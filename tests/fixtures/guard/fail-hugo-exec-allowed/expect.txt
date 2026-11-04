@@ -1,0 +1,1 @@
+hugo.toml: security.exec.allow: must be

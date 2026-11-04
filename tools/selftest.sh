@@ -7,6 +7,8 @@
 #   fail-<case>  must exit non-zero AND print the substring in its
 #                expect.txt, so a check that fails for the wrong reason
 #                (a crash, a missing tool) does not count as a pass.
+#   A pass-<case> with an expect.txt must also print that substring, so a
+#   pass that checked nothing (zero records, zero artifacts) is caught.
 #
 # html fixtures need the Nu Html Checker, which runs only in CI
 # (GITHUB_ACTIONS=true; ADR-0002 part 1). Outside CI they print the NOT RUN
@@ -19,6 +21,19 @@ SELFTEST_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SELFTEST_ROOT/tools/check.sh"
 
 FIXTURES="$SELFTEST_ROOT/tests/fixtures"
+
+# guard_env <fixture dir>: read <dir>/env.txt into GUARD_ENV. Only HUGO_*
+# assignments are accepted, so a fixture cannot change anything else.
+guard_env() {
+  GUARD_ENV=()
+  [[ -f "$1/env.txt" ]] || return 0
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    [[ "$line" =~ ^HUGO_[A-Z0-9_]+= ]] || return 1
+    GUARD_ENV+=("$line")
+  done < "$1/env.txt"
+}
 
 selftest_main() {
   load_pins || return 1
@@ -61,6 +76,39 @@ selftest_main() {
         links_check "$dir" >"$out" 2>&1
         rc=$?
         ;;
+      records)
+        # Records fixtures run against the real schemas in schema/.
+        records_check "$dir" "$SELFTEST_ROOT/schema" >"$out" 2>&1
+        rc=$?
+        ;;
+      schema)
+        # Schema fixtures bring their own schema/ to test the validator.
+        records_check "$dir" "$dir/schema" >"$out" 2>&1
+        rc=$?
+        ;;
+      site)
+        # <dir>/hugo.toml holds params.csp, <dir>/content the records whose
+        # artifacts must not appear live in the built tree <dir>/public.
+        site_check "$dir" "$SELFTEST_ROOT/schema" "$dir/public" >"$out" 2>&1
+        rc=$?
+        ;;
+      guard)
+        # <dir> stands in for the repo root. An optional env.txt holds
+        # HUGO_* overrides for the run, to prove the guard reads the
+        # effective Hugo config.
+        if ! guard_env "$dir"; then
+          echo "FAIL $check/$name: env.txt may only hold HUGO_<NAME>=<value> lines"
+          n_failed=$((n_failed + 1))
+          continue
+        fi
+        (
+          for line in "${GUARD_ENV[@]}"; do
+            export "${line?}"
+          done
+          guard_check "$dir"
+        ) >"$out" 2>&1
+        rc=$?
+        ;;
       *)
         echo "FAIL $check/$name: no check is mapped to fixture directory '$check'"
         n_failed=$((n_failed + 1))
@@ -69,8 +117,14 @@ selftest_main() {
     esac
 
     if [[ "$kind" == pass ]]; then
-      if [[ $rc -eq 0 ]]; then
-        echo "ok   $check/$name"
+      expect=""
+      [[ -s "$dir/expect.txt" ]] && expect="$(head -n 1 "$dir/expect.txt")"
+      if [[ $rc -eq 0 && -n "$expect" ]] && ! grep -qF -- "$expect" "$out"; then
+        echo "FAIL $check/$name: passed but without the expected output '$expect'; output:"
+        sed 's/^/     | /' "$out"
+        n_failed=$((n_failed + 1))
+      elif [[ $rc -eq 0 ]]; then
+        echo "ok   $check/$name${expect:+ (passed with: $expect)}"
         n_passed=$((n_passed + 1))
       else
         echo "FAIL $check/$name: expected exit 0, got $rc; output:"

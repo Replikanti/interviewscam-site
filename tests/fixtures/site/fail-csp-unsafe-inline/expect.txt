@@ -1,0 +1,1 @@
+CSP source not allowed in style-src

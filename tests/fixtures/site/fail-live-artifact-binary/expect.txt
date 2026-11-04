@@ -1,0 +1,1 @@
+public/blob.bin: the live form of artifact 'meeting[.]example'

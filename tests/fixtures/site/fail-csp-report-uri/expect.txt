@@ -1,0 +1,1 @@
+CSP reporting directive report-uri sends requests

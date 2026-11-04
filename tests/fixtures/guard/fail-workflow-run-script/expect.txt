@@ -1,0 +1,1 @@
+run step 'sh scripts/audit.sh': a workflow may only run

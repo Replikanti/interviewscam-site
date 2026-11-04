@@ -1,0 +1,2 @@
+[params]
+csp = "img-src 'self'; style-src 'self'"

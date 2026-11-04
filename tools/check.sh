@@ -13,9 +13,10 @@
 #   --external  check links online (third-party sites included) instead of
 #               the offline internal-link check (ADR-0002 part 7)
 #
-# tools/selftest.sh sources this file for html_check and links_check, so the
-# self-test runs exactly the invocations the real steps run; check_main and
-# the strict mode below apply only when the file is executed.
+# tools/selftest.sh sources this file for html_check, links_check and the
+# sitecheck functions, so the self-test runs exactly the invocations the real
+# steps run; check_main and the strict mode below apply only when the file is
+# executed.
 
 CHECK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tools/fetch-tools.sh
@@ -59,6 +60,25 @@ links_check() {
     -- "$dir"
 }
 
+# The safety nets (tools/sitecheck.py, ADR-0002 parts 3, 4 and 6), run in
+# Python's isolated mode. Each prints its counts and exits 1 on findings,
+# 2 on a usage or internal error.
+sitecheck() { python3 -I "$CHECK_ROOT/tools/sitecheck.py" "$@"; }
+
+# guard_check <repo root>: no JavaScript package tooling in the build chain
+# (D3; the guard keeps the tool names out of tools/), Hugo hardening keys in
+# hugo.toml and in the effective config of the pinned Hugo, actions owned by
+# actions/ and pinned to commit SHAs, Pages off until M6.
+guard_check() { sitecheck guard --root "$1" --hugo "$HUGO_BIN"; }
+
+# records_check <root> <schema dir>: schema, x-defang (D8), live forms (R2)
+# and the SPEC section 5 body rule for every record under <root>/content.
+records_check() { sitecheck records --root "$1" --schemas "$2"; }
+
+# site_check <root> <schema dir> <built dir>: third-party requests (D9), the
+# CSP meta from <root>/hugo.toml, and no live artifact in the build (R3).
+site_check() { sitecheck site --records "$1" --schemas "$2" "$3"; }
+
 STEP_NAMES=()
 STEP_RESULTS=()
 
@@ -96,6 +116,12 @@ step_shellcheck() {
   shellcheck -x "$CHECK_ROOT"/tools/*.sh || return 1
   echo "shellcheck OK"
 }
+
+step_guard() { guard_check "$CHECK_ROOT"; }
+
+step_records() { records_check "$CHECK_ROOT" "$CHECK_ROOT/schema"; }
+
+step_site() { site_check "$CHECK_ROOT" "$CHECK_ROOT/schema" "$CHECK_ROOT/public"; }
 
 step_build() {
   if [[ ! -x "$HUGO_BIN" ]]; then
@@ -144,7 +170,10 @@ check_main() {
     *) echo "==> shellcheck: FAIL"; record shellcheck FAIL ;;
   esac
 
+  run_step "guard (repo rules)" step_guard
+  run_step "records (schema, defang)" step_records
   run_step build step_build
+  run_step "site (third-party, CSP, defang)" step_site
 
   if in_github_actions; then
     run_step "html (Nu Html Checker)" step_html

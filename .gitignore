@@ -1,6 +1,7 @@
 worktrees/
-# Build output and generator state.
-public/
+# Build output and generator state. Anchored, so the site fixtures' public/
+# trees under tests/fixtures/site/ stay tracked.
+/public/
 resources/_gen/
 .hugo_build.lock
 # Pinned toolchain, fetched and verified by tools/fetch-tools.sh.

@@ -1,0 +1,1 @@
+content/campaigns/fixture.md: body: the live form of artifact

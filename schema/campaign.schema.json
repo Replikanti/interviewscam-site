@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "M1 placeholder (issue #2): a campaign is an object with a title. Milestone 3 replaces it with the SPEC section 5 campaign model. Keywords are limited to the subset tools/sitecheck.py implements (ADR-0002 part 4).",
+  "title": "Campaign front matter (placeholder)",
+  "type": "object",
+  "required": ["title"],
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

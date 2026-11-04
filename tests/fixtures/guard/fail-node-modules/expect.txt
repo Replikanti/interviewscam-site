@@ -1,0 +1,1 @@
+node_modules/fixture-pkg/index.js: JavaScript package-manager file

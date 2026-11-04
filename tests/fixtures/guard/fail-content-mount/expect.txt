@@ -1,0 +1,1 @@
+effective Hugo config (hugo config): content mount

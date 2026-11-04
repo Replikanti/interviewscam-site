@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "M1 placeholder (issue #2): only the artifacts the defang check needs. Milestone 3 replaces it with the SPEC section 5 report model. Keywords are limited to the subset tools/sitecheck.py implements (ADR-0002 part 4).",
+  "title": "Report front matter (placeholder)",
+  "type": "object",
+  "required": ["params"],
+  "properties": {
+    "params": {
+      "type": "object",
+      "required": ["artifacts"],
+      "properties": {
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["value"],
+            "properties": {
+              "value": {
+                "description": "One attacker artifact (domain, URL, SHA-256, handle, repository, package), defanged (D8).",
+                "type": "string",
+                "minLength": 1,
+                "x-defang": "host"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

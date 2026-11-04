@@ -1,0 +1,1 @@
+config/: a config/ directory overrides hugo.toml
