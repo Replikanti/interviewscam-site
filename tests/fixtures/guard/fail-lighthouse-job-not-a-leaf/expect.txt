@@ -1,0 +1,1 @@
+job after needs lighthouse, the job that runs tools/lighthouse.sh; it stays a leaf

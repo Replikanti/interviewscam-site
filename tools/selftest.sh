@@ -21,6 +21,9 @@ SELFTEST_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SELFTEST_ROOT/tools/check.sh"
 
 FIXTURES="$SELFTEST_ROOT/tests/fixtures"
+# The version the synthetic Lighthouse reports in tests/fixtures/lighthouse/
+# carry. Fixed, not the pin, so a Lighthouse upgrade does not touch them.
+LIGHTHOUSE_FIXTURE_VERSION=13.6.0
 
 # guard_env <fixture dir>: read <dir>/env.txt into GUARD_ENV. Only HUGO_*
 # assignments are accepted, so a fixture cannot change anything else.
@@ -90,6 +93,19 @@ selftest_main() {
         # <dir>/hugo.toml holds params.csp, <dir>/content the records whose
         # artifacts must not appear live in the built tree <dir>/public.
         site_check "$dir" "$SELFTEST_ROOT/schema" "$dir/public" >"$out" 2>&1
+        rc=$?
+        ;;
+      lighthouse)
+        # Synthetic reports holding only the fields the score gate reads.
+        sitecheck lighthouse --reports "$dir" \
+          --version "$LIGHTHOUSE_FIXTURE_VERSION" >"$out" 2>&1
+        rc=$?
+        ;;
+      tree)
+        # <dir>/lock.json is a resolved tree (the guard rejects the real
+        # lockfile name) and <dir>/pin.txt the digest the case pins.
+        sitecheck tree-digest "$dir/lock.json" \
+          --expect "$(head -n 1 "$dir/pin.txt" 2>/dev/null)" >"$out" 2>&1
         rc=$?
         ;;
       guard)

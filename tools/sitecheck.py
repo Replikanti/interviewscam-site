@@ -24,7 +24,18 @@ internal error, so a crash never reads as a finding or as a pass.
       chain (D3); the Hugo hardening keys of ADR-0001 in hugo.toml AND in the
       effective config that `hugo config` reports; no config/ directory and
       no second root config file; every action owned by actions/ and pinned
-      to a 40-hex commit SHA (ADR-0002 part 6); Pages off until M6.
+      to a 40-hex commit SHA (ADR-0002 part 6); Pages off until M6. Only
+      tools/lighthouse.sh may name the registry tools, only
+      .github/workflows/lighthouse.yml may run it, and the job that does has
+      no token permissions and no checkout (ADR-0003 part 2).
+  lighthouse --reports DIR --version V
+      The score gate of ADR-0003 part 3 on the JSON reports in DIR: exactly
+      3 runs per page, the pinned version, the mobile profile, a median of at
+      least LIGHTHOUSE_MIN_SCORE in each category, same-origin requests only.
+  tree-digest LOCKFILE --expect SHA256
+      The digest of a resolved dependency tree (ADR-0003 part 1): every entry
+      from the public registry with a sha512 integrity, then SHA-256 over the
+      sorted `name@version integrity` lines, compared with the pin.
 
 A finding never prints an artifact in live form: values are shown defanged.
 """
@@ -37,6 +48,7 @@ if sys.version_info < (3, 11):
 
 import argparse
 import datetime
+import hashlib
 import html
 import html.parser
 import json
@@ -900,6 +912,250 @@ def cmd_site(args):
 
 
 # ---------------------------------------------------------------------------
+# Lighthouse score gate (ADR-0003 part 3). It runs in the same job as the
+# tool, so it is a quality gate; the security boundary is the pin and the
+# isolation (ADR-0003 parts 1 and 2).
+
+# SPEC section 8. A constant, not a flag, so a workflow cannot lower it.
+LIGHTHOUSE_MIN_SCORE = 95
+LIGHTHOUSE_CATEGORIES = ("performance", "accessibility", "best-practices", "seo")
+# The smallest odd count that absorbs one outlier (ADR-0003 numbers table).
+LIGHTHOUSE_RUNS = 3
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
+
+
+def url_origin(url):
+    """(scheme, host, port) of an absolute URL, or None."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    if not parts.scheme or not parts.hostname:
+        return None
+    default = {"http": 80, "https": 443}.get(parts.scheme.lower())
+    return (parts.scheme.lower(), parts.hostname.lower(), port or default)
+
+
+def display_score(score):
+    """A category score as Lighthouse shows it: 0 to 100, rounded half up."""
+    return int(score * 100 + 0.5)
+
+
+def failing_audits(report, category):
+    """`id (score)` for every weighted audit of category that scored below 1."""
+    refs = dig(report, "categories", category, "auditRefs")
+    audits = report.get("audits")
+    out = []
+    if not isinstance(refs, list) or not isinstance(audits, dict):
+        return out
+    for ref in refs:
+        if not isinstance(ref, dict) or not ref.get("weight"):
+            continue
+        score = dig(audits, ref.get("id"), "score")
+        if isinstance(score, (int, float)) and not isinstance(score, bool) \
+                and score < 1:
+            out.append(f"{ref.get('id')} ({score})")
+    return out
+
+
+def cmd_lighthouse(args):
+    reports_dir = Path(args.reports).resolve()
+    if not reports_dir.is_dir():
+        raise UsageError(f"--reports {reports_dir} is not a directory")
+    findings = Findings()
+    paths = sorted(reports_dir.glob("*.json"))
+    if not paths:
+        findings.add(f"--reports {args.reports}", "no Lighthouse reports found; nothing "
+                     "was measured")
+    pages = {}  # page path -> [(report name, report, {category: score})]
+    for path in paths:
+        name = path.name
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            findings.add(name, f"cannot read the report: {exc}")
+            continue
+        if not isinstance(report, dict):
+            findings.add(name, "the report is not a JSON object")
+            continue
+        error = report.get("runtimeError")
+        if error:
+            code = dig(error, "code") if isinstance(error, dict) else error
+            findings.add(name, f"runtimeError {show(code)}: the run did not "
+                         "complete")
+        version = report.get("lighthouseVersion")
+        if version != args.version:
+            findings.add(name, f"lighthouseVersion {json.dumps(version)} is not "
+                         f"the pinned {json.dumps(args.version)}")
+        form = dig(report, "configSettings", "formFactor")
+        if form != "mobile":
+            findings.add(name, f"formFactor {json.dumps(form)}, the gate needs the "
+                         "mobile profile (SPEC section 8)")
+        url = report.get("requestedUrl") or report.get("finalDisplayedUrl")
+        origin = url_origin(url) if isinstance(url, str) else None
+        if origin is None:
+            findings.add(name, "no absolute requestedUrl; cannot tell which "
+                         "page was audited")
+            continue
+        if origin[0] != "http" or origin[1] not in LOOPBACK_HOSTS:
+            findings.add(name, f"audited {show(url)}, not the built site on "
+                         "loopback http")
+        items = dig(report, "audits", "network-requests", "details", "items")
+        if not isinstance(items, list):
+            findings.add(name, "no network-requests audit items; cannot prove "
+                         "same-origin requests (fails closed)")
+            items = []
+        for item in items:
+            target = item.get("url") if isinstance(item, dict) else None
+            if not isinstance(target, str) or url_origin(target) != origin:
+                findings.add(name, f"request to {show(target)} leaves the "
+                             "audited origin (D9)")
+        scores = {}
+        for category in LIGHTHOUSE_CATEGORIES:
+            if not isinstance(dig(report, "categories", category), dict):
+                findings.add(name, f"category {category} is missing")
+                continue
+            score = dig(report, "categories", category, "score")
+            if isinstance(score, bool) or not isinstance(score, (int, float)):
+                findings.add(name, f"category {category}: score is "
+                             f"{json.dumps(score)}, not a number")
+                continue
+            scores[category] = display_score(score)
+        page = urllib.parse.urlsplit(url).path or "/"
+        pages.setdefault(page, []).append((name, report, scores))
+
+    rows = []
+    for page, runs in sorted(pages.items()):
+        row = [page]
+        if len(runs) != LIGHTHOUSE_RUNS:
+            findings.add(page, f"{len(runs)} report(s), the gate needs exactly "
+                         f"{LIGHTHOUSE_RUNS} per page")
+        for category in LIGHTHOUSE_CATEGORIES:
+            values = [(s[category], r) for _, r, s in runs if category in s]
+            if len(runs) != LIGHTHOUSE_RUNS or len(values) != len(runs):
+                row.append("-")
+                continue
+            values.sort(key=lambda v: v[0])
+            median, median_report = values[len(values) // 2]
+            row.append(str(median))
+            audits = ", ".join(failing_audits(median_report, category)) or "none listed"
+            if median < LIGHTHOUSE_MIN_SCORE:
+                findings.add(page, f"median {category} score {median} is below "
+                             f"{LIGHTHOUSE_MIN_SCORE}; failing audits of the "
+                             f"median run: {audits}")
+            elif median < 100:
+                print(f"note: {page}: median {category} score {median}; audits "
+                      f"below 1 in the median run: {audits}")
+        rows.append(row)
+    header = ["page"] + list(LIGHTHOUSE_CATEGORIES)
+    widths = [max(len(r[i]) for r in rows + [header]) for i in range(len(header))]
+    print(f"median of {LIGHTHOUSE_RUNS} runs per page, threshold "
+          f"{LIGHTHOUSE_MIN_SCORE}:")
+    for row in [header] + rows:
+        print("  " + "  ".join(c.ljust(w) for c, w in zip(row, widths)).rstrip())
+    return findings.report(
+        f"lighthouse checked: {len(pages)} pages, {len(paths)} reports, "
+        f"version {args.version}")
+
+
+# ---------------------------------------------------------------------------
+# Tree digest (ADR-0003 part 1). The lockfile is generated in CI, in a
+# temporary directory of the job that runs the tool; the repo never holds
+# one (D3), so the fixtures name it lock.json.
+
+PUBLIC_REGISTRY = "https://registry.npmjs.org/"
+SHA512_INTEGRITY = re.compile(r"sha512-[A-Za-z0-9+/]{86}==")
+
+
+def package_name(key):
+    """The package name of a lockfile `packages` key: its last path segment,
+    or the last two when the second-to-last is a scope. The segment before
+    the name must equal the key's first segment (the install directory), so
+    any other layout fails closed."""
+    parts = key.split("/")
+    if len(parts) >= 3 and parts[-2].startswith("@"):
+        name, before = f"{parts[-2]}/{parts[-1]}", parts[-3]
+    elif len(parts) >= 2:
+        name, before = parts[-1], parts[-2]
+    else:
+        return None
+    if before != parts[0] or not name.strip("@/"):
+        return None
+    return name
+
+
+def cmd_tree_digest(args):
+    if not re.fullmatch(r"[0-9a-f]{64}", args.expect):
+        raise UsageError("--expect must be a 64-hex SHA-256 "
+                         "(LIGHTHOUSE_TREE_SHA256 in tools/pins.env)")
+    path = Path(args.lockfile)
+    try:
+        lock = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UsageError(f"cannot read {path}: {exc}") from exc
+    findings = Findings()
+    where = path.name
+    if not isinstance(lock, dict) or lock.get("lockfileVersion") not in (2, 3):
+        version = lock.get("lockfileVersion") if isinstance(lock, dict) else None
+        findings.add(where, f"lockfileVersion {json.dumps(version)}; only 2 and 3 "
+                     "carry the packages map this digest reads")
+        return findings.report("tree digest: not computed")
+    packages = lock.get("packages")
+    if not isinstance(packages, dict) or not packages:
+        findings.add(where, "no packages map")
+        return findings.report("tree digest: not computed")
+    first = None
+    lines = set()
+    for key, entry in packages.items():
+        if key == "":
+            continue  # the root manifest the job generated
+        here = f"{where}: packages[{key!r}]"
+        if not isinstance(entry, dict):
+            findings.add(here, "not an object")
+            continue
+        if entry.get("link"):
+            findings.add(here, "link entry; every package must come from the "
+                         "public registry (fails closed)")
+            continue
+        name = package_name(key)
+        top = key.split("/", 1)[0]
+        first = first or top
+        if name is None or top != first:
+            findings.add(here, "unexpected key layout; cannot derive the package "
+                         "name (fails closed)")
+            continue
+        version = entry.get("version")
+        integrity = entry.get("integrity")
+        resolved = entry.get("resolved")
+        if not isinstance(version, str) or not version:
+            findings.add(here, "no version")
+            continue
+        if not isinstance(integrity, str) or not SHA512_INTEGRITY.fullmatch(integrity):
+            findings.add(here, f"integrity {show(integrity, 24)} is not a single "
+                         "sha512- hash")
+            continue
+        if not isinstance(resolved, str) or not resolved.startswith(PUBLIC_REGISTRY):
+            findings.add(here, f"resolved {show(resolved)} is not on the public "
+                         f"registry {show(PUBLIC_REGISTRY)}")
+            continue
+        lines.add(f"{name}@{version} {integrity}")
+    ordered = sorted(lines)
+    digest = hashlib.sha256("".join(f"{line}\n" for line in ordered)
+                            .encode("utf-8")).hexdigest()
+    print(f"tree digest: {digest} ({len(ordered)} packages)")
+    if not findings.items and digest != args.expect:
+        print("resolved tree (name@version), for review against the expected "
+              "set of packages:")
+        for line in ordered:
+            print("  " + line.split(" ", 1)[0])
+        findings.add(where, f"tree digest {digest} does not match the pin "
+                     f"{args.expect}; review the list above, then pin the "
+                     "digest as LIGHTHOUSE_TREE_SHA256 in tools/pins.env")
+    return findings.report(f"tree digest checked: {len(ordered)} packages")
+
+
+# ---------------------------------------------------------------------------
 # Guard
 
 # The pattern tables. The tool scan skips exactly these lines of this file
@@ -987,6 +1243,14 @@ def scanned_for_tools(root, rel):
         return True
 
 
+# ADR-0003 part 2: the one script that may name the registry tools, and the
+# one workflow that may run it. The guard itself (this file) names both.
+LIGHTHOUSE_SCRIPT = "tools/lighthouse.sh"
+LIGHTHOUSE_WORKFLOW = ".github/workflows/lighthouse.yml"
+LIGHTHOUSE_REFERENCE = re.compile(r"(?i)lighthouse\.sh")
+REFERENCE_ALLOWED = {LIGHTHOUSE_SCRIPT, LIGHTHOUSE_WORKFLOW, "tools/sitecheck.py"}
+
+
 def guard_tool_invocations(root, files, findings):
     for rel in files:
         if not scanned_for_tools(root, rel):
@@ -997,6 +1261,13 @@ def guard_tool_invocations(root, files, findings):
             findings.add(rel, f"cannot read: {exc}")
             continue
         for n, line in enumerate(text.splitlines(), 1):
+            if rel not in REFERENCE_ALLOWED and LIGHTHOUSE_REFERENCE.search(line):
+                findings.add(f"{rel}:{n}", f"references {LIGHTHOUSE_SCRIPT}; only "
+                             f"{LIGHTHOUSE_WORKFLOW} may run it, so no other "
+                             "script or workflow can reach the registry code "
+                             "(ADR-0003 part 2)")
+            if rel == LIGHTHOUSE_SCRIPT:
+                continue  # the carve-out: it runs the registry tools
             if rel == "tools/sitecheck.py" and line in TABLE_LINES:
                 continue
             match = TOOL_WORD.search(line)
@@ -1218,6 +1489,174 @@ def guard_workflows(root, files, findings):
                 if rule.search(line):
                     findings.add(f"{rel}:{n}", f"{label}: Pages stays off until "
                                  "M6 (#7)")
+            # ADR-0003 part 2: nothing with a token or on the deploy path
+            # reads what the job running the registry code could write.
+            if WORKFLOW_RUN.search(line):
+                findings.add(f"{rel}:{n}", "workflow_run trigger: a run started "
+                             "by another workflow can download that run's "
+                             "artifacts, which the lighthouse job could have "
+                             "replaced (ADR-0003 part 2)")
+            if rel != LIGHTHOUSE_WORKFLOW and DOWNLOAD_ARTIFACT.search(line):
+                findings.add(f"{rel}:{n}", "actions/download-artifact outside the "
+                             f"lighthouse job of {LIGHTHOUSE_WORKFLOW}; an artifact "
+                             "of a run with that job can hold what registry code "
+                             "wrote (ADR-0003 part 2)")
+
+
+# lighthouse.yml is read by indentation, so every YAML form that can move a
+# key out of its line, or merge one mapping into another, is refused there.
+YAML_QUOTED = re.compile(r""""[^"]*"|'[^']*'""")
+YAML_EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
+YAML_COMMENT = re.compile(r"(?:^|\s)#.*$")
+YAML_ANCHOR_OR_ALIAS = re.compile(r"(?:^|[\s\[,])[&*][^\s,\]]")
+EMPTY_PERMISSIONS = re.compile(r"\s*permissions\s*:\s*\{\}\s*")
+JOB_KEY = re.compile(r"([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*")
+FORBIDDEN_IN_LIGHTHOUSE_JOB = re.compile(
+    r"actions/(checkout|upload-artifact|upload-pages-artifact)(?![\w-])")
+WORKFLOW_RUN = re.compile(r"(?i)(?<![\w-])workflow_run(?![\w-])")
+DOWNLOAD_ARTIFACT = re.compile(r"(?i)actions/download-artifact(?![\w-])")
+# Credentials that could reach the job running the registry code, besides
+# GITHUB_TOKEN (which permissions: {} empties). Matched on the raw line,
+# comments included, so no quoting or comment trick hides one.
+LIGHTHOUSE_CREDENTIALS = [
+    (re.compile(r"(?i)(?<![\w-])secrets(?![\w-])"), "a secrets reference"),
+    (re.compile(r"""(?i)(?<![\w-])github\s*(?:\.\s*|\[\s*['"]?)token(?![\w-])"""),
+     "a github.token reference"),
+    (re.compile(r"""(?i)(?<![\w-])['"]?(github-token|run-id|repository)['"]?\s*:"""),
+     "a download input that reads another run or repository"),
+]
+NEEDS_KEY = re.compile(r"\s*needs\s*:(.*)$")
+JOB_NAME_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
+
+
+def yaml_bare(line):
+    """The line without quoted strings, ${{ }} expressions and its comment."""
+    line = YAML_EXPRESSION.sub("", YAML_QUOTED.sub('""', line))
+    return YAML_COMMENT.sub("", line).rstrip()
+
+
+def indent_of(line):
+    return len(line) - len(line.lstrip(" "))
+
+
+def workflow_jobs(lines):
+    """{job id: [(line number, line)]} for the block under top-level jobs:,
+    split by indentation, or None when the layout cannot be read."""
+    start = next((i for i, line in enumerate(lines)
+                  if re.fullmatch(r"jobs\s*:", yaml_bare(line))), None)
+    if start is None:
+        return None
+    jobs, current, job_indent = {}, None, None
+    for i in range(start + 1, len(lines)):
+        bare = yaml_bare(lines[i])
+        if not bare.strip():
+            continue
+        indent = indent_of(bare)
+        if indent == 0:
+            break
+        if job_indent is None:
+            job_indent = indent
+        if indent < job_indent:
+            return None
+        if indent == job_indent:
+            match = JOB_KEY.fullmatch(bare.strip())
+            if not match:
+                return None
+            current = match.group(1)
+            if current in jobs:
+                return None
+            jobs[current] = []
+            continue
+        jobs[current].append((i + 1, lines[i]))
+    return jobs
+
+
+def guard_lighthouse_workflow(root, files, findings):
+    """The job that runs tools/lighthouse.sh holds no token permission and
+    no other credential, has no checkout, uploads nothing and is a leaf; only
+    it downloads an artifact; the workflow never builds the Pages artifact
+    (ADR-0003 part 2)."""
+    if LIGHTHOUSE_WORKFLOW not in files:
+        return
+    rel = LIGHTHOUSE_WORKFLOW
+    try:
+        text = (root / rel).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        findings.add(rel, f"cannot read: {exc}")
+        return
+    lines = text.splitlines()
+    for n, line in enumerate(lines, 1):
+        for rule, label in LIGHTHOUSE_CREDENTIALS:
+            if rule.search(line):
+                findings.add(f"{rel}:{n}", f"{label} in {LIGHTHOUSE_WORKFLOW}; no "
+                             "credential may reach the job that runs registry "
+                             "code (D3, ADR-0003 part 2)")
+        lowered = line.lower()
+        if "upload-pages-artifact" in lowered or "github-pages" in lowered:
+            findings.add(f"{rel}:{n}", "the Lighthouse workflow must never build "
+                         "or name the Pages artifact (ADR-0003 part 2)")
+        bare = yaml_bare(line)
+        if YAML_ANCHOR_OR_ALIAS.search(bare):
+            findings.add(f"{rel}:{n}", "YAML anchor or alias; the guard reads "
+                         "this file by indentation (fails closed)")
+        if not EMPTY_PERMISSIONS.fullmatch(bare) and ("{" in bare or "}" in bare):
+            findings.add(f"{rel}:{n}", "YAML flow mapping; the guard reads this "
+                         "file by indentation, only `permissions: {}` is "
+                         "allowed (fails closed)")
+    jobs = workflow_jobs(lines)
+    if jobs is None:
+        findings.add(rel, "cannot read the jobs block by indentation (fails "
+                     "closed)")
+        return
+    registry_jobs = {job for job, body in jobs.items()
+                     if any((m := RUN_KEY.search(line))
+                            and LIGHTHOUSE_REFERENCE.search(m.group(1))
+                            for _, line in body)}
+    allowed_downloads = {n for job in registry_jobs if job == "lighthouse"
+                         for n, _ in jobs[job]}
+    for n, line in enumerate(lines, 1):
+        if DOWNLOAD_ARTIFACT.search(line) and n not in allowed_downloads:
+            findings.add(f"{rel}:{n}", "actions/download-artifact outside the job "
+                         f"`lighthouse` that runs {LIGHTHOUSE_SCRIPT} (ADR-0003 "
+                         "part 2)")
+    for job, body in jobs.items():
+        # The registry job stays a leaf: no job may run after it and read
+        # what it left behind.
+        content = [(n, YAML_COMMENT.sub("", line).rstrip()) for n, line in body]
+        content = [(n, line) for n, line in content if line.strip()]
+        child = min(indent_of(line) for _, line in content) if content else None
+        for i, (n, line) in enumerate(content):
+            match = NEEDS_KEY.match(line) if indent_of(line) == child else None
+            if not match:
+                continue
+            values = [match.group(1)]
+            for _, more in content[i + 1:]:
+                if indent_of(more) <= child:
+                    break
+                values.append(more)
+            named = set(JOB_NAME_TOKEN.findall(" ".join(values)))
+            for target in sorted(named & registry_jobs):
+                findings.add(f"{rel}:{n}", f"job {job} needs {target}, the job "
+                             f"that runs {LIGHTHOUSE_SCRIPT}; it stays a leaf, so "
+                             "nothing reads what it could write (ADR-0003 part 2)")
+    for job, body in jobs.items():
+        if job not in registry_jobs:
+            continue
+        content = [(n, yaml_bare(line)) for n, line in body if yaml_bare(line).strip()]
+        child = min(indent_of(bare) for _, bare in content) if content else None
+        perms = [(n, bare) for n, bare in content if indent_of(bare) == child
+                 and re.match(r"\s*permissions\s*:", bare)]
+        if len(perms) != 1 or not EMPTY_PERMISSIONS.fullmatch(perms[0][1]):
+            findings.add(f"{rel}: job {job}", f"runs {LIGHTHOUSE_SCRIPT} without "
+                         "exactly one job-level `permissions: {}`; the registry "
+                         "code must hold no token permission (D3, ADR-0003 "
+                         "part 2)")
+        for n, line in body:
+            match = FORBIDDEN_IN_LIGHTHOUSE_JOB.search(line)
+            if match:
+                findings.add(f"{rel}:{n}", f"job {job} runs {LIGHTHOUSE_SCRIPT} "
+                             f"and uses actions/{match.group(1)}; that job has "
+                             "no checkout and uploads nothing (ADR-0003 part 2)")
 
 
 def cmd_guard(args):
@@ -1231,6 +1670,7 @@ def cmd_guard(args):
     guard_tool_invocations(root, files, findings)
     guard_hugo_config(root, hugo_bin, findings)
     guard_workflows(root, files, findings)
+    guard_lighthouse_workflow(root, files, findings)
     n_workflows = sum(f.startswith(".github/workflows/") for f in files)
     return findings.report(f"guard checked: {len(files)} files, "
                            f"{n_workflows} workflows")
@@ -1254,6 +1694,14 @@ def main(argv):
     p.add_argument("--root", default=".")
     p.add_argument("--hugo")
     p.set_defaults(func=cmd_guard)
+    p = sub.add_parser("lighthouse")
+    p.add_argument("--reports", required=True)
+    p.add_argument("--version", required=True)
+    p.set_defaults(func=cmd_lighthouse)
+    p = sub.add_parser("tree-digest")
+    p.add_argument("lockfile")
+    p.add_argument("--expect", required=True)
+    p.set_defaults(func=cmd_tree_digest)
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:

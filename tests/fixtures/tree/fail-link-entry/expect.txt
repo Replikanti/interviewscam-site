@@ -1,0 +1,1 @@
+link entry; every package must come from the public registry
