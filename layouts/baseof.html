@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+{{- /* A meta CSP applies only to content after it, so it comes right after the charset (D9). */}}
+<meta http-equiv="Content-Security-Policy" content="{{ site.Params.csp }}">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ block "title" . }}{{ site.Title }}{{ end }}</title>
+{{- with resources.Get "css/site.css" | resources.Minify | resources.Fingerprint }}
+<link rel="stylesheet" href="{{ .RelPermalink }}">
+{{- end }}
+</head>
+<body>
+{{ block "main" . }}{{ end }}
+</body>
+</html>

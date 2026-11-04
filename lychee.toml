@@ -1,0 +1,21 @@
+# lychee configuration for tools/check.sh (ADR-0002 parts 2 and 7).
+#
+# root_dir and the remap of https://interviewscam.com/ to the local build need
+# the absolute path of the directory under check, which differs between the
+# CI runner, the operator's checkout and every self-test fixture, so
+# tools/check.sh passes them as --root-dir and --remap. --offline is passed
+# by check.sh too: offline on every PR, online only for --external.
+
+# A directory link resolves to its index.html, and it must exist.
+index_files = ["index.html"]
+
+# Check #fragment targets (id / name anchors) as well as files.
+include_fragments = "anchor-only"
+
+# Only the built site's own file types carry links.
+extensions = ["html", "css"]
+
+# Non-interactive output for CI logs.
+no_progress = true
+
+# Reserved for M5: accept or exclude bot-walled 403 sources (ADR-0002 part 7).

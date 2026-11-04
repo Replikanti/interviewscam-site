@@ -1,1 +1,7 @@
 worktrees/
+# Build output and generator state.
+public/
+resources/_gen/
+.hugo_build.lock
+# Pinned toolchain, fetched and verified by tools/fetch-tools.sh.
+.tools/

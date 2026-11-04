@@ -1,0 +1,13 @@
+/* M1 placeholder styles. System fonts only: no @font-face, no third-party
+   fonts (D9). M2 replaces this with the design tokens. */
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0 auto;
+  max-width: 40rem;
+  padding: 1rem;
+  font-family: system-ui, sans-serif;
+  line-height: 1.5;
+}
