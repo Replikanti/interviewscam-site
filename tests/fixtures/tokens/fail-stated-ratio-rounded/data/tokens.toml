@@ -1,0 +1,10 @@
+[color]
+muted = "#475569"
+ground = "#F3F6FC"
+
+[[pair]]
+fg = "muted"
+bg = "ground"
+kind = "text"
+ratio = 7.00
+use = "lead paragraph"

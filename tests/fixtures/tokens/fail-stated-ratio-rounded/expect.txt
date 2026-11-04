@@ -1,0 +1,1 @@
+stated ratio 7.00 is wrong; the WCAG ratio floored to 2 decimals is 6.99

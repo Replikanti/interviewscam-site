@@ -18,7 +18,20 @@ internal error, so a crash never reads as a finding or as a pass.
       The built site in PUBLIC makes no third-party request (D9). Every page
       carries exactly one CSP meta, right after <meta charset>, equal to
       params.csp in DIR/hugo.toml. The live form of a record artifact appears
-      nowhere in PUBLIC (R3), decoded or not.
+      nowhere in PUBLIC (R3), decoded or not. Forms stay on the origin, no
+      web manifest, no inline style, script or event handler, one canonical
+      link to the page itself, no mailto: link, only token colours, no SMIL
+      animation, and .visually-hidden and !important only where ADR-0003
+      part 6 allows them (counted across all built CSS).
+  tokens [--root DIR]
+      data/tokens.toml is well formed and every listed colour pair meets its
+      WCAG 2.2 contrast minimum with the ratio it states. No colour literal
+      appears in assets/, layouts/, static/ or hugo.toml.
+  reflow --chrome BIN PUBLIC
+      Every HTML page in PUBLIC, loaded in headless Chrome at a 320 CSS px
+      viewport, has no page-level horizontal overflow, and every word and
+      replaced element lies within the viewport and within every clipping
+      ancestor (geometry, ADR-0003 part 6). CI only.
   guard [--root DIR] [--hugo BIN]
       Repo-level rules: no JavaScript package-manager tooling in the build
       chain (D3); the Hugo hardening keys of ADR-0001 in hugo.toml AND in the
@@ -48,13 +61,23 @@ if sys.version_info < (3, 11):
 
 import argparse
 import datetime
+import decimal
+import fcntl
+import functools
 import hashlib
 import html
 import html.parser
+import http.server
 import json
+import math
 import os
 import re
+import select
+import shutil
 import subprocess
+import tempfile
+import threading
+import time
 import tomllib
 import unicodedata
 import urllib.parse
@@ -617,7 +640,8 @@ CSS_URL = re.compile(r"(?i)url\(\s*(?:(['\"])(.*?)\1|([^)\s'\"]*))\s*\)", re.S)
 CSS_STRING = re.compile(r"(['\"])(.*?)\1", re.S)
 
 
-def css_decode(css):
+def css_unescape(css):
+    """CSS escapes decoded: \\69 and \\i are both an "i"."""
     def unescape(match):
         if match.group(1):
             try:
@@ -625,8 +649,12 @@ def css_decode(css):
             except (ValueError, OverflowError):
                 return "\ufffd"
         return match.group(2)
-    css = CSS_COMMENT_OR_STRING.sub(lambda m: m.group(0) if m.group(1) else "", css)
     return CSS_ESCAPE.sub(unescape, css)
+
+
+def css_decode(css):
+    css = CSS_COMMENT_OR_STRING.sub(lambda m: m.group(0) if m.group(1) else "", css)
+    return css_unescape(css)
 
 
 def css_urls(css):
@@ -801,6 +829,306 @@ def csp_position_problems(page, csp):
     return problems
 
 
+# ---------------------------------------------------------------------------
+# CSS structure: just enough of a parser for the .visually-hidden rule and the
+# named-colour scan. Strings, escapes and parentheses are kept intact, so a
+# brace or semicolon inside them does not end a block.
+
+class CssRule:
+    def __init__(self, parents, prelude, declarations):
+        self.parents = parents  # preludes of the enclosing blocks, outermost first
+        self.prelude = prelude  # selector list or at-rule prelude, comments removed
+        self.declarations = declarations  # raw declaration texts, in order
+
+
+def css_rules(css):
+    """Every block of a stylesheet as a CssRule, comments removed. A statement
+    outside any block (@import ...;) comes back as a rule with that statement
+    as prelude, no parents and no declarations. Unbalanced braces never raise:
+    a stray } is ignored and an unclosed block ends with the sheet."""
+    text = CSS_COMMENT_OR_STRING.sub(lambda m: m.group(0) if m.group(1) else " ", css)
+    rules, stack, buf = [], [], []
+    depth, i, n = 0, 0, len(text)
+
+    def flush():
+        item = "".join(buf).strip()
+        buf.clear()
+        if not item:
+            return
+        if stack:
+            stack[-1][1].append(item)
+        else:
+            rules.append(CssRule((), item, []))
+
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            buf.append(text[i:i + 2])
+            i += 2
+            continue
+        if ch in "\"'":
+            j = i + 1
+            while j < n and text[j] != ch:
+                j += 2 if text[j] == "\\" else 1
+            buf.append(text[i:j + 1])
+            i = j + 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        if depth == 0 and ch == "{":
+            prelude = "".join(buf).strip()
+            buf.clear()
+            stack.append((prelude, []))
+        elif depth == 0 and ch == ";":
+            flush()
+        elif depth == 0 and ch == "}":
+            flush()
+            if stack:
+                prelude, declarations = stack.pop()
+                rules.append(CssRule(tuple(p for p, _ in stack), prelude, declarations))
+        else:
+            buf.append(ch)
+        i += 1
+    flush()
+    while stack:
+        prelude, declarations = stack.pop()
+        rules.append(CssRule(tuple(p for p, _ in stack), prelude, declarations))
+    return rules
+
+
+def css_declaration(text):
+    """(property, value) of a declaration text, property lowercased."""
+    name, sep, value = text.partition(":")
+    if not sep:
+        return "", text
+    return css_unescape(name).strip().lower(), value
+
+
+# ADR-0003 part 6: the one sanctioned utility class. The reflow check exempts
+# elements that carry it while their box is at most 1 x 1 px and their
+# display is not contents. What this rule enforces: across ALL the site's
+# CSS the class has exactly one top-level definition with the pinned
+# hiding declarations and at most one :focus/:focus-visible reveal, both
+# entirely !important; !important appears nowhere else; no attribute
+# selector on `class` (it could match the class without naming it); inline
+# style is banned by rule (c).
+VISUALLY_HIDDEN = "visually-hidden"
+VISUALLY_HIDDEN_WORD = re.compile(r"(?i)visually-hidden")
+VH_DEFINITION = ".visually-hidden"
+VH_REVEAL = {".visually-hidden:focus", ".visually-hidden:focus-visible"}
+# The hiding pattern: a 1 x 1 px absolutely positioned box that clips its
+# content and keeps it on one line. Each is required with exactly this value.
+VH_REQUIRED = {
+    # Pinned so `display: contents` (no box, text still painted) cannot
+    # apply; an absolutely positioned box is blockified anyway.
+    "display": "block",
+    "position": "absolute",
+    "width": "1px",
+    "height": "1px",
+    "overflow": "hidden",
+    "clip-path": "inset(50%)",
+    "white-space": "nowrap",
+}
+# Allowed in the definition with any value: they only shrink or reset the box,
+# and the runtime 1 x 1 px check in reflow catches a value that grows it.
+VH_OPTIONAL = {"margin", "padding", "border", "clip"}
+IMPORTANT = re.compile(r"(?i)!\s*important")
+CLASS_ATTRIBUTE_SELECTOR = re.compile(r"(?i)\[\s*(?:[\w*-]*\|)?class\s*(?:[~|^$*]?=|\])")
+
+
+def css_selector_text(prelude):
+    return re.sub(r"\s+", " ", css_unescape(prelude)).strip()
+
+
+def css_value_text(value):
+    """A declaration value as compared: unescaped, !important removed,
+    lowercased, whitespace collapsed and trimmed inside parentheses."""
+    value = IMPORTANT.sub("", css_unescape(value)).strip().lower()
+    value = re.sub(r"\s+", " ", value)
+    return re.sub(r"\(\s*", "(", re.sub(r"\s*\)", ")", value))
+
+
+class CssRuleResult:
+    def __init__(self):
+        self.problems = []
+        self.definitions = 0
+        self.reveals = 0
+
+
+def css_rule_problems(css):
+    """The .visually-hidden and !important rule (ADR-0003 part 6) on one
+    stylesheet. The caller adds up definitions and reveals across files."""
+    result = CssRuleResult()
+    problems = result.problems
+    attributed = 0
+    for rule in css_rules(css):
+        selector = css_selector_text(rule.prelude)
+        top_level = not rule.parents
+        is_definition = top_level and selector == VH_DEFINITION
+        is_reveal = top_level and all(p.strip() in VH_REVEAL for p in selector.split(","))
+        if not selector.startswith("@") and CLASS_ATTRIBUTE_SELECTOR.search(selector):
+            problems.append(f"{show(selector)}: attribute selector on class; select "
+                            "by class name (it could match .visually-hidden without "
+                            "naming it)")
+        if is_definition or is_reveal:
+            result.definitions += is_definition
+            result.reveals += is_reveal
+            seen = {}
+            for declaration in rule.declarations:
+                found = len(IMPORTANT.findall(css_unescape(declaration)))
+                attributed += found
+                if not found:
+                    problems.append(f"{show(selector)}: declaration {show(declaration)} "
+                                    "is not !important; every declaration of the "
+                                    ".visually-hidden definition and its reveal is, so "
+                                    "only they win the cascade")
+                prop, value = css_declaration(declaration)
+                if prop in seen:
+                    problems.append(f"{show(selector)}: {prop} is declared twice")
+                seen[prop] = css_value_text(value)
+            if is_definition:
+                for prop, value in seen.items():
+                    if prop not in VH_REQUIRED and prop not in VH_OPTIONAL:
+                        problems.append(f"{show(selector)}: {prop} is not part of the "
+                                        "hiding pattern")
+                for prop, want in VH_REQUIRED.items():
+                    if seen.get(prop) != want:
+                        problems.append(f"{show(selector)}: the definition needs "
+                                        f"{prop}: {want} !important (found "
+                                        f"{show(seen.get(prop, 'nothing'))}); it must "
+                                        "provably hide")
+            continue
+        if VISUALLY_HIDDEN_WORD.search(selector) or any(
+                VISUALLY_HIDDEN_WORD.search(css_unescape(p)) for p in rule.parents):
+            inside = "".join(f" inside {show(css_selector_text(p))}" for p in rule.parents)
+            problems.append(f"{show(selector)}{inside}: .visually-hidden may appear only "
+                            "in its one top-level definition and its :focus/"
+                            ":focus-visible reveal (not nested in @media, @container "
+                            "or @supports, not in a compound or descendant selector)")
+        for declaration in rule.declarations:
+            decoded = css_unescape(declaration)
+            if VISUALLY_HIDDEN_WORD.search(decoded):
+                problems.append(f"{show(selector)}: declaration {show(declaration)} "
+                                "names visually-hidden outside its definition")
+            found = len(IMPORTANT.findall(decoded))
+            attributed += found
+            if found:
+                problems.append(f"{show(selector)}: !important outside the "
+                                ".visually-hidden definition and its reveal "
+                                f"({show(declaration)})")
+    # Fail closed: an !important the block walk did not attribute to a
+    # declaration (in a selector, an at-rule prelude, a stray statement).
+    stripped = CSS_COMMENT_OR_STRING.sub(lambda m: m.group(0) if m.group(1) else " ", css)
+    total = len(IMPORTANT.findall(css_unescape(stripped)))
+    if total > attributed:
+        problems.append(f"!important outside any declaration ({total - attributed} "
+                        "occurrence(s)); it is allowed only in the .visually-hidden "
+                        "definition and its reveal")
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Markup rules of the built site (PR 3 of milestone 2, ADR-0003 parts 3 and 6)
+
+FORM_ATTRS = {("form", "action"), ("button", "formaction"), ("input", "formaction")}
+URL_ATTRS = ("href", "src", "action", "formaction", "xlink:href", "data")
+JSON_LD = "application/ld+json"
+
+
+def url_scheme(url):
+    """The scheme of url as a browser reads it (tabs, newlines and edge C0
+    controls dropped, lowercased), or ""."""
+    url = re.sub(r"[\t\n\r]", "", url).strip(C0_AND_SPACE)
+    match = HAS_SCHEME.match(url)
+    return match.group(0)[:-1].lower() if match else ""
+
+
+def own_path(rel):
+    """The site path of a file under public/ (posix, relative)."""
+    if rel == "index.html":
+        return "/"
+    if rel.endswith("/index.html"):
+        return "/" + rel[:-len("index.html")]
+    return "/" + rel
+
+
+def markup_problems(page, rel):
+    """Rules (a) to (e) on one HTML page; rel is its path under public/."""
+    problems = []
+    canonicals = []
+    for tag, attrs in page.elements:
+        # (a) A form never submits to another origin or scheme.
+        for (ftag, fattr) in FORM_ATTRS:
+            if tag == ftag and fattr in attrs and leaves_origin(attrs[fattr]):
+                problems.append(f"(a) <{tag} {fattr}> submits to "
+                                f"{show(attrs[fattr])}, another origin")
+        # (b) No web manifest until its icons[].src are request-scanned.
+        rels = attrs.get("rel", "").lower().split()
+        if tag == "link" and "manifest" in rels:
+            problems.append("(b) <link rel=manifest>: a web manifest fails closed "
+                            "until its icons are request-scanned")
+        # (c) The CSP (style-src 'self', script-src 'self') blocks inline
+        # styles and scripts silently: dead styling, dead behaviour.
+        if "style" in attrs:
+            problems.append(f"(c) <{tag} style> attribute: inline styles are "
+                            "blocked by the CSP; use a class in the stylesheet")
+        if tag == "style":
+            problems.append("(c) <style> element: inline styles are blocked by the "
+                            "CSP; use the stylesheet")
+        if tag == "script" and not attrs.get("src", "").strip() \
+                and attrs.get("type", "").strip().lower() != JSON_LD:
+            problems.append("(c) inline <script> without src: blocked by the CSP; "
+                            "use one first-party file")
+        for name in attrs:
+            if name.startswith("on"):
+                problems.append(f"(c) <{tag} {name}> event-handler attribute: "
+                                "blocked by the CSP")
+        for name in URL_ATTRS:
+            if name not in attrs:
+                continue
+            scheme = url_scheme(attrs[name])
+            if scheme == "javascript":
+                problems.append(f"(c) <{tag} {name}> is a javascript: URL")
+            # (e) No mailto: link anywhere: the address is plain text (SPEC
+            # section 7, issue #3 STOP 1 decision 6).
+            if scheme == "mailto" and name not in ("src", "data"):
+                problems.append(f"(e) <{tag} {name}> is a mailto: URL; show the "
+                                "address as plain text")
+        if tag == "link" and "canonical" in rels:
+            canonicals.append(attrs.get("href", ""))
+        # (h) wrap=off keeps a textarea's lines from wrapping; its text has
+        # no DOM range, so reflow could only see it through (5).
+        if tag == "textarea" and attrs.get("wrap", "").strip().lower() == "off":
+            problems.append("(h) <textarea wrap=off>: the text cannot wrap at 320 px")
+        # (g) SVG animation can set an href (mailto:, javascript:) or a colour
+        # at run time, which no static check here reads.
+        if tag in SMIL_ELEMENTS:
+            problems.append(f"(g) SMIL animation element <{tag}>: it can set any "
+                            "attribute at run time")
+    # (d) Canonical tags (ADR-0003 part 3).
+    if rel == "404.html":
+        if canonicals:
+            problems.append("(d) 404.html has a canonical link; it answers for every "
+                            "missing URL, so it has none")
+        return problems
+    want = SITE_ORIGIN + own_path(rel)
+    if len(canonicals) != 1:
+        problems.append(f"(d) {len(canonicals)} <link rel=canonical>, exactly one is "
+                        f"needed: {show(want)}")
+    for href in canonicals:
+        if href == want:
+            continue
+        if not HAS_SCHEME.match(href.strip()):
+            problems.append(f"(d) canonical {show(href)} is relative; it must be "
+                            f"the absolute {show(want)}")
+        else:
+            problems.append(f"(d) canonical {show(href)} is not this page's own "
+                            f"URL {show(want)}")
+    return problems
+
+
 def json_strings(value):
     if isinstance(value, str):
         yield value
@@ -839,6 +1167,9 @@ def cmd_site(args):
         findings.items.append(item + " (records loaded for the built-defang scan)")
     forms = live_forms(records)
 
+    allowed = token_colors(root)
+    vh_definitions = vh_reveals = 0
+    vh_used = []
     n_html = 0
     files = sorted(p for p in public.rglob("*") if p.is_file())
     for path in files:
@@ -850,6 +1181,9 @@ def cmd_site(args):
             text = None
         suffix = path.suffix.lower()
         scans = []
+        if suffix == ".webmanifest":
+            findings.add(rel, "(b) a web manifest fails closed until its icons are "
+                         "request-scanned")
         if text is None:
             lowered = data.lower()
             for live, origin, apath, value in forms:
@@ -879,13 +1213,33 @@ def cmd_site(args):
                             == "content-security-policy":
                         for problem in csp_problems(attrs.get("content", "")):
                             findings.add(rel, problem)
+                for problem in markup_problems(page, path.relative_to(public).as_posix()):
+                    findings.add(rel, problem)
+                if any(VISUALLY_HIDDEN in attrs.get("class", "").split()
+                       for _, attrs in page.elements):
+                    vh_used.append(rel)
             else:
                 for problem in svg_request_problems(page):
                     findings.add(rel, f"third-party request: {problem} (D9)")
+                for tag, _ in page.elements:
+                    if tag in SMIL_ELEMENTS:
+                        findings.add(rel, f"(g) SMIL animation element <{tag}>: it can "
+                                     "set any attribute at run time")
+            for problem in markup_color_problems(page, allowed, smil=False):
+                findings.add(rel, f"(f) {problem}; colours come only from "
+                             "data/tokens.toml")
         elif suffix == ".css":
             for url in css_urls(text):
                 if leaves_origin(url):
                     findings.add(rel, f"third-party request: CSS loads {show(url)} (D9)")
+            result = css_rule_problems(text)
+            vh_definitions += result.definitions
+            vh_reveals += result.reveals
+            for problem in result.problems:
+                findings.add(rel, f"CSS: {problem} (ADR-0003 part 6)")
+            for problem in css_color_problems(text, allowed):
+                findings.add(rel, f"(f) {problem}; colours come only from "
+                             "data/tokens.toml")
         elif suffix in (".js", ".mjs"):
             for match in JS_URL.finditer(text):
                 if leaves_origin(match.group(2)):
@@ -904,11 +1258,760 @@ def cmd_site(args):
             if any(live in s for s in folded):
                 findings.add(rel, f"the live form of artifact {show(value)} "
                              f"({origin.rel}: {apath}) appears in the built site (R3)")
+    # Counted across ALL built CSS: a second file could otherwise redefine
+    # the class with its own, equally !important, rule.
+    if vh_definitions > 1:
+        findings.add("public", f"CSS: {vh_definitions} top-level .visually-hidden "
+                     "definitions across the built CSS; exactly one is allowed "
+                     "(ADR-0003 part 6)")
+    if vh_reveals > 1:
+        findings.add("public", f"CSS: {vh_reveals} .visually-hidden reveal rules across "
+                     "the built CSS; at most one is allowed (ADR-0003 part 6)")
+    if vh_used and vh_definitions == 0:
+        findings.add(vh_used[0], "CSS: the page uses class visually-hidden, but no "
+                     "built CSS defines it (ADR-0003 part 6)")
     if n_html == 0:
         findings.add("public", "no HTML pages found; nothing was checked")
     return findings.report(
         f"site checked: {len(files)} files, {n_html} HTML pages, "
         f"{len(forms)} artifact live forms scanned")
+
+
+# ---------------------------------------------------------------------------
+# Design tokens (SPEC section 7): data/tokens.toml is the only place a colour
+# value may appear, and every listed pair is contrast-checked.
+
+TOKENS_FILE = "data/tokens.toml"
+TOKEN_KEY = re.compile(r"[a-z][a-z0-9_]*")
+TOKEN_COLOR = re.compile(r"#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?")
+# WCAG 2.2: SC 1.4.3 (text 4.5:1, large text 3:1) and SC 1.4.11 (non-text 3:1).
+CONTRAST_MIN = {"text": decimal.Decimal("4.5"), "large_text": decimal.Decimal("3"),
+                "non_text": decimal.Decimal("3")}
+PAIR_KEYS = {"fg", "bg", "kind", "ratio", "use"}
+# Tables of positive numbers (CSS px, weights, line-height factors) and of
+# font stacks; any other top-level key fails closed.
+TOKEN_NUMBER_TABLES = {"weight", "type", "line_height", "space", "layout", "radius",
+                       "target", "focus", "border", "shadow", "underline"}
+TOKEN_STRING_TABLES = {"font"}
+
+# Colour literals outside the tokens file: hex (not an &#123; entity, not
+# followed by a word character) and colour functions, in every scanned file.
+HEX_COLOR = re.compile(r"(?<!&)#(?:[0-9A-Fa-f]{8}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{3,4})(?!\w)")
+COLOR_FUNCTION = re.compile(
+    r"(?i)(?<![\w-])(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix|light-dark|"
+    r"contrast-color|device-cmyk)\s*\(")
+# CSS named colours (CSS Color 4) and system colours. currentcolor,
+# transparent and the CSS-wide keywords are allowed. The deprecated system
+# colour `background` is left out: it is also the property name that a
+# `transition` list carries.
+NAMED_COLORS = frozenset("""
+aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond
+blue blueviolet brown burlywood cadetblue chartreuse chocolate coral
+cornflowerblue cornsilk crimson cyan darkblue darkcyan darkgoldenrod darkgray
+darkgreen darkgrey darkkhaki darkmagenta darkolivegreen darkorange darkorchid
+darkred darksalmon darkseagreen darkslateblue darkslategray darkslategrey
+darkturquoise darkviolet deeppink deepskyblue dimgray dimgrey dodgerblue
+firebrick floralwhite forestgreen fuchsia gainsboro ghostwhite gold goldenrod
+gray green greenyellow grey honeydew hotpink indianred indigo ivory khaki
+lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan
+lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon
+lightseagreen lightskyblue lightslategray lightslategrey lightsteelblue
+lightyellow lime limegreen linen magenta maroon mediumaquamarine mediumblue
+mediumorchid mediumpurple mediumseagreen mediumslateblue mediumspringgreen
+mediumturquoise mediumvioletred midnightblue mintcream mistyrose moccasin
+navajowhite navy oldlace olive olivedrab orange orangered orchid palegoldenrod
+palegreen paleturquoise palevioletred papayawhip peachpuff peru pink plum
+powderblue purple rebeccapurple red rosybrown royalblue saddlebrown salmon
+sandybrown seagreen seashell sienna silver skyblue slateblue slategray
+slategrey snow springgreen steelblue tan teal thistle tomato turquoise violet
+wheat white whitesmoke yellow yellowgreen
+accentcolor accentcolortext activetext buttonborder buttonface buttontext
+canvas canvastext field fieldtext graytext highlight highlighttext linktext
+mark marktext selecteditem selecteditemtext visitedtext
+activeborder activecaption appworkspace buttonhighlight buttonshadow
+captiontext inactiveborder inactivecaption inactivecaptiontext infobackground
+infotext menu menutext scrollbar threeddarkshadow threedface threedhighlight
+threedlightshadow threedshadow window windowframe windowtext
+""".split())
+CSS_WORD = re.compile(r"(?<![\w-])[A-Za-z][\w-]*")
+COLOR_ATTRS = {"fill", "stroke", "color", "stop-color", "flood-color", "lighting-color"}
+# HTML's obsolete presentational colour attributes: banned outright.
+PRESENTATIONAL_COLOR_ATTRS = {"bgcolor", "text", "link", "alink", "vlink"}
+# SVG animation elements can set any attribute (a colour, an href) at run
+# time, which no static value check reads: banned in the built site, rule (g).
+SMIL_ELEMENTS = {"set", "animate", "animatetransform", "animatemotion", "animatecolor"}
+VENDOR_VALUE = re.compile(r"(?i)(?<![\w-])-(?:webkit|moz|ms|o)-[\w-]+")
+CSS_STRING_LITERAL = re.compile(r"""(["'])(?:\\.|(?!\1)[^\\])*\1""", re.S)
+TEMPLATE_ACTION = re.compile(r"\{\{.*?\}\}", re.S)
+MARKUP_SUFFIXES = {".html", ".htm", ".svg", ".xml"}
+# Raster images cannot carry a CSS colour; any other file that is not UTF-8
+# fails closed.
+RASTER_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico"}
+
+
+def srgb_luminance(hex_color):
+    """WCAG 2.2 relative luminance of an opaque #RRGGBB colour."""
+    channels = []
+    for i in (1, 3, 5):
+        c = int(hex_color[i:i + 2], 16) / 255
+        channels.append(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4)
+    r, g, b = channels
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast_ratio(a, b):
+    hi, lo = sorted((srgb_luminance(a), srgb_luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def floor2(value):
+    """value floored to 2 decimals, as a Decimal (WCAG ratios are not rounded)."""
+    return decimal.Decimal(math.floor(value * 100)) / 100
+
+
+def is_number(value):
+    return isinstance(value, (int, decimal.Decimal)) and not isinstance(value, bool)
+
+
+def named_colors_in(value):
+    """CSS named colours in a declaration value (strings removed)."""
+    value = CSS_STRING.sub(" ", css_unescape(value))
+    return [w for w in CSS_WORD.findall(value) if w.lower() in NAMED_COLORS]
+
+
+def tokens_file_problems(path, findings):
+    """Validate data/tokens.toml; returns (n colours, pair report lines)."""
+    rel = TOKENS_FILE
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"),
+                             parse_float=decimal.Decimal)
+    except FileNotFoundError:
+        findings.add(rel, "missing; it is the single source of the colour tokens "
+                     "(SPEC section 7)")
+        return 0, []
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        findings.add(rel, f"cannot read: {exc}")
+        return 0, []
+    known = {"color", "pair"} | TOKEN_NUMBER_TABLES | TOKEN_STRING_TABLES
+    for key in data:
+        if key not in known:
+            findings.add(rel, f"unknown top-level key {key!r} (fails closed)")
+    colors = data.get("color")
+    if not isinstance(colors, dict) or not colors:
+        findings.add(rel, "[color] is missing or empty")
+        colors = {}
+    for key, value in colors.items():
+        if not TOKEN_KEY.fullmatch(key):
+            findings.add(rel, f"color.{key}: keys are snake_case (a-z, 0-9, _)")
+        if not isinstance(value, str) or not TOKEN_COLOR.fullmatch(value):
+            findings.add(rel, f"color.{key}: {show(value)} is not #RRGGBB or #RRGGBBAA")
+    for table in sorted(TOKEN_NUMBER_TABLES | TOKEN_STRING_TABLES):
+        if table not in data:
+            continue
+        values = data[table]
+        if not isinstance(values, dict):
+            findings.add(rel, f"[{table}] is not a table")
+            continue
+        for key, value in values.items():
+            if not TOKEN_KEY.fullmatch(key):
+                findings.add(rel, f"{table}.{key}: keys are snake_case (a-z, 0-9, _)")
+            if table in TOKEN_STRING_TABLES:
+                if not isinstance(value, str) or not value.strip():
+                    findings.add(rel, f"{table}.{key}: must be a non-empty string")
+            elif not is_number(value) or value <= 0:
+                findings.add(rel, f"{table}.{key}: {show(value)} is not a positive "
+                             "number")
+    pairs = data.get("pair")
+    if not isinstance(pairs, list) or not pairs:
+        findings.add(rel, "no [[pair]] entries; every colour pair the layout uses is "
+                     "listed and checked")
+        pairs = []
+    lines, seen = [], set()
+    for n, pair in enumerate(pairs, 1):
+        where = f"{rel}: pair {n}"
+        if not isinstance(pair, dict):
+            findings.add(where, "not a table")
+            continue
+        for key in sorted(set(pair) - PAIR_KEYS):
+            findings.add(where, f"unknown key {key!r} (fails closed)")
+        for key in sorted(PAIR_KEYS - set(pair)):
+            findings.add(where, f"missing key {key!r}")
+        fg, bg, kind = pair.get("fg"), pair.get("bg"), pair.get("kind")
+        ratio, use = pair.get("ratio"), pair.get("use")
+        where = f"{rel}: pair {n} ({fg}/{bg}, {kind})"
+        if kind not in CONTRAST_MIN:
+            findings.add(where, f"kind {show(kind)} is not one of "
+                         f"{', '.join(sorted(CONTRAST_MIN))}")
+        if not isinstance(use, str) or not use.strip():
+            findings.add(where, "use is empty; say where the pair appears")
+        if (fg, bg, kind) in seen:
+            findings.add(where, "duplicate (fg, bg, kind)")
+        seen.add((fg, bg, kind))
+        hexes = []
+        for role, key in (("fg", fg), ("bg", bg)):
+            value = colors.get(key) if isinstance(key, str) else None
+            if not isinstance(value, str) or not TOKEN_COLOR.fullmatch(value):
+                findings.add(where, f"{role} {show(key)} is not a colour token")
+            elif len(value) != 7:
+                findings.add(where, f"{role} {key} = {value} has an alpha channel; a "
+                             "contrast ratio needs opaque colours")
+            else:
+                hexes.append(value)
+        if len(hexes) != 2:
+            continue
+        actual = contrast_ratio(*hexes)
+        floored = floor2(actual)
+        if not is_number(ratio):
+            findings.add(where, f"ratio {show(ratio)} is not a number; it is "
+                         f"{floored:.2f}")
+        elif decimal.Decimal(ratio) != floored:
+            findings.add(where, f"stated ratio {ratio} is wrong; the WCAG ratio floored "
+                         f"to 2 decimals is {floored:.2f}")
+        minimum = CONTRAST_MIN.get(kind)
+        if minimum is not None and decimal.Decimal(actual) < minimum:
+            findings.add(where, f"contrast {floored:.2f}:1 is below the {kind} minimum "
+                         f"{minimum}:1 (WCAG 2.2)")
+        lines.append(f"  {fg}/{bg} {kind}: {floored:.2f}:1 (minimum "
+                     f"{minimum if minimum is not None else '?'}:1)")
+    return len(colors), lines
+
+
+def expand_hex(value):
+    """#rgb/#rgba as #rrggbb/#rrggbbaa, lowercased (minifiers shorten them)."""
+    value = value.lower()
+    if len(value) in (4, 5):
+        return "#" + "".join(c * 2 for c in value[1:])
+    return value
+
+
+def token_colors(root):
+    """The colour values of <root>/data/tokens.toml, expanded and lowercased;
+    empty when the file is missing or broken (the tokens check reports it),
+    so every hex colour in the build then fails closed."""
+    try:
+        data = tomllib.loads((root / TOKENS_FILE).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return set()
+    colors = data.get("color")
+    if not isinstance(colors, dict):
+        return set()
+    return {expand_hex(v) for v in colors.values()
+            if isinstance(v, str) and TOKEN_COLOR.fullmatch(v)}
+
+
+def color_value_problems(value, allowed):
+    """Colours in one CSS value or colour attribute. allowed: the token
+    colours a hex value may equal (the built site), or None to skip hex
+    (the source scan reports every hex line by line)."""
+    text = CSS_STRING.sub(" ", css_unescape(value))
+    problems = []
+    if allowed is not None:
+        for match in HEX_COLOR.finditer(text):
+            if expand_hex(match.group(0)) not in allowed:
+                problems.append(f"hex colour {match.group(0)!r} is not a token colour")
+    for match in COLOR_FUNCTION.finditer(text):
+        problems.append(f"colour function {match.group(1)}()")
+    for word in CSS_WORD.findall(text):
+        if word.lower() in NAMED_COLORS:
+            problems.append(f"named colour {word!r}")
+    # Vendor-prefixed values include colours no list names (-webkit-link,
+    # -webkit-focus-ring-color, ...): banned as values; prefixed property
+    # names stay allowed.
+    for match in VENDOR_VALUE.finditer(text):
+        problems.append(f"vendor-prefixed value {match.group(0)!r}")
+    return problems
+
+
+def css_color_problems(css, allowed):
+    """Colours of one stylesheet: no backslash escape outside a string (an
+    escape can spell a colour the patterns do not read), then every declaration
+    value through color_value_problems."""
+    problems = []
+    stripped = CSS_COMMENT_OR_STRING.sub(lambda m: m.group(0) if m.group(1) else " ", css)
+    if "\\" in CSS_STRING_LITERAL.sub('""', stripped):
+        problems.append("backslash escape outside a string; write the character "
+                        "itself")
+    for rule in css_rules(css):
+        for declaration in rule.declarations:
+            prop, value = css_declaration(declaration)
+            for problem in color_value_problems(value, allowed):
+                problems.append(f"{problem} in {show(prop)}")
+    return problems
+
+
+def markup_color_problems(page, allowed, smil):
+    """Colours in an HTML, SVG or XML page: colour attributes, the
+    theme-color meta, style attributes and <style> blocks. Presentational
+    colour attributes fail outright, and with smil=True so do SMIL animation
+    elements (rule (g) reports them on the built site)."""
+    problems = []
+    for tag, attrs in page.elements:
+        if smil and tag in SMIL_ELEMENTS:
+            problems.append(f"SMIL animation element <{tag}> (it can animate a colour "
+                            "that no value check reads)")
+        for name in sorted(PRESENTATIONAL_COLOR_ATTRS & set(attrs)):
+            problems.append(f"presentational colour attribute <{tag} {name}>")
+        values = [(name, attrs[name]) for name in sorted(COLOR_ATTRS) if name in attrs]
+        if tag == "meta" and attrs.get("name", "").strip().lower() == "theme-color":
+            values.append(("content", attrs.get("content", "")))
+        for name, value in values:
+            for problem in color_value_problems(value, allowed):
+                problems.append(f"{problem} in <{tag} {name}>")
+        if "style" in attrs:
+            for problem in css_color_problems("x{" + attrs["style"] + "}", allowed):
+                problems.append(f"{problem} in <{tag} style>")
+    for block in page.styles:
+        for problem in css_color_problems(block, allowed):
+            problems.append(f"{problem} in <style>")
+    return problems
+
+
+def color_literal_problems(rel, text):
+    """Colour literals in one scanned source file (raw text, templates
+    included). The built site gets the same value checks in `site` rule (f),
+    which also sees what templates inject from data/ and hugo.toml."""
+    problems = []
+    for n, line in enumerate(text.splitlines(), 1):
+        for match in HEX_COLOR.finditer(line):
+            problems.append((f"{rel}:{n}", f"hex colour {match.group(0)!r}; colours "
+                             "live only in data/tokens.toml (a fragment id that looks "
+                             "like hex fails closed: rename it)"))
+        for match in COLOR_FUNCTION.finditer(line):
+            problems.append((f"{rel}:{n}", f"colour function {match.group(1)}(); "
+                             "colours live only in data/tokens.toml"))
+    suffix = Path(rel).suffix.lower()
+    bare = TEMPLATE_ACTION.sub(" ", text)
+    if suffix == ".css":
+        found = css_color_problems(bare, None)
+    elif suffix in MARKUP_SUFFIXES:
+        found = markup_color_problems(parse_page(bare), None, smil=True)
+    else:
+        found = []
+    for problem in found:
+        problems.append((rel, f"{problem}; colours live only in data/tokens.toml"))
+    return problems
+
+
+def cmd_tokens(args):
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        raise UsageError(f"--root {root} is not a directory")
+    findings = Findings()
+    n_colors, lines = tokens_file_problems(root / TOKENS_FILE, findings)
+    scanned = [root / "hugo.toml"] if (root / "hugo.toml").is_file() else []
+    for top in ("assets", "layouts", "static"):
+        if (root / top).is_dir():
+            scanned += sorted(p for p in (root / top).rglob("*") if p.is_file())
+    for path in scanned:
+        rel = path.relative_to(root).as_posix()
+        try:
+            text = path.read_bytes().decode("utf-8")
+        except UnicodeDecodeError:
+            if path.suffix.lower() not in RASTER_SUFFIXES:
+                findings.add(rel, "not UTF-8 text and not a raster image; the colour "
+                             "scan cannot read it (fails closed)")
+            continue
+        except OSError as exc:
+            findings.add(rel, f"cannot read: {exc}")
+            continue
+        for where, problem in color_literal_problems(rel, text):
+            findings.add(where, problem)
+    if lines:
+        print("contrast of the listed pairs (WCAG 2.2, floored):")
+        for line in lines:
+            print(line)
+    return findings.report(f"tokens checked: {n_colors} colours, {len(lines)} pairs, "
+                           f"{len(scanned)} files scanned for colour literals")
+
+
+# ---------------------------------------------------------------------------
+# Reflow at 320 CSS px (ADR-0003 part 6), CI only. The runner's Google Chrome
+# runs headless and is driven over --remote-debugging-pipe: the DevTools
+# protocol as NUL-separated JSON on file descriptors 3 (commands in) and 4
+# (responses out), so no websocket and no registry code.
+
+# WCAG 2.2 SC 1.4.10: 320 CSS px wide content scrolls only vertically. The
+# height is not load-bearing: the check reads widths only, and 640 is a
+# typical phone height at that width.
+REFLOW_WIDTH = 320
+REFLOW_HEIGHT = 640
+# A cold headless start and a local static page each take about a second on
+# the runner; 30 s caps a hang at a small part of the job timeout.
+REFLOW_TIMEOUT = 30
+# At most this many elements are named per page and case, so one broken
+# template cannot flood the log; the count is always printed.
+REFLOW_NAMED = 10
+# Sub-pixel tolerance: layout positions are fractional, and a box that ends
+# at 320.3 px because of rounding hides nothing.
+REFLOW_EPSILON = 0.5
+CHROME_FLAGS = (
+    "--headless=new", "--remote-debugging-pipe", "--no-first-run",
+    "--no-default-browser-check", "--disable-extensions", "--disable-sync",
+    "--disable-background-networking", "--disable-component-update",
+    "--disable-default-apps", "--hide-scrollbars", "--mute-audio",
+)
+
+# Runs in the page; geometry, not CSS properties (ADR-0003 part 6). Every
+# word of every DOM text item (one Range per run of non-space characters, so
+# collapsible spaces never count) and every replaced element (img, outermost
+# svg, video, iframe, form controls, ...) must lie horizontally within the
+# viewport [0, width], and within the box of every clipping ancestor:
+# overflow-x not visible, contain with paint (paint, content, strict),
+# content-visibility not visible, a clip-path or a clip (the padding box
+# for the first three, the border box for clip-path and clip). That covers
+# clipping, scrolling, paint containment, fixed positioning, negative
+# margins and right-to-left overflow alike. (1) Page-level overflow stays a
+# separate check. (4) An element with the visually-hidden class is exempt,
+# with its subtree, only while its own box is at most 1 x 1 px.
+REFLOW_SCRIPT = r"""
+(async () => {
+  await document.fonts.ready;
+  const vw = %(width)d, exempt = %(exempt)s, limit = %(limit)d, eps = %(eps)s;
+  const root = document.documentElement;
+  const label = (el) => {
+    let s = el.tagName.toLowerCase();
+    if (el.id) s += "#" + el.id;
+    for (const c of el.classList) s += "." + c;
+    return s;
+  };
+  const snippet = (t) => t.replace(/\s+/g, " ").trim().slice(0, 40);
+  const notHidden = [], hiddenOk = new Set();
+  for (const el of root.querySelectorAll("." + exempt)) {
+    const r = el.getBoundingClientRect();
+    const display = getComputedStyle(el).display;
+    if (display === "contents") notHidden.push(label(el) + " has display: contents");
+    else if (r.width <= 1 && r.height <= 1) hiddenOk.add(el);
+    else notHidden.push(label(el) + " is " + Math.round(r.width) + " x " +
+                        Math.round(r.height) + " CSS px");
+  }
+  const isExempt = (el) => {
+    for (let e = el; e; e = e.parentElement) if (hiddenOk.has(e)) return true;
+    return false;
+  };
+  const clipCache = new Map();
+  const clips = (el) => {
+    if (!el) return [];
+    if (clipCache.has(el)) return clipCache.get(el);
+    const out = clips(el.parentElement).slice();
+    const cs = getComputedStyle(el);
+    const byPaint = cs.overflowX !== "visible" || /\b(paint|content|strict)\b/.test(cs.contain) ||
+                    (cs.contentVisibility || "visible") !== "visible";
+    const byShape = (cs.clipPath && cs.clipPath !== "none") || (cs.clip && cs.clip !== "auto");
+    if (el !== root && (byPaint || byShape)) {
+      const r = el.getBoundingClientRect();
+      let left = r.left, right = r.right;
+      if (byPaint && !byShape && (el.clientWidth || el.clientHeight)) {
+        left = r.left + el.clientLeft;
+        right = left + el.clientWidth;
+      }
+      out.push({el, left, right});
+    }
+    clipCache.set(el, out);
+    return out;
+  };
+  const outside = [], cut = [];
+  let nOutside = 0, nCut = 0, nItems = 0;
+  const place = (rect, owner, what) => {
+    if (rect.width === 0 && rect.height === 0) return;
+    nItems++;
+    if (rect.left < -eps || rect.right > vw + eps) {
+      nOutside++;
+      if (outside.length < limit) outside.push(what + " in " + label(owner) + " at x " +
+        Math.round(rect.left) + " to " + Math.round(rect.right));
+      return;
+    }
+    for (const c of clips(owner)) {
+      if (c.el === owner && what.startsWith("<")) continue;
+      if (rect.left < c.left - eps || rect.right > c.right + eps) {
+        nCut++;
+        if (cut.length < limit) cut.push(what + " in " + label(owner) + " at x " +
+          Math.round(rect.left) + " to " + Math.round(rect.right) + ", clipped by " +
+          label(c.el) + " at x " + Math.round(c.left) + " to " + Math.round(c.right));
+        return;
+      }
+    }
+  };
+  const walker = document.createTreeWalker(document.body || root, 4 /* text only */);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+    const owner = t.parentElement;
+    if (!owner || isExempt(owner)) continue;
+    const words = /\S+/g;
+    let m;
+    while ((m = words.exec(t.data)) !== null) {
+      const range = document.createRange();
+      range.setStart(t, m.index);
+      range.setEnd(t, m.index + m[0].length);
+      for (const rect of range.getClientRects()) place(rect, owner, "\"" + snippet(m[0]) + "\"");
+    }
+  }
+  const replaced = "img, svg, video, audio, iframe, canvas, object, embed, input, select, textarea, meter, progress";
+  for (const el of (document.body || root).querySelectorAll(replaced)) {
+    if (el.tagName.toLowerCase() === "svg" && el.ownerSVGElement) continue;
+    if (isExempt(el)) continue;
+    place(el.getBoundingClientRect(), el, "<" + el.tagName.toLowerCase() + ">");
+  }
+  // (5) Text inside form controls has no DOM range: a control whose content
+  // is wider than its box fails.
+  const controls = [];
+  for (const el of (document.body || root).querySelectorAll("input, textarea, select")) {
+    if (isExempt(el)) continue;
+    if (el.scrollWidth > el.clientWidth) controls.push(label(el) + " scrollWidth " +
+      el.scrollWidth + " > clientWidth " + el.clientWidth);
+  }
+  const page = root.scrollWidth, wide = [];
+  if (page > vw) {
+    const all = [...root.querySelectorAll("*")], out = [];
+    for (const el of all) {
+      if (isExempt(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) continue;
+      const sticks = r.right > vw + eps || r.left < -eps;
+      const spills = el.clientWidth > 0 && el.scrollWidth > el.clientWidth &&
+                     r.left + el.scrollWidth > vw + eps;
+      if (sticks || spills) out.push(el);
+    }
+    for (const el of out) {
+      if (!out.some((o) => o !== el && el.contains(o))) wide.push(label(el));
+    }
+  }
+  return {screen: screen.width, page, items: nItems,
+          wide: wide.slice(0, limit), nWide: wide.length,
+          outside, nOutside, cut, nCut, notHidden, controls};
+})()
+"""
+
+
+class DevTools:
+    """A minimal DevTools-protocol client over the two pipe ends."""
+
+    def __init__(self, write_fd, read_fd):
+        self.write_fd, self.read_fd = write_fd, read_fd
+        self.next_id = 0
+        self.buffer = b""
+        self.events = []
+
+    def _read(self, deadline):
+        while b"\0" not in self.buffer:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise UsageError("reflow: no answer from Chrome within "
+                                 f"{REFLOW_TIMEOUT} s")
+            ready, _, _ = select.select([self.read_fd], [], [], left)
+            if not ready:
+                continue
+            chunk = os.read(self.read_fd, 1 << 16)
+            if not chunk:
+                raise UsageError("reflow: Chrome closed the DevTools pipe")
+            self.buffer += chunk
+        message, self.buffer = self.buffer.split(b"\0", 1)
+        return json.loads(message)
+
+    def send(self, method, params=None, session=None):
+        self.next_id += 1
+        message = {"id": self.next_id, "method": method, "params": params or {}}
+        if session:
+            message["sessionId"] = session
+        data = json.dumps(message).encode("utf-8") + b"\0"
+        while data:
+            data = data[os.write(self.write_fd, data):]
+        deadline = time.monotonic() + REFLOW_TIMEOUT
+        while True:
+            reply = self._read(deadline)
+            if reply.get("id") == self.next_id:
+                if "error" in reply:
+                    raise UsageError(f"reflow: {method} failed: {reply['error']}")
+                return reply.get("result", {})
+            if "method" in reply:
+                self.events.append(reply)
+
+    def wait_event(self, method, session):
+        deadline = time.monotonic() + REFLOW_TIMEOUT
+        while True:
+            for event in self.events:
+                if event.get("method") == method and event.get("sessionId") == session:
+                    self.events.remove(event)
+                    return event
+            reply = self._read(deadline)
+            if "method" in reply:
+                self.events.append(reply)
+
+
+def start_chrome(chrome, profile, log):
+    """Chrome headless with its DevTools pipe on fds 3 and 4 of the child.
+    Returns (process, DevTools)."""
+    to_chrome_r, to_chrome_w = os.pipe()
+    from_chrome_r, from_chrome_w = os.pipe()
+    # Move all four ends above 10, so none of them is fd 3 or 4.
+    ends = [fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 10)
+            for fd in (to_chrome_r, to_chrome_w, from_chrome_r, from_chrome_w)]
+    for fd in (to_chrome_r, to_chrome_w, from_chrome_r, from_chrome_w):
+        os.close(fd)
+    to_chrome_r, to_chrome_w, from_chrome_r, from_chrome_w = ends
+    # The parent may hold fds 3 and 4 already (the CI runner passes some
+    # down): park them above 10, put the pipe ends there for the child, and
+    # restore them after the start.
+    parked = {}
+    for fd in (3, 4):
+        try:
+            parked[fd] = (fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 10), os.get_inheritable(fd))
+        except OSError:
+            parked[fd] = None
+    os.dup2(to_chrome_r, 3)
+    os.dup2(from_chrome_w, 4)
+    try:
+        process = subprocess.Popen(
+            [chrome, *CHROME_FLAGS, f"--user-data-dir={profile}", "about:blank"],
+            stdin=subprocess.DEVNULL, stdout=log, stderr=log, pass_fds=(3, 4))
+    except OSError as exc:
+        raise UsageError(f"reflow: cannot start {chrome}: {exc}") from exc
+    finally:
+        for fd, saved in parked.items():
+            if saved is None:
+                os.close(fd)
+            else:
+                os.dup2(saved[0], fd, inheritable=saved[1])
+                os.close(saved[0])
+        os.close(to_chrome_r)
+        os.close(from_chrome_w)
+    return process, DevTools(to_chrome_w, from_chrome_r)
+
+
+class SiteHandler(http.server.SimpleHTTPRequestHandler):
+    """Serves PUBLIC quietly and records every error response."""
+    errors = []
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def log_request(self, code="-", size="-"):
+        try:
+            status = int(code)
+        except (TypeError, ValueError):
+            status = 0
+        # Chrome asks for /favicon.ico on its own; the site links its icon.
+        if status >= 400 and self.path != "/favicon.ico":
+            SiteHandler.errors.append(f"{status} {self.path}")
+
+
+def reflow_pages(public):
+    pages = []
+    for path in sorted(public.rglob("*.html")):
+        rel = path.relative_to(public).as_posix()
+        url = own_path(rel)
+        pages.append((rel, urllib.parse.quote(url)))
+    return pages
+
+
+def cmd_reflow(args):
+    public = Path(args.public).resolve()
+    chrome = args.chrome
+    if not public.is_dir():
+        raise UsageError(f"{public} is not a directory (build the site first)")
+    if not (os.path.isfile(chrome) and os.access(chrome, os.X_OK)):
+        raise UsageError(f"--chrome {chrome} is not an executable file")
+    findings = Findings()
+    pages = reflow_pages(public)
+    if not pages:
+        findings.add("public", "no HTML pages found; nothing was checked")
+        return findings.report("reflow checked: 0 pages")
+
+    work = Path(tempfile.mkdtemp(prefix="reflow-"))
+    log_path = work / "chrome.log"
+    server = process = None
+    n_items = 0
+    try:
+        with open(log_path, "wb") as log:
+            process, tools = start_chrome(chrome, work / "profile", log)
+        SiteHandler.errors = []
+        handler = functools.partial(SiteHandler, directory=str(public))
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+
+        version = tools.send("Browser.getVersion")
+        print(f"reflow: {version.get('product', '?')}, viewport {REFLOW_WIDTH}x"
+              f"{REFLOW_HEIGHT} CSS px, mobile")
+        target = tools.send("Target.createTarget", {"url": "about:blank"})["targetId"]
+        session = tools.send("Target.attachToTarget",
+                             {"targetId": target, "flatten": True})["sessionId"]
+        tools.send("Page.enable", session=session)
+        tools.send("Emulation.setDeviceMetricsOverride",
+                   {"width": REFLOW_WIDTH, "height": REFLOW_HEIGHT,
+                    "screenWidth": REFLOW_WIDTH, "screenHeight": REFLOW_HEIGHT,
+                    "deviceScaleFactor": 1, "mobile": True}, session=session)
+        script = REFLOW_SCRIPT % {"width": REFLOW_WIDTH, "limit": REFLOW_NAMED,
+                                  "exempt": json.dumps(VISUALLY_HIDDEN),
+                                  "eps": json.dumps(REFLOW_EPSILON)}
+        for rel, path in pages:
+            where = f"public/{rel}"
+            tools.events.clear()
+            nav = tools.send("Page.navigate", {"url": origin + path}, session=session)
+            if nav.get("errorText"):
+                findings.add(where, f"did not load: {nav['errorText']}")
+                continue
+            tools.wait_event("Page.loadEventFired", session)
+            reply = tools.send("Runtime.evaluate",
+                               {"expression": script, "awaitPromise": True,
+                                "returnByValue": True}, session=session)
+            if "exceptionDetails" in reply:
+                raise UsageError(f"reflow: the measuring script failed on {where}: "
+                                 f"{reply['exceptionDetails'].get('text')}")
+            result = reply.get("result", {}).get("value") or {}
+            if result.get("screen") != REFLOW_WIDTH:
+                raise UsageError(f"reflow: the viewport emulation did not apply on "
+                                 f"{where} (screen width {result.get('screen')})")
+            n_items += result.get("items", 0)
+            page_width = result.get("page", 0)
+            if page_width > REFLOW_WIDTH:
+                named = ", ".join(show(e, 80) for e in result.get("wide", [])) \
+                    or "none found"
+                findings.add(where, f"(1) the page is {page_width} CSS px wide at a "
+                             f"{REFLOW_WIDTH} px viewport (WCAG 2.2 SC 1.4.10); "
+                             f"{result.get('nWide', 0)} element(s) stick out: {named}")
+            for key, count, text in (
+                    ("outside", "nOutside", f"lies outside the {REFLOW_WIDTH} px viewport"),
+                    ("cut", "nCut", "is cut off by a clipping ancestor (overflow, "
+                     "contain, content-visibility, clip-path or clip)")):
+                items = result.get(key, [])
+                for item in items:
+                    findings.add(where, f"({'2' if key == 'outside' else '3'}) {text}: "
+                                 f"{show(item, 200)}; long text must wrap at "
+                                 f"{REFLOW_WIDTH} px")
+                extra = result.get(count, 0) - len(items)
+                if extra > 0:
+                    findings.add(where, f"({'2' if key == 'outside' else '3'}) {extra} "
+                                 f"more item(s) {text}")
+            for item in result.get("controls", []):
+                findings.add(where, f"(5) form control content wider than its box: "
+                             f"{show(item, 160)}; its text is cut at {REFLOW_WIDTH} px")
+            for item in result.get("notHidden", []):
+                findings.add(where, f"(4) .visually-hidden element {show(item, 120)}; "
+                             "the class is exempt only while its box is at most 1 x 1 "
+                             "CSS px and its display is not contents")
+        for error in sorted(set(SiteHandler.errors)):
+            findings.add("public", f"the local server answered {error}; a page was "
+                         "measured without one of its files")
+        tools.send("Browser.close")
+    except BaseException:
+        if log_path.exists():
+            text = log_path.read_text(encoding="utf-8", errors="replace").strip()
+            if text:
+                print("reflow: Chrome log:", file=sys.stderr)
+                print(text[-4000:], file=sys.stderr)
+        raise
+    finally:
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        if process is not None:
+            try:
+                process.wait(timeout=REFLOW_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        shutil.rmtree(work, ignore_errors=True)
+    return findings.report(f"reflow checked: {len(pages)} pages at {REFLOW_WIDTH} "
+                           f"CSS px, {n_items} words and replaced elements")
 
 
 # ---------------------------------------------------------------------------
@@ -1054,6 +2157,19 @@ def cmd_lighthouse(args):
           f"{LIGHTHOUSE_MIN_SCORE}:")
     for row in [header] + rows:
         print("  " + "  ".join(c.ljust(w) for c, w in zip(row, widths)).rstrip())
+    # The canonical audit per run, shown and not gated (it weighs into seo):
+    # ADR-0003 part 3 needs a run log that shows it passing on real tags.
+    for page, runs in sorted(pages.items()):
+        results = []
+        for _, report, _ in runs:
+            audit = dig(report, "audits", "canonical")
+            if not isinstance(audit, dict):
+                results.append("absent")
+            elif audit.get("scoreDisplayMode") == "notApplicable":
+                results.append("not applicable")
+            else:
+                results.append(json.dumps(audit.get("score")))
+        print(f"canonical audit on {page}: {', '.join(results)}")
     return findings.report(
         f"lighthouse checked: {len(pages)} pages, {len(paths)} reports, "
         f"version {args.version}")
@@ -1690,6 +2806,13 @@ def main(argv):
     p.add_argument("--schemas")
     p.add_argument("public")
     p.set_defaults(func=cmd_site)
+    p = sub.add_parser("tokens")
+    p.add_argument("--root", default=".")
+    p.set_defaults(func=cmd_tokens)
+    p = sub.add_parser("reflow")
+    p.add_argument("--chrome", required=True)
+    p.add_argument("public")
+    p.set_defaults(func=cmd_reflow)
     p = sub.add_parser("guard")
     p.add_argument("--root", default=".")
     p.add_argument("--hugo")

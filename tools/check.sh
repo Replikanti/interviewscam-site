@@ -5,16 +5,17 @@
 # PASS / FAIL / SKIPPED / NOT RUN (CI only) per step, and the exit code is 1
 # if any step failed.
 #
-# The Nu Html Checker runs only in CI (GITHUB_ACTIONS=true; ADR-0002 part 1).
-# Outside CI its step prints a loud NOT RUN line and the final line never
-# uses all-pass wording. In CI a missing container runtime or image is FAIL.
+# The Nu Html Checker (ADR-0002 part 1) and the reflow check (ADR-0003
+# part 6) run only in CI (GITHUB_ACTIONS=true). Outside CI each step prints a
+# loud NOT RUN line and the final line never uses all-pass wording. In CI a
+# missing container runtime, image or Chrome is FAIL.
 #
 # Usage: bash tools/check.sh [--external]
 #   --external  check links online (third-party sites included) instead of
 #               the offline internal-link check (ADR-0002 part 7)
 #
-# tools/selftest.sh sources this file for html_check, links_check and the
-# sitecheck functions, so the self-test runs exactly the invocations the real
+# tools/selftest.sh sources this file for html_check, links_check,
+# reflow_check and the sitecheck functions, so the self-test runs exactly the invocations the real
 # steps run; check_main and the strict mode below apply only when the file is
 # executed.
 
@@ -23,6 +24,7 @@ CHECK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$CHECK_ROOT/tools/fetch-tools.sh"
 
 HTML_NOT_RUN_LINE='NOT RUN: HTML validation (Nu Html Checker) was NOT run locally. It runs only in CI (required check job). A local green does not mean the HTML is valid.'
+REFLOW_NOT_RUN_LINE='NOT RUN: reflow at 320 CSS px (sitecheck reflow) was NOT run locally. It runs only in CI, in the runner'"'"'s Google Chrome. A local green does not mean the pages reflow.'
 
 in_github_actions() { [[ "${GITHUB_ACTIONS:-}" == true ]]; }
 
@@ -60,6 +62,17 @@ links_check() {
     -- "$dir"
 }
 
+# reflow_check <absolute dir>: load every HTML page under dir at 320 CSS px
+# in the runner's Google Chrome (ADR-0003 part 6). Only ever called in CI.
+reflow_check() {
+  local chrome
+  chrome="$(command -v google-chrome || command -v google-chrome-stable)" || {
+    echo "FAIL: Google Chrome not found; in CI the reflow check must run" >&2
+    return 1
+  }
+  sitecheck reflow --chrome "$chrome" "$1"
+}
+
 # The safety nets (tools/sitecheck.py, ADR-0002 parts 3, 4 and 6), run in
 # Python's isolated mode. Each prints its counts and exits 1 on findings,
 # 2 on a usage or internal error.
@@ -78,6 +91,11 @@ records_check() { sitecheck records --root "$1" --schemas "$2"; }
 # site_check <root> <schema dir> <built dir>: third-party requests (D9), the
 # CSP meta from <root>/hugo.toml, and no live artifact in the build (R3).
 site_check() { sitecheck site --records "$1" --schemas "$2" "$3"; }
+
+# tokens_check <root>: data/tokens.toml well formed, every listed colour pair
+# at its WCAG 2.2 contrast minimum, and no colour literal in the site sources
+# (SPEC section 7).
+tokens_check() { sitecheck tokens --root "$1"; }
 
 STEP_NAMES=()
 STEP_RESULTS=()
@@ -121,6 +139,8 @@ step_guard() { guard_check "$CHECK_ROOT"; }
 
 step_records() { records_check "$CHECK_ROOT" "$CHECK_ROOT/schema"; }
 
+step_tokens() { tokens_check "$CHECK_ROOT"; }
+
 step_site() { site_check "$CHECK_ROOT" "$CHECK_ROOT/schema" "$CHECK_ROOT/public"; }
 
 step_build() {
@@ -133,6 +153,8 @@ step_build() {
 }
 
 step_html() { html_check "$CHECK_ROOT/public"; }
+
+step_reflow() { reflow_check "$CHECK_ROOT/public"; }
 
 step_links() { links_check "$CHECK_ROOT/public" "$EXTERNAL"; }
 
@@ -172,8 +194,18 @@ check_main() {
 
   run_step "guard (repo rules)" step_guard
   run_step "records (schema, defang)" step_records
+  run_step "tokens (contrast, colour literals)" step_tokens
   run_step build step_build
   run_step "site (third-party, CSP, defang)" step_site
+
+  if in_github_actions; then
+    run_step "reflow (320 CSS px)" step_reflow
+  else
+    echo
+    echo "==> reflow (320 CSS px)"
+    echo "$REFLOW_NOT_RUN_LINE"
+    record "reflow (320 CSS px)" "NOT RUN (CI only)"
+  fi
 
   if in_github_actions; then
     run_step "html (Nu Html Checker)" step_html
@@ -196,7 +228,7 @@ check_main() {
     echo
     echo "==> selftest"
     if step_selftest; then
-      record selftest "PASS (html fixtures NOT RUN, CI only)"
+      record selftest "PASS (html and reflow fixtures NOT RUN, CI only)"
     else
       echo "==> selftest: FAIL"
       record selftest FAIL
@@ -221,9 +253,9 @@ check_main() {
   fi
   local line
   if [[ $not_run -eq 1 ]]; then
-    line="LOCAL PASS, HTML validation not run (CI only)"
+    line="LOCAL PASS, HTML validation and reflow not run (CI only)"
   else
-    line="PASS: every step ran and passed, HTML validation included"
+    line="PASS: every step ran and passed, HTML validation and reflow included"
   fi
   if [[ ${#skipped_steps[@]} -gt 0 ]]; then
     line="$line; SKIPPED: ${skipped_steps[*]}"

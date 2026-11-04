@@ -1,0 +1,1 @@
+(f) hex colour '#ff0000' is not a token colour in <rect fill>

@@ -1,0 +1,1 @@
+color.card: '#FFF' is not #RRGGBB or #RRGGBBAA

@@ -1,0 +1,4 @@
+baseURL = "https://interviewscam.com/"
+title = "fixture"
+[params]
+themeColor = "#2350C8"

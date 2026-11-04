@@ -10,4 +10,8 @@ body {
   padding: 1rem;
   font-family: system-ui, sans-serif;
   line-height: 1.5;
+  /* A word wider than a 320 CSS px viewport (the site name in the h1, a
+     long hash or URL) wraps instead of widening the page (WCAG 2.2 SC
+     1.4.10, sitecheck reflow). */
+  overflow-wrap: anywhere;
 }

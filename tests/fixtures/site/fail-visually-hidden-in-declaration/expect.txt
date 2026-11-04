@@ -1,0 +1,1 @@
+names visually-hidden outside its definition

@@ -1,0 +1,1 @@
+not UTF-8 text and not a raster image

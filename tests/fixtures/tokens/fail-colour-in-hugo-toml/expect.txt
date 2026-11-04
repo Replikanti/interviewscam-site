@@ -1,0 +1,1 @@
+hugo.toml:4: hex colour '#2350C8'

@@ -42,9 +42,10 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     # 3x the first green run, rounded up to whole minutes (ADR-0003 part 5):
-    # that run took 40 s (run 41913851725, 2026-11-04), 3 x 40 s = 120 s ->
-    # 2 min. It runs the same check.sh as the check job in ci.yml.
-    timeout-minutes: 2
+    # that run took 101 s (run 41931421822, 2026-11-04, the first with the
+    # final reflow check of PR #16), 3 x 101 s = 303 s -> 6 min. It runs the
+    # same check.sh as the check job in ci.yml, plus the artifact upload.
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

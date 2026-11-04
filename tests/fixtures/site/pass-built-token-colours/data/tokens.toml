@@ -1,0 +1,11 @@
+[color]
+text = "#0F172A"
+card = "#FFFFFF"
+shadow = "#0F172A0F"
+
+[[pair]]
+fg = "text"
+bg = "card"
+kind = "text"
+ratio = 17.85
+use = "card body text"

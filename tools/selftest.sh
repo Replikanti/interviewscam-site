@@ -10,9 +10,10 @@
 #   A pass-<case> with an expect.txt must also print that substring, so a
 #   pass that checked nothing (zero records, zero artifacts) is caught.
 #
-# html fixtures need the Nu Html Checker, which runs only in CI
-# (GITHUB_ACTIONS=true; ADR-0002 part 1). Outside CI they print the NOT RUN
-# line; in CI the self-test fails unless every html fixture ran.
+# html fixtures need the Nu Html Checker and reflow fixtures the runner's
+# Google Chrome, which run only in CI (GITHUB_ACTIONS=true; ADR-0002 part 1,
+# ADR-0003 part 6). Outside CI they print the NOT RUN line; in CI the
+# self-test fails unless every html and every reflow fixture ran.
 #
 # Usage: bash tools/selftest.sh
 
@@ -44,7 +45,7 @@ selftest_main() {
   # whatever is in .tools/ (cheap; the archives are cached).
   bash "$SELFTEST_ROOT/tools/fetch-tools.sh" || return 1
 
-  local n_passed=0 n_failed=0 html_total=0 html_run=0
+  local n_passed=0 n_failed=0 html_total=0 html_run=0 reflow_total=0 reflow_run=0
   local dir check name kind out rc expect
   out="$(mktemp)"
   # shellcheck disable=SC2064 # expand now: the path is fixed
@@ -73,6 +74,24 @@ selftest_main() {
         fi
         html_run=$((html_run + 1))
         html_check "$dir" >"$out" 2>&1
+        rc=$?
+        ;;
+      reflow)
+        # <dir> is the built tree itself: its HTML pages are loaded at
+        # 320 CSS px.
+        reflow_total=$((reflow_total + 1))
+        if ! in_github_actions; then
+          echo "NOT RUN $check/$name (CI only)"
+          continue
+        fi
+        reflow_run=$((reflow_run + 1))
+        reflow_check "$dir" >"$out" 2>&1
+        rc=$?
+        ;;
+      tokens)
+        # <dir> stands in for the repo root: data/tokens.toml plus the
+        # assets/, layouts/, static/ and hugo.toml the colour scan reads.
+        tokens_check "$dir" >"$out" 2>&1
         rc=$?
         ;;
       links)
@@ -174,15 +193,26 @@ selftest_main() {
     echo "FAIL: no html fixtures found"
     n_failed=$((n_failed + 1))
   fi
+  if [[ $reflow_total -eq 0 ]]; then
+    echo "FAIL: no reflow fixtures found"
+    n_failed=$((n_failed + 1))
+  fi
   if in_github_actions && [[ $html_run -ne $html_total ]]; then
     echo "FAIL: only $html_run of $html_total html fixtures ran in CI"
+    n_failed=$((n_failed + 1))
+  fi
+  if in_github_actions && [[ $reflow_run -ne $reflow_total ]]; then
+    echo "FAIL: only $reflow_run of $reflow_total reflow fixtures ran in CI"
     n_failed=$((n_failed + 1))
   fi
   if ! in_github_actions && [[ $html_total -gt 0 ]]; then
     echo "$HTML_NOT_RUN_LINE"
   fi
+  if ! in_github_actions && [[ $reflow_total -gt 0 ]]; then
+    echo "$REFLOW_NOT_RUN_LINE"
+  fi
 
-  echo "selftest: $n_passed passed, $n_failed failed, html fixtures run: $html_run of $html_total"
+  echo "selftest: $n_passed passed, $n_failed failed, html fixtures run: $html_run of $html_total, reflow fixtures run: $reflow_run of $reflow_total"
   [[ $n_failed -eq 0 ]]
 }
 

@@ -1,0 +1,1 @@
+(3) is cut off by a clipping ancestor

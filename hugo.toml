@@ -27,6 +27,13 @@ unsafe = false
 # Bare https:// and www. text in a record must stay inert text (D8).
 linkify = false
 
+[markup.highlight]
+# Highlighted code gets CSS classes instead of inline style colours. The
+# inline form would be blocked by the CSP (style-src 'self') and would put
+# colour values outside data/tokens.toml (sitecheck site rule (c) and
+# sitecheck tokens catch a regression).
+noClasses = false
+
 [security.exec]
 # No Hugo function may start an external program (D3).
 allow = ["none"]
