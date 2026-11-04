@@ -54,7 +54,7 @@ Why: a site that warns about scams has to be accountable itself, and an anonymou
 Why: the campaigns are global and people search in English. One language halves the content upkeep. Rejected for the MVP: English and Czech, because every record would exist twice. Czech can be added later.
 
 **D3. Static site, generator without npm.** A single-binary static site generator: Hugo, standard edition, chosen in [ADR-0001](adr/0001-static-site-generator.md). GitHub's own JavaScript actions (`actions/*`), pinned to commit SHAs, are not npm tooling in this sense ([ADR-0002](adr/0002-check-toolchain.md) part 6).
-Why: the groups this site writes about attack developers through npm packages, so the build chain must not depend on npm. Tooling that only exists on npm (Lighthouse, for example) may run only in CI jobs that hold no write token and do not produce the deploy artifact, never on a developer machine.
+Why: the groups this site writes about attack developers through npm packages, so the build chain must not depend on npm. Tooling that only exists on npm (Lighthouse, for example) may run only in CI jobs whose `GITHUB_TOKEN` has no permissions (`permissions: {}`), that see only the built site and the check scripts (never the repository source), and that do not produce the deploy artifact, never on a developer machine. Every job still carries the Actions runtime token (artifact and cache services), so no workflow restores a cache and the deploy path never reads anything that job can write ([ADR-0003](adr/0003-browser-checks.md) part 2).
 Rejected: Astro, Next.js and other npm-based stacks.
 
 **D4. GitHub Pages from the private repo `Replikanti/interviewscam`, deployed by GitHub Actions.**
@@ -114,11 +114,16 @@ URLs and titles stay neutral, for example `/reports/saifuro/` titled "Saifuro, a
 - **Home**: one search box ("company, app, domain or recruiter"), the answer for an exact match on the same page, a short "before your call" checklist, the latest reports.
 - **Report and campaign pages** from §5.
 - **Before your call**: warning signs (unknown meeting app, link sent minutes before the call, "run this repo or command", installers only for Windows and macOS) and what to do instead.
-- **Report a scam**: what to send to `report@interviewscam.com`, which evidence helps, how reporters are protected.
+- **Report a scam**: what to send to `report@interviewscam.com`, shown as plain text with no `mailto:` link and with a fixed subject line ("Report: <name>"), which evidence helps, how reporters are protected. The page describes only the intake channel that exists and announces no other.
 - **Methodology**: how reports are reviewed, what the states mean, how sources are used.
 - **About**: who runs the site (D1), why it exists, how to get in touch.
-- **Corrections and removal**: how to ask and what happens next.
+- **Corrections and removal**: how to ask and what happens next. The same address, as plain text, with the subject line "Correction: <page URL>". Every request is acknowledged and reviewed, and the outcome is correct, remove or keep, with the reason given to the requester. No response time is promised, because there is one moderator and no request-volume data. The page stays up during review, so a front cannot hide itself by filing a request. Exception: when a natural person whose name a campaign used asks (a D10 persona name, or a person's name in the D6 "name abused" state), that name is hidden first, before the review. The review checks that the request comes from the named person (the controller may ask for proof of identity, GDPR Art. 12(6)), and if it does not, the name returns. Accepted weak point: until the review, an impostor can hide an active persona name, and the review restores it. The basis is GDPR Art. 18(1)(d), restriction while an objection under Art. 21 to processing based on legitimate interest is verified. The artifacts and the rest of the record stay up throughout, until the decision, so the record stays findable by company name and artifacts. Companies keep the general rule.
 - **Privacy**: what the site and GitHub log, what happens with reports.
+  - Controller: Martin Holý as a natural person, contact `report@interviewscam.com`. No postal or home address appears on the site.
+  - Legal basis: legitimate interest (GDPR Art. 6(1)(f)), namely warning candidates and moderating reports.
+  - Retention: evidence behind a published record is kept while the record is published and for 3 years after it is removed. A report that is not published is deleted once that decision is made. A reporter can ask for deletion at any time, and if that leaves a record without evidence, the record is unpublished (D7).
+  - Why 3 years: the general limitation period of the Czech Civil Code is 3 years (§ 629(1)). For damages it runs from when the claimant learned of the harm and of the liable person (§ 620(1)), with an objective cap of 10 years (§ 636(1)). Removal plus 3 years covers the typical case, a claimant who learns of the page while it is up. It does not cover late discovery from archive copies within the 10-year cap, and the operator accepts that gap for data minimisation. A second gap: when a reporter asks for deletion, the evidence is deleted and the record is unpublished, so a claim that arrives later (for the time the page was up) meets no evidence. The alternative is to keep only what a legal claim needs, restricted, under GDPR Art. 17(3)(e). Whether to do that is a question for the milestone 6 legal review. The policy above stays as approved until then.
+  - This text is not legally reviewed. Legal review is a step of milestone 6.
 - **404**.
 
 Search works without a server, from a static index. Without JavaScript, an alphabetical index of all reports and campaigns is the fallback.
@@ -130,13 +135,14 @@ Search works without a server, from a static index. Without JavaScript, an alpha
 - No hacker clichés (hoodies, green-on-black code), no stock photos, no red alarm overload.
 - System font stack, or one self-hosted font.
 - Before the design milestone starts, the operator picks one of two or three visual directions from mockups. The chosen direction becomes design tokens in the repo.
+- Picked 2026-11-04 on issue #3: direction C (Signal). The tokens live in `data/tokens.toml`, and every listed colour pair is contrast-checked in CI. Where a pair is placed is covered by Lighthouse's rendered-text contrast audit and by review. Non-text colours rest on review alone: for example the input border is 2.91:1 on the page ground and 3.15:1 on a card, so inputs sit only on cards. Light theme only; a dark theme may come after launch. No `mailto:` links anywhere on the site: the contact address is plain text.
 
 ## 8. Quality bar for the MVP
 
 | Criterion | Threshold | Why this value |
 |---|---|---|
-| Lighthouse (performance, accessibility, best practices, SEO) | at least 95 in each, mobile profile | A static page without JavaScript scores about 100, so anything lower means something regressed |
-| Accessibility | WCAG 2.2 AA | Credibility, and readable for everyone. Orange contrast is the known risk |
+| Lighthouse (performance, accessibility, best practices, SEO) | at least 95 in each, mobile profile, measured in CI on the built site ([ADR-0003](adr/0003-browser-checks.md)) | A static page without JavaScript scores about 100, so anything lower means something regressed |
+| Accessibility | WCAG 2.2 AA. In CI: Lighthouse accessibility, the contrast of the listed token pairs, and horizontal overflow at 320 CSS px (page level, and boxes that clip or scroll, except the one `visually-hidden` utility class, whose use in CSS is restricted by a static rule and which is the only place `!important` is allowed, [ADR-0003](adr/0003-browser-checks.md) part 6). Review covers the rest | Credibility, and readable for everyone. Orange contrast is the known risk. Long hashes and defanged URLs are the reflow risk |
 | HTML | valid in the Nu Html Checker | Clean markup for search engines and agents |
 | Links | no broken internal links, checked on every PR. External links are checked weekly and before content merges (lychee) | Broken sources undermine trust. A third-party outage must not block a removal PR, so external links are not a PR gate ([ADR-0002](adr/0002-check-toolchain.md)) |
 | Data | every record passes the schema, every attacker artifact is defanged | D6, D8 |
@@ -167,7 +173,7 @@ Report form, accounts and logins, an API beyond the JSON feed, MCP server, brows
 ## 11. Milestones
 
 1. **Bootstrap**: generator ADR (Hugo or Zola), repo skeleton, CI (build, HTML validation, link check, schema and defang checks, third-party request check), deploy workflow that does not publish yet, branch protection.
-2. **Design**: mockup choice, design tokens, base layout, the static pages from §6.
+2. **Design**: mockup choice, design tokens, base layout, the static pages from §6, and the Lighthouse CI job.
 3. **Data**: schema, report and campaign pages, JSON feed.
 4. **Search**: static index and the no-JavaScript fallback.
 5. **Seed content**: the three campaign families from §1 with sources, and the Saifuro report. The operator supplies the Saifuro artifacts (meeting domain, messages).

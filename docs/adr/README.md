@@ -30,3 +30,4 @@ A review of a PR that adds or changes an ADR rejects it when a decision has no r
 |---|---|
 | [0001](0001-static-site-generator.md) | Static site generator: Hugo, standard edition |
 | [0002](0002-check-toolchain.md) | Check toolchain: where each check runs and how it is pinned |
+| [0003](0003-browser-checks.md) | Browser checks: Lighthouse pin and isolation, score gate, trigger, reflow |
