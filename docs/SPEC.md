@@ -53,7 +53,7 @@ Why: a site that warns about scams has to be accountable itself, and an anonymou
 **D2. English only.**
 Why: the campaigns are global and people search in English. One language halves the content upkeep. Rejected for the MVP: English and Czech, because every record would exist twice. Czech can be added later.
 
-**D3. Static site, generator without npm.** A single-binary static site generator, Hugo or Zola. The first planning step picks one in an ADR.
+**D3. Static site, generator without npm.** A single-binary static site generator: Hugo, standard edition, chosen in [ADR-0001](adr/0001-static-site-generator.md). GitHub's own JavaScript actions (`actions/*`), pinned to commit SHAs, are not npm tooling in this sense ([ADR-0002](adr/0002-check-toolchain.md) part 6).
 Why: the groups this site writes about attack developers through npm packages, so the build chain must not depend on npm. Tooling that only exists on npm (Lighthouse, for example) may run only in CI jobs that hold no write token and do not produce the deploy artifact, never on a developer machine.
 Rejected: Astro, Next.js and other npm-based stacks.
 
@@ -103,6 +103,8 @@ Records are structured files in the repo, validated against a schema in CI.
 - sources and the number of independent reports
 - correction and removal link
 
+**Record bodies contain no live URLs** (D8): no bare URLs, no Markdown links, no `<…>` autolinks. This rule binds the Markdown body of a record. Live links appear only in `sources`. Template output may also link to MalwareBazaar or VirusTotal from SHA-256 artifacts (D8); that is not body text. The record check fails closed on any live URL in a body, because it cannot tell an attacker URL in prose from a source URL in prose. Relaxing this rule needs an ADR.
+
 **Feed**, `/feed.json`: all published reports and campaigns with defanged artifacts, for researchers and tools. Stable field names and a version field.
 
 URLs and titles stay neutral, for example `/reports/saifuro/` titled "Saifuro, a name used in fake job interviews", never "<company> scam". Structured data uses schema.org types that search engines still support. ClaimReview is not used, because Google retired it from Search in June 2025 and it was meant for fact-checking publishers.
@@ -136,7 +138,7 @@ Search works without a server, from a static index. Without JavaScript, an alpha
 | Lighthouse (performance, accessibility, best practices, SEO) | at least 95 in each, mobile profile | A static page without JavaScript scores about 100, so anything lower means something regressed |
 | Accessibility | WCAG 2.2 AA | Credibility, and readable for everyone. Orange contrast is the known risk |
 | HTML | valid in the Nu Html Checker | Clean markup for search engines and agents |
-| Links | no broken internal or external links (lychee) | Broken sources undermine trust |
+| Links | no broken internal links, checked on every PR. External links are checked weekly and before content merges (lychee) | Broken sources undermine trust. A third-party outage must not block a removal PR, so external links are not a PR gate ([ADR-0002](adr/0002-check-toolchain.md)) |
 | Data | every record passes the schema, every attacker artifact is defanged | D6, D8 |
 | Third-party requests | none in the built site, checked in CI | D9 |
 | Mobile | from the home page to the answer in one search on a phone | The 15-minute window from §1 |
@@ -147,7 +149,14 @@ The Content Security Policy is set with a meta tag, because GitHub Pages cannot 
 
 - The domain is verified for GitHub Pages in the Replikanti org settings (TXT record `_github-pages-challenge-Replikanti`, kept permanently). Order: verify the domain, set the custom domain in the repo, then create the DNS records. No wildcard DNS records.
 - DNS at Namecheap: A records `185.199.108.153`, `185.199.109.153`, `185.199.110.153`, `185.199.111.153`, AAAA records `2606:50c0:8000::153` to `2606:50c0:8003::153`, `www` as a CNAME to `replikanti.github.io`. HTTPS enforced.
-- Branch protection on `main`: PR required, CI required, no force-push.
+- Branch protection on `main`: PR required, CI required, no force-push. The agreed profile:
+  - The required status check is the CI job `check`, pinned to the GitHub Actions app, with the branch required to be up to date before merge. Pinning to the app stops a commit status posted by any other token from satisfying the check. The up-to-date rule stops a PR that was green on an old base from breaking `main`.
+  - A PR is required with 0 approvals. The org has one seat, and an author cannot approve their own PR, so 1 or more approvals would block every merge.
+  - The rules apply to administrators too (`enforce_admins`), because the only member is an admin and without it the rules would bind nobody.
+  - Linear history, with squash-only merges and automatic deletion of merged branches.
+  - Conversations must be resolved before merge, which makes review and QA findings blocking.
+  - No force-push and no branch deletion.
+- Emergency removal: if `check` is red for a cause outside the PR (for example a deleted Nu Html Checker image digest or a registry outage) and an urgent D7 removal is pending, only the operator personally, never an agent session, may lift `enforce_admins` through the API for that one removal PR. This is allowed only when the run log shows every `check.sh` step green except the one with the outside cause. The PR body records the reason and the failing run URL, and `enforce_admins` is restored immediately after the merge. The bypass covers the merge only. The deploy builds its artifact with the same `check.sh`, so milestone 6 defines the operator-only deploy path for an emergency removal before Pages goes on ([ADR-0002](adr/0002-check-toolchain.md)).
 - Accounts: passkey or hardware-key 2FA on GitHub and Namecheap. Domain lock and WHOIS privacy on the domain.
 - Email: `report@interviewscam.com` forwarded to the operator.
 
