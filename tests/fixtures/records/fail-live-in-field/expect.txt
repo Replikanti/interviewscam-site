@@ -1,1 +1,1 @@
-title: the live form of artifact
+params.summary: the live form of artifact

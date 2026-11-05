@@ -1,0 +1,1 @@
+params.sources[0].url: its host 'xn--11b2ezcw70k[.]example' equals the declared artifact domain

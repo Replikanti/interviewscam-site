@@ -1,0 +1,1 @@
+params.sources[0].url: its host 'vendor[.]example' equals the declared artifact domain 'vendor[.]example'

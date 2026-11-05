@@ -1,0 +1,1 @@
+params.sources[0].url: its host 'meeting[.]example' is a parent of the declared artifact domain 'login[.]meeting[.]example' (content/reports/other.md

@@ -1,0 +1,1 @@
+params.sources[0].url: its host 'fixture-careers[.]example' equals the declared artifact domain

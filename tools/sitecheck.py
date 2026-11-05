@@ -13,7 +13,10 @@ internal error, so a crash never reads as a finding or as a pass.
       the schema marks with x-defang is defanged (D8). The live form of an
       artifact appears in no other string and no body of any record (R2).
       No record body carries a bare URL, a Markdown link or a <...> autolink
-      (SPEC section 5); the rule fails closed.
+      (SPEC section 5); the rule fails closed. Then the record rules R4 to
+      R15 of ADR-0004 (slugs, persona names, references, dates, evidence,
+      hostnames and IP forms in record text, _index.md, verdict phrases,
+      source hosts), with the retired slugs of DIR/record-policy.json.
   site --records DIR [--schemas DIR] PUBLIC
       The built site in PUBLIC makes no third-party request (D9). Every page
       carries exactly one CSP meta, right after <meta charset>, equal to
@@ -62,12 +65,14 @@ if sys.version_info < (3, 11):
 import argparse
 import datetime
 import decimal
+import encodings.idna
 import fcntl
 import functools
 import hashlib
 import html
 import html.parser
 import http.server
+import ipaddress
 import json
 import math
 import os
@@ -116,8 +121,21 @@ class Findings:
 # Dot look-alikes that browsers map to "." in a hostname (IDNA).
 DOT_CHARS = "\u3002\uff0e\uff61"
 DOT = r"[.\u3002\uff0e\uff61]"
-# Invisible characters that a copy-paste carries along without a trace.
-INVISIBLE = dict.fromkeys(map(ord, "\u00ad\u200b\u200c\u200d\u2060\ufeff"))
+# Invisible characters that a copy-paste carries along without a trace: the
+# whole Default_Ignorable_Code_Point set, which browsers drop from a host
+# (UTS #46), so attacker\ufe0f.example opens attacker.example. The standard
+# library has no such property, so the ranges are copied from Unicode's
+# DerivedCoreProperties.txt (Unicode 16.0, Default_Ignorable_Code_Point).
+# They are stripped before every check, not rejected, so emoji in prose
+# (U+FE0F, the ZWJ of a family emoji) keep passing.
+DEFAULT_IGNORABLE = (
+    (0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160),
+    (0x17B4, 0x17B5), (0x180B, 0x180F), (0x200B, 0x200F), (0x202A, 0x202E),
+    (0x2060, 0x206F), (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+INVISIBLE = dict.fromkeys(c for lo, hi in DEFAULT_IGNORABLE for c in range(lo, hi + 1))
 TO_DOT = str.maketrans(dict.fromkeys(DOT_CHARS, "."))
 
 
@@ -127,10 +145,27 @@ def norm(text):
     return text.translate(INVISIBLE).translate(TO_DOT).lower()
 
 
+# Defanged spellings and the character each stands for. The one table that
+# refang() and host-mode parsing (restructure) share, so they cannot drift.
+DEFANGS = (("[.]", "."), ("[://]", "://"), ("[:]", ":"), ("[@]", "@"))
+# Every entry but the dot: a defanged scheme separator or userinfo still
+# splits a URL the way the live form would, while [.] keeps a host defanged.
+STRUCTURE_DEFANGS = tuple((d, live) for d, live in DEFANGS if live != ".")
+
+
 def refang(value):
     """The live form of a defanged artifact (R2, R3)."""
-    live = value.replace("[.]", ".").replace("[:]", ":").replace("[@]", "@")
-    return re.sub(r"(?i)hxxp", "http", live)
+    for defanged, live in DEFANGS:
+        value = value.replace(defanged, live)
+    return re.sub(r"(?i)hxxp", "http", value)
+
+
+def restructure(text):
+    """text with every defanged separator except [.] read as the character it
+    stands for, so hxxps[:]//host splits at its scheme like hxxps://host."""
+    for defanged, live in STRUCTURE_DEFANGS:
+        text = text.replace(defanged, live)
+    return text
 
 
 def show(value, limit=120):
@@ -164,37 +199,383 @@ TLD = r"(?:[^\W\d_]{2,63}|xn--[a-z0-9-]{1,59})"
 LIVE_HOST = re.compile(rf"(?i)(?<![\w-])(?:{LABEL}{DOT})+{TLD}(?![\w-])")
 LIVE_IPV4 = re.compile(rf"(?<!\d)(?:\d{{1,3}}{DOT}){{3}}\d{{1,3}}(?!\d)")
 
-DEFANG_MODES = ("host", "url-only")
+# The one x-defang mode (ADR-0004 part 3). The former mode url-only is gone,
+# so a schema that still uses it fails closed.
+DEFANG_MODES = ("host",)
 # A scheme anywhere in a token (irm('hxxps://...'), url=hxxps://...), with any
 # run of slashes after it, or a leading run of slashes (protocol-relative):
-# both are replaced by a space so the host that follows is split out.
+# the token is split there, so the host that follows is split out.
 SCHEME_IN_TOKEN = re.compile(
     r"(?i)[a-z][a-z0-9+.\-]*:(?=[/\\])[/\\]*|^[/\\]+")
 URL_HOST_END = re.compile(r"[/?#\\]")
+# The site's own host, the only live host record text may carry (R11).
+OWN_HOST = urllib.parse.urlsplit(SITE_ORIGIN).hostname
 
 
-def defang_problems(value, mode):
-    """Why a string is not defanged under mode, or [] when it is."""
+def token_pieces(text):
+    """(piece, after a scheme or leading slashes) for every whitespace token,
+    split at every scheme in it."""
+    pieces = []
+    for token in text.split():
+        for i, piece in enumerate(SCHEME_IN_TOKEN.split(token)):
+            if piece:
+                pieces.append((piece, i > 0))
+    return pieces
+
+
+def raw_authority(piece):
+    """The authority of a URL piece as a browser cuts it: up to the first raw
+    / ? # or \\ (for http and https a browser reads \\ as /)."""
+    return URL_HOST_END.split(piece, maxsplit=1)[0]
+
+
+def percent_decode(text):
+    """Percent-decoded until it no longer changes (at most three rounds), so
+    %2E, %66 and a double-encoded %252E all come out as what they spell."""
+    for _ in range(3):
+        decoded = urllib.parse.unquote(text)
+        if decoded == text:
+            break
+        text = decoded
+    return text
+
+
+# A word that can only be a scheme in front of a host: letters first, no dot.
+SCHEME_WORD = re.compile(r"(?i)[a-z][a-z0-9+\-]*:?")
+
+
+def find_host(piece):
+    """(host part, read past a scheme-like prefix) of a token piece without
+    a recognised scheme. When the text before the first / ? # or \\ is empty
+    or a scheme-like word without a dot (hxxps, hxxps:), the host is the next
+    part that is neither, so hxxps//host and hxxps:/host read like
+    hxxps://host whatever the scheme's spelling (ADR-0004 part 3,
+    amendment). Otherwise the first part is the host."""
+    parts = URL_HOST_END.split(piece)
+    if len(parts) > 1 and (parts[0] == "" or SCHEME_WORD.fullmatch(parts[0])):
+        for part in parts[1:]:
+            if part and not SCHEME_WORD.fullmatch(part):
+                return part, True
+    return parts[0], False
+
+
+def value_hosts(text):
+    """(host, URL-shaped, whole value) for every token piece of text, read
+    twice: as written (cut at the raw / ? # \\ first, then decoded, so an
+    encoded %2F cannot hide a host) and percent-decoded first (so hxxps%3A//
+    is a scheme). [:], [://] and [@] read as what they stand for."""
+    found = []
+    for reading in (restructure(text), restructure(percent_decode(text))):
+        whole = reading.strip()
+        for piece, url in token_pieces(reading):
+            if url:
+                host, shaped = raw_authority(piece), True
+            else:
+                host, shaped = find_host(piece)
+            found.append((percent_decode(host), shaped, piece == whole))
+    return list(dict.fromkeys(found))
+
+
+def host_part(piece):
+    """The host part of a token piece: cut at the raw / ? # \\ and decoded
+    afterwards, so %2E in a host is a dot, and an encoded %2F
+    (hxxps://x%2F@host) cannot hide one."""
+    return percent_decode(raw_authority(piece))
+
+
+def idna_label(label):
+    """One label in its ASCII (xn--) form, lowercase."""
+    if label.isascii():
+        return label.lower()
+    try:
+        return encodings.idna.ToASCII(label).decode("ascii").lower()
+    except UnicodeError:
+        try:
+            return "xn--" + label.lower().encode("punycode").decode("ascii")
+        except UnicodeError:
+            return label
+
+
+# A run of text that can be a host: no space, URL delimiter or markup.
+HOST_RUN = re.compile(r"""[^\s/\\?#@:\[\]<>"'()`*]+""")
+
+
+def idna_fold(text):
+    """Every non-ASCII run of text that can be a host in its xn-- form, so a
+    Unicode host and its punycode spelling compare equal (R2, R11, R15)."""
+    def fold(match):
+        run = match.group()
+        return run if run.isascii() else ".".join(idna_label(l) for l in run.split("."))
+    return HOST_RUN.sub(fold, text)
+
+
+# IDNA deviation characters: UTS #46 nontransitional processing, which
+# browsers use, keeps them, while IDNA2003 (encodings.idna) maps ß to ss and
+# ς to σ and drops the joiners. Characters UTS #46 ignores are dropped.
+DEVIATIONS = "\u00df\u03c2\u200c\u200d"
+ZWJ = "\u200d"
+# Every default-ignorable except the joiners, which nontransitional
+# processing keeps (CheckJoiners decides whether they are valid).
+IGNORED = {c: None for c in INVISIBLE if c not in (0x200C, 0x200D)}
+
+
+def nontransitional_label(label):
+    """One label in its UTS #46 nontransitional xn-- form (deviation
+    characters kept, encoded with the punycode codec: faß is xn--fa-hia), or
+    None when the browser rejects it. CheckJoiners: a ZWJ is valid only after
+    a virama (combining class 9). A ZWNJ is kept in every position, because
+    its second valid context (Arabic joining types) is not in the standard
+    library, and an extra form only adds a match (fails closed)."""
+    out = []
+    for i, char in enumerate(label):
+        if char in DEVIATIONS:
+            if char == ZWJ and (i == 0 or unicodedata.combining(label[i - 1]) != 9):
+                return None
+            out.append(char)
+        else:
+            out.append(unicodedata.normalize("NFKC", char).lower())
+    label = unicodedata.normalize("NFC", "".join(out))
+    if label.isascii():
+        return label
+    try:
+        return "xn--" + label.encode("punycode").decode("ascii")
+    except UnicodeError:
+        return None
+
+
+def nontransitional_fold(text):
+    """text with every non-ASCII run that can be a host in its UTS #46
+    nontransitional form; a run the browser rejects stays as it is."""
+    def fold(match):
+        run = match.group()
+        if run.isascii():
+            return run
+        labels = [nontransitional_label(l) for l in run.split(".")]
+        return run if None in labels else ".".join(labels)
+    text = unicodedata.normalize("NFC", text).translate(IGNORED).translate(TO_DOT)
+    return HOST_RUN.sub(fold, text).lower()
+
+
+def authority_host(authority):
+    """The host of an authority, userinfo and port cut at the raw @ and :,
+    percent-decoded, not folded yet."""
+    return percent_decode(re.sub(r":[0-9]*$", "", authority.rsplit("@", 1)[-1]))
+
+
+def canonical_host(authority):
+    """A host as a browser resolves it: userinfo and port cut at the raw @
+    and :, percent-decoded, NFKC with dot look-alikes and invisibles folded,
+    lowercase, IDNA-folded to the xn-- form, trailing dot stripped. The
+    form R12 reads; R15 and R2 also compare the nontransitional form
+    (host_forms; ADR-0004 part 3, amendment)."""
+    return idna_fold(norm(authority_host(authority))).removesuffix(".")
+
+
+def host_forms(authority):
+    """Every form a browser may resolve the host to: the canonical
+    (transitional) form and the UTS #46 nontransitional one. A match on
+    either counts (R2, R15)."""
+    forms = {canonical_host(authority)}
+    nontransitional = nontransitional_fold(authority_host(authority)).removesuffix(".")
+    if nontransitional.isascii():
+        forms.add(nontransitional)
+    return forms
+
+
+URL_SCHEME = re.compile(r"(?i)[a-z][a-z0-9+.\-]*:(?=[/\\])")
+C0_AND_SPACE = "".join(map(chr, range(0x21)))
+
+
+def url_authority(url):
+    """The raw authority of a URL or a bare host (WHATWG: tab and newline
+    removed, C0 controls and spaces trimmed, the scheme and any run of / or
+    \\ after it skipped)."""
+    text = re.sub(r"[\t\n\r]", "", url).strip(C0_AND_SPACE)
+    match = URL_SCHEME.match(text)
+    rest = text[match.end():] if match else text
+    return raw_authority(rest.lstrip("/\\"))
+
+
+def url_host(url):
+    """The canonical host of a URL or a bare host."""
+    return canonical_host(url_authority(url))
+
+
+# One label of an IPv4 address as the WHATWG URL parser reads it: hex, octal
+# or decimal (R12).
+IP_NUMBER = re.compile(r"0x[0-9a-f]*|0[0-7]*|[1-9][0-9]*")
+CANONICAL_IPV4_LABEL = re.compile(r"0|[1-9][0-9]{0,2}")
+# The one field where a bare number is a handle, not a host (R12, amendment).
+NUMERIC_HANDLE = re.compile(r"params\.artifacts\.handles\[\d+\]\.value")
+
+
+def ip_literal_form(host, exempt_bare_number):
+    """True when host is an IPv4 address in integer, hex, octal or short form
+    (3232235777, 0xc0a80001, 127.1), which a browser resolves like the dotted
+    form (R12). The canonical dotted form is LIVE_IPV4's. exempt_bare_number
+    lets a single decimal or octal number pass (a numeric handle)."""
+    h = norm(host).rsplit("@", 1)[-1]
+    h = re.sub(r":[0-9]*$", "", h).removesuffix(".")
+    labels = h.split(".")
+    if not 1 <= len(labels) <= 4:
+        return False
+    values = []
+    for label in labels:
+        if not IP_NUMBER.fullmatch(label):
+            return False
+        if label.startswith("0x"):
+            values.append(int(label[2:] or "0", 16))
+        elif len(label) > 1 and label.startswith("0"):
+            values.append(int(label, 8))
+        else:
+            values.append(int(label))
+    if any(v > 255 for v in values[:-1]) or values[-1] >= 256 ** (5 - len(labels)):
+        return False  # not an IPv4 address at all (the URL parser rejects it)
+    if len(labels) == 4 and all(CANONICAL_IPV4_LABEL.fullmatch(l) for l in labels):
+        return False
+    if exempt_bare_number and len(labels) == 1 and not labels[0].startswith("0x"):
+        return False
+    return True
+
+
+IP_FORM_PROBLEM = ("IPv4 address in integer, hex, octal or short form (R12: "
+                   "write the dotted IPv4, defanged)")
+
+
+# The one form a urls artifact may take (ADR-0004 part 3, amendment): hxxp or
+# hxxps, then :// in one of its DEFANGS spellings (read by restructure), then
+# a non-empty authority, then an optional path, query or fragment.
+URL_ARTIFACT = re.compile(r"params\.artifacts\.urls\[\d+\]")
+URL_FORM = re.compile(r"(?i)hxxps?://(?P<authority>[^/?#\\\s]+)(?:[/?#][^\s\\]*)?")
+URL_FORM_PROBLEM = ("not a URL in the form hxxps://host[.]tld/path (the scheme hxxp "
+                    "or hxxps, then ://, [://] or [:]//, then a host name or a "
+                    "dotted IPv4, never a bracketed IPv6; R12 and R2 read the "
+                    "host only from this form)")
+LIVE_NAME_PROBLEM = ("live hostname (write every dot as [.], also in a path, a "
+                     "file name or a repository: attacker/interview[.]task)")
+
+
+# IPv6 candidates: the inside of brackets, and a standalone run of hex
+# digits, colons and dots that holds a colon (not part of a word, so Foo::Bar
+# is no candidate). Only a candidate that parses as IPv6 counts.
+IPV6_BRACKETED = re.compile(r"\[([^\[\]\s]*)\]")
+IPV6_BARE = re.compile(r"(?<![\w:.])[0-9a-fA-F.]*:[0-9a-fA-F:.]*(?![\w:.])")
+IPV6_PROBLEM = ("IPv6 address (an IPv6 artifact cannot be declared, ADR-0004 "
+                "part 3)")
+
+
+def is_ipv6(candidate):
+    try:
+        ipaddress.IPv6Address(candidate.split("%", 1)[0])
+    except ValueError:
+        return False
+    return True
+
+
+def has_ipv6_literal(readings):
+    """True when any reading holds an IPv6 literal, bracketed or bare. The
+    bare unspecified address :: alone is no host a link can reach."""
+    for reading in readings:
+        if any(is_ipv6(m.group(1)) for m in IPV6_BRACKETED.finditer(reading)):
+            return True
+        if any(m.group() != "::" and is_ipv6(m.group())
+               for m in IPV6_BARE.finditer(reading)):
+            return True
+    return False
+
+
+def defang_problems(value, mode, numeric_handle=False, url_field=False):
+    """Why a string is not defanged under mode, or [] when it is. The whole
+    value is scanned in every reading (as written, with the DEFANGS
+    separators read, percent-decoded): every dotted name anywhere in it is
+    defanged, a path or file name included, as in record text (R11), so no
+    spelling of a scheme can hide a host. A urls value (url_field) must also
+    take URL_FORM, and R12 reads its host only from that authority. In other
+    fields R12 reads every token's host (value_hosts); a bare single number
+    there is an integer IPv4 only as the whole value, and never in
+    handles[].value (numeric_handle)."""
     text = unicodedata.normalize("NFKC", value).translate(INVISIBLE)
     problems = []
     if LIVE_SCHEME.search(text):
         problems.append("live URL scheme (write hxxp:// or hxxps://)")
-    if mode == "url-only":
-        return problems
-    # Only the host part of each token counts: a dot in a URL path or query
-    # (/download/GoogleMeet.exe, ?id=abc.def) is not a hostname.
-    # The host part is cut at the raw / ? # \ and decoded afterwards: %2E in
-    # a host is a dot, and an encoded %2F (hxxps://x%2F@host) cannot hide one.
-    hosts = [urllib.parse.unquote(URL_HOST_END.split(part, maxsplit=1)[0])
-             for token in text.split()
-             for part in SCHEME_IN_TOKEN.sub(" ", token).split()]
-    if any(WWW_PREFIX.search(h) for h in hosts):
+    readings = {text, restructure(text), restructure(percent_decode(text))}
+    if any(WWW_PREFIX.search(r) for r in readings):
         problems.append("live www. prefix (write www[.])")
-    if any(LIVE_HOST.search(h) for h in hosts):
-        problems.append("live hostname (write every dot as [.])")
-    if any(LIVE_IPV4.search(h) for h in hosts):
+    if any(LIVE_HOST.search(r) for r in readings):
+        problems.append(LIVE_NAME_PROBLEM)
+    if any(LIVE_IPV4.search(r) for r in readings):
         problems.append("live IPv4 address (write every dot as [.])")
+    # An IPv6 artifact cannot be declared (part 3): [::ffff:7f00:1] opens
+    # 127.0.0.1. One rule for every host-mode field, urls included.
+    ipv6 = has_ipv6_literal(readings)
+    if ipv6:
+        problems.append(IPV6_PROBLEM)
+    if url_field:
+        form = URL_FORM.fullmatch(restructure(text))
+        host = form.group("authority").rsplit("@", 1)[-1] if form else ""
+        if not form or ipv6 or (host.startswith("[") and not host.startswith("[.]")):
+            problems.append(URL_FORM_PROBLEM)
+        elif ip_literal_form(authority_host(form.group("authority")), False):
+            problems.append(IP_FORM_PROBLEM)
+    elif any(ip_literal_form(h, not url and (numeric_handle or not whole))
+             for h, url, whole in value_hosts(text)):
+        problems.append(IP_FORM_PROBLEM)
     return problems
+
+
+# Inline markup that a reader never sees: HTML comments and tags, link and
+# image syntax around their text, code and emphasis markers (R5, R11, R14).
+MARKUP_COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
+MARKUP_AUTOLINK = re.compile(r"<([a-z][a-z0-9+.\-]*:[^<>\s]*|[^<>\s@]+@[^<>\s]+)>", re.I)
+MARKUP_TAG = re.compile(r"</?[a-z][^<>]*>", re.I)
+MARKUP_LINK = re.compile(r"!?\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])")
+MARKUP_MARKERS = re.compile(r"[`*_~]+")
+
+
+def strip_markup(text):
+    """The text a reader sees once inline Markdown and HTML render."""
+    text = MARKUP_COMMENT.sub("", text)
+    text = MARKUP_AUTOLINK.sub(r"\1", text)
+    text = MARKUP_TAG.sub("", text)
+    text = MARKUP_LINK.sub(r"\1", text)
+    text = MARKUP_MARKERS.sub("", text)
+    return MD_ESCAPE.sub(r"\1", html.unescape(text))
+
+
+def rendered_variants(text):
+    """text_variants plus each with its markup stripped, folded."""
+    variants = text_variants(text)
+    return variants | {norm(strip_markup(v)) for v in variants}
+
+
+def record_text_problems(text):
+    """R11 and R12 on one string of record text. Every variant (as written,
+    decoded, markup stripped, percent-decoded) is read whole, a URL's path,
+    query and fragment included: every dotted name in record text is
+    defanged (ADR-0004 part 3). The only live host allowed is the site's
+    own; there is no other exemption."""
+    problems = []
+    for variant in rendered_variants(text):
+        scanned = restructure(percent_decode(variant))
+        if LIVE_IPV4.search(scanned):
+            problems.append("a live IPv4 address (R11: write every dot as [.])")
+        if WWW_PREFIX.search(scanned):
+            problems.append("a live www. prefix (R11: write www[.])")
+        for match in LIVE_HOST.finditer(scanned):
+            host = idna_fold(norm(match.group())).removesuffix(".")
+            if host == OWN_HOST:
+                continue
+            if scanned[:match.start()].endswith("@"):
+                problems.append(f"an email address on the live host {show(host)} "
+                                "(R11: write every dot as [.])")
+            else:
+                problems.append(f"the live dotted name {show(host)} (R11: write "
+                                "every dot as [.], or an undotted form such as "
+                                "Doctor Web)")
+        for host, url, _ in value_hosts(scanned):
+            if url and ip_literal_form(host, False):
+                problems.append(f"an {IP_FORM_PROBLEM}")
+    return list(dict.fromkeys(problems))
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +584,8 @@ def defang_problems(value, mode):
 
 VALIDATION_KEYWORDS = {
     "type", "required", "properties", "additionalProperties", "items",
-    "enum", "const", "pattern", "minLength", "minItems", "format", "x-defang",
+    "enum", "const", "pattern", "minLength", "minItems", "minimum", "format",
+    "x-defang",
 }
 ANNOTATION_KEYWORDS = {
     "$schema", "$id", "$comment", "title", "description", "examples",
@@ -255,6 +637,9 @@ def schema_problems(schema, where):
         elif key in ("minLength", "minItems"):
             if type(value) is not int or value < 0:
                 problems.append(f"{here}: must be a non-negative integer")
+        elif key == "minimum":
+            if type(value) not in (int, float):
+                problems.append(f"{here}: must be a number")
         elif key == "format":
             if value not in FORMATS:
                 problems.append(f"{here}: unsupported format {value!r} "
@@ -324,6 +709,9 @@ def validate(value, schema, path, errors, artifacts):
                 datetime.date.fromisoformat(value)
             except ValueError:
                 errors.append(f"{where}: not a date (YYYY-MM-DD)")
+    if type(value) in (int, float) and "minimum" in schema:
+        if value < schema["minimum"]:
+            errors.append(f"{where}: less than the minimum {schema['minimum']!r}")
     if isinstance(value, list):
         if "minItems" in schema and len(value) < schema["minItems"]:
             errors.append(f"{where}: fewer than {schema['minItems']} items")
@@ -348,7 +736,9 @@ def validate(value, schema, path, errors, artifacts):
         mode = schema["x-defang"]
         for sub_path, text in iter_strings(value, path):
             artifacts.append((sub_path, text))
-            for problem in defang_problems(text, mode):
+            numeric = NUMERIC_HANDLE.fullmatch(sub_path) is not None
+            url_field = URL_ARTIFACT.fullmatch(sub_path) is not None
+            for problem in defang_problems(text, mode, numeric, url_field):
                 errors.append(f"{sub_path}: not defanged ({mode}): {problem}: "
                               f"{show(text)}")
 
@@ -382,7 +772,15 @@ class Record:
         self.data = data
         self.body = body
         self.body_line = body_line
-        self.artifacts = []  # (path, defanged value)
+        self.artifacts = []  # (path, defanged value) of every x-defang string
+        path = Path(rel)  # content/<section>/<slug>.md, or content/_index.md
+        self.section = path.parts[1] if len(path.parts) > 2 else ""
+        self.slug = path.stem
+
+    @property
+    def params(self):
+        params = self.data.get("params")
+        return params if isinstance(params, dict) else {}
 
 
 def load_schemas(schema_dir, findings):
@@ -406,8 +804,30 @@ def load_schemas(schema_dir, findings):
     return schemas
 
 
-def load_records(root, schema_dir, findings):
-    """Parse and validate every record. Returns the records that parsed."""
+def read_front_matter(path, rel, findings, what):
+    """(data, body, body line) of a content file, or None after a finding."""
+    try:
+        text = path.read_text(encoding="utf-8").removeprefix("﻿")
+    except (OSError, UnicodeDecodeError) as exc:
+        findings.add(rel, f"cannot read the {what}: {exc}")
+        return None
+    match = FRONT_MATTER.match(text)
+    if not match:
+        findings.add(rel, "front matter must be TOML between +++ lines "
+                          "at the top of the file")
+        return None
+    try:
+        data = plain(tomllib.loads(match.group(1)))
+    except tomllib.TOMLDecodeError as exc:
+        findings.add(rel, f"front matter is not valid TOML: {exc}")
+        return None
+    return data, text[match.end():], text.count("\n", 0, match.end()) + 1
+
+
+def load_records(root, schema_dir, findings, index_pages=None):
+    """Parse and validate every record. Returns the records that parsed.
+    With a list in index_pages, every content/<section>/_index.md that
+    parsed is appended to it (R13); without one, they are skipped."""
     schemas = load_schemas(schema_dir, findings)
     content = root / "content"
     records = []
@@ -417,7 +837,13 @@ def load_records(root, schema_dir, findings):
         rel = path.relative_to(root).as_posix()
         parts = path.relative_to(content).parts
         if len(parts) == 1:
-            continue  # a page at the top of content/, not a record
+            # A page at the top of content/, not a record. The home page
+            # content/_index.md is a section page too (R13).
+            if path.name == "_index.md" and index_pages is not None:
+                parsed = read_front_matter(path, rel, findings, "section page")
+                if parsed:
+                    index_pages.append(Record(rel, *parsed))
+            continue
         section = parts[0]
         if section not in RECORD_SCHEMAS:
             findings.add(rel, f"no schema is mapped to the record directory "
@@ -429,27 +855,19 @@ def load_records(root, schema_dir, findings):
                               f"is content/{section}/<slug>.md")
             continue
         if path.name == "_index.md":
-            continue  # the section page, not a record
-        try:
-            text = path.read_text(encoding="utf-8").removeprefix("\ufeff")
-        except (OSError, UnicodeDecodeError) as exc:
-            findings.add(rel, f"cannot read the record: {exc}")
+            # The section page, not a record; R13 checks it.
+            if index_pages is not None:
+                parsed = read_front_matter(path, rel, findings, "section page")
+                if parsed:
+                    index_pages.append(Record(rel, *parsed))
             continue
-        match = FRONT_MATTER.match(text)
-        if not match:
-            findings.add(rel, "front matter must be TOML between +++ lines "
-                              "at the top of the file")
+        parsed = read_front_matter(path, rel, findings, "record")
+        if not parsed:
             continue
-        try:
-            data = plain(tomllib.loads(match.group(1)))
-        except tomllib.TOMLDecodeError as exc:
-            findings.add(rel, f"front matter is not valid TOML: {exc}")
-            continue
-        body_line = text.count("\n", 0, match.end()) + 1
-        record = Record(rel, data, text[match.end():], body_line)
+        record = Record(rel, *parsed)
         if section in schemas:
             errors = []
-            validate(data, schemas[section], "", errors, record.artifacts)
+            validate(record.data, schemas[section], "", errors, record.artifacts)
             for error in errors:
                 findings.add(rel, error)
         records.append(record)
@@ -470,7 +888,7 @@ def live_forms(records):
 
 # SPEC section 5: record bodies carry no live URLs. Fails closed: a link in a
 # code span or an escaped bracket is flagged too. URL_RULES also bind every
-# front-matter string outside params.sources (plan decision 6).
+# front-matter string except params.sources[].url (ADR-0004 part 3).
 BARE_URL = re.compile(r"([a-z][a-z0-9+.\-]*)://")
 URL_RULES = [
     (BARE_URL, "bare URL"),
@@ -528,11 +946,10 @@ def body_problems(record):
 
 
 def front_matter_problems(record):
-    """Live URLs in front matter belong only in params.sources (decision 6)."""
+    """Live URLs in front matter belong only in params.sources[].url (D8)."""
     problems = []
     for path, text in iter_strings(record.data, ""):
-        if path == "params.sources" or path.startswith(("params.sources.",
-                                                        "params.sources[")):
+        if is_source_url(path):
             continue
         if (path, text) in record.artifacts:
             continue  # checked by its x-defang mode
@@ -543,8 +960,357 @@ def front_matter_problems(record):
                     labels.append(label)
         for label in labels:
             problems.append(f"{path}: front matter string contains a {label}; "
-                            "live links belong only in params.sources (D8)")
+                            "live links belong only in params.sources[].url (D8)")
     return problems
+
+
+# ---------------------------------------------------------------------------
+# Record rules R4 to R15 (ADR-0004, table "Record rules R4 to R15"). Each rule
+# reads only values of the right type, so a missing or mistyped field is the
+# schema's finding alone and every fixture fails for its own reason.
+
+RECORD_POLICY = "record-policy.json"
+SOURCE_URL = re.compile(r"params\.sources\[\d+\]\.url")
+DOMAIN_ARTIFACT = re.compile(r"params\.artifacts\.domains\[\d+\]")
+SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+PERSONA_SLUG = re.compile(r"persona-[1-9][0-9]*")
+SLUG_SUFFIX = re.compile(r"-(?:[2-9]|[1-9][0-9]+)")
+ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+INDEX_KEYS = ("title", "description")
+# R14: a heuristic net for the D7 label rule, not a proof; review stays
+# binding. A word may not run into a phrase from the left (this is a scam).
+VERDICT_PHRASE = re.compile(r"(?<!\w)(?:verified scam|confirmed scam|is a scam|"
+                            r"scam company|fraudulent company)")
+
+
+def comparison_variants(text):
+    """text_variants plus each percent-decoded, with \\ read as / and
+    IDNA-folded, the form canonical_host gives a host (R2)."""
+    variants = text_variants(text)
+    variants |= {idna_fold(percent_decode(v).replace("\\", "/")) for v in variants}
+    return variants | {nontransitional_fold(percent_decode(text).replace("\\", "/"))}
+
+
+def is_source_url(path):
+    return SOURCE_URL.fullmatch(path) is not None
+
+
+def slugify(name):
+    """R4: NFKD ASCII folding, lowercase, [.] and every non-alphanumeric run
+    as -, trimmed."""
+    folded = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "-", folded.lower()).strip("-")
+
+
+def word_variants(text):
+    """The text as written, entity-decoded, Markdown-unescaped and with its
+    markup stripped: NFKC, case-folded, invisibles dropped, whitespace
+    collapsed (R5, R14)."""
+    variants = {text, html.unescape(text)}
+    variants |= {MD_ESCAPE.sub(r"\1", v) for v in list(variants)}
+    variants |= {strip_markup(v) for v in list(variants)}
+    return {" ".join(unicodedata.normalize("NFKC", v).translate(INVISIBLE)
+                     .casefold().split()) for v in variants}
+
+
+def record_text(record):
+    """(path, string) of every front-matter string that is record text (R11):
+    neither an x-defang field nor params.sources[].url."""
+    return [(path, text) for path, text in iter_strings(record.data, "")
+            if (path, text) not in record.artifacts and not is_source_url(path)]
+
+
+def free_text(record):
+    """(path, string) of every front-matter string except the declared
+    artifacts and the source URLs, so names and aliases count (R5, R14)."""
+    return [(path, text) for path, text in iter_strings(record.data, "")
+            if not path.startswith("params.artifacts.") and not is_source_url(path)]
+
+
+def declared_artifacts(record):
+    """(path, value) of every artifact value under params.artifacts."""
+    return [(path, value) for path, value in record.artifacts
+            if path.startswith("params.artifacts.")]
+
+
+def sources_of(record):
+    sources = record.params.get("sources")
+    return [s for s in sources if isinstance(s, dict)] if isinstance(sources, list) else []
+
+
+def source_hosts(url):
+    """Every form of the host of a source URL (host_forms)."""
+    return {h for h in host_forms(url_authority(url)) if h}
+
+
+def domain_hosts(value):
+    """Every form of the live host a domain artifact declares: refanged, then
+    read like a source host, so both sides of R15 share the same forms."""
+    return {h.removeprefix("*.").strip(".")
+            for h in host_forms(url_authority(refang(value)))} - {""}
+
+
+def load_policy(schema_dir, findings):
+    """The retired slugs of schema/record-policy.json (R4). The file holds
+    nothing else: an exemption list cannot be added (ADR-0004 part 3)."""
+    where = f"schema/{RECORD_POLICY}"
+    try:
+        policy = json.loads((schema_dir / RECORD_POLICY).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        findings.add(where, "missing record policy (it holds retired_slugs, R4)")
+        return set()
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        findings.add(where, f"cannot read the record policy: {exc}")
+        return set()
+    if not isinstance(policy, dict):
+        findings.add(where, "the record policy must be a JSON object")
+        return set()
+    extra = sorted(set(policy) - {"retired_slugs"})
+    if extra:
+        findings.add(where, f"keys not allowed: {', '.join(map(show, extra))}; the "
+                     "record policy holds only retired_slugs and no allowlist "
+                     "(ADR-0004 part 3)")
+    retired = policy.get("retired_slugs")
+    if not isinstance(retired, list):
+        findings.add(where, "retired_slugs must be a list of slugs")
+        return set()
+    good = set()
+    for i, slug in enumerate(retired):
+        if not isinstance(slug, str) or not SLUG.fullmatch(slug):
+            findings.add(where, f"retired_slugs[{i}]: {show(slug)} is not a slug")
+        elif slug in good:
+            findings.add(where, f"retired_slugs[{i}]: {show(slug)} is listed twice")
+        else:
+            good.add(slug)
+    return good
+
+
+def slug_problems(record, retired):
+    """R4: slugs follow the name, persona slugs carry no name, retired slugs
+    stay retired."""
+    problems = []
+    params = record.params
+    name = params.get("name")
+    if record.section == "reports" and params.get("name_type") == "persona":
+        if not PERSONA_SLUG.fullmatch(record.slug):
+            problems.append(f"slug {show(record.slug)}: a persona report's slug is "
+                            "persona-N with N >= 1, so its URL never carries a "
+                            "name (R4)")
+    elif isinstance(name, str):
+        base = slugify(name)
+        if not base:
+            problems.append("params.name slugifies to nothing, so it gives no slug (R4)")
+        elif record.slug != base and not (record.slug.startswith(base)
+                                          and SLUG_SUFFIX.fullmatch(record.slug[len(base):])):
+            problems.append(f"slug {show(record.slug)} is neither {show(base)} nor "
+                            f"{show(base + '-N')} with N >= 2, the slug of params.name (R4)")
+    if record.slug in retired:
+        problems.append(f"slug {show(record.slug)} is retired in schema/{RECORD_POLICY} "
+                        "and is never reused (R4)")
+    return problems
+
+
+def reference_problems(record, campaign_slugs, report_slugs):
+    """R7: campaign, source and related references resolve."""
+    problems = []
+    params = record.params
+    ids = [s["id"] for s in sources_of(record) if isinstance(s.get("id"), str)]
+    for dup in sorted({i for i in ids if ids.count(i) > 1}):
+        problems.append(f"params.sources: the source id {show(dup)} appears more than "
+                        "once; source ids are unique per record (R7)")
+    if record.section == "campaigns":
+        attribution = params.get("attribution")
+        for i, entry in enumerate(attribution if isinstance(attribution, list) else []):
+            source = entry.get("source") if isinstance(entry, dict) else None
+            if isinstance(source, str) and source not in ids:
+                problems.append(f"params.attribution[{i}].source {show(source)} is no "
+                                "source id of this record; attribution is stated "
+                                "only as a cited source states it (R7)")
+        return problems
+    campaign = params.get("campaign")
+    if isinstance(campaign, dict):
+        slug = campaign.get("slug")
+        if isinstance(slug, str) and slug not in campaign_slugs:
+            problems.append(f"params.campaign.slug {show(slug)} names no campaign "
+                            "record content/campaigns/<slug>.md (R7)")
+        source = campaign.get("source")
+        if isinstance(source, str) and source not in ids:
+            problems.append(f"params.campaign.source {show(source)} is no source id of "
+                            "this record (R7)")
+        basis = campaign.get("basis")
+        if basis == "artifact":
+            if "artifact" not in campaign:
+                problems.append("params.campaign: basis \"artifact\" needs "
+                                "params.campaign.artifact, the declared artifact "
+                                "the cited source lists (R7)")
+            elif not isinstance(campaign["artifact"], str):
+                pass  # the schema reports the type
+            elif campaign["artifact"] not in {v for _, v in declared_artifacts(record)}:
+                problems.append(f"params.campaign.artifact {show(campaign['artifact'])} "
+                                "is none of this record's declared artifact values (R7)")
+        elif basis == "named" and "artifact" in campaign:
+            problems.append("params.campaign.artifact: basis \"named\" takes no "
+                            "artifact; use basis \"artifact\" when the source lists "
+                            "one (R7)")
+    related = params.get("related")
+    for i, slug in enumerate(related if isinstance(related, list) else []):
+        if not isinstance(slug, str):
+            continue
+        if slug == record.slug:
+            problems.append(f"params.related[{i}]: a report is not related to "
+                            "itself (R7)")
+        elif slug not in report_slugs:
+            problems.append(f"params.related[{i}] {show(slug)} names no report "
+                            "record content/reports/<slug>.md (R7)")
+    return problems
+
+
+def date_problems(record):
+    """R8: first seen <= last seen (<= last reviewed for reports)."""
+    params = record.params
+    dates = {key: params.get(key) for key in ("first_seen", "last_seen", "last_reviewed")}
+    dates = {k: v for k, v in dates.items() if isinstance(v, str) and ISO_DATE.fullmatch(v)}
+    order = [("first_seen", "last_seen")]
+    if record.section == "reports":
+        order.append(("last_seen", "last_reviewed"))
+    return [f"params.{later} {dates[later]} is before params.{earlier} "
+            f"{dates[earlier]} (R8)"
+            for earlier, later in order
+            if earlier in dates and later in dates and dates[later] < dates[earlier]]
+
+
+def report_problems(record):
+    """R6, R9 and R10: rules on one report's own fields."""
+    problems = []
+    params = record.params
+    if "hide_name" in params and params.get("name_type") != "persona":
+        problems.append("params.hide_name: only a persona record can hide its "
+                        "name (R6)")
+    count = params.get("independent_reports")
+    if type(count) is int and count < 1 and not sources_of(record):
+        problems.append("params.independent_reports is 0 and the record cites no "
+                        "source; a report needs an independent report or a cited "
+                        "source (R9)")
+    if isinstance(params.get("artifacts"), dict) and not declared_artifacts(record):
+        problems.append("params.artifacts declares no artifact; a report declares "
+                        "at least one (R10)")
+    return problems
+
+
+def text_problems(record):
+    """R11 and R12 on the record text of a record or section page."""
+    problems = []
+    for path, text in record_text(record):
+        for problem in record_text_problems(text):
+            problems.append(f"{path}: record text contains {problem}")
+    for offset, line in enumerate(record.body.split("\n")):
+        for problem in record_text_problems(line):
+            problems.append(f"line {record.body_line + offset}: body contains {problem}")
+    return problems
+
+
+def verdict_problems(record):
+    """R14: no verdict phrase in a free-text string or the body."""
+    problems = []
+    for path, text in free_text(record) + [("body", record.body)]:
+        found = {m.group() for v in word_variants(text) for m in VERDICT_PHRASE.finditer(v)}
+        for phrase in sorted(found):
+            problems.append(f"{path}: contains the verdict phrase {phrase!r}; labels "
+                            "state facts, never a verdict (R14, D7)")
+    return problems
+
+
+def persona_problems(records):
+    """R5: (record, problem) for every persona name or alias in the free text
+    or body of any record, so hide_name can remove it in one line."""
+    found = []
+    personas = []
+    for persona in records:
+        params = persona.params
+        if persona.section != "reports" or params.get("name_type") != "persona":
+            continue
+        names = [("params.name", params.get("name"))]
+        aliases = params.get("aliases")
+        names += [(f"params.aliases[{i}]", a)
+                  for i, a in enumerate(aliases if isinstance(aliases, list) else [])]
+        for field, name in names:
+            folded = word_variants(name) if isinstance(name, str) else set()
+            for text in sorted(t for t in folded if t):
+                personas.append((persona, field, re.compile(
+                    rf"(?<!\w){re.escape(text)}(?!\w)")))
+    for record in records:
+        texts = free_text(record) + [("body", record.body)]
+        for persona, field, pattern in personas:
+            for path, text in texts:
+                if record is persona and (path == "params.name"
+                                          or path.startswith("params.aliases[")):
+                    continue
+                if any(pattern.search(v) for v in word_variants(text)):
+                    found.append((record, f"{path}: contains the {field} of the persona "
+                                  f"record {persona.rel}; a persona name renders only "
+                                  "from that record, so hide_name can remove it (R5)"))
+    return list(dict.fromkeys(found))
+
+
+def host_relation(host, domain):
+    """How a source host relates to a declared domain (R15), or None."""
+    if host == domain:
+        return "equals"
+    if host.endswith("." + domain):
+        return "is a subdomain of"
+    if domain.endswith("." + host):
+        return "is a parent of"
+    return None
+
+
+def source_problems(records):
+    """(record, problem) for R12 and R15 on every params.sources[].url."""
+    found = []
+    domains = [(r, path, value, domain_hosts(value))
+               for r in records if r.section == "reports"
+               for path, value in r.artifacts if DOMAIN_ARTIFACT.fullmatch(path)]
+    for record in records:
+        for i, source in enumerate(sources_of(record)):
+            url = source.get("url")
+            if not isinstance(url, str):
+                continue
+            where = f"params.sources[{i}].url"
+            # A browser reads the IDNA deviation characters (ss, final sigma,
+            # the joiners) nontransitionally, so only an ASCII host has one
+            # reading (ADR-0004 part 3, amendment).
+            if not authority_host(url_authority(url)).isascii():
+                found.append((record, f"{where}: its host is not ASCII; write the "
+                              "xn-- form of the host, which a browser reads only "
+                              "one way (R15)"))
+            hosts = source_hosts(url)
+            if not hosts:
+                continue
+            if any(ip_literal_form(h, False) for h in hosts):
+                found.append((record, f"{where}: its host is an {IP_FORM_PROBLEM}"))
+            for other, path, value, forms in domains:
+                for host, domain in sorted((h, d) for h in hosts for d in forms):
+                    relation = host_relation(host, domain)
+                    if relation:
+                        found.append((record, f"{where}: its host {show(host)} "
+                                      f"{relation} the declared artifact domain "
+                                      f"{show(value)} ({other.rel}: {path}); a source "
+                                      "never points at a declared domain (R15)"))
+                        break
+    return found
+
+
+def index_problems(page):
+    """R13: a section page carries only title and description strings, plus
+    the body rule and R11."""
+    problems = []
+    extra = sorted(set(page.data) - set(INDEX_KEYS))
+    if extra:
+        problems.append(f"front matter keys not allowed: {', '.join(map(show, extra))}; "
+                        "an _index.md carries only title and description (R13)")
+    for key in INDEX_KEYS:
+        if key in page.data and not isinstance(page.data[key], str):
+            problems.append(f"{key}: must be a string (R13)")
+    return problems + body_problems(page) + front_matter_problems(page) + text_problems(page)
 
 
 def cmd_records(args):
@@ -553,26 +1319,45 @@ def cmd_records(args):
     if not root.is_dir():
         raise UsageError(f"--root {root} is not a directory")
     findings = Findings()
-    records = load_records(root, schema_dir, findings)
+    index_pages = []
+    records = load_records(root, schema_dir, findings, index_pages)
+    retired = load_policy(schema_dir, findings)
     for record in records:
         for problem in body_problems(record) + front_matter_problems(record):
             findings.add(record.rel, problem)
     forms = live_forms(records)
     for live, origin, path, value in forms:
+        targets = {live, idna_fold(live), nontransitional_fold(refang(value))}
         for record in records:
             for spath, text in iter_strings(record.data, ""):
                 if (spath, text) in record.artifacts:
                     continue  # artifact fields carry the defanged form
-                if any(live in v for v in text_variants(text)):
+                if any(t in v for t in targets for v in comparison_variants(text)):
                     findings.add(record.rel, f"{spath}: the live form of artifact "
                                  f"{show(value)} ({origin.rel}: {path}) appears "
                                  "here (R2)")
-            if any(live in v for v in text_variants(record.body)):
+            if any(t in v for t in targets for v in comparison_variants(record.body)):
                 findings.add(record.rel, f"body: the live form of artifact "
                              f"{show(value)} ({origin.rel}: {path}) appears "
                              "here (R2)")
-    n_reports = sum(r.rel.startswith("content/reports/") for r in records)
-    n_artifacts = sum(len(r.artifacts) for r in records)
+    campaign_slugs = {r.slug for r in records if r.section == "campaigns"}
+    report_slugs = {r.slug for r in records if r.section == "reports"}
+    for record in records:
+        problems = slug_problems(record, retired)
+        problems += reference_problems(record, campaign_slugs, report_slugs)
+        problems += date_problems(record)
+        if record.section == "reports":
+            problems += report_problems(record)
+        problems += text_problems(record) + verdict_problems(record)
+        for problem in problems:
+            findings.add(record.rel, problem)
+    for record, problem in persona_problems(records) + source_problems(records):
+        findings.add(record.rel, problem)
+    for page in index_pages:
+        for problem in index_problems(page):
+            findings.add(page.rel, problem)
+    n_reports = sum(r.section == "reports" for r in records)
+    n_artifacts = sum(len(declared_artifacts(r)) for r in records)
     return findings.report(
         f"records checked: {len(records)} (reports {n_reports}, campaigns "
         f"{len(records) - n_reports}), artifacts: {n_artifacts}")

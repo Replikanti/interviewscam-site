@@ -1,0 +1,1 @@
+slug 'fixture-scam' is neither 'fixture'

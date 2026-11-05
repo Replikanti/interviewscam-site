@@ -4,23 +4,64 @@
   "title": "Subset fixture",
   "description": "Not a real record schema.",
   "type": "object",
-  "required": ["title", "params"],
+  "required": [
+    "title",
+    "params"
+  ],
   "properties": {
-    "title": {"type": "string", "minLength": 3, "pattern": "^Fixture"},
-    "draft": {"type": ["boolean", "null"]},
+    "title": {
+      "type": "string",
+      "minLength": 3,
+      "pattern": "^Fixture"
+    },
+    "draft": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "params": {
       "type": "object",
-      "required": ["state", "first_seen", "packages", "version"],
+      "required": [
+        "state",
+        "first_seen",
+        "artifacts",
+        "version"
+      ],
       "additionalProperties": false,
       "properties": {
-        "state": {"enum": ["name abused", "front"]},
-        "version": {"const": 1},
-        "first_seen": {"type": "string", "format": "date"},
-        "count": {"type": "integer"},
-        "packages": {
-          "type": "array",
-          "minItems": 1,
-          "items": {"type": "string", "x-defang": "url-only", "examples": ["pkg.fixture.test"]}
+        "state": {
+          "enum": [
+            "name abused",
+            "front"
+          ]
+        },
+        "version": {
+          "const": 1
+        },
+        "first_seen": {
+          "type": "string",
+          "format": "date"
+        },
+        "count": {
+          "type": "integer"
+        },
+        "artifacts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "packages": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "x-defang": "host",
+                "examples": [
+                  "pkg[.]fixture[.]test"
+                ]
+              }
+            }
+          }
         }
       }
     }

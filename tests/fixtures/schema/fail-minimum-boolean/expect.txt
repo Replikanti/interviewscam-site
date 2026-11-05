@@ -1,0 +1,1 @@
+#/properties/count/minimum: must be a number

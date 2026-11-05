@@ -1,26 +1,380 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "M1 placeholder (issue #2): only the artifacts the defang check needs. Milestone 3 replaces it with the SPEC section 5 report model. Keywords are limited to the subset tools/sitecheck.py implements (ADR-0002 part 4).",
-  "title": "Report front matter (placeholder)",
+  "$comment": "SPEC section 5 report model (ADR-0004). Structure only: rules R4 to R15 in tools/sitecheck.py (records) add what a structural schema cannot say, so this schema alone under-describes a valid record (ADR-0004 part 2). Keywords are limited to the subset tools/sitecheck.py implements (ADR-0002 part 4, amended by ADR-0004 part 2).",
+  "title": "Report record front matter",
+  "description": "Front matter of content/reports/<slug>.md: one report per name a candidate sees. Only date and params are allowed at the top level, so nothing in a record can set a title, URL, alias, draft state or build option (ADR-0004 part 4).",
   "type": "object",
-  "required": ["params"],
+  "required": [
+    "date",
+    "params"
+  ],
+  "additionalProperties": false,
   "properties": {
+    "date": {
+      "description": "Publication date (YYYY-MM-DD): the sort order, the feed's published date and the JSON-LD datePublished. A future date is not built.",
+      "type": "string",
+      "format": "date"
+    },
     "params": {
+      "description": "The report itself.",
       "type": "object",
-      "required": ["artifacts"],
+      "required": [
+        "name",
+        "name_type",
+        "state",
+        "state_basis",
+        "summary",
+        "evidence",
+        "first_seen",
+        "last_seen",
+        "last_reviewed",
+        "independent_reports",
+        "artifacts"
+      ],
+      "additionalProperties": false,
       "properties": {
-        "artifacts": {
+        "name": {
+          "description": "The name a candidate sees, every dot written [.]. It renders only through the record-name partial, and the slug derives from it (R4) except for persona records.",
+          "type": "string",
+          "minLength": 1,
+          "x-defang": "host"
+        },
+        "aliases": {
+          "description": "Other spellings of the name, shown as \"Also seen as\".",
           "type": "array",
           "minItems": 1,
           "items": {
-            "type": "object",
-            "required": ["value"],
-            "properties": {
-              "value": {
-                "description": "One attacker artifact (domain, URL, SHA-256, handle, repository, package), defanged (D8).",
+            "description": "One alias, every dot written [.].",
+            "type": "string",
+            "minLength": 1,
+            "x-defang": "host"
+          }
+        },
+        "name_type": {
+          "description": "What kind of name this is.",
+          "enum": [
+            "company",
+            "persona",
+            "meeting_app",
+            "domain",
+            "repository",
+            "package"
+          ]
+        },
+        "state": {
+          "description": "The D6 state of the name: name_abused (used without the owner's involvement) or front (no real party found behind it). Every name has one (ADR-0004 part 1).",
+          "enum": [
+            "name_abused",
+            "front"
+          ]
+        },
+        "state_basis": {
+          "description": "What was checked to reach the state, shown as \"What was checked\".",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "description": "One check, as a short factual sentence.",
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "hide_name": {
+          "description": "Persona records only (R6): true hides the name and aliases from the page, the title, the feed and every index without changing the URL (ADR-0004 part 5).",
+          "type": "boolean"
+        },
+        "campaign": {
+          "description": "The campaign family that used this name, only when a cited source of this record names the name or lists one of its artifacts. Absent means unattributed (ADR-0004 part 6).",
+          "type": "object",
+          "required": [
+            "slug",
+            "source",
+            "basis"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "slug": {
+              "description": "Slug of a campaign record in content/campaigns/ (R7).",
+              "type": "string",
+              "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+            },
+            "source": {
+              "description": "The id of the source of this record that links the name to the campaign (R7).",
+              "type": "string",
+              "pattern": "^[a-z0-9-]+$"
+            },
+            "basis": {
+              "description": "named: the source names this name. artifact: the source lists one of its artifacts, given in artifact (R7).",
+              "enum": [
+                "named",
+                "artifact"
+              ]
+            },
+            "artifact": {
+              "description": "With basis artifact only: one of this record's declared artifact values, exactly as stored (R7).",
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "related": {
+          "description": "Slugs of other report records shown as \"Related names\" (R7).",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "description": "Slug of another report record.",
+            "type": "string",
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+          }
+        },
+        "summary": {
+          "description": "Short factual summary: the lead, the meta description and the feed summary.",
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "description": "Summary of the evidence that was reviewed, never raw personal data (D7).",
+          "type": "string",
+          "minLength": 1
+        },
+        "first_seen": {
+          "description": "Date the name was first seen in use (YYYY-MM-DD).",
+          "type": "string",
+          "format": "date"
+        },
+        "last_seen": {
+          "description": "Date the name was last seen in use, not before first_seen (R8).",
+          "type": "string",
+          "format": "date"
+        },
+        "last_reviewed": {
+          "description": "Date the evidence was last reviewed, not before last_seen (R8). The D7 label and the JSON-LD lastReviewed.",
+          "type": "string",
+          "format": "date"
+        },
+        "independent_reports": {
+          "description": "Number of independent reports the moderator reviewed. 0 only when the record cites at least one source (R9, ADR-0004 part 12).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "artifacts": {
+          "description": "The attacker artifacts, every one defanged (D8). At least one entry overall (R10).",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "domains": {
+              "description": "Domains, every dot written [.]. Only these are compared with source hosts (R15), so every attacker-owned host is declared here.",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "description": "One domain, for example login[.]meeting[.]example.",
                 "type": "string",
                 "minLength": 1,
                 "x-defang": "host"
+              }
+            },
+            "urls": {
+              "description": "URLs, with hxxp or hxxps and every dot in the host written [.].",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "description": "One URL, for example hxxps://login[.]meeting[.]example/join.",
+                "type": "string",
+                "minLength": 1,
+                "x-defang": "host"
+              }
+            },
+            "ips": {
+              "description": "IPv4 addresses in dotted form, every dot written [.].",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "description": "One IPv4 address, for example 192[.]0[.]2[.]10.",
+                "type": "string",
+                "minLength": 1,
+                "x-defang": "host",
+                "pattern": "^\\d{1,3}(\\[\\.\\]\\d{1,3}){3}$"
+              }
+            },
+            "emails": {
+              "description": "Email addresses, every dot in the host written [.].",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "description": "One email address, for example hr[@]meeting[.]example.",
+                "type": "string",
+                "minLength": 1,
+                "x-defang": "host"
+              }
+            },
+            "repositories": {
+              "description": "Code repositories, every dot written [.].",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "description": "One repository, for example git[.]meeting[.]example/hiring/task.",
+                "type": "string",
+                "minLength": 1,
+                "x-defang": "host"
+              }
+            },
+            "file_names": {
+              "description": "File names, every dot written [.].",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "description": "One file name, for example Setup[.]zip.",
+                "type": "string",
+                "minLength": 1,
+                "x-defang": "host"
+              }
+            },
+            "handles": {
+              "description": "Accounts on messaging and social platforms.",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "description": "One account.",
+                "type": "object",
+                "required": [
+                  "platform",
+                  "value"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "platform": {
+                    "description": "The platform of the account.",
+                    "enum": [
+                      "telegram",
+                      "linkedin",
+                      "x",
+                      "discord",
+                      "whatsapp",
+                      "skype",
+                      "github",
+                      "other"
+                    ]
+                  },
+                  "value": {
+                    "description": "The handle, every dot written [.].",
+                    "type": "string",
+                    "minLength": 1,
+                    "x-defang": "host"
+                  }
+                }
+              }
+            },
+            "packages": {
+              "description": "Packages on a registry.",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "description": "One package.",
+                "type": "object",
+                "required": [
+                  "registry",
+                  "name"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "registry": {
+                    "description": "The registry of the package.",
+                    "enum": [
+                      "npm",
+                      "pypi",
+                      "other"
+                    ]
+                  },
+                  "name": {
+                    "description": "The package name, every dot written [.], for example socket[.]io.",
+                    "type": "string",
+                    "minLength": 1,
+                    "x-defang": "host"
+                  }
+                }
+              }
+            },
+            "sha256": {
+              "description": "SHA-256 hashes of files. The page links only the lookups in listed_on, never a file (ADR-0004 part 9).",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "description": "One file hash.",
+                "type": "object",
+                "required": [
+                  "value",
+                  "listed_on"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "value": {
+                    "description": "The SHA-256 as 64 lowercase hex digits.",
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                    "x-defang": "host"
+                  },
+                  "file_name": {
+                    "description": "The file name the hash was seen with, every dot written [.].",
+                    "type": "string",
+                    "minLength": 1,
+                    "x-defang": "host"
+                  },
+                  "listed_on": {
+                    "description": "The lookup services the moderator found the hash on, at least one.",
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "description": "One lookup service.",
+                      "enum": [
+                        "malwarebazaar",
+                        "virustotal"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "sources": {
+          "description": "Cited sources. Optional when independent_reports is at least 1 (R9).",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "description": "One cited source: a vendor report, an advisory or an article. Its url is the one live link a record carries (D8); every other field is record text (R11).",
+            "type": "object",
+            "required": [
+              "id",
+              "title",
+              "publisher",
+              "date",
+              "url"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "description": "Identifier of the source within this record, referenced by params.campaign.source and params.attribution[].source (R7). Unique per record.",
+                "type": "string",
+                "pattern": "^[a-z0-9-]+$"
+              },
+              "title": {
+                "description": "Title of the source as published, with every dotted name defanged (R11).",
+                "type": "string",
+                "minLength": 1
+              },
+              "publisher": {
+                "description": "Publisher of the source, with every dotted name defanged or written undotted (R11), for example Doctor Web.",
+                "type": "string",
+                "minLength": 1
+              },
+              "date": {
+                "description": "Publication date of the source (YYYY-MM-DD).",
+                "type": "string",
+                "format": "date"
+              },
+              "url": {
+                "description": "Live https link to the source. Its host must not equal, be a subdomain of or be a parent of any declared artifacts.domains value of any report (R15), and it is never an IP literal in integer, hex, octal or short form (R12).",
+                "type": "string",
+                "pattern": "^https://\\S+$"
               }
             }
           }

@@ -1,0 +1,1 @@
+params.related[0]: a report is not related to itself (R7)

@@ -1,1 +1,1 @@
-params.artifacts: expected type array
+params.artifacts: expected type object

@@ -1,0 +1,1 @@
+params.artifacts.urls[0]: not defanged (host): not a URL in the form hxxps://host[.]tld/path

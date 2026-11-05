@@ -1,13 +1,175 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "M1 placeholder (issue #2): a campaign is an object with a title. Milestone 3 replaces it with the SPEC section 5 campaign model. Keywords are limited to the subset tools/sitecheck.py implements (ADR-0002 part 4).",
-  "title": "Campaign front matter (placeholder)",
+  "$comment": "SPEC section 5 campaign model (ADR-0004). Structure only: rules R4 to R15 in tools/sitecheck.py (records) add what a structural schema cannot say (ADR-0004 part 2). Keywords are limited to the subset tools/sitecheck.py implements (ADR-0002 part 4, amended by ADR-0004 part 2).",
+  "title": "Campaign record front matter",
+  "description": "Front matter of content/campaigns/<slug>.md: one campaign family. Only date and params are allowed at the top level (ADR-0004 part 4). Related reports are computed from the reports that name this family, not stored.",
   "type": "object",
-  "required": ["title"],
+  "required": [
+    "date",
+    "params"
+  ],
+  "additionalProperties": false,
   "properties": {
-    "title": {
+    "date": {
+      "description": "Publication date (YYYY-MM-DD): the sort order and the feed's published date. A future date is not built.",
       "type": "string",
-      "minLength": 1
+      "format": "date"
+    },
+    "params": {
+      "description": "The campaign family itself.",
+      "type": "object",
+      "required": [
+        "name",
+        "summary",
+        "first_seen",
+        "last_seen",
+        "delivery",
+        "targeted_os",
+        "steals",
+        "sources"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "The name the cited sources use for the family, every dot written [.]. The slug derives from it (R4).",
+          "type": "string",
+          "minLength": 1,
+          "x-defang": "host"
+        },
+        "aliases": {
+          "description": "Other names of the family in the cited sources.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "description": "One alias, every dot written [.].",
+            "type": "string",
+            "minLength": 1,
+            "x-defang": "host"
+          }
+        },
+        "summary": {
+          "description": "Short factual summary of how the family works.",
+          "type": "string",
+          "minLength": 1
+        },
+        "first_seen": {
+          "description": "Date the family was first seen (YYYY-MM-DD).",
+          "type": "string",
+          "format": "date"
+        },
+        "last_seen": {
+          "description": "Date the family was last seen, not before first_seen (R8).",
+          "type": "string",
+          "format": "date"
+        },
+        "delivery": {
+          "description": "How the family delivers its malware.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "description": "One delivery route.",
+            "enum": [
+              "fake_meeting_app",
+              "coding_test_repository",
+              "npm_package",
+              "terminal_command"
+            ]
+          }
+        },
+        "targeted_os": {
+          "description": "The operating systems the family targets.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "description": "One operating system.",
+            "enum": [
+              "windows",
+              "macos",
+              "linux"
+            ]
+          }
+        },
+        "steals": {
+          "description": "What the family steals.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "description": "One kind of data, for example browser passwords.",
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "attribution": {
+          "description": "Attribution as the cited sources state it, never our own (ADR-0004 part 6). Absent means no source states one.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "description": "One attribution statement.",
+            "type": "object",
+            "required": [
+              "statement",
+              "source"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "statement": {
+                "description": "The attribution as the source states it.",
+                "type": "string",
+                "minLength": 1
+              },
+              "source": {
+                "description": "The id of the source of this record that states it (R7).",
+                "type": "string",
+                "pattern": "^[a-z0-9-]+$"
+              }
+            }
+          }
+        },
+        "sources": {
+          "description": "Cited sources, at least one.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "description": "One cited source: a vendor report, an advisory or an article. Its url is the one live link a record carries (D8); every other field is record text (R11).",
+            "type": "object",
+            "required": [
+              "id",
+              "title",
+              "publisher",
+              "date",
+              "url"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "description": "Identifier of the source within this record, referenced by params.campaign.source and params.attribution[].source (R7). Unique per record.",
+                "type": "string",
+                "pattern": "^[a-z0-9-]+$"
+              },
+              "title": {
+                "description": "Title of the source as published, with every dotted name defanged (R11).",
+                "type": "string",
+                "minLength": 1
+              },
+              "publisher": {
+                "description": "Publisher of the source, with every dotted name defanged or written undotted (R11), for example Doctor Web.",
+                "type": "string",
+                "minLength": 1
+              },
+              "date": {
+                "description": "Publication date of the source (YYYY-MM-DD).",
+                "type": "string",
+                "format": "date"
+              },
+              "url": {
+                "description": "Live https link to the source. Its host must not equal, be a subdomain of or be a parent of any declared artifacts.domains value of any report (R15), and it is never an IP literal in integer, hex, octal or short form (R12).",
+                "type": "string",
+                "pattern": "^https://\\S+$"
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

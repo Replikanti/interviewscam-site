@@ -84,8 +84,9 @@ sitecheck() { python3 -I "$CHECK_ROOT/tools/sitecheck.py" "$@"; }
 # actions/ and pinned to commit SHAs, Pages off until M6.
 guard_check() { sitecheck guard --root "$1" --hugo "$HUGO_BIN"; }
 
-# records_check <root> <schema dir>: schema, x-defang (D8), live forms (R2)
-# and the SPEC section 5 body rule for every record under <root>/content.
+# records_check <root> <schema dir>: schema, x-defang (D8), live forms (R2),
+# the SPEC section 5 body rule and the record rules R4 to R15 (ADR-0004) for
+# every record and _index.md under <root>/content.
 records_check() { sitecheck records --root "$1" --schemas "$2"; }
 
 # site_check <root> <schema dir> <built dir>: third-party requests (D9), the

@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "params": {
+      "type": "object",
+      "properties": {
+        "packages": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "x-defang": "url-only"
+          }
+        }
+      }
+    }
+  }
+}

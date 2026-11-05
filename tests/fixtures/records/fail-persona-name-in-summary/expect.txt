@@ -1,0 +1,1 @@
+params.summary: contains the params.name of the persona record content/reports/persona-1.md
