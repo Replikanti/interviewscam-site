@@ -66,6 +66,8 @@ The validator implements only the keywords the record schemas use, fails closed 
 
 **Rejected:** see part 3 (a dependency or a second binary for a full validator).
 
+*Amended by ADR-0004 parts 2 and 3: the validator gains one keyword, `minimum` (numbers only), and `x-defang` keeps a single mode, `host`. The mode `url-only` is removed, so a schema that still uses it fails closed.*
+
 ### 5. Runner label `ubuntu-24.04`, not `ubuntu-latest`
 
 All workflows run on `ubuntu-24.04`.

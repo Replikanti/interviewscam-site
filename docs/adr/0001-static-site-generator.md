@@ -43,7 +43,7 @@ PR 2 of milestone 1 puts these into `hugo.toml`, and the guard check of PR 3 ass
 | `[security.http] urls = ["none"]` | Stops build-time remote fetches (D3, D9). |
 | `[privacy]` `disable = true` for disqus, googleAnalytics, instagram, vimeo, x and youtube | Each is an embedded third-party surface. They are inert unless used. With the switch on, a use renders nothing: no third-party request is made and the build stays green, so D9 holds, but the content is dropped silently. The `twitter` and `gist` shortcodes are already removed stubs that fail the build, and `[privacy]` has no keys for them (D9). |
 | `disableHugoGeneratorInject = true` | Hugo would otherwise inject a generator meta tag into `<head>`. The CSP meta tag must be the first element after `<meta charset>`, because a meta CSP applies only to content after it (D9). |
-| `disableKinds = ["taxonomy", "term", "rss"]` | Nothing in milestone 1 uses taxonomies or RSS, and the empty generated pages would still be built and checked. Milestone 3 revisits this. |
+| `disableKinds = ["taxonomy", "term", "rss"]` | Nothing in milestone 1 uses taxonomies or RSS, and the empty generated pages would still be built and checked. Milestone 3 revisits this. Revisited in ADR-0004 part 7: unchanged. |
 | `refLinksErrorLevel = "ERROR"` | A broken internal reference fails the build instead of producing a warning. |
 | `[params] csp = "..."` | The single source of the Content Security Policy that every page carries (D9). |
 
