@@ -1,7 +1,18 @@
+{{ define "title" }}Check a name from your interview invite · {{ site.Title }}{{ end }}
 {{ define "main" }}
-<main>
-<h1>{{ site.Title }}</h1>
-<p>A community registry of fake job-interview scams that target developers.</p>
-<p>This site is in development.</p>
-</main>
+<h1 class="home-title">Check a name from your interview invite</h1>
+<p class="lead">Got a meeting link or a coding test from a recruiter you do not know? Look up the company, the app or the domain before you install or run anything.</p>
+{{- /* Search markup only; the search behaviour is milestone 4. The input sits on a card, because input_border is below 3:1 on the page ground (data/tokens.toml). */}}
+<form class="card search" role="search" method="get" action="{{ "/" | relURL }}">
+<label for="q">Company, app, domain or recruiter</label>
+<div class="search-row">
+<div class="search-field"><span class="search-icon">{{ partial "icon.html" "search" }}</span><input id="q" type="search" name="q" autocomplete="off" spellcheck="false"></div>
+<button class="button-primary" type="submit">Check</button>
+</div>
+</form>
+<section class="card" aria-labelledby="before-your-call">
+<h2 id="before-your-call">Before your call</h2>
+{{ partial "checklist.html" (dict "details" false) }}
+<p class="more"><a href="{{ "/before-your-call/" | relURL }}">The full checklist</a></p>
+</section>
 {{ end }}

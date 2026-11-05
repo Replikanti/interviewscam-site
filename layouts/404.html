@@ -1,7 +1,11 @@
 {{ define "title" }}Page not found · {{ site.Title }}{{ end }}
 {{ define "main" }}
-<main>
+<div class="card">
 <h1>Page not found</h1>
-<p><a href="{{ "/" | relURL }}">Back to the home page</a></p>
-</main>
+<p>There is no page at this address.</p>
+<ul class="link-list">
+<li><a href="{{ "/" | relURL }}">Go to the home page</a></li>
+<li><a href="{{ "/report-a-scam/" | relURL }}">Report a scam</a></li>
+</ul>
+</div>
 {{ end }}

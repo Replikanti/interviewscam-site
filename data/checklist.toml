@@ -1,0 +1,61 @@
+# The "before your call" checklist (SPEC section 6), the single source for
+# Home (titles only) and Before your call (titles and details). Plain text,
+# no Markdown and no links: templates render it as text. Milestone 2 PR 5
+# sets the final copy.
+#
+# [[warning]]      warning signs, shown with an orange warning tile
+# [[instead]]      what to do instead, shown with a blue check tile
+# [[already_ran]]  steps in the "if you already ran it" warning panel
+# Each entry: `title` (required) and `detail` (optional, one paragraph).
+
+[[warning]]
+title = "The meeting link arrives minutes before the call"
+detail = "A link sent at the last moment leaves no time to check the app or the company. That is the point of sending it late."
+
+[[warning]]
+title = "The call needs a meeting app you have never heard of"
+detail = "The invite points to a new platform that asks you to download its own app instead of joining in the browser."
+
+[[warning]]
+title = "You are asked to run a repo or a command"
+detail = "A coding test you must clone and run, or a command that should fix your camera or microphone, can install an info-stealer."
+
+[[warning]]
+title = "There are installers only for Windows and macOS"
+detail = "The Linux download is missing or inactive, or it serves the Windows build."
+
+[[instead]]
+title = "Ask to move the call to a tool you already use"
+detail = "A real recruiter can switch to a meeting tool that runs in your browser."
+
+[[instead]]
+title = "Search the company, the app and the domain first"
+detail = "Look them up here and in a search engine before you install or run anything."
+
+[[instead]]
+title = "Run test code only in a throwaway virtual machine"
+detail = "Never on the computer that holds your passwords, wallets or SSH keys."
+
+[[instead]]
+title = "Take your time"
+detail = "Pressure to install something right now is how these scams work. A real interview can wait ten minutes."
+
+[[already_ran]]
+title = "Disconnect the computer from the network"
+detail = "Leave it off the network until it is checked or reinstalled."
+
+[[already_ran]]
+title = "From another device, change your passwords and end your sessions"
+detail = "Start with email, GitHub, your password manager and Telegram, and sign out of every active session."
+
+[[already_ran]]
+title = "Move funds from any wallet that computer could reach"
+detail = "Send them to a new wallet created on a clean device."
+
+[[already_ran]]
+title = "Revoke SSH keys and API tokens"
+detail = "Create new ones on a clean device."
+
+[[already_ran]]
+title = "Report the invite"
+detail = "Your report helps the next candidate who gets the same invite."

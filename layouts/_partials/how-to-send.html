@@ -1,0 +1,19 @@
+{{- /* How to send a report or a correction request today: the one address
+  as plain text plus the fixed subject line (SPEC section 6, decision 6 on
+  issue #3). No mailto: link anywhere (SPEC section 7, sitecheck site rule
+  (e)). Called with the page's `channel` front matter value: "report" or
+  "correction". This is the one file the report-form milestone replaces, so
+  it describes only the channel that exists and announces no other. */ -}}
+{{- $subjects := dict
+  "report" "Report: <name of the company, app or person>"
+  "correction" "Correction: <page URL>"
+-}}
+{{- $subject := index $subjects . -}}
+{{- if not $subject }}{{ errorf "how-to-send.html: unknown channel %q (report or correction)" . }}{{ end -}}
+<section class="send" aria-labelledby="how-to-send">
+<h2 id="how-to-send">How to send it</h2>
+<dl class="send-list">
+<div><dt>Email address</dt><dd class="address">{{ site.Params.contact }}</dd></div>
+<div><dt>Subject line</dt><dd>{{ $subject }}</dd></div>
+</dl>
+</section>

@@ -1,0 +1,16 @@
+{{- /* Site footer on every page: the operator and the contact address (D1),
+  the address as plain text with no mailto: link (SPEC section 7), and the
+  link to Corrections and removal that every page must carry (D7). */ -}}
+<footer class="site-footer">
+<div class="container">
+<p>Run by {{ site.Params.operator }} · <span class="address">{{ site.Params.contact }}</span></p>
+<nav aria-label="Site">
+<ul class="footer-links">
+<li><a href="{{ "/methodology/" | relURL }}">Methodology</a></li>
+<li><a href="{{ "/corrections/" | relURL }}">Corrections and removal</a></li>
+<li><a href="{{ "/privacy/" | relURL }}">Privacy</a></li>
+</ul>
+</nav>
+<p>No trackers, no cookies, no third-party scripts.</p>
+</div>
+</footer>

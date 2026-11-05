@@ -1,0 +1,35 @@
+{{- /* The "before your call" checklist from data/checklist.toml, its single
+  source. Called with a dict:
+    details  false on Home (titles only, under the card's h2),
+             true on Before your call (titles with details, plus the
+             "if you already ran it" warning panel).
+  Warning tiles are the only orange on the page besides the CTA and the
+  warning panel (SPEC section 7). */ -}}
+{{- $data := hugo.Data.checklist -}}
+{{- $details := .details -}}
+{{- $h := cond $details "h2" "h3" -}}
+<div class="columns">
+{{- range slice
+  (dict "id" "warning-signs" "title" "Warning signs" "items" $data.warning "tile" "tile-warn" "icon" "warning")
+  (dict "id" "do-this-instead" "title" "Do this instead" "items" $data.instead "tile" "tile-ok" "icon" "check") }}
+<section class="column" aria-labelledby="{{ .id }}">
+{{ printf "<%s id=%q>%s</%s>" $h .id .title $h | safeHTML }}
+<ul class="checklist">
+{{- $item := . }}
+{{- range .items }}
+<li><span class="tile {{ $item.tile }}">{{ partial "icon.html" $item.icon }}</span><div>{{ if $details }}<p class="item-title">{{ .title }}</p>{{ with .detail }}<p class="item-detail">{{ . }}</p>{{ end }}{{ else }}{{ .title }}{{ end }}</div></li>
+{{- end }}
+</ul>
+</section>
+{{- end }}
+</div>
+{{- if $details }}
+<section class="panel-warn" aria-labelledby="already-ran">
+<h2 id="already-ran"><span class="panel-icon">{{ partial "icon.html" "warning" }}</span>If you already ran it</h2>
+<ol class="steps">
+{{- range $data.already_ran }}
+<li><p class="item-title">{{ .title }}</p>{{ with .detail }}<p class="item-detail">{{ . }}</p>{{ end }}</li>
+{{- end }}
+</ol>
+</section>
+{{- end }}

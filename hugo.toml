@@ -60,6 +60,12 @@ disable = true
 # The default <meta name="description"> for pages without their own
 # `description` front matter (SPEC section 8: the Lighthouse SEO category).
 description = "A community registry of fake job-interview scams that target developers."
+# The operator (D1) and the one contact address (SPEC section 9). The footer,
+# About and the how-to-send partial read them from here, and every template
+# renders them as plain text: no mailto: link anywhere (SPEC section 7,
+# sitecheck site rule (e)).
+operator = "Martin Holý (Replikanti)"
+contact = "report@interviewscam.com"
 # The single source of the Content Security Policy every page carries as a
 # meta tag; GitHub Pages cannot set response headers (D9, SPEC section 8).
 csp = "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'"
