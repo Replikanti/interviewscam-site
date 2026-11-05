@@ -61,9 +61,9 @@ disable = true
 # `description` front matter (SPEC section 8: the Lighthouse SEO category).
 description = "A community registry of fake job-interview scams that target developers."
 # The operator (D1) and the one contact address (SPEC section 9). The footer,
-# About and the how-to-send partial read them from here, and every template
-# renders them as plain text: no mailto: link anywhere (SPEC section 7,
-# sitecheck site rule (e)).
+# the how-to-send partial and the About and Privacy copy (through the `param`
+# shortcode) read them from here, always as plain text: no mailto: link
+# anywhere (SPEC section 7, sitecheck site rule (e)).
 operator = "Martin Holý (Replikanti)"
 contact = "report@interviewscam.com"
 # The single source of the Content Security Policy every page carries as a

@@ -1,7 +1,7 @@
 # The "before your call" checklist (SPEC section 6), the single source for
 # Home (titles only) and Before your call (titles and details). Plain text,
-# no Markdown and no links: templates render it as text. Milestone 2 PR 5
-# sets the final copy.
+# no Markdown and no links: templates render it as text. The facts come
+# from SPEC section 1; no entry names a company.
 #
 # [[warning]]      warning signs, shown with an orange warning tile
 # [[instead]]      what to do instead, shown with a blue check tile
@@ -10,43 +10,43 @@
 
 [[warning]]
 title = "The meeting link arrives minutes before the call"
-detail = "A link sent at the last moment leaves no time to check the app or the company. That is the point of sending it late."
+detail = "A link sent at the last moment leaves you no time to check the app or the company."
 
 [[warning]]
 title = "The call needs a meeting app you have never heard of"
-detail = "The invite points to a new platform that asks you to download its own app instead of joining in the browser."
+detail = "The invite points to a new platform that wants you to download its own app. These apps change their name often, so a new name with no reports is no sign of safety."
 
 [[warning]]
 title = "You are asked to run a repo or a command"
-detail = "A coding test you must clone and run, or a command that should fix your camera or microphone, can install an info-stealer."
+detail = "A take-home coding test you must clone and run, or a command to paste into a terminal, can install an info-stealer. Some of these tests are written in JavaScript or Python, so Linux is at risk too."
 
 [[warning]]
 title = "There are installers only for Windows and macOS"
-detail = "The Linux download is missing or inactive, or it serves the Windows build."
+detail = "The Linux download is missing or does not work, or it serves the Windows build."
 
 [[instead]]
 title = "Ask to move the call to a tool you already use"
-detail = "A real recruiter can switch to a meeting tool that runs in your browser."
+detail = "A real recruiter can switch to a meeting tool you already have, or to one that runs in the browser."
 
 [[instead]]
 title = "Search the company, the app and the domain first"
-detail = "Look them up here and in a search engine before you install or run anything."
+detail = "Look them up here and in a search engine before you install or run anything. A company with no footprint at all is a warning sign too."
 
 [[instead]]
 title = "Run test code only in a throwaway virtual machine"
-detail = "Never on the computer that holds your passwords, wallets or SSH keys."
+detail = "Never on the computer that holds your passwords, wallets or SSH keys. Use a new virtual machine with no shared folders, no shared clipboard, no forwarded SSH agent and no accounts you care about signed in. Delete it afterwards."
 
 [[instead]]
 title = "Take your time"
-detail = "Pressure to install something right now is how these scams work. A real interview can wait ten minutes."
+detail = "Pressure to install something right now is part of how these scams work. A real interviewer can wait while you check."
 
 [[already_ran]]
 title = "Disconnect the computer from the network"
-detail = "Leave it off the network until it is checked or reinstalled."
+detail = "Keep it offline and do not sign in to anything on it."
 
 [[already_ran]]
 title = "From another device, change your passwords and end your sessions"
-detail = "Start with email, GitHub, your password manager and Telegram, and sign out of every active session."
+detail = "Start with email, GitHub, your password manager and Telegram. Sign out of every active session, because a stolen session works without the password."
 
 [[already_ran]]
 title = "Move funds from any wallet that computer could reach"
@@ -57,5 +57,13 @@ title = "Revoke SSH keys and API tokens"
 detail = "Create new ones on a clean device."
 
 [[already_ran]]
+title = "Write down what you ran"
+detail = "With the computer still offline, note the names and SHA-256 hashes of the files you ran or installed. Keep the messages, the meeting link and the repository or package name. The Report a scam page shows how to get a hash."
+
+[[already_ran]]
 title = "Report the invite"
-detail = "Your report helps the next candidate who gets the same invite."
+detail = "Send what you noted from another device. Your report helps the next candidate who gets the same invite."
+
+[[already_ran]]
+title = "Reinstall the operating system"
+detail = "Wait only until the file names and hashes are written down on paper or on another device. You do not need to send the report first. Do not use the computer for anything else until it is reinstalled."

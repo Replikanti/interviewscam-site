@@ -13,6 +13,9 @@
 <section class="card" aria-labelledby="before-your-call">
 <h2 id="before-your-call">Before your call</h2>
 {{ partial "checklist.html" (dict "details" false) }}
-<p class="more"><a href="{{ "/before-your-call/" | relURL }}">The full checklist</a></p>
+<ul class="link-list">
+<li><a href="{{ "/before-your-call/" | relURL }}">The full checklist</a></li>
+<li><a href="{{ "/before-your-call/#already-ran" | relURL }}">Already ran it? What to do now</a></li>
+</ul>
 </section>
 {{ end }}
