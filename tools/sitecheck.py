@@ -26,6 +26,15 @@ internal error, so a crash never reads as a finding or as a pass.
       link to the page itself, no mailto: link, only token colours, no SMIL
       animation, and .visually-hidden and !important only where ADR-0003
       part 6 allows them (counted across all built CSS).
+  render --records DIR [--schemas DIR] PUBLIC
+      The built record pages in PUBLIC follow the markup contract of
+      ADR-0004 (milestone 3): one page per record and none without one, the
+      fixed titles, the D6 chip, state sentence and What was checked list,
+      the D10 label after every visible persona name, the exact D7 label, the
+      campaign line and attribution with their source links, every artifact
+      in an artifact element and only source and lookup links out, JSON-LD
+      of the allowed types only and no ClaimReview, no hidden persona name in
+      any file, and the index lists on /reports/, /campaigns/ and Home.
   tokens [--root DIR]
       data/tokens.toml is well formed and every listed colour pair meets its
       WCAG 2.2 contrast minimum with the ratio it states. No colour literal
@@ -2063,6 +2072,1318 @@ def cmd_site(args):
 
 
 # ---------------------------------------------------------------------------
+# Render rules on the built site (ADR-0004; milestone 3, PR 3). They pin the
+# markup contract the record templates implement: the class hooks below, the
+# fixed D6, D7 and D10 wording, the titles, the links a record page may carry
+# and the structured data. The wording lives here on purpose a second time,
+# independently of data/labels.toml, so a copy change shows up in a
+# safety-net diff (ADR-0004 Consequences).
+
+STATE_CHIP = {"name_abused": "Name abused", "front": "Front"}
+STATE_SENTENCE = {
+    "name_abused": "This name belongs to someone else. The campaign used it "
+                   "without their involvement.",
+    "front": "No real company, person or product was found behind this name.",
+}
+PERSONA_LABEL = "(name used by the campaign, possibly a stolen identity)"
+TITLE_SUFFIX = " · interviewscam.com"
+REPORT_TITLE = "{name}, a name used in fake job interviews"
+HIDDEN_TITLE = "A person's name used in fake job interviews, hidden on request"
+CAMPAIGN_TITLE = "{name}, a campaign family that uses fake job interviews"
+SECTION_TITLES = {"reports": "Names used in fake job interviews",
+                  "campaigns": "Campaign families"}
+LABEL_REPORTED = "Reported {n} times, evidence reviewed on {date}"
+LABEL_REPORTED_ONCE = "Reported once, evidence reviewed on {date}"
+LABEL_ONE_SOURCE = "Named in 1 cited source, reviewed on {date}"
+LABEL_SOURCES = "Named in {k} cited sources, reviewed on {date}"
+CAMPAIGN_LINE = "Campaign family that used this name: {campaign}. Source: {source}"
+CAMPAIGN_LINE_ARTIFACT = ", which lists {artifact}"
+UNATTRIBUTED = "Campaign family: unattributed"
+SOURCE_REF = "{title} ({publisher}, {date})"
+ATTRIBUTION_LINE = "{statement}, as stated by {source}"
+NO_ATTRIBUTION = "No attribution is stated by the cited sources."
+# The two lookup URL forms of a SHA-256 (ADR-0004 part 9).
+LOOKUPS = {
+    "malwarebazaar": "https://bazaar.abuse.ch/sample/{}/",
+    "virustotal": "https://www.virustotal.com/gui/file/{}",
+}
+HOME_LATEST = 5  # ADR-0004 Numbers: the Home list of 5 reports
+# Structured data (ADR-0004 part 8): JSON-LD only, from these types only.
+JSONLD_TYPES = {"WebPage", "WebSite", "Organization", "BreadcrumbList", "ListItem"}
+JSONLD_ORGANIZATION = "interviewscam.com"
+# The only context: an inline context could alias @type to another key. The
+# schema.org context itself maps "type" to "@type", so both keys are read.
+JSONLD_CONTEXT = "https://schema.org"
+JSONLD_TYPE_KEYS = ("@type", "type")
+# The keys each type may carry (ADR-0004 part 8 and the JSON-LD contract of
+# the record pages): an allowlist, so an IRI key (rdf:type), a prefixed key
+# (schema:additionalType), additionalType, about, mentions or a keyword such
+# as @reverse cannot add an object about a record's subject. Every object is
+# typed; the block root may instead be a bare @graph container.
+JSONLD_KEYS = {
+    "WebPage": {"url", "name", "description", "datePublished", "dateModified",
+                "lastReviewed", "isPartOf", "publisher"},
+    "WebSite": {"name", "url"},
+    "Organization": {"name", "url"},
+    "BreadcrumbList": {"itemListElement"},
+    "ListItem": {"position", "name", "item"},
+}
+JSONLD_OBJECT_KEYS = {"@context", "@id", *JSONLD_TYPE_KEYS}
+JSONLD_GRAPH_KEYS = {"@context", "@graph"}
+MICRODATA_ATTRS = ("itemscope", "itemtype", "itemprop", "vocab", "typeof")
+# RDFa: a second structured-data syntax, banned outright (ADR-0004 part 8).
+# The base layout uses none of them (no Open Graph <meta property>), so no
+# exception exists. A rel token with a colon is an RDFa CURIE.
+RDFA_ATTRS = ("property", "resource", "prefix", "about", "datatype", "inlist")
+VOID_ELEMENTS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+                 "meta", "param", "source", "track", "wbr"}
+NO_TEXT_ELEMENTS = {"script", "style", "template"}
+HIDING_TAGS = {"template", "noscript", "select", "datalist"}
+# Elements whose end tag HTML lets a page omit. The render tree infers no
+# end tags, so an omitted one is a finding of its own (close every <li>).
+OPTIONAL_END = ("li", "p", "dt", "dd", "tr", "td", "th", "option")
+# Text a reader may never see: content in these never meets a requirement
+# (a chip, a state sentence, a persona label), and a persona name in it is a
+# finding (rules 3 to 6).
+HIDDEN_CONTENT = ("hidden, aria-hidden, visually-hidden, <template>, <noscript>, "
+                  "<select>, an SVG <title>, a closed <dialog> or <details>")
+# Rule 7 on every page: URL schemes that carry or open a file in place.
+FILE_SCHEMES = ("data", "blob", "javascript", "vbscript", "file")
+# Rule 7 on every page: a link to a lookup service is one of the two lookup
+# page forms, never a sample download or an API path.
+LOOKUP_SERVICE_HOSTS = ("abuse.ch", "virustotal.com")
+LOOKUP_PAGE = re.compile(r"https://bazaar\.abuse\.ch/sample/[0-9a-f]{64}/"
+                         r"|https://www\.virustotal\.com/gui/file/[0-9a-f]{64}")
+# Rule 7 on every page: an internal link (relative or to the site's own
+# host) points to a page path, which ends in "/", or to one of these
+# non-page files. The production build and the fixtures link none today
+# (404.html is served, never linked); PR 5 adds /feed.json.
+INTERNAL_FILES = frozenset()
+# The one written form of an absolute link to the site's own host.
+OWN_URL = re.compile(r"https://interviewscam\.com(?:[/?#]|$)")
+# Rule 3: a link to a report page, and the list-item contract around it.
+REPORT_LINK = re.compile(r"/reports/([^/]+)(?:/|$)")
+RECORD_DATE = "record-date"
+# Rule 9 and rule 4: the alphanumeric tokens of a name, matched with at
+# least one other character between them (Morgan+Placeholder,
+# morgan-placeholder, morgan_placeholder.png). Joined with no separator
+# (MorganPlaceholder) only when every token has at least JOIN_MIN_LETTERS
+# letters, so short tokens such as "A. Bout", "Li Ke" or "T. Rust" never
+# match ordinary words (about, like, trust).
+JOIN_MIN_LETTERS = 4
+NAME_TOKEN = re.compile(r"[^\W_]+")
+
+
+class Element:
+    """One element of a built page: tag, attributes, children (Element or str)."""
+
+    def __init__(self, tag, attrs, parent):
+        self.tag = tag
+        self.attrs = attrs
+        self.parent = parent
+        self.children = []
+
+    @property
+    def classes(self):
+        return self.attrs.get("class", "").split()
+
+    def walk(self):
+        yield self
+        for child in self.children:
+            if isinstance(child, Element):
+                yield from child.walk()
+
+    def hides(self):
+        """The element itself hides its content (HIDDEN_CONTENT): any
+        hidden attribute whatever its value, aria-hidden="true", the class
+        visually-hidden, <template>, <noscript>, a <select> or <datalist>
+        (option text is no inline copy), an SVG <title> or <desc> (a
+        tooltip), a <dialog> without open, and every child of a <details>
+        without open except its <summary>."""
+        parent = self.parent
+        return (self.tag in HIDING_TAGS or "hidden" in self.attrs
+                or self.attrs.get("aria-hidden", "").strip().lower() == "true"
+                or VISUALLY_HIDDEN in self.classes
+                or (self.tag == "dialog" and "open" not in self.attrs)
+                or (self.tag in ("title", "desc") and self.inside_tag("svg"))
+                or (parent is not None and parent.tag == "details"
+                    and "open" not in parent.attrs and self.tag != "summary"))
+
+    def concealed(self):
+        """The element or one of its ancestors hides it."""
+        el = self
+        while el is not None:
+            if el.hides():
+                return True
+            el = el.parent
+        return False
+
+    def strings(self, shown=True):
+        """Text pieces; shown=True skips hidden content, shown=False keeps
+        it, <template> content included (never script or style)."""
+        closed = shown and self.tag == "details" and "open" not in self.attrs
+        for child in self.children:
+            if isinstance(child, str):
+                if not closed:  # loose text of a closed <details> is hidden
+                    yield child
+            elif shown and (child.tag in NO_TEXT_ELEMENTS or child.hides()):
+                continue
+            elif child.tag not in ("script", "style"):
+                yield from child.strings(shown)
+
+    def text(self, sep="", shown=True):
+        """The text inside the element, whitespace collapsed, hidden content
+        left out (shown=False keeps it). sep="" joins the text pieces as a
+        browser lays out inline text; sep=" " also separates block
+        neighbours that a tight join would run together."""
+        return squash(sep.join(self.strings(shown)))
+
+    def nearest(self, tag):
+        el = self.parent
+        while el is not None and el.tag != tag:
+            el = el.parent
+        return el
+
+    def inside_tag(self, tag):
+        el = self.parent
+        while el is not None:
+            if el.tag == tag:
+                return True
+            el = el.parent
+        return False
+
+    def inside(self, cls):
+        el = self.parent
+        while el is not None:
+            if cls in el.classes:
+                return True
+            el = el.parent
+        return False
+
+
+class RenderPage(Page):
+    """Page, plus an element tree that keeps each element's text and class
+    list, so the render rules can be scoped to the class hooks."""
+
+    def __init__(self):
+        super().__init__()
+        self.root = Element("#document", {}, None)
+        self._open = [self.root]
+        self.jsonld = []  # raw text of every application/ld+json block
+        self._script = None
+        # Elements of OPTIONAL_END closed without their own end tag: the
+        # tree infers no end tags, so such a page is reported, not read.
+        self.unclosed = []
+
+    def _tree_element(self, tag, attrs):
+        first = {}
+        for name, value in attrs:
+            first.setdefault(name, value if value is not None else "")
+        el = Element(tag, first, self._open[-1])
+        self._open[-1].children.append(el)
+        return el
+
+    def handle_starttag(self, tag, attrs):
+        super().handle_starttag(tag, attrs)
+        el = self._tree_element(tag, attrs)
+        if tag == "script":
+            ld = el.attrs.get("type", "").strip().lower() == JSON_LD
+            self._script = [] if ld else None
+        if tag not in VOID_ELEMENTS:
+            self._open.append(el)
+
+    def handle_startendtag(self, tag, attrs):
+        super().handle_startendtag(tag, attrs)
+        self._tree_element(tag, attrs)
+
+    def handle_endtag(self, tag):
+        super().handle_endtag(tag)
+        if tag == "script" and self._script is not None:
+            self.jsonld.append("".join(self._script))
+            self._script = None
+        # An end tag closes the nearest open element of its name; a stray
+        # one is ignored, as a browser ignores it.
+        for i in range(len(self._open) - 1, 0, -1):
+            if self._open[i].tag == tag:
+                self.unclosed += [el.tag for el in self._open[i + 1:]
+                                  if el.tag in OPTIONAL_END]
+                del self._open[i:]
+                break
+
+    def close(self):
+        super().close()
+        self.unclosed += [el.tag for el in self._open[1:] if el.tag in OPTIONAL_END]
+        del self._open[1:]
+
+    def handle_data(self, data):
+        super().handle_data(data)
+        if self._script is not None:
+            self._script.append(data)
+        self._open[-1].children.append(data)
+
+
+def squash(text):
+    return " ".join(text.split())
+
+
+def fold_words(text):
+    """NFKC, invisibles dropped, case-folded, whitespace collapsed (R5)."""
+    return " ".join(unicodedata.normalize("NFKC", text).translate(INVISIBLE)
+                    .casefold().split())
+
+
+def parse_render_page(text):
+    page = RenderPage()
+    page.feed(text)
+    page.close()
+    return page
+
+
+def jsonld_values(page):
+    """(index, parsed value or None, error) of every JSON-LD block."""
+    blocks = []
+    for i, raw in enumerate(page.jsonld):
+        try:
+            blocks.append((i, json.loads(raw), None))
+        except json.JSONDecodeError as exc:
+            blocks.append((i, None, str(exc)))
+    return blocks
+
+
+def by_class(page, cls):
+    return [n for n in page.root.walk() if cls in n.classes]
+
+
+def by_tag(page, tag):
+    return [n for n in page.root.walk() if n.tag == tag]
+
+
+def links_in(el, shown=False):
+    """(href, link text) of every <a> or <area> link inside el, the SVG
+    xlink:href form included; shown=True leaves out links in hidden
+    content, which never meet a requirement."""
+    return [(a.attrs[name], a.text()) for a in el.walk() if a.tag in ("a", "area")
+            and not (shown and a.concealed())
+            for name in ("href", "xlink:href") if name in a.attrs]
+
+
+def browser_url(url):
+    """url as the WHATWG parser reads it: tabs and newlines dropped, C0
+    controls and spaces stripped at both ends."""
+    return re.sub(r"[\t\n\r]", "", url).strip(C0_AND_SPACE)
+
+
+def site_path(href, page_path):
+    """The percent-decoded path on the site's own host that an href points
+    to, read as a browser reads it (backslashes as slashes; any case,
+    trailing dot, http or https, port or userinfo), the bare origin as "/";
+    None for another host or scheme. Whether the href is written in the
+    canonical form is internal_link_problems' finding."""
+    url = browser_url(href).replace("\\", "/")
+    try:
+        parts = urllib.parse.urlsplit(urllib.parse.urljoin(SITE_ORIGIN + page_path, url))
+        host = (parts.hostname or "").rstrip(".")
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in ("http", "https") or host != OWN_HOST:
+        return None
+    return urllib.parse.unquote(parts.path) or "/"
+
+
+def nav_targets(page):
+    """(element, URL) of every navigation a click or a submit makes: <a> and
+    <area> href (and SVG xlink:href), <form action>, <button formaction>
+    and <input formaction>."""
+    targets = []
+    for el in page.root.walk():
+        if el.tag in ("a", "area"):
+            names = ("href", "xlink:href")
+        elif el.tag == "form":
+            names = ("action",)
+        elif el.tag in ("button", "input"):
+            names = ("formaction",)
+        else:
+            continue
+        targets += [(el, el.attrs[name]) for name in names if name in el.attrs]
+    return targets
+
+
+def text_param(record, key):
+    value = record.params.get(key)
+    return value if isinstance(value, str) else None
+
+
+def is_persona(record):
+    return record.section == "reports" and record.params.get("name_type") == "persona"
+
+
+def is_hidden(record):
+    return is_persona(record) and record.params.get("hide_name") is True
+
+
+def record_names(record):
+    """(field, name) of params.name and every alias that is a string."""
+    names = [("params.name", record.params.get("name"))]
+    aliases = record.params.get("aliases")
+    names += [(f"params.aliases[{i}]", a)
+              for i, a in enumerate(aliases if isinstance(aliases, list) else [])]
+    return [(field, name) for field, name in names if isinstance(name, str) and name.strip()]
+
+
+def display_name(record):
+    """The name as it renders: with the D10 label for a visible persona."""
+    name = text_param(record, "name") or ""
+    return f"{name} {PERSONA_LABEL}" if is_persona(record) else name
+
+
+def record_title(record):
+    """The fixed title of a record page, without the site suffix (rule 2)."""
+    if record.section == "campaigns":
+        return CAMPAIGN_TITLE.format(name=text_param(record, "name") or "")
+    if is_hidden(record):
+        return HIDDEN_TITLE
+    return REPORT_TITLE.format(name=display_name(record))
+
+
+def record_label(record):
+    """The D7 label of a report (rule 5), or None when none can be derived."""
+    count = record.params.get("independent_reports")
+    date = text_param(record, "last_reviewed")
+    if type(count) is not int or date is None:
+        return None
+    if count >= 2:
+        return LABEL_REPORTED.format(n=count, date=date)
+    if count == 1:
+        return LABEL_REPORTED_ONCE.format(date=date)
+    k = len(sources_of(record))
+    if k == 0:
+        return None  # R9 is the records check's finding
+    return LABEL_ONE_SOURCE.format(date=date) if k == 1 else \
+        LABEL_SOURCES.format(k=k, date=date)
+
+
+def source_ref(source):
+    return SOURCE_REF.format(title=source.get("title"), publisher=source.get("publisher"),
+                             date=source.get("date"))
+
+
+def source_by_id(record, source_id):
+    for source in sources_of(record):
+        if source.get("id") == source_id:
+            return source
+    return None
+
+
+def lookup_urls(record):
+    """(declared lookup URLs per listed_on, every lookup URL of a declared
+    hash) of a report (rule 7)."""
+    listed, possible = set(), set()
+    artifacts = record.params.get("artifacts")
+    hashes = artifacts.get("sha256") if isinstance(artifacts, dict) else None
+    for entry in hashes if isinstance(hashes, list) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("value"), str):
+            continue
+        value = entry["value"]
+        possible |= {form.format(value) for form in LOOKUPS.values()}
+        on = entry.get("listed_on")
+        for service in on if isinstance(on, list) else []:
+            if service in LOOKUPS:
+                listed.add(LOOKUPS[service].format(value))
+    return listed, possible
+
+
+def name_pattern(name):
+    """A name as whole words (NFKC, case-folded): its alphanumeric tokens in
+    order, with a run of other characters between them (or none, when
+    every token has JOIN_MIN_LETTERS letters), and no letter or digit right
+    before or after (rules 4 and 9). An initial (a single-letter token)
+    matches only with a period right after it ("A. Page", "a.page"), so it
+    never meets ordinary copy such as "a page"."""
+    folded = fold_words(name)
+    tokens = NAME_TOKEN.findall(folded)
+    if not tokens:
+        return re.compile(rf"(?<![^\W_]){re.escape(folded)}(?![^\W_])")
+    joinable = all(sum(c.isalpha() for c in tok) >= JOIN_MIN_LETTERS for tok in tokens)
+
+    def initial(tok):
+        return len(tok) == 1 and tok.isalpha()
+    parts = []
+    for i, tok in enumerate(tokens):
+        if i:
+            parts.append(r"[\W_]*" if joinable or initial(tokens[i - 1]) else r"[\W_]+")
+        parts.append(re.escape(tok) + (r"\." if initial(tok) else ""))
+    return re.compile(rf"(?<![^\W_]){''.join(parts)}(?![^\W_])")
+
+
+def title_problems(page, want):
+    """Rule 2: one <title> with the fixed title plus suffix, one <h1> with
+    the fixed title."""
+    problems = []
+    # An SVG <title> is a tooltip, not the document title.
+    titles = [n for n in by_tag(page, "title") if not n.inside_tag("svg")]
+    if len(titles) != 1:
+        problems.append(f"rule 2: {len(titles)} <title> elements, exactly one is needed")
+    for el in titles:
+        if el.text() != want + TITLE_SUFFIX:
+            problems.append(f"rule 2: <title> reads {show(el.text())}, the fixed title "
+                            f"is {show(want + TITLE_SUFFIX)} (SPEC section 5)")
+    h1s = by_tag(page, "h1")
+    if len(h1s) != 1:
+        problems.append(f"rule 2: {len(h1s)} <h1> elements, exactly one is needed")
+    for el in h1s:
+        if el.text() != want:
+            problems.append(f"rule 2: <h1> reads {show(el.text())}, the fixed title "
+                            f"is {show(want)} (SPEC section 5)")
+    return problems
+
+
+def shown_one(els, cls, rule):
+    """(the one visible element or None, problems) for a hook that must
+    occur exactly once; a hidden one never counts (HIDDEN_CONTENT)."""
+    shown = [n for n in els if not n.concealed()]
+    hidden = len(els) - len(shown)
+    note = f" (and {hidden} in hidden content: {HIDDEN_CONTENT}, which never " \
+        "counts)" if hidden else ""
+    if len(shown) != 1:
+        return (shown[0] if shown else None,
+                [f"{rule}: {len(shown)} elements of class {cls}{note}, exactly one "
+                 "visible one is needed"])
+    if hidden:
+        return shown[0], [f"{rule}: {hidden} element(s) of class {cls} in hidden "
+                          f"content ({HIDDEN_CONTENT}); a hook is never hidden"]
+    return shown[0], []
+
+
+def one_of_class(page, cls, rule):
+    """(el or None, problems) for a hook that must occur exactly once."""
+    return shown_one(by_class(page, cls), cls, rule)
+
+
+def report_links(page, page_path):
+    """(element, slug) of every link to a report page (rule 3), a link to
+    the page itself (the skip link, an in-page anchor) aside."""
+    links, seen = [], set()
+    for el, url in nav_targets(page):
+        path = site_path(url, page_path)
+        match = REPORT_LINK.match(path) if path and path != page_path else None
+        if match and id(el) not in seen:
+            seen.add(id(el))
+            links.append((el, match.group(1)))
+    return links
+
+
+def report_items(page, page_path, reports):
+    """Rule 3 (D6) on every page: each link to a report page is a list
+    item with the name, exactly one state chip reading the report's state
+    and the date (the list-item contract of ADR-0004). Returns (the list
+    items that hold a report link, problems)."""
+    problems, items = [], {}
+    for a, slug in report_links(page, page_path):
+        where = f"/reports/{slug}/"
+        record = reports.get(slug)
+        li = a.nearest("li")
+        if record is None:
+            problems.append(f"rule 3: a link points to {where}, which is no report record")
+        elif li is None:
+            problems.append(f"rule 3: the link to {where} sits in no list item; every "
+                            "link to a report is a list item with the name, one state "
+                            "chip and the date (D6)")
+        else:
+            items.setdefault(id(li), (li, []))[1].append((slug, record))
+    for li, entries in items.values():
+        slug, record = entries[0]
+        where = f"/reports/{slug}/"
+        if len(entries) > 1:
+            problems.append(f"rule 3: one list item holds {len(entries)} report links "
+                            f"({', '.join(f'/reports/{s}/' for s, _ in entries)}); each "
+                            "report is its own item with its own chip (D6)")
+            continue
+        state = record.params.get("state")
+        chips = [n for n in li.walk() if "state-chip" in n.classes]
+        chip, found = shown_one(chips, "state-chip",
+                                f"rule 3: the list item linking {where}")
+        problems += [f"{p} (D6)" for p in found]
+        if chip is not None and not found and state in STATE_CHIP \
+                and chip.text() != STATE_CHIP[state]:
+            problems.append(f"rule 3: the state chip next to {where} reads "
+                            f"{show(chip.text())}, the state {state} reads "
+                            f"{show(STATE_CHIP[state])} (D6)")
+        dates = [n for n in li.walk() if RECORD_DATE in n.classes]
+        date_el, found = shown_one(dates, RECORD_DATE,
+                                   f"rule 3: the list item linking {where}")
+        problems += found
+        want = record.data.get("date")
+        if date_el is not None and not found and isinstance(want, str) \
+                and date_el.text() != want:
+            problems.append(f"rule 3: the list item linking {where} shows the date "
+                            f"{show(date_el.text())}, the record's date is {want}")
+    return [li for li, _ in items.values()], problems
+
+
+def own_chips(page, items):
+    """The state chips that sit in no list item holding a report link."""
+    inside = {id(n) for li in items for n in li.walk()}
+    return [n for n in by_class(page, "state-chip") if id(n) not in inside]
+
+
+def state_problems(page, record, chips):
+    """Rule 3 (D6) on a report page: exactly one chip of its own (chips is
+    the page's chips outside report list items) with the state's text, the
+    state sentence, and the What was checked list equal to state_basis, in
+    order."""
+    problems = []
+    state = record.params.get("state")
+    if state not in STATE_CHIP:
+        return problems  # the schema's finding
+    chip, found = shown_one(chips, "state-chip", "rule 3")
+    problems += found
+    if chip is not None and chip.text() != STATE_CHIP[state]:
+        problems.append(f"rule 3: the state chip reads {show(chip.text())}, the state "
+                        f"{state} reads {show(STATE_CHIP[state])} (D6)")
+    sentence, found = one_of_class(page, "state-sentence", "rule 3")
+    problems += found
+    if sentence is not None and sentence.text() != STATE_SENTENCE[state]:
+        problems.append(f"rule 3: the state sentence reads {show(sentence.text())}, the "
+                        f"state {state} reads {show(STATE_SENTENCE[state])} (D6)")
+    basis = record.params.get("state_basis")
+    want = [squash(b) for b in basis if isinstance(b, str)] if isinstance(basis, list) else []
+    el, found = one_of_class(page, "state-basis", "rule 3")
+    problems += found
+    if el is not None:
+        got = [li.text() for li in el.walk() if li.tag == "li" and not li.concealed()]
+        if got != want:
+            problems.append(f"rule 3: What was checked lists {got!r}, params.state_basis "
+                            f"is {want!r} in this order (D6)")
+    return problems
+
+
+def chip_problems(page, chips, report_page):
+    """Rule 3 on every page: a chip carries only its own class (never a
+    warning or call-to-action colour) and one of the two state texts, and
+    outside report list items a chip appears only on a report page (chips
+    is the page's chips outside report list items)."""
+    problems = []
+    for chip in by_class(page, "state-chip"):
+        if chip.classes != ["state-chip"]:
+            problems.append(f"rule 3: a state chip has the classes {chip.classes!r}; it "
+                            "carries the class state-chip alone, so no warning colour "
+                            "reaches it (D6, pick constraint 1)")
+        if chip.text() not in STATE_CHIP.values():
+            problems.append(f"rule 3: a state chip reads {show(chip.text())}, not one of "
+                            f"{sorted(STATE_CHIP.values())!r} (D6)")
+    if not report_page and chips:
+        problems.append(f"rule 3: {len(chips)} state chip(s) belong to no report link; "
+                        "a chip sits in the list item of a report link or once on its "
+                        "report page (D6)")
+    return problems
+
+
+def page_texts(page):
+    """Every text of a page a reader or a search engine sees: the joined
+    visible text (tight and spaced), each JSON-LD string and every attribute
+    value, as written and percent-decoded (an alt, an aria-description, a
+    search link)."""
+    texts = [page.root.text(), page.root.text(" ")]
+    for _, value, _ in jsonld_values(page):
+        if value is not None:
+            texts += list(json_strings(value))
+    for el in page.root.walk():
+        for value in el.attrs.values():
+            texts += [value, urllib.parse.unquote(value)]
+    return texts
+
+
+def hidden_texts(page):
+    """The text of every outermost element that hides its content
+    (HIDDEN_CONTENT), <template> content included."""
+    texts = [el.text(sep, shown=False) for el in page.root.walk()
+             if el.hides() and not (el.parent is not None and el.parent.concealed())
+             for sep in ("", " ")]
+    # The loose text of a closed <details> (outside its <summary>) is hidden
+    # too; its element children are collected above, since they hide.
+    texts += [squash(sep.join(c for c in el.children if isinstance(c, str)))
+              for el in page.root.walk()
+              if el.tag == "details" and "open" not in el.attrs and not el.concealed()
+              for sep in ("", " ")]
+    return texts
+
+
+def persona_label_problems(page, personas):
+    """Rule 4 (D10): every whole-word occurrence of a visible persona's name
+    or alias is followed by the persona label, and none sits in hidden
+    content, where a label does not count."""
+    problems = []
+    label = " " + fold_words(PERSONA_LABEL)
+    for el in by_class(page, "persona-label"):
+        if el.text() != PERSONA_LABEL:
+            problems.append(f"rule 4: a persona-label element reads {show(el.text())}, "
+                            f"the label is {show(PERSONA_LABEL)} (D10)")
+    texts = [fold_words(t) for t in page_texts(page)]
+    hidden = [fold_words(t) for t in hidden_texts(page)]
+    for persona in personas:
+        names = record_names(persona)
+        for field, name in names:
+            pattern = name_pattern(name)
+            if any(pattern.search(text) for text in hidden):
+                problems.append(f"rule 4: the {field} of the persona record "
+                                f"{persona.rel} appears in hidden content "
+                                f"({HIDDEN_CONTENT}), where no label counts (D10)")
+            for text in texts:
+                # A shorter name inside a labelled longer one (an alias that
+                # is part of the name) is covered by that label.
+                covered = [(m.start(), m.end()) for _, other in names
+                           for m in name_pattern(other).finditer(text)
+                           if text.startswith(label, m.end())]
+                bare = [m for m in pattern.finditer(text)
+                        if not text.startswith(label, m.end())
+                        and not any(s <= m.start() and m.end() <= e and (s, e) != m.span()
+                                    for s, e in covered)]
+                if bare:
+                    problems.append(f"rule 4: the {field} of the persona record "
+                                    f"{persona.rel} renders without the label "
+                                    f"{show(PERSONA_LABEL)} right after it (D10)")
+                    break
+    return problems
+
+
+def verdict_page_problems(page):
+    """Rule 5: no R14 verdict phrase on a record or section page."""
+    found = {m.group() for text in page_texts(page) + hidden_texts(page)
+             for m in VERDICT_PHRASE.finditer(fold_words(text))}
+    return [f"rule 5: the page contains the verdict phrase {phrase!r}; labels state "
+            "facts, never a verdict (D7, R14)" for phrase in sorted(found)]
+
+
+def label_problems(page, record):
+    """Rule 5 (D7): the exact label."""
+    want = record_label(record)
+    if want is None:
+        return []
+    el, problems = one_of_class(page, "record-label", "rule 5")
+    if el is not None and el.text() != want:
+        problems.append(f"rule 5: the label reads {show(el.text())}, the fixed label "
+                        f"is {show(want)} (D7)")
+    return problems
+
+
+def source_link_problems(el, source, what):
+    """The element links the source's URL with the source's title."""
+    url, title = source.get("url"), source.get("title")
+    if not any(href == url and text == squash(str(title))
+               for href, text in links_in(el, shown=True)):
+        return [f"rule 6: {what} does not link its source {show(source.get('id'))} "
+                f"({show(title)}) to the source URL {show(url)}"]
+    return []
+
+
+def campaign_line_problems(page, record, campaigns, page_path):
+    """Rule 6: the campaign line on a report page, with the campaign link and
+    the source as a link to its URL."""
+    el, problems = one_of_class(page, "campaign-line", "rule 6")
+    if el is None:
+        return problems
+    campaign = record.params.get("campaign")
+    if not isinstance(campaign, dict):
+        if el.text() != UNATTRIBUTED:
+            problems.append(f"rule 6: the campaign line reads {show(el.text())}, an "
+                            f"unattributed report reads {show(UNATTRIBUTED)}")
+        return problems
+    slug = campaign.get("slug")
+    target = campaigns.get(slug)
+    name = text_param(target, "name") if target else None
+    source = source_by_id(record, campaign.get("source"))
+    if name is None or source is None:
+        return problems  # R7 is the records check's finding
+    want = CAMPAIGN_LINE.format(campaign=squash(name), source=source_ref(source))
+    if campaign.get("basis") == "artifact" and isinstance(campaign.get("artifact"), str):
+        want += CAMPAIGN_LINE_ARTIFACT.format(artifact=campaign["artifact"])
+    want = squash(want)
+    if el.text() != want:
+        problems.append(f"rule 6: the campaign line reads {show(el.text())}, the fixed "
+                        f"wording is {show(want)} (ADR-0004 part 6)")
+    path = f"/campaigns/{slug}/"
+    if not any(site_path(href, page_path) == path and text == squash(name)
+               for href, text in links_in(el, shown=True)):
+        problems.append(f"rule 6: the campaign line does not link {show(name)} to {path}")
+    problems += source_link_problems(el, source, "the campaign line")
+    return problems
+
+
+def attribution_problems(page, record):
+    """Rule 6: one attribution element per entry, in order, each linking its
+    source; without entries, the one fixed sentence."""
+    problems = []
+    els = by_class(page, "attribution")
+    hidden = [n for n in els if n.concealed()]
+    if hidden:
+        problems.append(f"rule 6: {len(hidden)} attribution element(s) in hidden content "
+                        f"({HIDDEN_CONTENT}); hidden content never counts")
+        els = [n for n in els if not n.concealed()]
+    entries = record.params.get("attribution")
+    entries = [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+    if not entries:
+        if [n.text() for n in els] != [NO_ATTRIBUTION]:
+            problems.append(f"rule 6: without attribution entries the page carries one "
+                            f"attribution element reading {show(NO_ATTRIBUTION)}, found "
+                            f"{[n.text() for n in els]!r}")
+        return problems
+    if len(els) != len(entries):
+        problems.append(f"rule 6: {len(els)} attribution elements for "
+                        f"{len(entries)} params.attribution entries")
+    for i, (entry, el) in enumerate(zip(entries, els)):
+        source = source_by_id(record, entry.get("source"))
+        if source is None or not isinstance(entry.get("statement"), str):
+            continue  # R7 and the schema report it
+        want = squash(ATTRIBUTION_LINE.format(statement=entry["statement"],
+                                              source=source_ref(source)))
+        if el.text() != want:
+            problems.append(f"rule 6: params.attribution[{i}] reads {show(el.text())}, "
+                            f"the fixed wording is {show(want)} (ADR-0004 part 6)")
+        problems += source_link_problems(el, source, f"params.attribution[{i}]")
+    return problems
+
+
+def sources_list_problems(page, record):
+    """Rule 6: every source of the record is listed as a link to its URL,
+    outside the campaign line and the attribution."""
+    problems = []
+    listed = [(a.attrs["href"], a.text()) for a in page.root.walk()
+              if a.tag in ("a", "area") and "href" in a.attrs and not a.concealed()
+              and not a.inside("campaign-line") and not a.inside("attribution")]
+    for i, source in enumerate(sources_of(record)):
+        url, title = source.get("url"), source.get("title")
+        if not any(href == url and text == squash(str(title)) for href, text in listed):
+            problems.append(f"rule 6: params.sources[{i}] ({show(title)}) is not listed "
+                            f"as a link to {show(url)}")
+    return problems
+
+
+def artifact_problems(page, record):
+    """Rule 7: every declared artifact inside an artifact element, and the
+    lookups of each hash equal to its listed_on."""
+    problems = []
+    boxes = {n.text() for n in by_class(page, "artifact") if not n.concealed()}
+    for path, value in declared_artifacts(record):
+        if squash(value) not in boxes:
+            problems.append(f"rule 7: {path} {show(value)} appears in no element of "
+                            "class artifact as stored")
+    listed, possible = lookup_urls(record)
+    hrefs = {browser_url(href) for href, _ in links_in(page.root, shown=True)}
+    every_href = {browser_url(href) for href, _ in links_in(page.root)}
+    for url in sorted(listed - hrefs):
+        problems.append(f"rule 7: the lookup {show(url)} of a hash listed there is "
+                        "not linked")
+    for url in sorted((every_href & possible) - listed):
+        problems.append(f"rule 7: the lookup {show(url)} is linked, but the hash does "
+                        "not list that service in listed_on (ADR-0004 part 9)")
+    return problems
+
+
+def external_link_problems(page, record):
+    """Rule 7: on a record page every external link is a source URL of the
+    record or a lookup URL of one of its hashes."""
+    allowed = {s.get("url") for s in sources_of(record)} | lookup_urls(record)[1]
+    return [f"rule 7: external link {show(href)} is neither a source URL of this "
+            "record nor a lookup of one of its hashes (D8)"
+            for href, _ in links_in(page.root)
+            if leaves_origin(href) and browser_url(href) not in allowed]
+
+
+def jsonld_duplicate_keys(raw):
+    """The keys that occur twice in one object of a JSON-LD block: json
+    keeps the last, so "@type": "Person", "@type": "WebPage" would read as
+    a WebPage."""
+    duplicates = []
+
+    def pairs(items):
+        seen = set()
+        for key, _ in items:
+            if key in seen:
+                duplicates.append(key)
+            seen.add(key)
+        return dict(items)
+    try:
+        json.loads(raw, object_pairs_hook=pairs)
+    except json.JSONDecodeError:
+        pass  # reported as invalid JSON
+    return duplicates
+
+
+def jsonld_value_problems(value, types, where, page_url):
+    """Rule 8: the values of a typed object's keys. The site-identity values
+    are pinned (publisher, isPartOf, a WebSite, every url, item and @id a
+    site URL, a WebPage's url its own page); free text is only type-checked,
+    because titles carry the subject's name."""
+    problems = []
+    kind = "/".join(types)
+    for key in ("name", "description", "datePublished", "dateModified", "lastReviewed"):
+        if key in value and not isinstance(value[key], str):
+            problems.append(f"rule 8: {where} has a {kind} whose {key} is not a string")
+    for key in ("url", "item", "@id"):
+        if key in value and not (isinstance(value[key], str)
+                                 and value[key].startswith(SITE_ORIGIN + "/")):
+            problems.append(f"rule 8: {where} has a {kind} whose {key} "
+                            f"{show(json.dumps(value[key]))} is not a URL of this site "
+                            f"({SITE_ORIGIN}/...)")
+    if "position" in value and type(value["position"]) is not int:
+        problems.append(f"rule 8: {where} has a {kind} whose position is not an integer")
+    if "itemListElement" in value and not isinstance(value["itemListElement"], list):
+        problems.append(f"rule 8: {where} has a {kind} whose itemListElement is not a list")
+    for key in ("url", "@id"):
+        if "WebPage" in types and value.get(key, page_url) != page_url:
+            problems.append(f"rule 8: {where} has a WebPage whose {key} "
+                            f"{show(json.dumps(value.get(key)))} is not this page's own "
+                            f"URL {show(page_url)}")
+    if "Organization" in types and value.get("url", SITE_ORIGIN + "/") != SITE_ORIGIN + "/":
+        problems.append(f"rule 8: {where} has an Organization at "
+                        f"{show(json.dumps(value.get('url')))}; the only Organization is "
+                        f"{JSONLD_ORGANIZATION!r} at {SITE_ORIGIN}/ (ADR-0004 part 8)")
+    if "WebSite" in types and (value.get("name") != JSONLD_ORGANIZATION
+                               or value.get("url") != SITE_ORIGIN + "/"):
+        problems.append(f"rule 8: {where} has a WebSite named {show(value.get('name'))} "
+                        f"at {show(json.dumps(value.get('url')))}; the only WebSite is "
+                        f"{JSONLD_ORGANIZATION!r} at {SITE_ORIGIN}/ (ADR-0004 part 8)")
+    for key, want in (("publisher", "Organization"), ("isPartOf", "WebSite")):
+        sub = value.get(key)
+        if key in value and not (isinstance(sub, dict) and sub.get("@type") == want):
+            problems.append(f"rule 8: {where} has a {kind} whose {key} is "
+                            f"{show(json.dumps(sub))}, not the site's {want} object "
+                            f"named {JSONLD_ORGANIZATION!r} (ADR-0004 part 8)")
+    return problems
+
+
+def jsonld_type_problems(value, where, page_url, root=True):
+    """Rule 8 on one JSON-LD value: the only context, every object typed with
+    an allowed type, an interviewscam.com Organization only, and on each
+    object only the keys of JSONLD_KEYS. A block root may be a bare @graph
+    container instead of an object."""
+    problems = []
+    if isinstance(value, list):
+        for sub in value:
+            problems += jsonld_type_problems(sub, where, page_url, root)
+        return problems
+    if not isinstance(value, dict):
+        return problems
+    if "@context" in value and value["@context"] != JSONLD_CONTEXT:
+        problems.append(f"rule 8: {where} has the @context "
+                        f"{show(json.dumps(value['@context']))}; the only context is "
+                        f"{JSONLD_CONTEXT!r}, so no key can stand in for @type")
+    types = []
+    for key in JSONLD_TYPE_KEYS:
+        if key in value:
+            types += value[key] if isinstance(value[key], list) else [value[key]]
+    for t in types:
+        if not isinstance(t, str) or t not in JSONLD_TYPES:
+            problems.append(f"rule 8: {where} has the @type {show(t)}; only "
+                            f"{', '.join(sorted(JSONLD_TYPES))} are used "
+                            "(ADR-0004 part 8)")
+    if "Organization" in types and value.get("name") != JSONLD_ORGANIZATION:
+        problems.append(f"rule 8: {where} is an Organization named "
+                        f"{show(value.get('name'))}; the only Organization is "
+                        f"{JSONLD_ORGANIZATION!r}, never a record's subject (D6)")
+    if not types:
+        if root and "@graph" in value:
+            allowed = JSONLD_GRAPH_KEYS
+        else:
+            allowed = None
+            problems.append(f"rule 8: {where} has an object without @type (keys "
+                            f"{sorted(value)!r}); every object has one of the allowed "
+                            "types, so none can describe a record's subject "
+                            "(ADR-0004 part 8)")
+    elif all(isinstance(t, str) and t in JSONLD_TYPES for t in types):
+        allowed = JSONLD_OBJECT_KEYS.union(*(JSONLD_KEYS[t] for t in types))
+        problems += jsonld_value_problems(value, types, where, page_url)
+    else:
+        allowed = None  # the type finding is enough
+    for key in sorted(value) if allowed is not None else ():
+        if key not in allowed:
+            kind = " (an IRI, prefixed or keyword key)" if ":" in key or \
+                key.startswith("@") else ""
+            kind_of = "/".join(types) if types else "@graph container"
+            problems.append(f"rule 8: {where} has the key {show(key)}{kind} on a "
+                            f"{kind_of}; a {kind_of} carries only "
+                            f"{', '.join(sorted(allowed))} (ADR-0004 part 8)")
+    # The value of a key that is not allowed is that key's finding alone.
+    for key, sub in value.items():
+        if key != "@context" and (allowed is None or key in allowed):
+            problems += jsonld_type_problems(sub, where, page_url, False)
+    return problems
+
+
+def structured_data_problems(page, page_url):
+    """Rule 8 on one page: JSON-LD parses without duplicate keys and uses
+    only the allowed types and keys; no microdata or RDFa attribute."""
+    problems = []
+    for i, value, error in jsonld_values(page):
+        if error is not None:
+            problems.append(f"rule 8: JSON-LD block {i + 1} is not valid JSON: {error}")
+            continue
+        for key in dict.fromkeys(jsonld_duplicate_keys(page.jsonld[i])):
+            problems.append(f"rule 8: JSON-LD block {i + 1} repeats the key {show(key)} "
+                            "in one object; a parser keeps only one of them")
+        problems += jsonld_type_problems(value, f"JSON-LD block {i + 1}", page_url)
+    names = sorted({a for n in page.root.walk() for a in n.attrs
+                    if a in MICRODATA_ATTRS or a in RDFA_ATTRS})
+    for name in names:
+        problems.append(f"rule 8: the attribute {name} is microdata or RDFa; structured "
+                        "data is JSON-LD only (ADR-0004 part 8)")
+    if any(":" in token for n in page.root.walk()
+           for token in n.attrs.get("rel", "").split()):
+        problems.append("rule 8: a rel attribute holds a CURIE (a token with a colon), "
+                        "which is RDFa; structured data is JSON-LD only (ADR-0004 "
+                        "part 8)")
+    return list(dict.fromkeys(problems))
+
+
+def percent_decodings(text):
+    """text and its percent-decodings until they stop changing (at most
+    three rounds, so %252B reads as +)."""
+    out = [text]
+    for _ in range(3):
+        decoded = urllib.parse.unquote(out[-1])
+        if decoded == out[-1]:
+            break
+        out.append(decoded)
+    return out
+
+
+def file_scans(rel, data, page):
+    """The R3 scan set of one built file, folded for word matching: the
+    file's path (every directory and file name), raw, entity-decoded and
+    percent-decoded text, joined text (hidden and <template> content
+    included), attribute values, JSON-LD strings, and every string of a
+    file that parses as JSON whatever its name. A file that is not UTF-8 is
+    read with replacement characters, so its text is scanned too."""
+    text = data.decode("utf-8", "replace")
+    unescaped = html.unescape(text)
+    scans = percent_decodings(rel) + [text] + percent_decodings(unescaped)
+    if page is not None:
+        scans += [page.root.text(shown=False), page.root.text(" ", shown=False)]
+        for el in page.root.walk():
+            for value in el.attrs.values():
+                scans += percent_decodings(value)
+        for _, value, _ in jsonld_values(page):
+            if value is not None:
+                scans += list(json_strings(value))
+    else:
+        try:
+            scans += list(json_strings(json.loads(text)))
+        except (json.JSONDecodeError, RecursionError):
+            pass  # not JSON; a broken .json file is sitecheck site's finding
+    return [fold_words(s) for s in scans]
+
+
+def hidden_name_problems(scans, hidden):
+    """Rule 9: no name or alias of a hidden persona in the file, its path
+    included. The finding names the field, never the name."""
+    problems = []
+    for persona in hidden:
+        for field, name in record_names(persona):
+            pattern = name_pattern(name)
+            if any(pattern.search(s) for s in scans):
+                problems.append(f"rule 9: the {field} of {persona.rel} is hidden "
+                                "(hide_name) and appears in this file or its path "
+                                "(ADR-0004 part 5)")
+    return problems
+
+
+def url_problems(page):
+    """Rule 7 on every page: no URL that carries or opens a file in place,
+    and a link to a lookup service only to one of its lookup pages."""
+    problems = []
+    for el in page.root.walk():
+        for name in URL_ATTRS:
+            if name not in el.attrs:
+                continue
+            url = browser_url(el.attrs[name])
+            scheme = url_scheme(url)
+            if scheme in FILE_SCHEMES:
+                problems.append(f"rule 7: <{el.tag} {name}> is a {scheme}: URL; the "
+                                "site never carries or opens a file (D8)")
+                continue
+            try:
+                host = urllib.parse.urlsplit(url.replace("\\", "/")).hostname or ""
+            except ValueError:
+                continue  # not a URL a browser follows to another host
+            host = host.rstrip(".")
+            if any(host == h or host.endswith("." + h) for h in LOOKUP_SERVICE_HOSTS) \
+                    and not LOOKUP_PAGE.fullmatch(url):
+                problems.append(f"rule 7: <{el.tag} {name}> {show(url)} is on a lookup "
+                                "service but is not a lookup page of a hash (a sample "
+                                "download or an API path); a hash links only to its "
+                                "MalwareBazaar sample page or VirusTotal file page (D8, "
+                                "ADR-0004 part 9)")
+    return problems
+
+
+def internal_link_problems(page, page_path):
+    """Rule 7 on every page, for every navigation to the site's own host
+    (nav_targets): an absolute one is written exactly
+    https://interviewscam.com plus a path; no backslash in its path; and
+    it points to a page (a path ending in "/") or to a file in
+    INTERNAL_FILES, never to another file such as /files/setup.exe. A link
+    to the page itself (the skip link of 404.html) is no file link."""
+    problems = []
+    for el, href in nav_targets(page):
+        path = site_path(href, page_path)
+        if path is None:
+            continue
+        raw = browser_url(href)
+        if (HAS_SCHEME.match(raw) or re.match(r"[/\\]{2}", raw)) and not OWN_URL.match(raw):
+            problems.append(f"rule 7: the link {show(href)} names the site's own host in "
+                            f"another form; an absolute link to it is written exactly "
+                            f"{SITE_ORIGIN} plus a path (no other scheme, case, port, "
+                            "userinfo or trailing dot)")
+        if "\\" in re.split(r"[?#]", raw, maxsplit=1)[0]:
+            problems.append(f"rule 7: the internal link {show(href)} has a backslash in "
+                            "its path; a browser reads it as a slash, so write the slash")
+        if path != page_path and not path.endswith("/") and path not in INTERNAL_FILES:
+            problems.append(f"rule 7: the internal link {show(href)} points to the file "
+                            f"{show(path)}, not to a page; a link on this site opens a "
+                            "page, never a file (D8)")
+    return problems
+
+
+def record_set_problems(public, records):
+    """Rule 1: every record has its page, every entry under a record section
+    belongs to a record, and a record directory holds only its index.html,
+    at any depth, so no fixture, alternative page or data file of a record
+    and no future-dated record can slip in or out unnoticed."""
+    problems = []
+    for record in records:
+        page = public / record.section / record.slug / "index.html"
+        if not page.is_file():
+            problems.append((f"public/{record.section}/{record.slug}/index.html",
+                             f"rule 1: {record.rel} has no built page (a future date "
+                             "or a build error skips it)"))
+    for section in RECORD_SCHEMAS:
+        slugs = {r.slug for r in records if r.section == section}
+        folder = public / section
+        if not folder.is_dir():
+            continue
+        for entry in sorted(folder.iterdir()):
+            if entry.name == "index.html" and entry.is_file():
+                continue
+            if entry.is_dir() and entry.name in slugs:
+                for sub in sorted(p for p in entry.rglob("*") if not p.is_dir()):
+                    inner = sub.relative_to(entry).as_posix()
+                    if inner != "index.html":
+                        problems.append((f"public/{section}/{entry.name}/{inner}",
+                                         "rule 1: a record directory holds only its "
+                                         "index.html; this is a second output of "
+                                         f"content/{section}/{entry.name}.md"))
+                continue
+            problems.append((f"public/{section}/{entry.name}",
+                             f"rule 1: belongs to no record in content/{section}/ "
+                             "(a fixture record or a stale page in the build)"))
+    return problems
+
+
+def fixture_leak_problems(fixtures, records):
+    """Rule 1, production only (--fixtures): no record under content/ shares
+    its slug or its name with a fixture record under <fixtures>/**/content/.
+    A leaked fixture builds its own page, so the record set alone cannot
+    tell it from a real record. persona-N slugs are numbered, not named,
+    so only a persona's name counts."""
+    slugs, names = {}, {}
+    scratch = Findings()
+    for content in sorted(p for p in fixtures.rglob("content") if p.is_dir()):
+        for section in RECORD_SCHEMAS:
+            for path in sorted((content / section).glob("*.md")):
+                if path.name == "_index.md":
+                    continue
+                rel = f"{fixtures.name}/{path.relative_to(fixtures).as_posix()}"
+                if not PERSONA_SLUG.fullmatch(path.stem):
+                    slugs.setdefault((section, path.stem), rel)
+                parsed = read_front_matter(path, rel, scratch, "fixture record")
+                params = parsed[0].get("params") if parsed else None
+                name = params.get("name") if isinstance(params, dict) else None
+                if isinstance(name, str) and name.strip():
+                    names.setdefault((section, fold_words(name)), rel)
+    problems = []
+    for record in records:
+        by_slug = None if PERSONA_SLUG.fullmatch(record.slug) else \
+            slugs.get((record.section, record.slug))
+        name = text_param(record, "name")
+        by_name = names.get((record.section, fold_words(name))) if name else None
+        matches = [(what, rel) for what, rel in (("slug", by_slug), ("name", by_name))
+                   if rel]
+        if matches:
+            what = " and ".join(w for w, _ in matches)
+            problems.append((record.rel, f"rule 1: shares its {what} with the fixture "
+                             f"record {matches[0][1]}; fixture records never enter "
+                             "content/ (a fixture leak, ADR-0004 part 10)"))
+    return problems
+
+
+def linked_paths(page, page_path):
+    return {site_path(href, page_path) for href, _ in links_in(page.root, shown=True)} \
+        - {None}
+
+
+def index_link_problems(pages, records):
+    """Rule 10: /reports/ links every report, /campaigns/ every campaign, and
+    Home the five latest reports and every campaign."""
+    problems = []
+    for section in RECORD_SCHEMAS:
+        members = [r for r in records if r.section == section]
+        if not members:
+            continue
+        rel = f"public/{section}/index.html"
+        page = pages.get(rel)
+        if page is None:
+            problems.append((rel, f"rule 10: content/{section}/ has records, but the "
+                                  f"section page /{section}/ was not built"))
+            continue
+        linked = linked_paths(page, f"/{section}/")
+        for record in members:
+            if f"/{section}/{record.slug}/" not in linked:
+                problems.append((rel, f"rule 10: /{section}/ does not link {record.rel}"))
+    if not records:
+        return problems
+    home = pages.get("public/index.html")
+    if home is None:
+        problems.append(("public/index.html", "rule 10: records exist, but no Home page "
+                                              "was built"))
+        return problems
+    linked = linked_paths(home, "/")
+    for record in records:
+        if record.section == "campaigns" and f"/campaigns/{record.slug}/" not in linked:
+            problems.append(("public/index.html",
+                             f"rule 10: Home does not link the campaign {record.rel}"))
+    reports = [r for r in records if r.section == "reports"]
+    shown = [r for r in reports if f"/reports/{r.slug}/" in linked]
+    want = min(HOME_LATEST, len(reports))
+    if len(shown) != want:
+        problems.append(("public/index.html",
+                         f"rule 10: Home links {len(shown)} reports; it links the "
+                         f"{want} latest by date"))
+
+    def date_of(record):
+        value = record.data.get("date")
+        return value if isinstance(value, str) else ""
+    # Any tie-break among equal dates is a valid choice of the latest.
+    unshown = [r for r in reports if r not in shown]
+    if shown and unshown:
+        oldest = min(shown, key=date_of)
+        newest = max(unshown, key=date_of)
+        if date_of(newest) > date_of(oldest):
+            problems.append(("public/index.html",
+                             f"rule 10: Home links {oldest.rel} ({date_of(oldest)}) but "
+                             f"not the newer {newest.rel} ({date_of(newest)}); it links "
+                             f"the {HOME_LATEST} latest by date"))
+    return problems
+
+
+def cmd_render(args):
+    root = Path(args.records).resolve()
+    public = Path(args.public).resolve()
+    schema_dir = Path(args.schemas).resolve() if args.schemas else root / "schema"
+    if not public.is_dir():
+        raise UsageError(f"{public} is not a directory (build the site first)")
+    fixtures = Path(args.fixtures).resolve() if args.fixtures else None
+    if fixtures is not None and not fixtures.is_dir():
+        raise UsageError(f"{fixtures} is not a directory (--fixtures)")
+    findings = Findings()
+
+    record_findings = Findings()
+    records = load_records(root, schema_dir, record_findings)
+    for item in record_findings.items:
+        findings.items.append(item + " (records loaded for the render check)")
+    by_page = {f"public/{r.section}/{r.slug}/index.html": r for r in records}
+    by_dir = {(r.section, r.slug): r for r in records}
+    reports = {r.slug: r for r in records if r.section == "reports"}
+    campaigns = {r.slug: r for r in records if r.section == "campaigns"}
+    personas = [r for r in records if is_persona(r) and not is_hidden(r)]
+    hidden = [r for r in records if is_hidden(r)]
+
+    for rel, problem in record_set_problems(public, records):
+        findings.add(rel, problem)
+    if fixtures is not None:
+        for rel, problem in fixture_leak_problems(fixtures, records):
+            findings.add(rel, problem)
+
+    pages = {}
+    files = sorted(p for p in public.rglob("*") if p.is_file())
+    for path in files:
+        rel = "public/" + path.relative_to(public).as_posix()
+        data = path.read_bytes()
+        suffix = path.suffix.lower()
+        page = None
+        if suffix in HTML_SUFFIXES or suffix in XML_SUFFIXES:
+            try:
+                page = parse_render_page(data.decode("utf-8"))
+            except UnicodeDecodeError:
+                page = None
+        scans = file_scans(rel, data, page)
+        problems = []
+        # Rule 8: the retired fact-check type appears nowhere, in any form.
+        if any("claimreview" in s for s in scans):
+            problems.append("rule 8: contains ClaimReview; it is never used (ADR-0004 "
+                            "part 8, SPEC section 5)")
+        problems += hidden_name_problems(scans, hidden)
+        page_path = own_path(rel.removeprefix("public/"))
+        if page is not None:
+            if any("download" in n.attrs for n in page.root.walk()):
+                problems.append("rule 7: an element carries the download attribute; "
+                                "the site never offers a file download (D8)")
+            problems += url_problems(page)
+            problems += internal_link_problems(page, page_path)
+            problems += persona_label_problems(page, personas)
+            problems += structured_data_problems(page, SITE_ORIGIN + page_path)
+            # The tree infers no end tags (OPTIONAL_END): a page that omits
+            # one gets that finding instead of the class-scoped rules, which
+            # would read a nesting no browser builds.
+            for tag in dict.fromkeys(page.unclosed):
+                n = page.unclosed.count(tag)
+                problems.append(f"markup: {n} <{tag}> element(s) closed without their own "
+                                f"</{tag}>; close every <{tag}> explicitly, because the "
+                                "render check infers no end tags")
+        if page is not None and suffix in HTML_SUFFIXES:
+            pages[rel] = page
+        if page is not None and suffix in HTML_SUFFIXES and not page.unclosed:
+            parts = rel.split("/")
+            # Every HTML page under a record directory is that record's page,
+            # so an alternative page meets the record rules too (rule 1
+            # reports it as well).
+            record = by_dir.get((parts[1], parts[2])) if len(parts) > 3 else None
+            section = next((s for s in SECTION_TITLES if rel == f"public/{s}/index.html"),
+                           None)
+            items, found = report_items(page, page_path, reports)
+            problems += found
+            chips = own_chips(page, items)
+            problems += chip_problems(page, chips, record is not None
+                                      and record.section == "reports")
+            if record is not None:
+                problems += title_problems(page, record_title(record))
+                problems += verdict_page_problems(page)
+                if record.section == "reports":
+                    problems += state_problems(page, record, chips)
+                    problems += label_problems(page, record)
+                    problems += campaign_line_problems(page, record, campaigns, page_path)
+                    problems += artifact_problems(page, record)
+                else:
+                    problems += attribution_problems(page, record)
+                problems += sources_list_problems(page, record)
+                problems += external_link_problems(page, record)
+            elif section is not None:
+                problems += title_problems(page, SECTION_TITLES[section])
+                problems += verdict_page_problems(page)
+        for problem in dict.fromkeys(problems):
+            findings.add(rel, problem)
+    for rel, problem in index_link_problems(pages, records):
+        findings.add(rel, problem)
+    if not pages:
+        findings.add("public", "no HTML pages found; nothing was checked")
+    n_reports = sum(r.section == "reports" for r in records)
+    n_record_pages = sum(rel in by_page for rel in pages)
+    return findings.report(
+        f"render checked: {len(records)} records (reports {n_reports}, campaigns "
+        f"{len(records) - n_reports}), {n_record_pages} record pages, {len(pages)} "
+        f"HTML pages, {len(files)} files")
+
+
+# ---------------------------------------------------------------------------
 # Design tokens (SPEC section 7): data/tokens.toml is the only place a colour
 # value may appear, and every listed pair is contrast-checked.
 
@@ -3591,6 +4912,12 @@ def main(argv):
     p.add_argument("--schemas")
     p.add_argument("public")
     p.set_defaults(func=cmd_site)
+    p = sub.add_parser("render")
+    p.add_argument("--records", required=True)
+    p.add_argument("--schemas")
+    p.add_argument("--fixtures")
+    p.add_argument("public")
+    p.set_defaults(func=cmd_render)
     p = sub.add_parser("tokens")
     p.add_argument("--root", default=".")
     p.set_defaults(func=cmd_tokens)

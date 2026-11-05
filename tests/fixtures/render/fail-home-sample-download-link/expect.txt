@@ -1,0 +1,1 @@
+rule 7: <a href> 'hxxps://bazaar[.]abuse[.]ch/download/

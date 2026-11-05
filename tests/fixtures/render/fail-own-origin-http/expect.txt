@@ -1,0 +1,1 @@
+rule 7: the link 'hxxp://interviewscam[.]com/methodology/' names the site's own host in another form

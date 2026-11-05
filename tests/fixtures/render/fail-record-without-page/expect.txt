@@ -1,0 +1,1 @@
+rule 1: content/reports/example-front-company.md has no built page

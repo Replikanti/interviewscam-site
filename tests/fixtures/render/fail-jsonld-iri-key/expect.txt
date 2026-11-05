@@ -1,0 +1,1 @@
+rule 8: JSON-LD block 1 has the key 'hxxp://www[.]w3[.]org/1999/02/22-rdf-syntax-ns#type' (an IRI, prefixed or keyword key) on a WebPage

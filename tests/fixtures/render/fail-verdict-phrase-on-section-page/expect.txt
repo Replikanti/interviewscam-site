@@ -1,0 +1,1 @@
+rule 5: the page contains the verdict phrase 'verified scam'

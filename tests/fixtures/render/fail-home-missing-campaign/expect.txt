@@ -1,0 +1,1 @@
+rule 10: Home does not link the campaign content/campaigns/example-campaign-family.md

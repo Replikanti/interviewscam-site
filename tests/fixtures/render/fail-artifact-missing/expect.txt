@@ -1,0 +1,1 @@
+rule 7: params.artifacts.ips[0]

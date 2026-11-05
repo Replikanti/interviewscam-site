@@ -1,0 +1,1 @@
+rule 3: the list item linking /reports/example-abused-company/ shows the date '2026-11-04', the record's date is 2026-11-03

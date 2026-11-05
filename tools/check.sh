@@ -93,6 +93,19 @@ records_check() { sitecheck records --root "$1" --schemas "$2"; }
 # CSP meta from <root>/hugo.toml, and no live artifact in the build (R3).
 site_check() { sitecheck site --records "$1" --schemas "$2" "$3"; }
 
+# render_check <root> <schema dir> <built dir> [<fixtures dir>]: the markup
+# contract of the record pages (ADR-0004): one page per record and none
+# without one, the fixed titles, the D6, D7 and D10 wording, the campaign
+# line and attribution, artifacts and external links, structured data, no
+# hidden persona name anywhere, and the index lists. With a fixtures dir, no
+# record may share its slug or name with a fixture record under
+# <fixtures dir>/**/content/ (the fixture-leak check; production only).
+render_check() {
+  local fixtures=()
+  [[ -n "${4:-}" ]] && fixtures=(--fixtures "$4")
+  sitecheck render --records "$1" --schemas "$2" "${fixtures[@]}" "$3"
+}
+
 # tokens_check <root>: data/tokens.toml well formed, every listed colour pair
 # at its WCAG 2.2 contrast minimum, and no colour literal in the site sources
 # (SPEC section 7).
@@ -143,6 +156,11 @@ step_records() { records_check "$CHECK_ROOT" "$CHECK_ROOT/schema"; }
 step_tokens() { tokens_check "$CHECK_ROOT"; }
 
 step_site() { site_check "$CHECK_ROOT" "$CHECK_ROOT/schema" "$CHECK_ROOT/public"; }
+
+step_render() {
+  render_check "$CHECK_ROOT" "$CHECK_ROOT/schema" "$CHECK_ROOT/public" \
+    "$CHECK_ROOT/tests/fixtures"
+}
 
 step_build() {
   if [[ ! -x "$HUGO_BIN" ]]; then
@@ -198,6 +216,7 @@ check_main() {
   run_step "tokens (contrast, colour literals)" step_tokens
   run_step build step_build
   run_step "site (third-party, CSP, defang)" step_site
+  run_step "render (D6, D7, D10, structured data)" step_render
 
   if in_github_actions; then
     run_step "reflow (320 CSS px)" step_reflow
@@ -240,7 +259,7 @@ check_main() {
   echo
   echo "==> Summary"
   for i in "${!STEP_NAMES[@]}"; do
-    printf '  %-36s %s\n' "${STEP_NAMES[$i]}" "${STEP_RESULTS[$i]}"
+    printf '  %-38s %s\n' "${STEP_NAMES[$i]}" "${STEP_RESULTS[$i]}"
     case "${STEP_RESULTS[$i]}" in
       FAIL) failed_steps+=("${STEP_NAMES[$i]}") ;;
       SKIPPED) skipped_steps+=("${STEP_NAMES[$i]}") ;;

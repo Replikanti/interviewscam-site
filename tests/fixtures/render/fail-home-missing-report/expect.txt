@@ -1,0 +1,1 @@
+rule 10: Home links 0 reports; it links the 1 latest by date

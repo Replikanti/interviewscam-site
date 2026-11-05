@@ -1,0 +1,1 @@
+rule 3: the state chip next to /reports/example-abused-company/ reads 'Front', the state name_abused reads 'Name abused'

@@ -1,0 +1,1 @@
+rule 10: content/reports/ has records, but the section page /reports/ was not built

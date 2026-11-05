@@ -1,0 +1,1 @@
+markup: 1 <li> element(s) closed without their own </li>; close every <li> explicitly

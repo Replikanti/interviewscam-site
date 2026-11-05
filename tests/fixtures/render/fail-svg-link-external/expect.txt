@@ -1,0 +1,1 @@
+rule 7: external link 'hxxps://other[.]example/x'

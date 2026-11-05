@@ -1,0 +1,1 @@
+rule 10: /campaigns/ does not link content/campaigns/example-campaign-family.md

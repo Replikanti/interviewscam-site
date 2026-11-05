@@ -1,0 +1,1 @@
+rule 10: Home links content/reports/example-company-one.md (2026-10-21) but not the newer content/reports/example-company-six.md

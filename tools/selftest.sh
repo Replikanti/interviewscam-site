@@ -46,7 +46,7 @@ selftest_main() {
   bash "$SELFTEST_ROOT/tools/fetch-tools.sh" || return 1
 
   local n_passed=0 n_failed=0 html_total=0 html_run=0 reflow_total=0 reflow_run=0
-  local dir check name kind out rc expect
+  local dir check name kind out rc expect leak_fixtures
   out="$(mktemp)"
   # shellcheck disable=SC2064 # expand now: the path is fixed
   trap "rm -f '$out'" RETURN
@@ -112,6 +112,18 @@ selftest_main() {
         # <dir>/hugo.toml holds params.csp, <dir>/content the records whose
         # artifacts must not appear live in the built tree <dir>/public.
         site_check "$dir" "$SELFTEST_ROOT/schema" "$dir/public" >"$out" 2>&1
+        rc=$?
+        ;;
+      render)
+        # Laid out like the site fixtures: <dir>/content holds the records,
+        # <dir>/public the hand-written built pages that pin the markup
+        # contract the record templates implement (ADR-0004). An optional
+        # <dir>/fixtures stands in for tests/fixtures in the fixture-leak
+        # check of the production run.
+        leak_fixtures=""
+        [[ -d "$dir/fixtures" ]] && leak_fixtures="$dir/fixtures"
+        render_check "$dir" "$SELFTEST_ROOT/schema" "$dir/public" "$leak_fixtures" \
+          >"$out" 2>&1
         rc=$?
         ;;
       lighthouse)
@@ -188,6 +200,30 @@ selftest_main() {
       n_passed=$((n_passed + 1))
     fi
   done
+
+  # Wiring: check_main must run the production render step, and that step
+  # must run the fixture-leak check (--fixtures tests/fixtures), which no
+  # fixture can prove. declare -f prints check_main without comments, so a
+  # commented-out or deleted step line is missing; a stub sitecheck in a
+  # subshell prints the arguments step_render passes, so dropping the flag
+  # turns the self-test red too.
+  local render_args
+  render_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render)"
+  if ! declare -f check_main \
+      | grep -qE '^ *run_step "render \(D6, D7, D10, structured data\)" step_render;?$'; then
+    echo "FAIL wiring/render-step: check_main in tools/check.sh does not run" \
+      "the production render step (run_step \"render (...)\" step_render)"
+    n_failed=$((n_failed + 1))
+  elif awk -v want="$CHECK_ROOT/tests/fixtures" \
+      'prev == "--fixtures" && $0 == want { found = 1 } { prev = $0 } END { exit !found }' \
+      <<<"$render_args"; then
+    echo "ok   wiring/render-fixture-leak (check_main runs step_render, which passes --fixtures tests/fixtures)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL wiring/render-fixture-leak: step_render in tools/check.sh does not pass" \
+      "--fixtures \"\$CHECK_ROOT/tests/fixtures\" to sitecheck render (the fixture-leak check)"
+    n_failed=$((n_failed + 1))
+  fi
 
   if [[ $html_total -eq 0 ]]; then
     echo "FAIL: no html fixtures found"

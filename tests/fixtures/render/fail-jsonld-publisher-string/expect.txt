@@ -1,0 +1,1 @@
+rule 8: JSON-LD block 1 has a WebPage whose publisher is '"Example Abused Company"', not the site's Organization object

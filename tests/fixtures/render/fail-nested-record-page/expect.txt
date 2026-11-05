@@ -1,0 +1,1 @@
+rule 1: a record directory holds only its index.html
