@@ -15,7 +15,7 @@ statement = "Linked to the fictional Fixture Group"
 source = "vendor-analysis"
 
 [[params.attribution]]
-statement = "Shares its installer code with an earlier fixture campaign"
+statement = "Shares its installer code, build J3qMXicxfX4H5at1w0ef9IDynYtyoWF29zgeh6NZ4xGBA2TXCeO48mOt71EBhZJk, with an earlier fixture campaign"
 source = "second-analysis"
 
 [[params.sources]]

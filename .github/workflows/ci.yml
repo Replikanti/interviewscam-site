@@ -15,13 +15,15 @@ jobs:
   # `check`. A rename must update the protection in the same session.
   check:
     runs-on: ubuntu-24.04
-    # 3x the first green run, rounded up to whole minutes (ADR-0003 part 5):
-    # that run took 107 s (run 41931422101, 2026-11-04, the first with the
-    # final reflow check of PR #16), 3 x 107 s = 321 s -> 6 min. The M1 value
-    # (22 s -> 2 min) no longer fits: the reflow step and its fixtures start
-    # Chrome 25 times. The 360-minute default would let a hung run block
-    # merges for hours.
-    timeout-minutes: 6
+    # ADR-0004 Numbers, "check.sh workflow timeouts": 2 x the slowest green
+    # run of check.sh on PR #23 (M3 PR 4, the first with the fixture build),
+    # rounded up to whole minutes. Green runs on 2026-11-05: check 161 s
+    # (run 42095775647), lighthouse build 154 s (run 42095775227),
+    # links-external 181 s (run 42095780993, a manual start on the branch);
+    # spread 181 / 154 = 1.18, so the factor is 2: 2 x 181 s = 362 s ->
+    # 7 min. Re-derive in the next PR that changes check.sh.
+    # The 360-minute default would let a hung run block merges for hours.
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

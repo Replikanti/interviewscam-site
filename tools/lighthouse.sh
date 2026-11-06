@@ -4,8 +4,9 @@
 # The only file the guard lets name the JavaScript registry tools, and only
 # .github/workflows/lighthouse.yml may run it: in the job `lighthouse`, whose
 # GITHUB_TOKEN has no permissions, with no checkout, on the `build` artifact
-# (public/ and tools/). It refuses to run anywhere else (exit 2), so it never
-# runs on a developer machine or next to the repository source (D3).
+# (public/, public-fixtures/ and tools/). It refuses to run anywhere else
+# (exit 2), so it never runs on a developer machine or next to the
+# repository source (D3).
 #
 #   1. Resolve the tree of the pinned Lighthouse version in lock-only mode,
 #      with the cooldown date and install scripts off. Only manifests are
@@ -15,7 +16,12 @@
 #      it prints the digest and the resolved list and the job fails.
 #   3. Install exactly that lock, install scripts off.
 #   4. Serve public/ on 127.0.0.1 and audit every page 3 times with the
-#      mobile profile (every directory with an index.html, plus /404.html).
+#      mobile profile (every directory with an index.html, plus /404.html),
+#      except the individual record pages under /reports/ and /campaigns/:
+#      one page per template is enough (ADR-0003), and the job must not
+#      grow with every record. Serve public-fixtures/, the fixture build of
+#      tools/check.sh, on a second loopback port and audit the fixed list
+#      LH_FIXTURE_PAGES: one page per record template (ADR-0004 part 10).
 #   5. sitecheck lighthouse: the score gate (ADR-0003 part 3).
 #
 # Node.js, npm and Google Chrome come from the runner image (ADR-0003 part 7).
@@ -30,8 +36,21 @@ source "$LH_ROOT/tools/fetch-tools.sh"
 
 # Written out, so no config file can point the resolver elsewhere.
 LH_REGISTRY=https://registry.npmjs.org/
-# Loopback only. The runner is a fresh VM, so a fixed port is free.
+# Loopback only. The runner is a fresh VM, so fixed ports are free.
 LH_PORT=8137
+LH_FIXTURE_PORT=8138
+# The fixture pages: Home with both lists, the two section pages, the
+# report with every artifact type and the campaign with attribution. Each
+# is audited by its index.html path, so the score gate, which groups the
+# reports by URL path, keeps them apart from the production pages of the
+# same directory (/ now, /reports/ and /campaigns/ from milestone 5).
+LH_FIXTURE_PAGES=(
+  /index.html
+  /reports/index.html
+  /campaigns/index.html
+  /reports/example-front-company/index.html
+  /campaigns/example-campaign-family/index.html
+)
 LH_CATEGORIES=performance,accessibility,best-practices,seo
 LH_RUNS=3
 
@@ -76,6 +95,8 @@ lighthouse_main() {
   done
   [[ -f "$LH_ROOT/public/index.html" ]] \
     || refuse "no public/index.html: the job downloads the build artifact first"
+  [[ -f "$LH_ROOT/public-fixtures/index.html" ]] \
+    || refuse "no public-fixtures/index.html: the build artifact lacks the fixture build"
   [[ -n "${RUNNER_TEMP:-}" && -d "$RUNNER_TEMP" ]] || refuse "RUNNER_TEMP is not a directory"
 
   load_pins || return 1
@@ -115,41 +136,59 @@ lighthouse_main() {
     return 1
   }
 
-  local public="$LH_ROOT/public" reports="$LH_WORK/reports" server_pid
+  local public="$LH_ROOT/public" fixtures="$LH_ROOT/public-fixtures"
+  local reports="$LH_WORK/reports" server_pid fixture_pid
   mkdir -p "$reports"
   python3 -I -m http.server --bind 127.0.0.1 --directory "$public" "$LH_PORT" \
     >"$LH_WORK/server.log" 2>&1 &
   server_pid=$!
-  # shellcheck disable=SC2064 # expand now: the PID is fixed
-  trap "kill $server_pid 2>/dev/null" EXIT
-  local _
-  for _ in $(seq 50); do
-    curl --silent --fail --output /dev/null "http://127.0.0.1:$LH_PORT/" && break
-    sleep 0.2
+  python3 -I -m http.server --bind 127.0.0.1 --directory "$fixtures" "$LH_FIXTURE_PORT" \
+    >"$LH_WORK/server-fixtures.log" 2>&1 &
+  fixture_pid=$!
+  # shellcheck disable=SC2064 # expand now: the PIDs are fixed
+  trap "kill $server_pid $fixture_pid 2>/dev/null" EXIT
+  local _ port
+  for port in "$LH_PORT" "$LH_FIXTURE_PORT"; do
+    for _ in $(seq 50); do
+      curl --silent --fail --output /dev/null "http://127.0.0.1:$port/" && break
+      sleep 0.2
+    done
+    if ! curl --silent --fail --output /dev/null "http://127.0.0.1:$port/"; then
+      echo "lighthouse: FAIL: the local server on port $port did not start" >&2
+      cat "$LH_WORK/server.log" "$LH_WORK/server-fixtures.log" >&2
+      return 1
+    fi
   done
-  if ! curl --silent --fail --output /dev/null "http://127.0.0.1:$LH_PORT/"; then
-    echo "lighthouse: FAIL: the local server did not start" >&2
-    cat "$LH_WORK/server.log" >&2
-    return 1
-  fi
 
+  # Full URLs: the production pages, then the fixture pages.
   local pages=() file rel
   while IFS= read -r -d '' file; do
     rel="${file#"$public"}"
-    pages+=("${rel%index.html}")
+    # A record page (a directory below /reports/ or /campaigns/) is skipped;
+    # the section pages themselves stay.
+    [[ "$rel" =~ ^/(reports|campaigns)/[^/]+/ ]] && continue
+    pages+=("http://127.0.0.1:$LH_PORT${rel%index.html}")
   done < <(find "$public" -name index.html -print0 | sort -z)
-  [[ -f "$public/404.html" ]] && pages+=(/404.html)
+  [[ -f "$public/404.html" ]] && pages+=("http://127.0.0.1:$LH_PORT/404.html")
+  local page
+  for page in "${LH_FIXTURE_PAGES[@]}"; do
+    if [[ ! -f "$fixtures$page" ]]; then
+      echo "lighthouse: FAIL: the fixture page $page is missing from public-fixtures/" >&2
+      return 1
+    fi
+    pages+=("http://127.0.0.1:$LH_FIXTURE_PORT$page")
+  done
 
   setup_ms=$(($(now_ms) - start))
   echo "timing: setup $(seconds "$setup_ms") s"
 
-  local page run t0 run_ms total_ms=0 max_ms=0 n_runs=0 n=0
+  local run t0 run_ms total_ms=0 max_ms=0 n_runs=0 n=0
   for page in "${pages[@]}"; do
     n=$((n + 1))
     for run in $(seq "$LH_RUNS"); do
       t0="$(now_ms)"
       if ! CHROME_PATH="$chrome" node "$LH_WORK/node_modules/lighthouse/cli/index.js" \
-          "http://127.0.0.1:$LH_PORT$page" \
+          "$page" \
           --output=json --output-path="$reports/page$n-run$run.json" \
           --only-categories="$LH_CATEGORIES" \
           --chrome-flags="--headless=new" \
@@ -170,7 +209,7 @@ lighthouse_main() {
   # /favicon.ico; each one is a console error in best practices.
   echo "lighthouse: local server error responses (count, status, path):"
   sed -n 's/.*"[A-Z]* \([^ ]*\) HTTP[^"]*" \([45][0-9][0-9]\) .*/\2 \1/p' \
-    "$LH_WORK/server.log" | sort | uniq -c | sed 's/^/  /'
+    "$LH_WORK/server.log" "$LH_WORK/server-fixtures.log" | sort | uniq -c | sed 's/^/  /'
 
   python3 -I "$LH_ROOT/tools/sitecheck.py" lighthouse --reports "$reports" \
     --version "$PIN_LIGHTHOUSE_VERSION"

@@ -7,8 +7,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 {{- /* Light theme only (SPEC section 7): every token pair describes a light surface, so the browser must not draw dark controls on it. */}}
 <meta name="color-scheme" content="light">
-{{- /* The page's own description, else the site's; Lighthouse's SEO category needs one on every page. */}}
-<meta name="description" content="{{ .Description | default site.Params.description }}">
+{{- /* The page's own description, else the site's; Lighthouse's SEO category needs one on every page. Record pages override the block with their summary. */}}
+<meta name="description" content="{{ block "description" . }}{{ .Description | default site.Params.description }}{{ end }}">
 <title>{{ block "title" . }}{{ .Title }} · {{ site.Title }}{{ end }}</title>
 {{- /* The absolute URL of the page itself (ADR-0003 part 3; sitecheck site rule (d)). The 404 page has none: it answers for every missing URL. */}}
 {{- if ne .Kind "404" }}
@@ -23,6 +23,8 @@
 {{- with slice $tokens (resources.Get "css/site.css") | resources.Concat "css/site.css" | resources.Minify | resources.Fingerprint }}
 <link rel="stylesheet" href="{{ .RelPermalink }}">
 {{- end }}
+{{- /* Record and section pages add their JSON-LD here (ADR-0004 part 8). */}}
+{{- block "head" . }}{{ end }}
 </head>
 <body>
 {{- /* The skip link uses the one sanctioned visually-hidden class (ADR-0003 part 6) and is shown on focus. */}}

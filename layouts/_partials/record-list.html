@@ -1,0 +1,13 @@
+{{- /* A list of records, sorted by the name as it renders, then by slug, so
+  the position of a hidden persona never hints at the hidden name. Called
+  with the pages. */ -}}
+{{- $items := slice -}}
+{{- range . -}}
+  {{- $name := partial "record-name.html" (dict "page" . "html" false) -}}
+  {{- $items = $items | append (dict "key" (printf "%s %s" (lower $name) .File.ContentBaseName) "page" .) -}}
+{{- end -}}
+<ul class="record-list">
+{{- range sort $items "key" }}
+{{ partial "record-item.html" .page }}
+{{- end }}
+</ul>

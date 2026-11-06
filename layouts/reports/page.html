@@ -1,0 +1,72 @@
+{{- /* A report page: one name a candidate saw (SPEC section 5, ADR-0004).
+  The order is fixed by the plan of milestone 3: breadcrumb, h1, chip and
+  type line, state sentence, D7 label, summary, the warning panel,
+  artifacts, campaign line, facts, evidence, What was checked, related
+  names, body, sources. Every name renders through record-name.html and
+  every fixed string comes from data/labels.toml; sitecheck render pins
+  the result. */ -}}
+{{ define "title" }}{{ partial "record-title.html" (dict "page" . "html" false) }} · {{ site.Title }}{{ end }}
+{{ define "description" }}{{ .Params.summary }}{{ end }}
+{{ define "head" }}{{ partial "jsonld.html" . }}{{ end }}
+{{ define "main" }}
+{{- $p := .Params -}}
+{{ partial "breadcrumb.html" (dict "page" . "jsonld" false) }}
+<h1>{{ partial "record-title.html" (dict "page" . "html" true) }}</h1>
+{{- if and (eq $p.name_type "persona") $p.hide_name }}
+<p class="hidden-name-notice">{{ partial "label.html" "persona.hidden_notice" }} <a href="{{ "/corrections/" | relURL }}">Corrections and removal</a></p>
+{{- end }}
+{{ partial "state.html" (dict "page" . "part" "summary") }}
+{{ partial "record-label.html" . }}
+{{- if not $p.hide_name }}
+{{- with $p.aliases }}
+<p class="aliases">Also seen as: {{ range $i, $alias := . }}{{ if $i }}, {{ end }}{{ partial "record-name.html" (dict "page" $ "html" true "value" $alias) }}{{ end }}</p>
+{{- end }}
+{{- end }}
+<p class="lead">{{ $p.summary }}</p>
+<section class="panel-warn" aria-labelledby="what-to-do">
+<h2 id="what-to-do"><span class="panel-icon">{{ partial "icon.html" "warning" }}</span>What to do now</h2>
+<p>If you were sent code, a repository or an app to run as part of an interview like this, do not install or run it.</p>
+<ul class="link-list">
+<li><a href="{{ "/before-your-call/" | relURL }}">What to do before your call</a></li>
+<li><a href="{{ "/before-your-call/#already-ran" | relURL }}">Already ran it? What to do now</a></li>
+</ul>
+</section>
+{{ partial "artifacts.html" . }}
+<div class="card">
+{{ partial "campaign-line.html" . }}
+<dl class="facts">
+<div><dt>First seen</dt><dd>{{ time.Format "2006-01-02" $p.first_seen }}</dd></div>
+<div><dt>Last seen</dt><dd>{{ time.Format "2006-01-02" $p.last_seen }}</dd></div>
+<div><dt>Last reviewed</dt><dd>{{ time.Format "2006-01-02" $p.last_reviewed }}</dd></div>
+</dl>
+</div>
+<section class="card" aria-labelledby="evidence">
+<h2 id="evidence">Evidence reviewed</h2>
+<p>{{ $p.evidence }}</p>
+</section>
+<section class="card" aria-labelledby="what-was-checked">
+<h2 id="what-was-checked">What was checked</h2>
+{{ partial "state.html" (dict "page" . "part" "basis") }}
+</section>
+{{- with $p.related }}
+<section class="card" aria-labelledby="related">
+<h2 id="related">Related names</h2>
+<ul class="record-list">
+{{- range . }}
+{{- with site.GetPage (printf "/reports/%s" .) }}
+{{ partial "record-item.html" . }}
+{{- else }}
+{{- errorf "reports/page.html: %s names the related report %q, which does not exist" $.File.Path . }}
+{{- end }}
+{{- end }}
+</ul>
+</section>
+{{- end }}
+{{- with .Content }}
+<section class="card prose" aria-labelledby="what-happened">
+<h2 id="what-happened">What happened</h2>
+{{ . }}
+</section>
+{{- end }}
+{{ partial "sources.html" . }}
+{{ end }}

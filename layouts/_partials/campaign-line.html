@@ -1,0 +1,15 @@
+{{- /* The campaign line of a report page (ADR-0004 part 6, Methodology): the
+  family is named only when a cited source links this name or one of its
+  artifacts to it, and is named as the campaign that used the name.
+  Without params.campaign the report is unattributed. Called with the
+  report page. */ -}}
+{{- with .Params.campaign -}}
+  {{- $c := . -}}
+  {{- $campaign := site.GetPage (printf "/campaigns/%s" $c.slug) -}}
+  {{- if not $campaign }}{{ errorf "campaign-line.html: no campaign record %q" $c.slug }}{{ end -}}
+  {{- $source := index (where $.Params.sources "id" $c.source) 0 -}}
+<p class="campaign-line">{{ partial "label.html" "campaign_line.named" }}<a href="{{ $campaign.RelPermalink }}">{{ partial "record-name.html" (dict "page" $campaign "html" true) }}</a>{{ partial "label.html" "campaign_line.source" }}{{ partial "source-ref.html" $source }}
+{{- if eq $c.basis "artifact" }}{{ partial "label.html" "campaign_line.lists" }}<code>{{ $c.artifact }}</code>{{ end }}</p>
+{{- else -}}
+<p class="campaign-line">{{ partial "label.html" "campaign_line.unattributed" }}</p>
+{{- end -}}

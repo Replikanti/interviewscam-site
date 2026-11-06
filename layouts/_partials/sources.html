@@ -1,0 +1,12 @@
+{{- /* Every cited source of a record page, as a link to its URL (SPEC
+  section 5). Called with the record page. */ -}}
+{{- with .Params.sources -}}
+<section class="card" aria-labelledby="sources">
+<h2 id="sources">Sources</h2>
+<ul class="sources">
+{{- range . }}
+<li>{{ partial "source-ref.html" . }}</li>
+{{- end }}
+</ul>
+</section>
+{{- end -}}

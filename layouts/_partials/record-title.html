@@ -1,0 +1,25 @@
+{{- /* The fixed title of a record page or a section page (SPEC section 5,
+  ADR-0004 part 4). Called with a dict and returns the title:
+    page  the page
+    html  true: HTML for the h1 (the persona label in its span); false:
+          plain text for <title>, the description and JSON-LD
+  baseof appends " · interviewscam.com" to the <title>. */ -}}
+{{- $page := .page -}}
+{{- $out := "" -}}
+{{- if eq $page.Kind "section" -}}
+  {{- $out = partial "label.html" (printf "title.%s" $page.Section) -}}
+  {{- if .html }}{{ $out = htmlEscape $out }}{{ end -}}
+{{- else if and (eq $page.Section "reports") (eq $page.Params.name_type "persona") $page.Params.hide_name -}}
+  {{- $out = partial "label.html" "title.hidden" -}}
+  {{- if .html }}{{ $out = htmlEscape $out }}{{ end -}}
+{{- else -}}
+  {{- $format := partial "label.html" (cond (eq $page.Section "campaigns") "title.campaign" "title.report") -}}
+  {{- $name := partial "record-name.html" (dict "page" $page "html" .html) -}}
+  {{- if .html -}}
+    {{- $out = printf (htmlEscape $format) $name -}}
+  {{- else -}}
+    {{- $out = printf $format $name -}}
+  {{- end -}}
+{{- end -}}
+{{- if .html }}{{ $out = $out | safeHTML }}{{ end -}}
+{{- return $out -}}

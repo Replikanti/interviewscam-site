@@ -1,0 +1,31 @@
+{{- /* The breadcrumb of a record or section page: Home, the section, the
+  page (ADR-0004 part 8). Called with a dict:
+    page    the page
+    jsonld  false: the visible <nav>; true: returns the BreadcrumbList
+            object for layouts/_partials/jsonld.html
+  Search engines want structured data to match visible content, so both
+  come from this one list. */ -}}
+{{- $page := .page -}}
+{{- $section := site.GetPage (printf "/%s" $page.Section) -}}
+{{- $sectionTitle := partial "label.html" (printf "title.%s" $page.Section) -}}
+{{- $out := "" -}}
+{{- if .jsonld -}}
+  {{- $items := slice (dict "@type" "ListItem" "position" 1 "name" "Home" "item" site.Home.Permalink) -}}
+  {{- if eq $page.Kind "section" -}}
+    {{- $items = $items | append (dict "@type" "ListItem" "position" 2 "name" $sectionTitle "item" $page.Permalink) -}}
+  {{- else -}}
+    {{- $items = $items | append (dict "@type" "ListItem" "position" 2 "name" $sectionTitle "item" $section.Permalink) -}}
+    {{- $items = $items | append (dict "@type" "ListItem" "position" 3 "name" (partial "record-name.html" (dict "page" $page "html" false))) -}}
+  {{- end -}}
+  {{- $out = dict "@type" "BreadcrumbList" "itemListElement" $items -}}
+{{- else -}}
+  {{- $html := "" -}}
+  {{- if eq $page.Kind "section" -}}
+    {{- $html = printf `<li aria-current="page">%s</li>` (htmlEscape $sectionTitle) -}}
+  {{- else -}}
+    {{- $html = printf `<li><a href="%s">%s</a></li><li aria-current="page">%s</li>` $section.RelPermalink (htmlEscape $sectionTitle) (partial "record-name.html" (dict "page" $page "html" true)) -}}
+  {{- end -}}
+  {{- $html = printf `<nav class="breadcrumb" aria-label="Breadcrumb"><ol><li><a href="%s">Home</a></li>%s</ol></nav>` ("/" | relURL) $html -}}
+  {{- $out = $html | safeHTML -}}
+{{- end -}}
+{{- return $out -}}

@@ -1,0 +1,54 @@
+{{- /* A campaign page: one campaign family as the cited sources describe it
+  (SPEC section 5, ADR-0004 part 6). Attribution only as a cited source
+  states it, each entry with its source linked; the names this family used
+  are computed from the reports whose params.campaign names this page, not
+  stored. */ -}}
+{{ define "title" }}{{ partial "record-title.html" (dict "page" . "html" false) }} · {{ site.Title }}{{ end }}
+{{ define "description" }}{{ .Params.summary }}{{ end }}
+{{ define "head" }}{{ partial "jsonld.html" . }}{{ end }}
+{{ define "main" }}
+{{- $p := .Params -}}
+{{ partial "breadcrumb.html" (dict "page" . "jsonld" false) }}
+<h1>{{ partial "record-title.html" (dict "page" . "html" true) }}</h1>
+{{- with $p.aliases }}
+<p class="aliases">Also seen as: {{ range $i, $alias := . }}{{ if $i }}, {{ end }}{{ partial "record-name.html" (dict "page" $ "html" true "value" $alias) }}{{ end }}</p>
+{{- end }}
+<p class="lead">{{ $p.summary }}</p>
+<div class="card">
+<dl class="facts">
+<div><dt>First seen</dt><dd>{{ time.Format "2006-01-02" $p.first_seen }}</dd></div>
+<div><dt>Last seen</dt><dd>{{ time.Format "2006-01-02" $p.last_seen }}</dd></div>
+<div><dt>Delivery</dt><dd>{{ range $i, $d := $p.delivery }}{{ if $i }}, {{ end }}{{ partial "label.html" (printf "delivery.%s" $d) }}{{ end }}</dd></div>
+<div><dt>Targeted systems</dt><dd>{{ range $i, $os := $p.targeted_os }}{{ if $i }}, {{ end }}{{ partial "label.html" (printf "os.%s" $os) }}{{ end }}</dd></div>
+</dl>
+</div>
+<section class="card" aria-labelledby="steals">
+<h2 id="steals">What it steals</h2>
+<ul class="bullets">
+{{- range $p.steals }}<li>{{ . }}</li>{{ end -}}
+</ul>
+</section>
+<section class="card" aria-labelledby="attribution">
+<h2 id="attribution">Attribution</h2>
+{{ partial "attribution.html" . }}
+</section>
+{{- $slug := .File.ContentBaseName }}
+{{- $names := where (where site.RegularPages "Section" "reports") "Params.campaign.slug" $slug }}
+{{- with $names }}
+<section class="card" aria-labelledby="names">
+<h2 id="names">Names this family used</h2>
+<ul class="record-list">
+{{- range sort . "Date" "desc" }}
+{{ partial "record-item.html" . }}
+{{- end }}
+</ul>
+</section>
+{{- end }}
+{{- with .Content }}
+<section class="card prose" aria-labelledby="what-happened">
+<h2 id="what-happened">What happened</h2>
+{{ . }}
+</section>
+{{- end }}
+{{ partial "sources.html" . }}
+{{ end }}

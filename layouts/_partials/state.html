@@ -1,0 +1,23 @@
+{{- /* The D6 state of a report (ADR-0004 part 1), from data/labels.toml.
+  Called with a dict:
+    page  the report page
+    part  "chip"     the state chip alone (lists and the type line)
+          "summary"  the type line (chip plus name type) and the state
+                     sentence, under the h1 of the report page
+          "basis"    the "What was checked" list, params.state_basis in order
+  The chip carries the class state-chip and nothing else: neutral blue
+  (chip_text on chip_bg), never orange (SPEC section 7). */ -}}
+{{- $p := .page.Params -}}
+{{- $chip := partial "label.html" (printf "state.%s.chip" $p.state) -}}
+{{- if eq .part "chip" -}}
+<span class="state-chip">{{ $chip }}</span>
+{{- else if eq .part "summary" -}}
+<p class="record-type"><span class="state-chip">{{ $chip }}</span> {{ partial "label.html" (printf "name_type.%s" $p.name_type) }}</p>
+<p class="state-sentence">{{ partial "label.html" (printf "state.%s.sentence" $p.state) }}</p>
+{{- else if eq .part "basis" -}}
+<ul class="state-basis">
+{{- range $p.state_basis }}<li>{{ . }}</li>{{ end -}}
+</ul>
+{{- else -}}
+{{- errorf "state.html: unknown part %q" .part -}}
+{{- end -}}

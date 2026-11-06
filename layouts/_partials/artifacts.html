@@ -1,0 +1,47 @@
+{{- /* The artifacts of a report in monospace code boxes, grouped by type in
+  the order of data/labels.toml (SPEC section 5). Called with the report
+  page. Every value renders exactly as stored, defanged (D8): it is the
+  whole text of a <code class="artifact">, so the render check can match it
+  and nothing turns it into a link. The boxes wrap anywhere instead of
+  scrolling or clipping (ADR-0003 part 6).
+
+  A hash links only to the lookup pages its listed_on names (ADR-0004
+  part 9), never to a file. The two URL forms are the constants below. */ -}}
+{{- $lookups := dict
+  "malwarebazaar" "https://bazaar.abuse.ch/sample/%s/"
+  "virustotal" "https://www.virustotal.com/gui/file/%s"
+-}}
+{{- $groups := hugo.Data.labels.artifact_group -}}
+{{- if not $groups }}{{ errorf "artifacts.html: data/labels.toml has no artifact_group list" }}{{ end -}}
+{{- $artifacts := .Params.artifacts -}}
+<section class="card" aria-labelledby="artifacts">
+<h2 id="artifacts">Artifacts</h2>
+{{- range $groups }}
+{{- $key := .key }}
+{{- $heading := .heading }}
+{{- if not (and $key $heading) }}{{ errorf "artifacts.html: an artifact_group in data/labels.toml lacks its key or heading" }}{{ end }}
+{{- with index $artifacts $key }}
+<h3>{{ $heading }}</h3>
+<ul class="artifact-list">
+{{- range . }}
+<li>
+{{- if eq $key "handles" -}}
+<span class="artifact-meta">{{ partial "label.html" (printf "platform.%s" .platform) }}</span><code class="artifact">{{ .value }}</code>
+{{- else if eq $key "packages" -}}
+<span class="artifact-meta">{{ partial "label.html" (printf "registry.%s" .registry) }}</span><code class="artifact">{{ .name }}</code>
+{{- else if eq $key "sha256" -}}
+{{- $hash := .value -}}
+<code class="artifact">{{ $hash }}</code>
+{{- with .file_name }}<span class="artifact-meta">File name</span><code class="artifact">{{ . }}</code>{{ end -}}
+<span class="artifact-meta">Look up</span><ul class="lookup-links">
+{{- range .listed_on }}<li><a href="{{ printf (index $lookups .) $hash }}">{{ partial "label.html" (printf "lookup.%s" .) }}</a></li>{{ end -}}
+</ul>
+{{- else -}}
+<code class="artifact">{{ . }}</code>
+{{- end -}}
+</li>
+{{- end }}
+</ul>
+{{- end }}
+{{- end }}
+</section>

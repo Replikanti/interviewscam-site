@@ -1,0 +1,1 @@
+rule 8: JSON-LD block 1 has a WebPage with lastReviewed on a page that is not a report page

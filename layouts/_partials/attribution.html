@@ -1,0 +1,12 @@
+{{- /* The attribution of a campaign page: each entry only as its cited
+  source states it, with the source linked (D6, ADR-0004 part 6). Called
+  with the campaign page. */ -}}
+{{- $sources := .Params.sources -}}
+<ul class="attribution-list">
+{{- range .Params.attribution }}
+{{- $source := index (where $sources "id" .source) 0 }}
+<li class="attribution">{{ .statement }}{{ partial "label.html" "attribution.as_stated_by" }}{{ partial "source-ref.html" $source }}</li>
+{{- else }}
+<li class="attribution">{{ partial "label.html" "attribution.none" }}</li>
+{{- end }}
+</ul>

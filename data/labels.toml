@@ -1,0 +1,133 @@
+# The fixed wording of the record pages (ADR-0004, SPEC section 5), the
+# single source for the templates under layouts/. The D6, D7 and D10 strings
+# are pinned a second time, independently, as constants in tools/sitecheck.py
+# (the render check), so a copy change here turns `render` red until the same
+# change lands there too and shows up in a safety-net diff (ADR-0004
+# Consequences). Read through hugo.Data.labels, never .Site.Data.
+#
+# Strings with %s or %d are printf formats: the template fills in the name,
+# the count or the date, in that order.
+
+# The two D6 states: the chip (neutral blue, chip_text on chip_bg, never
+# orange) and the sentence under the h1 of a report page.
+[state.name_abused]
+chip = "Name abused"
+sentence = "This name belongs to someone else. The campaign used it without their involvement."
+
+[state.front]
+chip = "Front"
+sentence = "No real company, person or product was found behind this name."
+
+[persona]
+# D10: rendered in brackets right after every visible persona name or alias,
+# wherever the name renders (layouts/_partials/record-name.html).
+label = "(name used by the campaign, possibly a stolen identity)"
+# The display name of a persona record with params.hide_name = true
+# (ADR-0004 part 5).
+hidden_name = "Name hidden on request"
+# The notice on that page; the template adds the link to Corrections and
+# removal.
+hidden_notice = "The person named on this page asked for the name to be hidden. It stays hidden while the request is reviewed."
+
+# Page titles (h1, and <title> plus " · interviewscam.com").
+[title]
+report = "%s, a name used in fake job interviews"
+hidden = "A person's name used in fake job interviews, hidden on request"
+campaign = "%s, a campaign family that uses fake job interviews"
+reports = "Names used in fake job interviews"
+campaigns = "Campaign families"
+
+# The D7 label: facts, never a verdict. %d is params.independent_reports
+# (or the number of cited sources), %s is params.last_reviewed.
+[label]
+reported = "Reported %d times, evidence reviewed on %s"
+reported_once = "Reported once, evidence reviewed on %s"
+one_source = "Named in 1 cited source, reviewed on %s"
+sources = "Named in %d cited sources, reviewed on %s"
+
+# The campaign line of a report page and the attribution of a campaign page
+# (ADR-0004 part 6). The parts sit around links, so they are stored as
+# pieces: "<named><campaign link><source><source title link> (<publisher>,
+# <date>)[<lists><artifact>]".
+[campaign_line]
+named = "Campaign family that used this name: "
+source = ". Source: "
+lists = ", which lists "
+unattributed = "Campaign family: unattributed"
+
+[attribution]
+as_stated_by = ", as stated by "
+none = "No attribution is stated by the cited sources."
+
+# The type line next to the state chip (params.name_type).
+[name_type]
+company = "Company"
+persona = "Recruiter persona"
+meeting_app = "Meeting app"
+domain = "Domain"
+repository = "Repository"
+package = "Package"
+
+# Artifact groups of a report page, in this order (params.artifacts).
+[[artifact_group]]
+key = "domains"
+heading = "Domains"
+[[artifact_group]]
+key = "urls"
+heading = "URLs"
+[[artifact_group]]
+key = "ips"
+heading = "IP addresses"
+[[artifact_group]]
+key = "emails"
+heading = "Email addresses"
+[[artifact_group]]
+key = "repositories"
+heading = "Repositories"
+[[artifact_group]]
+key = "file_names"
+heading = "File names"
+[[artifact_group]]
+key = "handles"
+heading = "Handles"
+[[artifact_group]]
+key = "packages"
+heading = "Packages"
+[[artifact_group]]
+key = "sha256"
+heading = "SHA-256 file hashes"
+
+# params.artifacts.handles[].platform
+[platform]
+telegram = "Telegram"
+linkedin = "LinkedIn"
+x = "X"
+discord = "Discord"
+whatsapp = "WhatsApp"
+skype = "Skype"
+github = "GitHub"
+other = "Other platform"
+
+# params.artifacts.packages[].registry
+[registry]
+npm = "npm"
+pypi = "PyPI"
+other = "Other registry"
+
+# The lookup links of a hash (params.artifacts.sha256[].listed_on); the URL
+# forms are named constants in layouts/_partials/artifacts.html.
+[lookup]
+malwarebazaar = "MalwareBazaar"
+virustotal = "VirusTotal"
+
+# Campaign pages: params.delivery and params.targeted_os.
+[delivery]
+fake_meeting_app = "Fake meeting app"
+coding_test_repository = "Coding test repository"
+npm_package = "npm package"
+terminal_command = "Terminal command"
+
+[os]
+windows = "Windows"
+macos = "macOS"
+linux = "Linux"

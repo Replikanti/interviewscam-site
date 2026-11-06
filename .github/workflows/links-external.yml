@@ -14,12 +14,16 @@ permissions:
 jobs:
   links-external:
     runs-on: ubuntu-24.04
-    # 3x the first green run, rounded up to whole minutes (ADR-0003 part 5):
-    # that run took 73 s (run 41931934799, 2026-11-04, a manual start on the
-    # branch of PR #16 with the final reflow check), 3 x 73 s = 219 s ->
-    # 4 min. M2 has no external links to fetch; revisit once milestone 5
-    # adds sources.
-    timeout-minutes: 4
+    # ADR-0004 Numbers, "check.sh workflow timeouts": 2 x the slowest green
+    # run of check.sh on PR #23 (M3 PR 4, the first with the fixture build),
+    # rounded up to whole minutes. Green runs on 2026-11-05: check 161 s
+    # (run 42095775647), lighthouse build 154 s (run 42095775227),
+    # links-external 181 s (run 42095780993, a manual start on the branch);
+    # spread 181 / 154 = 1.18, so the factor is 2: 2 x 181 s = 362 s ->
+    # 7 min. Re-derive in the next PR that changes check.sh.
+    # M3 has no external links to fetch yet (the fixture build's links stay
+    # offline); revisit once milestone 5 adds sources.
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

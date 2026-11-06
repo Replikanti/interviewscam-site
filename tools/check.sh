@@ -12,7 +12,17 @@
 #
 # Usage: bash tools/check.sh [--external]
 #   --external  check links online (third-party sites included) instead of
-#               the offline internal-link check (ADR-0002 part 7)
+#               the offline internal-link check (ADR-0002 part 7); the
+#               fixture build's links stay offline, because its sources
+#               and lookups are placeholders
+#
+# The fixture build (ADR-0004 part 10): production content/ has no records
+# until milestone 5, so the record templates would meet no check before
+# then. A second build of the real templates on the canonical fixture
+# records (tests/fixtures/records/pass-fixture-site/) goes into
+# public-fixtures/ and gets the same site, render, reflow, HTML and offline
+# link checks. It is assembled in .fixture-site/, never in content/, and the
+# deploy artifact stays public/ alone.
 #
 # tools/selftest.sh sources this file for html_check, links_check,
 # reflow_check and the sitecheck functions, so the self-test runs exactly the invocations the real
@@ -20,6 +30,10 @@
 # executed.
 
 CHECK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The fixture build: its source tree, its output and the records it adds.
+FIXTURE_SITE="$CHECK_ROOT/.fixture-site"
+FIXTURE_PUBLIC="$CHECK_ROOT/public-fixtures"
+FIXTURE_RECORDS="$CHECK_ROOT/tests/fixtures/records/pass-fixture-site/content"
 # shellcheck source=tools/fetch-tools.sh
 source "$CHECK_ROOT/tools/fetch-tools.sh"
 
@@ -157,25 +171,75 @@ step_tokens() { tokens_check "$CHECK_ROOT"; }
 
 step_site() { site_check "$CHECK_ROOT" "$CHECK_ROOT/schema" "$CHECK_ROOT/public"; }
 
+step_site_fixtures() { site_check "$FIXTURE_SITE" "$CHECK_ROOT/schema" "$FIXTURE_PUBLIC"; }
+
 step_render() {
   render_check "$CHECK_ROOT" "$CHECK_ROOT/schema" "$CHECK_ROOT/public" \
     "$CHECK_ROOT/tests/fixtures"
 }
 
-step_build() {
+# The fixture tree is not the production tree, so it never gets the
+# fixture-leak check (--fixtures): every record in it is a fixture.
+step_render_fixtures() {
+  render_check "$FIXTURE_SITE" "$CHECK_ROOT/schema" "$FIXTURE_PUBLIC"
+}
+
+# hugo_build <source dir> <destination dir>: the one Hugo invocation, for
+# the production build and the fixture build alike.
+hugo_build() {
   if [[ ! -x "$HUGO_BIN" ]]; then
     echo "hugo not found at $HUGO_BIN; run tools/fetch-tools.sh" >&2
     return 1
   fi
-  "$HUGO_BIN" --source "$CHECK_ROOT" --gc --minify --panicOnWarning \
-    --cleanDestinationDir --destination "$CHECK_ROOT/public"
+  "$HUGO_BIN" --source "$1" --gc --minify --panicOnWarning \
+    --cleanDestinationDir --destination "$2"
 }
 
-step_html() { html_check "$CHECK_ROOT/public"; }
+step_build() { hugo_build "$CHECK_ROOT" "$CHECK_ROOT/public"; }
 
-step_reflow() { reflow_check "$CHECK_ROOT/public"; }
+# step_fixture_build: assemble .fixture-site/ from hugo.toml, layouts/,
+# assets/, data/, static/ (if present), the top-level content/*.md and the
+# fixture records, then build it into public-fixtures/. Both directories are
+# removed first, so a failed build leaves no stale tree for the steps after
+# it to pass on.
+step_fixture_build() {
+  rm -rf "$FIXTURE_SITE" "$FIXTURE_PUBLIC" || return 1
+  mkdir -p "$FIXTURE_SITE/content" || return 1
+  local item
+  for item in hugo.toml layouts assets data static; do
+    [[ -e "$CHECK_ROOT/$item" ]] || continue
+    cp -R "$CHECK_ROOT/$item" "$FIXTURE_SITE/" || return 1
+  done
+  for item in "$CHECK_ROOT"/content/*.md; do
+    [[ -e "$item" ]] || continue
+    cp "$item" "$FIXTURE_SITE/content/" || return 1
+  done
+  if [[ ! -d "$FIXTURE_RECORDS" ]]; then
+    echo "fixture records not found at $FIXTURE_RECORDS" >&2
+    return 1
+  fi
+  cp -R "$FIXTURE_RECORDS/." "$FIXTURE_SITE/content/" || return 1
+  hugo_build "$FIXTURE_SITE" "$FIXTURE_PUBLIC"
+}
+
+# Both trees, the second even when the first fails.
+step_html() {
+  local rc=0
+  html_check "$CHECK_ROOT/public" || rc=1
+  html_check "$FIXTURE_PUBLIC" || rc=1
+  return $rc
+}
+
+step_reflow() {
+  local rc=0
+  reflow_check "$CHECK_ROOT/public" || rc=1
+  reflow_check "$FIXTURE_PUBLIC" || rc=1
+  return $rc
+}
 
 step_links() { links_check "$CHECK_ROOT/public" "$EXTERNAL"; }
+
+step_links_fixtures() { links_check "$FIXTURE_PUBLIC"; }
 
 step_selftest() { bash "$CHECK_ROOT/tools/selftest.sh"; }
 
@@ -217,23 +281,26 @@ check_main() {
   run_step build step_build
   run_step "site (third-party, CSP, defang)" step_site
   run_step "render (D6, D7, D10, structured data)" step_render
+  run_step "fixture build" step_fixture_build
+  run_step "site (fixture build)" step_site_fixtures
+  run_step "render (fixture build)" step_render_fixtures
 
   if in_github_actions; then
-    run_step "reflow (320 CSS px)" step_reflow
+    run_step "reflow (320 CSS px, both trees)" step_reflow
   else
     echo
-    echo "==> reflow (320 CSS px)"
+    echo "==> reflow (320 CSS px, both trees)"
     echo "$REFLOW_NOT_RUN_LINE"
-    record "reflow (320 CSS px)" "NOT RUN (CI only)"
+    record "reflow (320 CSS px, both trees)" "NOT RUN (CI only)"
   fi
 
   if in_github_actions; then
-    run_step "html (Nu Html Checker)" step_html
+    run_step "html (Nu Html Checker, both trees)" step_html
   else
     echo
-    echo "==> html (Nu Html Checker)"
+    echo "==> html (Nu Html Checker, both trees)"
     echo "$HTML_NOT_RUN_LINE"
-    record "html (Nu Html Checker)" "NOT RUN (CI only)"
+    record "html (Nu Html Checker, both trees)" "NOT RUN (CI only)"
   fi
 
   if [[ -n "$EXTERNAL" ]]; then
@@ -241,6 +308,7 @@ check_main() {
   else
     run_step "links (offline, internal)" step_links
   fi
+  run_step "links (fixture build, offline)" step_links_fixtures
 
   if in_github_actions; then
     run_step selftest step_selftest

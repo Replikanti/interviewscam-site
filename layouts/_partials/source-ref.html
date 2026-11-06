@@ -1,0 +1,5 @@
+{{- /* One cited source: its title as a link to its URL, then publisher and
+  date in brackets (SPEC section 5). Called with one params.sources entry.
+  The URL is the only live external link a record can carry; its host never
+  overlaps a declared attacker domain (R15). */ -}}
+<a href="{{ .url }}">{{ .title }}</a> ({{ .publisher }}, {{ time.Format "2006-01-02" .date }})

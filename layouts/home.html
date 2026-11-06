@@ -18,4 +18,29 @@
 <li><a href="{{ "/before-your-call/#already-ran" | relURL }}">Already ran it? What to do now</a></li>
 </ul>
 </section>
+{{- /* The five latest reports by date (ADR-0004 Numbers: about 290 px at
+  the 640 px reference viewport) and every campaign family. Both sections
+  stay out of the page while there are no records. */}}
+{{- with first 5 (where site.RegularPages "Section" "reports").ByDate.Reverse }}
+<section class="card" aria-labelledby="latest">
+<h2 id="latest">Latest reports</h2>
+<ul class="record-list">
+{{- range . }}
+{{ partial "record-item.html" . }}
+{{- end }}
+</ul>
+<ul class="link-list">
+<li><a href="{{ "/reports/" | relURL }}">All names</a></li>
+</ul>
+</section>
+{{- end }}
+{{- with where site.RegularPages "Section" "campaigns" }}
+<section class="card" aria-labelledby="families">
+<h2 id="families">Campaign families</h2>
+{{ partial "record-list.html" . }}
+<ul class="link-list">
+<li><a href="{{ "/campaigns/" | relURL }}">All campaign families</a></li>
+</ul>
+</section>
+{{- end }}
 {{ end }}

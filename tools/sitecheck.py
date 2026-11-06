@@ -2120,15 +2120,20 @@ JSONLD_TYPE_KEYS = ("@type", "type")
 # (schema:additionalType), additionalType, about, mentions or a keyword such
 # as @reverse cannot add an object about a record's subject. Every object is
 # typed; the block root may instead be a bare @graph container.
+# No dateModified: no record states when it was last changed, so the key
+# would claim a modification the record does not state (ADR-0004 part 8).
 JSONLD_KEYS = {
-    "WebPage": {"url", "name", "description", "datePublished", "dateModified",
-                "lastReviewed", "isPartOf", "publisher"},
+    "WebPage": {"url", "name", "description", "datePublished", "lastReviewed",
+                "isPartOf", "publisher"},
     "WebSite": {"name", "url"},
     "Organization": {"name", "url"},
     "BreadcrumbList": {"itemListElement"},
     "ListItem": {"position", "name", "item"},
 }
 JSONLD_OBJECT_KEYS = {"@context", "@id", *JSONLD_TYPE_KEYS}
+# lastReviewed is a report's D7 evidence review (params.last_reviewed); only
+# a report page may carry it (ADR-0004 part 8).
+REPORT_PAGE_URL = re.compile(re.escape(SITE_ORIGIN) + r"/reports/[^/]+/")
 JSONLD_GRAPH_KEYS = {"@context", "@graph"}
 MICRODATA_ATTRS = ("itemscope", "itemtype", "itemprop", "vocab", "typeof")
 # RDFa: a second structured-data syntax, banned outright (ADR-0004 part 8).
@@ -2916,9 +2921,13 @@ def jsonld_value_problems(value, types, where, page_url):
     because titles carry the subject's name."""
     problems = []
     kind = "/".join(types)
-    for key in ("name", "description", "datePublished", "dateModified", "lastReviewed"):
+    for key in ("name", "description", "datePublished", "lastReviewed"):
         if key in value and not isinstance(value[key], str):
             problems.append(f"rule 8: {where} has a {kind} whose {key} is not a string")
+    if "lastReviewed" in value and not REPORT_PAGE_URL.match(page_url):
+        problems.append(f"rule 8: {where} has a {kind} with lastReviewed on a page that "
+                        "is not a report page; only a report states a review date, so "
+                        "no other page may claim one (ADR-0004 part 8)")
     for key in ("url", "item", "@id"):
         if key in value and not (isinstance(value[key], str)
                                  and value[key].startswith(SITE_ORIGIN + "/")):

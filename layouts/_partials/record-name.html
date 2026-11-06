@@ -1,0 +1,32 @@
+{{- /* The only place a record name renders (ADR-0004 part 5, D10). Called
+  with a dict and returns the name:
+    page   the record page (a report or a campaign)
+    html   true: HTML, with the persona label in a span of class
+           persona-label; false: plain text, for <title>, the description
+           and JSON-LD
+    value  optional: one alias of that record instead of params.name
+
+  A persona's name and aliases always carry the label from
+  data/labels.toml. A persona with params.hide_name = true renders the
+  placeholder "Name hidden on request" and never reads params.name, so the
+  name leaves every page, title and list in one line (SPEC section 6). */ -}}
+{{- $p := .page.Params -}}
+{{- $persona := and (eq .page.Section "reports") (eq $p.name_type "persona") -}}
+{{- $out := "" -}}
+{{- if and $persona $p.hide_name -}}
+  {{- $out = partial "label.html" "persona.hidden_name" -}}
+  {{- if .html }}{{ $out = $out | htmlEscape | safeHTML }}{{ end -}}
+{{- else -}}
+  {{- $name := .value | default $p.name -}}
+  {{- if .html -}}
+    {{- $out = htmlEscape $name -}}
+    {{- if $persona -}}
+      {{- $out = printf "%s <span class=\"persona-label\">%s</span>" $out (htmlEscape (partial "label.html" "persona.label")) -}}
+    {{- end -}}
+    {{- $out = safeHTML $out -}}
+  {{- else -}}
+    {{- $out = $name -}}
+    {{- if $persona }}{{ $out = printf "%s %s" $name (partial "label.html" "persona.label") }}{{ end -}}
+  {{- end -}}
+{{- end -}}
+{{- return $out -}}

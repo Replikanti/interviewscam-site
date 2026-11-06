@@ -2,6 +2,10 @@ worktrees/
 # Build output and generator state. Anchored, so the site fixtures' public/
 # trees under tests/fixtures/site/ stay tracked.
 /public/
+# The fixture build of tools/check.sh (ADR-0004 part 10): its assembled
+# source tree and its output, never committed and never deployed.
+/.fixture-site/
+/public-fixtures/
 resources/_gen/
 .hugo_build.lock
 # Pinned toolchain, fetched and verified by tools/fetch-tools.sh.

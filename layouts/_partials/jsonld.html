@@ -1,0 +1,34 @@
+{{- /* Structured data, JSON-LD only (ADR-0004 part 8): on a record page a
+  WebPage plus the BreadcrumbList, on a section page the BreadcrumbList
+  alone. No Article, ClaimReview, Review, Rating or Person, and no node
+  about a record's subject: the WebPage describes this page, and the only
+  Organization is the site itself. Date keys: datePublished is the
+  record's date; a report adds lastReviewed, its params.last_reviewed (the
+  D7 evidence review). A campaign states no review date, so its WebPage
+  carries datePublished alone, and no page carries dateModified, because no
+  record states when it was last modified. No key may claim a review or a
+  change the record does not state (ADR-0004 part 8).
+  jsonify | safeJS emits one parseable object with <, > and & escaped. */ -}}
+{{- $breadcrumb := partial "breadcrumb.html" (dict "page" . "jsonld" true) -}}
+{{- $data := dict "@context" "https://schema.org" -}}
+{{- if eq .Kind "section" -}}
+  {{- $data = merge $data $breadcrumb -}}
+{{- else -}}
+  {{- $site := dict "@type" "WebSite" "name" site.Title "url" site.Home.Permalink -}}
+  {{- $publisher := dict "@type" "Organization" "name" site.Title "url" site.Home.Permalink -}}
+  {{- $page := dict
+    "@type" "WebPage"
+    "@id" .Permalink
+    "url" .Permalink
+    "name" (partial "record-title.html" (dict "page" . "html" false))
+    "description" .Params.summary
+    "datePublished" (.Date.Format "2006-01-02")
+    "isPartOf" $site
+    "publisher" $publisher
+  -}}
+  {{- with .Params.last_reviewed -}}
+    {{- $page = merge $page (dict "lastReviewed" (time.Format "2006-01-02" .)) -}}
+  {{- end -}}
+  {{- $data = merge $data (dict "@graph" (slice $page $breadcrumb)) -}}
+{{- end }}
+<script type="application/ld+json">{{ $data | jsonify | safeJS }}</script>

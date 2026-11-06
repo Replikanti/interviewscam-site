@@ -1,0 +1,7 @@
+{{- /* One record in a list (Home, the section pages, a campaign's names, a
+  report's related names): the name as a link, the state chip for a report,
+  and the publication date. Exactly one record link per list item, so each
+  name keeps its own chip (D6; sitecheck render rule 3). Called with the
+  record page. */ -}}
+<li><a href="{{ .RelPermalink }}">{{ partial "record-name.html" (dict "page" . "html" true) }}</a>
+{{- if eq .Section "reports" }} {{ partial "state.html" (dict "page" . "part" "chip") }}{{ end }} <time class="record-date" datetime="{{ .Date.Format "2006-01-02" }}">{{ .Date.Format "2006-01-02" }}</time></li>
