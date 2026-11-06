@@ -5,7 +5,7 @@
   names, body, sources. Every name renders through record-name.html and
   every fixed string comes from data/labels.toml; sitecheck render pins
   the result. */ -}}
-{{ define "title" }}{{ partial "record-title.html" (dict "page" . "html" false) }} · {{ site.Title }}{{ end }}
+{{ define "title" }}{{ partial "record-title.html" (dict "page" . "html" false "head" true) }} · {{ site.Title }}{{ end }}
 {{ define "description" }}{{ .Params.summary }}{{ end }}
 {{ define "head" }}{{ partial "jsonld.html" . }}{{ end }}
 {{ define "main" }}

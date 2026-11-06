@@ -2093,6 +2093,14 @@ STATE_SENTENCE = {
 PERSONA_LABEL = "(name used by the campaign, possibly a stolen identity)"
 TITLE_SUFFIX = " · interviewscam.com"
 REPORT_TITLE = "{name}, a name used in fake job interviews"
+# The <title> of a visible persona's own report page puts the D10 label
+# first, word for word and capitalised as the start of a sentence, so a
+# search result cut at about 60 characters still shows the whole label
+# (SPEC section 5, ADR-0004 part 4, amended in M3 PR 6). Only that <title>
+# takes this form: the h1, the lists and JSON-LD keep the label after the
+# name, and the meta description is the summary, with neither (rule 2).
+PERSONA_LABEL_FIRST = "Name used by the campaign, possibly a stolen identity: {name}"
+PERSONA_HEAD_TITLE = "{name}"
 HIDDEN_TITLE = "A person's name used in fake job interviews, hidden on request"
 CAMPAIGN_TITLE = "{name}, a campaign family that uses fake job interviews"
 SECTION_TITLES = {"reports": "Names used in fake job interviews",
@@ -2167,7 +2175,7 @@ LOOKUP_PAGE = re.compile(r"https://bazaar\.abuse\.ch/sample/[0-9a-f]{64}/"
 # Rule 7 on every page: an internal link (relative or to the site's own
 # host) points to a page path, which ends in "/", or to one of these
 # non-page files. The production build and the fixtures link none today
-# (404.html is served, never linked); PR 5 adds /feed.json.
+# (404.html is served, never linked); PR 8 adds /feed.json.
 INTERNAL_FILES = frozenset()
 # The one written form of an absolute link to the site's own host.
 OWN_URL = re.compile(r"https://interviewscam\.com(?:[/?#]|$)")
@@ -2182,6 +2190,14 @@ RECORD_DATE = "record-date"
 # match ordinary words (about, like, trust).
 JOIN_MIN_LETTERS = 4
 NAME_TOKEN = re.compile(r"[^\W_]+")
+# Rule 4's exempt spans (the label-first <title>, the own-artifact boxes):
+# the joined text keeps their text between these two private-use
+# characters, and a name match is exempt only when it lies wholly between
+# one pair. Both are non-word characters, so a name that runs across a
+# marker still matches; the same characters in page text are replaced
+# first, so a page cannot forge a span.
+SPAN_OPEN, SPAN_CLOSE = "\ue000", "\ue001"
+SPAN_FORGERY = str.maketrans({SPAN_OPEN: "\ufffd", SPAN_CLOSE: "\ufffd"})
 
 
 class Element:
@@ -2228,25 +2244,32 @@ class Element:
             el = el.parent
         return False
 
-    def strings(self, shown=True):
+    def strings(self, shown=True, spans=frozenset()):
         """Text pieces; shown=True skips hidden content, shown=False keeps
-        it, <template> content included (never script or style)."""
+        it, <template> content included (never script or style). The text
+        of an element in spans (rule 4's exemptions) is kept between
+        SPAN_OPEN and SPAN_CLOSE; with spans, those characters in the page
+        text itself are replaced, so a page cannot forge a span."""
         closed = shown and self.tag == "details" and "open" not in self.attrs
         for child in self.children:
             if isinstance(child, str):
                 if not closed:  # loose text of a closed <details> is hidden
-                    yield child
+                    yield child.translate(SPAN_FORGERY) if spans else child
             elif shown and (child.tag in NO_TEXT_ELEMENTS or child.hides()):
                 continue
+            elif child in spans:
+                yield SPAN_OPEN
+                yield from child.strings(shown, spans)
+                yield SPAN_CLOSE
             elif child.tag not in ("script", "style"):
-                yield from child.strings(shown)
+                yield from child.strings(shown, spans)
 
-    def text(self, sep="", shown=True):
+    def text(self, sep="", shown=True, spans=frozenset()):
         """The text inside the element, whitespace collapsed, hidden content
         left out (shown=False keeps it). sep="" joins the text pieces as a
         browser lays out inline text; sep=" " also separates block
         neighbours that a tight join would run together."""
-        return squash(sep.join(self.strings(shown)))
+        return squash(sep.join(self.strings(shown, spans)))
 
     def nearest(self, tag):
         el = self.parent
@@ -2455,6 +2478,23 @@ def record_title(record):
     return REPORT_TITLE.format(name=display_name(record))
 
 
+def head_title(record):
+    """The <title> of a record page, without the site suffix (rule 2): the
+    label-first form for a visible persona, else the fixed title."""
+    if is_persona(record) and not is_hidden(record):
+        return PERSONA_HEAD_TITLE.format(
+            name=PERSONA_LABEL_FIRST.format(name=text_param(record, "name") or ""))
+    return record_title(record)
+
+
+def own_record(by_page, rel, page):
+    """The record whose own page this is: public/<section>/<slug>/index.html
+    itself, never a page nested under its directory (rule 1 fails that),
+    and only when the page has no markup: finding, whose nesting the
+    class-scoped reads below cannot trust. None otherwise."""
+    return None if page.unclosed else by_page.get(rel)
+
+
 def record_label(record):
     """The D7 label of a report (rule 5), or None when none can be derived."""
     count = record.params.get("independent_reports")
@@ -2525,18 +2565,24 @@ def name_pattern(name):
     return re.compile(rf"(?<![^\W_]){''.join(parts)}(?![^\W_])")
 
 
-def title_problems(page, want):
+def document_titles(page):
+    """The document <title> elements; an SVG <title> is a tooltip."""
+    return [n for n in by_tag(page, "title") if not n.inside_tag("svg")]
+
+
+def title_problems(page, want, head=None):
     """Rule 2: one <title> with the fixed title plus suffix, one <h1> with
-    the fixed title."""
+    the fixed title. head is the <title> form when it differs from the h1
+    (a visible persona's own page: the label first)."""
     problems = []
-    # An SVG <title> is a tooltip, not the document title.
-    titles = [n for n in by_tag(page, "title") if not n.inside_tag("svg")]
+    head = want if head is None else head
+    titles = document_titles(page)
     if len(titles) != 1:
         problems.append(f"rule 2: {len(titles)} <title> elements, exactly one is needed")
     for el in titles:
-        if el.text() != want + TITLE_SUFFIX:
+        if el.text() != head + TITLE_SUFFIX:
             problems.append(f"rule 2: <title> reads {show(el.text())}, the fixed title "
-                            f"is {show(want + TITLE_SUFFIX)} (SPEC section 5)")
+                            f"is {show(head + TITLE_SUFFIX)} (SPEC section 5)")
     h1s = by_tag(page, "h1")
     if len(h1s) != 1:
         problems.append(f"rule 2: {len(h1s)} <h1> elements, exactly one is needed")
@@ -2544,6 +2590,29 @@ def title_problems(page, want):
         if el.text() != want:
             problems.append(f"rule 2: <h1> reads {show(el.text())}, the fixed title "
                             f"is {show(want)} (SPEC section 5)")
+    return problems
+
+
+def description_problems(page, record):
+    """Rule 2 on a visible persona's own page: the one meta description
+    reads exactly the record's summary, so it carries neither the name nor
+    the label (SPEC section 5). R5 keeps the name out of the summary in the
+    source; rule 4 alone would pass a description with the labelled name."""
+    want = text_param(record, "summary")
+    if want is None:
+        return []  # the schema's finding
+    metas = [n for n in by_tag(page, "meta")
+             if n.attrs.get("name", "").strip().lower() == "description"]
+    problems = []
+    if len(metas) != 1:
+        problems.append(f"rule 2: {len(metas)} <meta name=\"description\"> elements, "
+                        "exactly one is needed")
+    for el in metas:
+        got = squash(el.attrs.get("content", ""))
+        if got != squash(want):
+            problems.append(f"rule 2: the meta description reads {show(got)}; on a "
+                            "persona page it is exactly params.summary, without the name "
+                            "or the label (SPEC section 5)")
     return problems
 
 
@@ -2688,12 +2757,14 @@ def chip_problems(page, chips, report_page):
     return problems
 
 
-def page_texts(page):
+def page_texts(page, spans=frozenset()):
     """Every text of a page a reader or a search engine sees: the joined
     visible text (tight and spaced), each JSON-LD string and every attribute
     value, as written and percent-decoded (an alt, an aria-description, a
-    search link)."""
-    texts = [page.root.text(), page.root.text(" ")]
+    search link). The joined text keeps the text of the elements in spans
+    (rule 4's exemptions) between SPAN_OPEN and SPAN_CLOSE; their
+    attributes are scanned as usual."""
+    texts = [page.root.text(spans=spans), page.root.text(" ", spans=spans)]
     for _, value, _ in jsonld_values(page):
         if value is not None:
             texts += list(json_strings(value))
@@ -2718,10 +2789,72 @@ def hidden_texts(page):
     return texts
 
 
-def persona_label_problems(page, personas):
+def head_exemption(page, record):
+    """Rule 4 on a visible persona's own page: the document <title>, when it
+    is the only one and reads exactly the label-first head form (ADR-0004
+    part 4). Any other <title> stays in the scan."""
+    titles = document_titles(page)
+    if len(titles) == 1 and titles[0].text() == head_title(record) + TITLE_SUFFIX:
+        return set(titles)
+    return set()
+
+
+# Rule 4: the only characters an own-artifact box may hold, the printable
+# ASCII range U+0021 to U+007E (94 characters, no space). Every member
+# draws a visible glyph and the set can be read by eye; each wider set
+# tried in PR 6 had a member that draws blank or folds to a space
+# (ADR-0004 part 5, operator decision at #27 STOP 2).
+BOX_CHARS = frozenset(map(chr, range(0x21, 0x7F)))
+
+
+def plain_box(el):
+    """Rule 4 (ADR-0004 part 5): the box holds nothing but text, with no
+    child element (a <br> or an empty tag would break the name for the eye
+    but not for the scan), and that text, entity-decoded (the parser does
+    that) with nothing dropped or folded, consists only of BOX_CHARS. Any
+    other character, whitespace, a blank, an invisible, a combining mark or
+    a non-ASCII letter, makes the box non-exempt, so it fails closed."""
+    if any(not isinstance(child, str) for child in el.children):
+        return False
+    text = "".join(el.children)
+    return bool(text) and all(c in BOX_CHARS for c in text)
+
+
+def own_artifact_boxes(page, record):
+    """Rule 4 on a visible persona's own page (ADR-0004 part 5): the code
+    boxes that may hold the persona's own name, as its own artifacts do.
+    Only when the page's single h1 reads exactly the labelled title; then
+    every <code> outside hidden content whose whole text equals a declared
+    artifact value of the record as stored and is a plain box (plain_box:
+    a handle or a mailbox built from the name, never the name as a name),
+    and that carries the class artifact or is the <code> child of the
+    page's single campaign-line element. Their attributes stay in the scan."""
+    h1s = by_tag(page, "h1")
+    if len(h1s) != 1 or h1s[0].text() != record_title(record):
+        return set()
+    values = {squash(value) for _, value in declared_artifacts(record)}
+    lines = by_class(page, "campaign-line")
+    line = lines[0] if len(lines) == 1 else None
+    return {el for el in by_tag(page, "code")
+            if not el.concealed() and el.text() in values and plain_box(el)
+            and ("artifact" in el.classes or (line is not None and el.parent is line))}
+
+
+def in_one_span(text, match):
+    """The match lies wholly between one SPAN_OPEN and its SPAN_CLOSE."""
+    inner = match.group()
+    if SPAN_OPEN in inner or SPAN_CLOSE in inner:
+        return False
+    return text.rfind(SPAN_OPEN, 0, match.start()) > text.rfind(SPAN_CLOSE, 0, match.start())
+
+
+def persona_label_problems(page, personas, own=None):
     """Rule 4 (D10): every whole-word occurrence of a visible persona's name
     or alias is followed by the persona label, and none sits in hidden
-    content, where a label does not count."""
+    content, where a label does not count. own is the record whose own page
+    this is (own_record): for that persona's names alone a match that lies
+    wholly inside the label-first <title> or one own-artifact box is
+    exempt; a match that runs across a box's edge is not."""
     problems = []
     label = " " + fold_words(PERSONA_LABEL)
     for el in by_class(page, "persona-label"):
@@ -2729,6 +2862,11 @@ def persona_label_problems(page, personas):
             problems.append(f"rule 4: a persona-label element reads {show(el.text())}, "
                             f"the label is {show(PERSONA_LABEL)} (D10)")
     texts = [fold_words(t) for t in page_texts(page)]
+    own_texts = texts
+    if own is not None and any(own is p for p in personas):
+        spans = frozenset(head_exemption(page, own) | own_artifact_boxes(page, own))
+        if spans:
+            own_texts = [fold_words(t) for t in page_texts(page, spans)]
     hidden = [fold_words(t) for t in hidden_texts(page)]
     for persona in personas:
         names = record_names(persona)
@@ -2738,7 +2876,10 @@ def persona_label_problems(page, personas):
                 problems.append(f"rule 4: the {field} of the persona record "
                                 f"{persona.rel} appears in hidden content "
                                 f"({HIDDEN_CONTENT}), where no label counts (D10)")
-            for text in texts:
+            # The span exemption applies to the two joined texts (indexes 0
+            # and 1) only: attribute values and JSON-LD strings get none, so
+            # a marker forged there exempts nothing.
+            for i, text in enumerate(own_texts if persona is own else texts):
                 # A shorter name inside a labelled longer one (an alias that
                 # is part of the name) is covered by that label.
                 covered = [(m.start(), m.end()) for _, other in names
@@ -2747,11 +2888,15 @@ def persona_label_problems(page, personas):
                 bare = [m for m in pattern.finditer(text)
                         if not text.startswith(label, m.end())
                         and not any(s <= m.start() and m.end() <= e and (s, e) != m.span()
-                                    for s, e in covered)]
+                                    for s, e in covered)
+                        and not (persona is own and i < 2 and in_one_span(text, m))]
                 if bare:
                     problems.append(f"rule 4: the {field} of the persona record "
                                     f"{persona.rel} renders without the label "
-                                    f"{show(PERSONA_LABEL)} right after it (D10)")
+                                    f"{show(PERSONA_LABEL)} right after it (D10; the "
+                                    "only exemptions are the label-first <title> of its "
+                                    "own page and its own artifact boxes there, "
+                                    "ADR-0004 parts 4 and 5)")
                     break
     return problems
 
@@ -2919,11 +3064,41 @@ def jsonld_duplicate_keys(raw):
     return duplicates
 
 
-def jsonld_value_problems(value, types, where, page_url):
+def jsonld_date_problems(value, kind, where, record):
+    """Rule 8: the dates of a WebPage are the record's own (ADR-0004 part 8,
+    amended in M3 PR 6). record is the record whose own page this is, or
+    None. On a record page datePublished equals the record's date, and on a
+    report page lastReviewed equals params.last_reviewed, as strings
+    (YYYY-MM-DD). On any other page no record states a publication date, so
+    a datePublished there is a finding."""
+    problems = []
+    published = value.get("datePublished")
+    if "datePublished" in value and record is None:
+        problems.append(f"rule 8: {where} has a {kind} with datePublished on a page that "
+                        "is not a record's own page; no record states that date, so the "
+                        "page may not claim one (ADR-0004 part 8)")
+    elif isinstance(published, str) and record is not None:
+        want = record.data.get("date")
+        if isinstance(want, str) and published != want:
+            problems.append(f"rule 8: {where} has a {kind} whose datePublished "
+                            f"{show(published)} is not the record's date {show(want)} "
+                            "(ADR-0004 part 8)")
+    reviewed = value.get("lastReviewed")
+    if isinstance(reviewed, str) and record is not None and record.section == "reports":
+        want = text_param(record, "last_reviewed")
+        if want is not None and reviewed != want:
+            problems.append(f"rule 8: {where} has a {kind} whose lastReviewed "
+                            f"{show(reviewed)} is not the record's last_reviewed "
+                            f"{show(want)} (ADR-0004 part 8)")
+    return problems
+
+
+def jsonld_value_problems(value, types, where, page_url, record=None):
     """Rule 8: the values of a typed object's keys. The site-identity values
     are pinned (publisher, isPartOf, a WebSite, every url, item and @id a
-    site URL, a WebPage's url its own page); free text is only type-checked,
-    because titles carry the subject's name."""
+    site URL, a WebPage's url its own page), and so are a WebPage's dates
+    (jsonld_date_problems); free text is only type-checked, because titles
+    carry the subject's name."""
     problems = []
     kind = "/".join(types)
     for key in ("name", "description", "datePublished", "lastReviewed"):
@@ -2933,6 +3108,8 @@ def jsonld_value_problems(value, types, where, page_url):
         problems.append(f"rule 8: {where} has a {kind} with lastReviewed on a page that "
                         "is not a report page; only a report states a review date, so "
                         "no other page may claim one (ADR-0004 part 8)")
+    if "WebPage" in types:
+        problems += jsonld_date_problems(value, kind, where, record)
     for key in ("url", "item", "@id"):
         if key in value and not (isinstance(value[key], str)
                                  and value[key].startswith(SITE_ORIGIN + "/")):
@@ -2966,7 +3143,7 @@ def jsonld_value_problems(value, types, where, page_url):
     return problems
 
 
-def jsonld_type_problems(value, where, page_url, root=True):
+def jsonld_type_problems(value, where, page_url, root=True, record=None):
     """Rule 8 on one JSON-LD value: the only context, every object typed with
     an allowed type, an interviewscam.com Organization only, and on each
     object only the keys of JSONLD_KEYS. A block root may be a bare @graph
@@ -2974,7 +3151,7 @@ def jsonld_type_problems(value, where, page_url, root=True):
     problems = []
     if isinstance(value, list):
         for sub in value:
-            problems += jsonld_type_problems(sub, where, page_url, root)
+            problems += jsonld_type_problems(sub, where, page_url, root, record)
         return problems
     if not isinstance(value, dict):
         return problems
@@ -3006,7 +3183,7 @@ def jsonld_type_problems(value, where, page_url, root=True):
                             "(ADR-0004 part 8)")
     elif all(isinstance(t, str) and t in JSONLD_TYPES for t in types):
         allowed = JSONLD_OBJECT_KEYS.union(*(JSONLD_KEYS[t] for t in types))
-        problems += jsonld_value_problems(value, types, where, page_url)
+        problems += jsonld_value_problems(value, types, where, page_url, record)
     else:
         allowed = None  # the type finding is enough
     for key in sorted(value) if allowed is not None else ():
@@ -3020,13 +3197,15 @@ def jsonld_type_problems(value, where, page_url, root=True):
     # The value of a key that is not allowed is that key's finding alone.
     for key, sub in value.items():
         if key != "@context" and (allowed is None or key in allowed):
-            problems += jsonld_type_problems(sub, where, page_url, False)
+            problems += jsonld_type_problems(sub, where, page_url, False, record)
     return problems
 
 
-def structured_data_problems(page, page_url):
+def structured_data_problems(page, page_url, record=None):
     """Rule 8 on one page: JSON-LD parses without duplicate keys and uses
-    only the allowed types and keys; no microdata or RDFa attribute."""
+    only the allowed types and keys, and a WebPage's dates are those of
+    record, the record whose own page this is (None on any other page); no
+    microdata or RDFa attribute."""
     problems = []
     for i, value, error in jsonld_values(page):
         if error is not None:
@@ -3035,7 +3214,8 @@ def structured_data_problems(page, page_url):
         for key in dict.fromkeys(jsonld_duplicate_keys(page.jsonld[i])):
             problems.append(f"rule 8: JSON-LD block {i + 1} repeats the key {show(key)} "
                             "in one object; a parser keeps only one of them")
-        problems += jsonld_type_problems(value, f"JSON-LD block {i + 1}", page_url)
+        problems += jsonld_type_problems(value, f"JSON-LD block {i + 1}", page_url,
+                                         record=record)
     names = sorted({a for n in page.root.walk() for a in n.attrs
                     if a in MICRODATA_ATTRS or a in RDFA_ATTRS})
     for name in names:
@@ -3343,8 +3523,12 @@ def cmd_render(args):
                                 "the site never offers a file download (D8)")
             problems += url_problems(page)
             problems += internal_link_problems(page, page_path)
-            problems += persona_label_problems(page, personas)
-            problems += structured_data_problems(page, SITE_ORIGIN + page_path)
+            problems += persona_label_problems(page, personas,
+                                               own_record(by_page, rel, page))
+            # JSON-LD does not depend on element nesting, so rule 8 reads the
+            # page's own record even when the page has a markup: finding.
+            problems += structured_data_problems(page, SITE_ORIGIN + page_path,
+                                                 by_page.get(rel))
             # The tree infers no end tags (OPTIONAL_END): a page that omits
             # one gets that finding instead of the class-scoped rules, which
             # would read a nesting no browser builds.
@@ -3368,8 +3552,12 @@ def cmd_render(args):
             chips = own_chips(page, items)
             problems += chip_problems(page, chips, record is not None
                                       and record.section == "reports")
+            own = own_record(by_page, rel, page)
             if record is not None:
-                problems += title_problems(page, record_title(record))
+                problems += title_problems(page, record_title(record),
+                                           head_title(record) if own is record else None)
+                if own is record and is_persona(record) and not is_hidden(record):
+                    problems += description_problems(page, record)
                 problems += verdict_page_problems(page)
                 if record.section == "reports":
                     problems += state_problems(page, record, chips)

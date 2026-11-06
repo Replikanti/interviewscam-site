@@ -24,7 +24,7 @@ The address of a page about a person never contains the person's name. It carrie
 
 ## Recruiter names
 
-Recruiter identities are often stolen from real people. A recruiter's name appears only when the evidence shows it in the scam contact. It always carries the label "name used by the campaign, possibly a stolen identity". The real person can ask for removal through [Corrections and removal](/corrections/).
+Recruiter identities are often stolen from real people. A recruiter's name appears only when the evidence shows it in the scam contact. Wherever the name is shown as a name, it carries the label "name used by the campaign, possibly a stolen identity". On the report page about that recruiter, the name can also appear inside the handles, email addresses and other artifacts the campaign used. The heading of that page carries the label. The real person can ask for removal through [Corrections and removal](/corrections/).
 
 ## Labels state facts
 

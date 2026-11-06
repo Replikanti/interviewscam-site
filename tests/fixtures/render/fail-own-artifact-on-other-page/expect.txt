@@ -1,0 +1,1 @@
+public/about/index.html: rule 4: the params.name of the persona record content/reports/persona-1.md renders without the label

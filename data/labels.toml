@@ -19,9 +19,16 @@ chip = "Front"
 sentence = "No real company, person or product was found behind this name."
 
 [persona]
-# D10: rendered in brackets right after every visible persona name or alias,
-# wherever the name renders (layouts/_partials/record-name.html).
+# D10: rendered in brackets right after every visible persona name or alias
+# (layouts/_partials/record-name.html), in the h1, the lists and JSON-LD.
+# The one exception is the <title> of the persona's own page, which puts
+# the label first (label_first, title.persona_head; SPEC section 5,
+# ADR-0004 part 4). Its meta description is the summary, with neither the
+# name nor the label.
 label = "(name used by the campaign, possibly a stolen identity)"
+# The label first, word for word and capitalised as the start of a
+# sentence; %s is the name.
+label_first = "Name used by the campaign, possibly a stolen identity: %s"
 # The display name of a persona record with params.hide_name = true
 # (ADR-0004 part 5).
 hidden_name = "Name hidden on request"
@@ -32,6 +39,9 @@ hidden_notice = "The person named on this page asked for the name to be hidden. 
 # Page titles (h1, and <title> plus " · interviewscam.com").
 [title]
 report = "%s, a name used in fake job interviews"
+# The <title> of a visible persona's own page; %s is the name in the
+# label-first form (persona.label_first). The h1 keeps title.report.
+persona_head = "%s"
 hidden = "A person's name used in fake job interviews, hidden on request"
 campaign = "%s, a campaign family that uses fake job interviews"
 reports = "Names used in fake job interviews"

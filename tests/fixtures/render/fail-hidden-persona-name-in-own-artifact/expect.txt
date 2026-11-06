@@ -1,0 +1,1 @@
+public/reports/persona-2/index.html: rule 9: the params.name of content/reports/persona-2.md is hidden

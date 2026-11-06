@@ -2,8 +2,13 @@
   ADR-0004 part 4). Called with a dict and returns the title:
     page  the page
     html  true: HTML for the h1 (the persona label in its span); false:
-          plain text for <title>, the description and JSON-LD
-  baseof appends " · interviewscam.com" to the <title>. */ -}}
+          plain text, for <title> and JSON-LD
+    head  optional, plain text only: true gives the <title> form. For a
+          visible persona that is title.persona_head with the label first
+          (SPEC section 5, ADR-0004 part 4); for every other page it is the
+          title above
+  The <title> block appends " · interviewscam.com". */ -}}
+{{- if and .head .html }}{{ errorf "record-title.html: head is plain text only, never html" }}{{ end -}}
 {{- $page := .page -}}
 {{- $out := "" -}}
 {{- if eq $page.Kind "section" -}}
@@ -12,6 +17,9 @@
 {{- else if and (eq $page.Section "reports") (eq $page.Params.name_type "persona") $page.Params.hide_name -}}
   {{- $out = partial "label.html" "title.hidden" -}}
   {{- if .html }}{{ $out = htmlEscape $out }}{{ end -}}
+{{- else if and .head (eq $page.Section "reports") (eq $page.Params.name_type "persona") -}}
+  {{- $name := partial "record-name.html" (dict "page" $page "html" false "first" true) -}}
+  {{- $out = printf (partial "label.html" "title.persona_head") $name -}}
 {{- else -}}
   {{- $format := partial "label.html" (cond (eq $page.Section "campaigns") "title.campaign" "title.report") -}}
   {{- $name := partial "record-name.html" (dict "page" $page "html" .html) -}}

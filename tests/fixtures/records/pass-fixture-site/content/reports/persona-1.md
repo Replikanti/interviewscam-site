@@ -16,9 +16,25 @@ last_seen = 2026-10-28
 last_reviewed = 2026-11-01
 independent_reports = 2
 
+[params.campaign]
+slug = "example-campaign-family"
+source = "recruiter-accounts"
+basis = "artifact"
+artifact = "avery-exampleton-4b2a1"
+
 [params.artifacts]
-handles = [{ platform = "telegram", value = "@talent_lead_frontco" }]
-emails = ["lead[@]frontco-careers[.]example"]
+handles = [
+  { platform = "telegram", value = "@talent_lead_frontco" },
+  { platform = "linkedin", value = "avery-exampleton-4b2a1" },
+]
+emails = ["lead[@]frontco-careers[.]example", "avery[.]exampleton[@]frontco-careers[.]example"]
+
+[[params.sources]]
+id = "recruiter-accounts"
+title = "Recruiter accounts that hand out fake meeting apps"
+publisher = "Vendor Example Research"
+date = 2026-10-24
+url = "https://vendor.example/research/recruiter-accounts"
 +++
 
 The persona sent the meeting link from the front company record.

@@ -33,7 +33,7 @@ Proof of identity is used only to check a request. It is deleted once the decisi
 
 ## People named on a page
 
-A page can show the name of a person that a scam campaign used, as a recruiter or as someone at a company the campaign impersonated. A recruiter's name always carries the label "name used by the campaign, possibly a stolen identity".
+A page can show the name of a person that a scam campaign used, as a recruiter or as someone at a company the campaign impersonated. Wherever a recruiter's name is shown as a name, it carries the label "name used by the campaign, possibly a stolen identity". On the report page about that recruiter, the name can also appear inside the handles, email addresses and other artifacts the campaign used. The heading of that page carries the label.
 
 - **What is shown.** The name, as the campaign used it.
 - **Where it comes from.** The reports and their evidence, and the public sources the page cites.
