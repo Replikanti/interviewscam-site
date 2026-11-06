@@ -39,11 +39,16 @@ internal error, so a crash never reads as a finding or as a pass.
       data/tokens.toml is well formed and every listed colour pair meets its
       WCAG 2.2 contrast minimum with the ratio it states. No colour literal
       appears in assets/, layouts/, static/ or hugo.toml.
-  reflow --chrome BIN PUBLIC
+  reflow --chrome BIN [--launch-timeout SECONDS] PUBLIC
       Every HTML page in PUBLIC, loaded in headless Chrome at a 320 CSS px
       viewport, has no page-level horizontal overflow, and every word and
       replaced element lies within the viewport and within every clipping
-      ancestor (geometry, ADR-0003 part 6). CI only.
+      ancestor (geometry, ADR-0003 part 6). CI only. A Chrome that gives no
+      first answer within REFLOW_LAUNCH_TIMEOUT, or closes the pipe before
+      it, is started once more; every later answer has REFLOW_TIMEOUT.
+      Stall probes and Chrome's own log (kept on the tmpfs REFLOW_LOG_DIR)
+      go to stderr. --launch-timeout (default REFLOW_LAUNCH_TIMEOUT) is for
+      the self-test only.
   guard [--root DIR] [--hugo BIN]
       Repo-level rules: no JavaScript package-manager tooling in the build
       chain (D3); the Hugo hardening keys of ADR-0001 in hugo.toml AND in the
@@ -3750,9 +3755,62 @@ def cmd_tokens(args):
 # typical phone height at that width.
 REFLOW_WIDTH = 320
 REFLOW_HEIGHT = 640
-# A cold headless start and a local static page each take about a second on
-# the runner; 30 s caps a hang at a small part of the job timeout.
+# The budget of the first answer of every launch (Browser.getVersion, both
+# attempts; ADR-0003 part 6 and Numbers, amended for #24). Lower bound: one
+# attempt alone outlasts the longest stall seen, at most 70.3 s (PR 5 job
+# 20, image 20261101), so it is absorbed whether a killed Chrome keeps its
+# progress, the stall lies outside the VM, or only a fresh Chrome helps.
+# Upper bound: the 7-minute workflow cap holds the slowest green run of PR
+# 4 (181 s), the reflow-launch self-test cases it did not have yet (15.4 s:
+# 13.4 s in CI for the first six, at most 2 s for default-budget,
+# log-dir-fallback and first-answer-deadline together), a fully used
+# window (2 x L) and one more 70 s stall, so L is at most 76.8 s; 75 s
+# leaves 3.6 s of the cap. Below 71 s job 20's shape depends on a restart
+# helping again; above 76.8 s an absorbed window plus a second stall is
+# cancelled at 7 minutes.
+REFLOW_LAUNCH_TIMEOUT = 75
+# The budget of every later answer (ADR-0003 Numbers). A 23-page call makes
+# about 70 page-level calls in 1.9 to 2.8 s on the runner, and no later call
+# has run out in any job. A stall can reach past the first answer (PR 5 job
+# 11: its 8 pages took at least 4.8 s against about 2 s), and 30 s covers
+# that by a factor above 6. Shorter: the tail of a stall fails a page call,
+# which never retries. Longer: a hung page waits longer for no data.
 REFLOW_TIMEOUT = 30
+# Launches of Chrome per run (ADR-0003 part 6 and Numbers, amended for #24).
+# With REFLOW_LAUNCH_TIMEOUT one launch absorbs every stall seen; the second
+# covers a Chrome that exits at start or wedges where a fresh one does not
+# (after #23's cuts and PR 5 job 7's, the fresh Chrome finished a normal
+# call), and it doubles the window to 150 s, 2.1 times the longest stall.
+# 1: an early exit or a wedged launch fails the job. 3: a hang waits 225 s
+# per call, which with the 196.4 s base passes the 7-minute cap (421.4 s).
+# Only NoAnswerError from the first answer retries.
+REFLOW_LAUNCH_ATTEMPTS = 2
+# A probe at each fifth of the launch budget (15 s at 75 s), four while
+# waiting plus one before a kill, so at most 5 per launch. The first comes
+# after every normal first answer sampled so far (whole tree-1 calls up to
+# 10.2 s in 18 stall-free jobs, the timing line up to 12.34 s, c0ba6f4's
+# acceptance dispatch 2, run 42208254148) and before 30 s, where every stall
+# so far was cut. A tenth (7.5 s) would probe ordinary cold starts; a half
+# (37.5 s) could miss a stall that ends between 30 and 37.5 s, as jobs 7 and
+# 11 did, the 2 of the 7 stalls seen with a known duration in that range.
+REFLOW_PROBES = 5
+# The tail of a launch's Chrome log that a dump prints. A normal startup
+# logs about 17.7 KB up to its first answer with --v=1 (one local run), so
+# 64 KiB shows a stalled startup that logs several times as much; a whole
+# call logs up to 0.9 MB, which would flood the job log.
+REFLOW_LOG_DUMP_BYTES = 64 * 1024
+# Where Chrome's logs go (ADR-0003 part 6 and Numbers, #25 review): a fresh
+# directory on this tmpfs. With --v=1 Chrome writes its log synchronously,
+# and Google Chrome's launcher relays it through cat into the log file; on
+# the runner's disk a stall would block cat, fill the pipe and block
+# Chrome's logging threads, the DevTools ones included. A tmpfs write does
+# not wait for the disk unless memory runs short (reclaim can then wait on
+# the disk, through swap or through other files' writeback; the probe line
+# reports memory pressure), and a full one fails at once (ENOSPC), so a log
+# line is lost, not time. One call's logs take about 1 MB (0.9 MB for a 23-page
+# call) and go with the call. Where this is no tmpfs mount or no directory
+# can be made in it, the logs stay in the work directory, as before.
+REFLOW_LOG_DIR = "/dev/shm"
 # At most this many elements are named per page and case, so one broken
 # template cannot flood the log; the count is always printed.
 REFLOW_NAMED = 10
@@ -3764,6 +3822,9 @@ CHROME_FLAGS = (
     "--no-default-browser-check", "--disable-extensions", "--disable-sync",
     "--disable-background-networking", "--disable-component-update",
     "--disable-default-apps", "--hide-scrollbars", "--mute-audio",
+    # Chrome's own log, verbose (ADR-0003 part 6): without --v=1 the log is
+    # empty up to the first answer, so a startup stall would show nothing.
+    "--enable-logging=stderr", "--v=1",
 )
 
 # Runs in the page; geometry, not CSS properties (ADR-0003 part 6). Every
@@ -3896,6 +3957,13 @@ REFLOW_SCRIPT = r"""
 """
 
 
+class NoAnswerError(UsageError):
+    """No answer from Chrome within the budget, or the pipe closed before
+    one (on the first answer of a launch also a closed pipe on the write).
+    Exit 2 like every UsageError; cmd_reflow retries it only on the first
+    answer of a launch (Browser.getVersion), never on a later call."""
+
+
 class DevTools:
     """A minimal DevTools-protocol client over the two pipe ends."""
 
@@ -3904,34 +3972,59 @@ class DevTools:
         self.next_id = 0
         self.buffer = b""
         self.events = []
+        # When the current wait began, for the diagnostics only.
+        self.sent_at = time.monotonic()
+        # How often first_answer called on_wait.
+        self.waited = 0
+        # The budget of the current wait, for the diagnostics only.
+        self.budget = REFLOW_TIMEOUT
 
-    def _read(self, deadline):
+    def close(self):
+        for fd in (self.write_fd, self.read_fd):
+            os.close(fd)
+
+    def _read(self, deadline, budget, ticks=None, on_wait=None):
+        # ticks: the times (time.monotonic) at which on_wait(elapsed) runs
+        # while no message has come; only first_answer passes them. The
+        # deadline stays fixed, so a probe never ends the wait early.
+        self.budget = budget
         while b"\0" not in self.buffer:
-            left = deadline - time.monotonic()
+            now = time.monotonic()
+            left = deadline - now
             if left <= 0:
-                raise UsageError("reflow: no answer from Chrome within "
-                                 f"{REFLOW_TIMEOUT} s")
+                raise NoAnswerError("reflow: no answer from Chrome within "
+                                    f"{budget:g} s")
+            if ticks and now >= ticks[0]:
+                ticks.pop(0)
+                self.waited += 1
+                on_wait(now - self.sent_at)
+                continue
+            if ticks:
+                left = min(left, ticks[0] - now)
             ready, _, _ = select.select([self.read_fd], [], [], left)
             if not ready:
                 continue
             chunk = os.read(self.read_fd, 1 << 16)
             if not chunk:
-                raise UsageError("reflow: Chrome closed the DevTools pipe")
+                raise NoAnswerError("reflow: Chrome closed the DevTools pipe")
             self.buffer += chunk
         message, self.buffer = self.buffer.split(b"\0", 1)
         return json.loads(message)
 
-    def send(self, method, params=None, session=None):
+    def _write(self, method, params, session):
         self.next_id += 1
         message = {"id": self.next_id, "method": method, "params": params or {}}
         if session:
             message["sessionId"] = session
         data = json.dumps(message).encode("utf-8") + b"\0"
+        self.sent_at = time.monotonic()
         while data:
             data = data[os.write(self.write_fd, data):]
-        deadline = time.monotonic() + REFLOW_TIMEOUT
+
+    def _answer(self, method, budget, ticks=None, on_wait=None):
+        deadline = time.monotonic() + budget
         while True:
-            reply = self._read(deadline)
+            reply = self._read(deadline, budget, ticks, on_wait)
             if reply.get("id") == self.next_id:
                 if "error" in reply:
                     raise UsageError(f"reflow: {method} failed: {reply['error']}")
@@ -3939,21 +4032,44 @@ class DevTools:
             if "method" in reply:
                 self.events.append(reply)
 
+    def send(self, method, params=None, session=None, budget=REFLOW_TIMEOUT):
+        """A later call: a closed pipe on the write stays a BrokenPipeError
+        (exit 2 through main, never retried)."""
+        self._write(method, params, session)
+        return self._answer(method, budget)
+
+    def first_answer(self, budget, on_wait):
+        """The launch's first answer, to Browser.getVersion, within budget
+        seconds. A closed pipe on the write (Chrome exited before it read
+        the command) is the same launch failure as a closed pipe on the
+        read, whichever side sees the close first (#25 Known limit 2).
+        on_wait(elapsed) runs at each REFLOW_PROBES-th of the budget while
+        no answer has come; a protocol error is a UsageError, as in send."""
+        self.budget = budget
+        try:
+            self._write("Browser.getVersion", None, None)
+        except BrokenPipeError as exc:
+            raise NoAnswerError("reflow: Chrome closed the DevTools pipe") from exc
+        start = time.monotonic()
+        ticks = [start + budget * k / REFLOW_PROBES for k in range(1, REFLOW_PROBES)]
+        return self._answer("Browser.getVersion", budget, ticks, on_wait)
+
     def wait_event(self, method, session):
+        self.sent_at = time.monotonic()
         deadline = time.monotonic() + REFLOW_TIMEOUT
         while True:
             for event in self.events:
                 if event.get("method") == method and event.get("sessionId") == session:
                     self.events.remove(event)
                     return event
-            reply = self._read(deadline)
+            reply = self._read(deadline, REFLOW_TIMEOUT)
             if "method" in reply:
                 self.events.append(reply)
 
 
 def start_chrome(chrome, profile, log):
-    """Chrome headless with its DevTools pipe on fds 3 and 4 of the child.
-    Returns (process, DevTools)."""
+    """Chrome headless with its DevTools pipe on fds 3 and 4 of the child
+    and its stdout and stderr in the file log. Returns (process, DevTools)."""
     to_chrome_r, to_chrome_w = os.pipe()
     from_chrome_r, from_chrome_w = os.pipe()
     # Move all four ends above 10, so none of them is fd 3 or 4.
@@ -3962,6 +4078,11 @@ def start_chrome(chrome, profile, log):
     for fd in (to_chrome_r, to_chrome_w, from_chrome_r, from_chrome_w):
         os.close(fd)
     to_chrome_r, to_chrome_w, from_chrome_r, from_chrome_w = ends
+    # The same for the log (#25 Known limit 1): the log may sit on fd 3 or 4
+    # itself, and the dup2 below would then point Chrome's output at a pipe
+    # end (on 3 it was lost, on 4 it went into the DevTools pipe). The
+    # duplicate above 10 is Chrome's stdout and stderr.
+    log_fd = fcntl.fcntl(log.fileno(), fcntl.F_DUPFD_CLOEXEC, 10)
     # The parent may hold fds 3 and 4 already (the CI runner passes some
     # down): park them above 10, put the pipe ends there for the child, and
     # restore them after the start.
@@ -3976,7 +4097,7 @@ def start_chrome(chrome, profile, log):
     try:
         process = subprocess.Popen(
             [chrome, *CHROME_FLAGS, f"--user-data-dir={profile}", "about:blank"],
-            stdin=subprocess.DEVNULL, stdout=log, stderr=log, pass_fds=(3, 4))
+            stdin=subprocess.DEVNULL, stdout=log_fd, stderr=log_fd, pass_fds=(3, 4))
     except OSError as exc:
         raise UsageError(f"reflow: cannot start {chrome}: {exc}") from exc
     finally:
@@ -3988,7 +4109,139 @@ def start_chrome(chrome, profile, log):
                 os.close(saved[0])
         os.close(to_chrome_r)
         os.close(from_chrome_w)
+        os.close(log_fd)
     return process, DevTools(to_chrome_w, from_chrome_r)
+
+
+# Stall diagnostics of the reflow launch (ADR-0003 part 6, #24). Read-only:
+# /proc and the Chrome logs, every read catches only OSError and ValueError,
+# and nothing here changes an exit code, a retry or a finding.
+
+def proc_text(path):
+    """The text of a /proc (or log) file, or None when it is unreadable."""
+    try:
+        with open(path, "rb") as f:
+            return f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def proc_stat(pid):
+    """(name, state, parent PID) from /proc/<pid>/stat, or None."""
+    text = proc_text(f"/proc/{pid}/stat")
+    if text is None:
+        return None
+    head, sep, rest = text.rpartition(")")
+    fields = rest.split()
+    if not sep or "(" not in head or len(fields) < 2:
+        return None
+    try:
+        return head.partition("(")[2], fields[0], int(fields[1])
+    except ValueError:
+        return None
+
+
+def proc_tree(root):
+    """root and every descendant, from the parent PIDs in /proc/*/stat."""
+    children = {}
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        names = []
+    for name in names:
+        if name.isascii() and name.isdigit():
+            stat = proc_stat(int(name))
+            if stat is not None:
+                children.setdefault(stat[2], []).append(int(name))
+    tree, todo = [], [root]
+    while todo:
+        pid = todo.pop(0)
+        if pid not in tree:
+            tree.append(pid)
+            todo.extend(sorted(children.get(pid, [])))
+    return tree
+
+
+def pressure_avg10(kind):
+    """The `some avg10` value of /proc/pressure/<kind>, or ?."""
+    for line in (proc_text(f"/proc/pressure/{kind}") or "").splitlines():
+        fields = line.split()
+        if fields and fields[0] == "some":
+            for field in fields[1:]:
+                key, _, value = field.partition("=")
+                if key == "avg10":
+                    return value
+    return "?"
+
+
+def reflow_probe(process, tools, where, elapsed):
+    """One stderr line on a launch that has not answered: the budget of the
+    wait (tools.budget, the value first_answer or the later call got), the
+    load, the pressure stall figures and each Chrome process with its
+    state, kernel wait channel and syscall number. A process in state D under I/O
+    pressure points at the disk; an idle Chrome blocked in a wait points
+    outside the VM."""
+    load = (proc_text("/proc/loadavg") or "").split()
+    parts = [f"load {load[0] if load else '?'}",
+             "pressure some avg10 " + " ".join(
+                 f"{kind} {pressure_avg10(kind)}" for kind in ("cpu", "io", "memory"))]
+    for pid in proc_tree(process.pid):
+        stat = proc_stat(pid) or ("?", "?", 0)
+        wchan = (proc_text(f"/proc/{pid}/wchan") or "").strip() or "?"
+        syscall = (proc_text(f"/proc/{pid}/syscall") or "").split()
+        parts.append(f"process {pid} ({stat[0]}) {stat[1]} wchan {wchan} "
+                     f"syscall {syscall[0] if syscall else '?'}")
+    print(f"reflow: no answer after {elapsed:.2f} s {where} "
+          f"(budget {tools.budget:g} s): " + "; ".join(parts),
+          file=sys.stderr, flush=True)
+
+
+def tmpfs_mounted(path):
+    """True when path is the mount point of a tmpfs, by the last mount of
+    it in /proc/self/mounts (False when that is unreadable)."""
+    real = os.path.realpath(path)
+    found = False
+    for line in (proc_text("/proc/self/mounts") or "").splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[1] == real:
+            found = fields[2] == "tmpfs"
+    return found
+
+
+def reflow_log_dir(work):
+    """The directory of a call's Chrome logs: a fresh one on the tmpfs
+    REFLOW_LOG_DIR, or work itself where REFLOW_LOG_DIR is no tmpfs mount
+    or no directory can be made in it."""
+    if tmpfs_mounted(REFLOW_LOG_DIR):
+        try:
+            return Path(tempfile.mkdtemp(prefix="reflow-log-", dir=REFLOW_LOG_DIR))
+        except OSError:
+            pass
+    return work
+
+
+def log_lines(path):
+    """The line count of a Chrome log, or ? when it is unreadable."""
+    text = proc_text(path)
+    return "?" if text is None else str(text.count("\n"))
+
+
+def reflow_dump(path, attempt):
+    """The last REFLOW_LOG_DUMP_BYTES of one launch's Chrome log, on stderr."""
+    launch = f"launch {attempt} of {REFLOW_LAUNCH_ATTEMPTS}"
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError as exc:
+        print(f"reflow: Chrome log of {launch} unreadable: {exc}", file=sys.stderr)
+        return
+    lines = data.count(b"\n")
+    print(f"reflow: Chrome log of {launch} ({lines} lines, {len(data)} bytes):",
+          file=sys.stderr)
+    text = data[-REFLOW_LOG_DUMP_BYTES:].decode("utf-8", errors="replace")
+    if text:
+        print(text, end="" if text.endswith("\n") else "\n", file=sys.stderr)
+    sys.stderr.flush()
 
 
 class SiteHandler(http.server.SimpleHTTPRequestHandler):
@@ -4031,21 +4284,62 @@ def cmd_reflow(args):
         return findings.report("reflow checked: 0 pages")
 
     work = Path(tempfile.mkdtemp(prefix="reflow-"))
-    log_path = work / "chrome.log"
-    server = process = None
+    logs = work
+    server = None
+    processes = []
+    log_path = None
+    launched = False
     n_items = 0
     try:
-        with open(log_path, "wb") as log:
-            process, tools = start_chrome(chrome, work / "profile", log)
+        # The launch: start Chrome and wait for its first answer, within
+        # args.launch_timeout (REFLOW_LAUNCH_TIMEOUT). Only the two launch
+        # failures of that answer (NoAnswerError: no answer within the
+        # budget, or the pipe closed before it, on the write or the read)
+        # start a fresh Chrome, with its own profile and log; a protocol
+        # error here, every later call and every page finding fail as
+        # before. The local server starts only after the launch. The
+        # diagnostics (probes, the timing line, dumps) only print. Chrome's
+        # logs go to a tmpfs (REFLOW_LOG_DIR), so a disk stall cannot block
+        # Chrome's log writes unless memory runs short (reclaim can then
+        # wait on the disk, through swap or through other files'
+        # writeback; the probe line reports memory pressure).
+        logs = reflow_log_dir(work)
+        for attempt in range(1, REFLOW_LAUNCH_ATTEMPTS + 1):
+            where = f"on launch {attempt} of {REFLOW_LAUNCH_ATTEMPTS}"
+            log_path = logs / f"chrome-{attempt}.log"
+            with open(log_path, "wb") as log:
+                process, tools = start_chrome(chrome, work / f"profile-{attempt}", log)
+            processes.append(process)
+            probe = functools.partial(reflow_probe, process, tools, where)
+            try:
+                version = tools.first_answer(args.launch_timeout, probe)
+            except NoAnswerError as exc:
+                reflow_probe(process, tools, where, time.monotonic() - tools.sent_at)
+                process.kill()
+                process.wait()
+                tools.close()
+                if attempt == REFLOW_LAUNCH_ATTEMPTS:
+                    raise UsageError(f"{exc} {where}") from exc
+                reflow_dump(log_path, attempt)
+                print(f"{exc} {where}; starting it again with a fresh profile",
+                      file=sys.stderr)
+                continue
+            print(f"reflow: first answer after {time.monotonic() - tools.sent_at:.2f} s "
+                  f"{where} (budget {tools.budget:g} s, Chrome log "
+                  f"{log_lines(log_path)} lines in {logs.parent})", file=sys.stderr,
+                  flush=True)
+            if tools.waited:
+                reflow_dump(log_path, attempt)
+            launched = True
+            break
         SiteHandler.errors = []
         handler = functools.partial(SiteHandler, directory=str(public))
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         origin = f"http://127.0.0.1:{server.server_address[1]}"
 
-        version = tools.send("Browser.getVersion")
         print(f"reflow: {version.get('product', '?')}, viewport {REFLOW_WIDTH}x"
-              f"{REFLOW_HEIGHT} CSS px, mobile")
+              f"{REFLOW_HEIGHT} CSS px, mobile", flush=True)
         target = tools.send("Target.createTarget", {"url": "about:blank"})["targetId"]
         session = tools.send("Target.attachToTarget",
                              {"targetId": target, "flatten": True})["sessionId"]
@@ -4107,23 +4401,27 @@ def cmd_reflow(args):
             findings.add("public", f"the local server answered {error}; a page was "
                          "measured without one of its files")
         tools.send("Browser.close")
-    except BaseException:
-        if log_path.exists():
-            text = log_path.read_text(encoding="utf-8", errors="replace").strip()
-            if text:
-                print("reflow: Chrome log:", file=sys.stderr)
-                print(text[-4000:], file=sys.stderr)
+    except BaseException as exc:
+        # Diagnostics of the error that ends the run; the error itself is
+        # re-raised unchanged. A later call without an answer gets one probe
+        # of the Chrome that did not answer, before the reap below.
+        if launched and isinstance(exc, NoAnswerError):
+            reflow_probe(process, tools, where, time.monotonic() - tools.sent_at)
+        if log_path is not None:
+            reflow_dump(log_path, attempt)
         raise
     finally:
         if server is not None:
             server.shutdown()
             server.server_close()
-        if process is not None:
+        for process in processes:
             try:
                 process.wait(timeout=REFLOW_TIMEOUT)
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+        if logs != work:
+            shutil.rmtree(logs, ignore_errors=True)
         shutil.rmtree(work, ignore_errors=True)
     return findings.report(f"reflow checked: {len(pages)} pages at {REFLOW_WIDTH} "
                            f"CSS px, {n_items} words and replaced elements")
@@ -4909,6 +5207,17 @@ def cmd_guard(args):
 
 # ---------------------------------------------------------------------------
 
+def positive_seconds(text):
+    """A finite number of seconds above 0 (argparse type: exit 2 otherwise)."""
+    try:
+        value = float(text)
+    except ValueError:
+        value = math.nan
+    if not (math.isfinite(value) and value > 0):
+        raise argparse.ArgumentTypeError(f"{text!r} is not a positive number of seconds")
+    return value
+
+
 def main(argv):
     parser = argparse.ArgumentParser(prog="sitecheck", description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -4932,6 +5241,10 @@ def main(argv):
     p.set_defaults(func=cmd_tokens)
     p = sub.add_parser("reflow")
     p.add_argument("--chrome", required=True)
+    # Self-test only: check.sh never passes it, so CI keeps
+    # REFLOW_LAUNCH_TIMEOUT.
+    p.add_argument("--launch-timeout", type=positive_seconds,
+                   default=REFLOW_LAUNCH_TIMEOUT)
     p.add_argument("public")
     p.set_defaults(func=cmd_reflow)
     p = sub.add_parser("guard")
