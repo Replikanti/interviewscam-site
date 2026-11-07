@@ -1,1 +1,1 @@
-the dict key 'version' is not on LITERALS_DICT_KEYS
+the dict key 'feed_url' is not on LITERALS_DICT_KEYS

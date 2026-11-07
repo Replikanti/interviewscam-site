@@ -7,8 +7,8 @@ baseURL = "https://interviewscam.com/"
 locale = "en"
 title = "interviewscam.com"
 
-# Nothing in M1 uses taxonomies or RSS, and the empty generated pages would
-# still be built and checked. M3 revisits this.
+# Nothing uses taxonomies or RSS, and the empty generated pages would still
+# be built and checked. Revisited in M3 (ADR-0004 part 7): unchanged.
 disableKinds = ["taxonomy", "term", "rss"]
 
 # No generator meta in <head>: the CSP meta must be the first element after
@@ -17,6 +17,19 @@ disableHugoGeneratorInject = true
 
 # A broken internal reference fails the build instead of warning.
 refLinksErrorLevel = "ERROR"
+
+# The data feed /feed.json (SPEC section 5, ADR-0004 part 7): a custom JSON
+# document, the second output of the home page, from layouts/home.feed.json.
+# application/json is a built-in media type, so no [mediaTypes] entry is
+# needed. Plain text: the template is one jsonify action, which escapes for
+# JSON itself. The guard pins every key (HUGO_CONFIG_PINNED).
+[outputs]
+home = ["html", "feed"]
+
+[outputFormats.feed]
+mediaType = "application/json"
+baseName = "feed"
+isPlainText = true
 
 [markup.goldmark.renderer]
 # Raw HTML in Markdown is omitted. Already the default; explicit so the guard

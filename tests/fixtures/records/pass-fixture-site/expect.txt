@@ -1,1 +1,1 @@
-records checked: 13 (reports 11, campaigns 2), artifacts: 32
+records checked: 14 (reports 12, campaigns 2), artifacts: 33

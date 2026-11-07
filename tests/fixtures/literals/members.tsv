@@ -83,8 +83,10 @@ LITERALS_TEXT_SHAPERS	replacePairs	layouts/page.html	<p>{{ replacePairs .x }}</p
 LITERALS_TEXT_SHAPERS	strings.ReplacePairs	layouts/page.html	<p>{{ strings.ReplacePairs .x }}</p>	strings.ReplacePairs turns tokens into words, capitals or sentences	1
 LITERALS_REPLACE	replace	assets/css/x.css	p { --a: {{ replace .x "-" " " }}; }	replace replaces with ' ', which holds whitespace or markup	1
 LITERALS_REPLACE	strings.Replace	layouts/page.html	<p>{{ strings.Replace .x "-" "<br>" }}</p>	strings.Replace replaces with '<br>', which holds whitespace or markup	2
-LITERALS_REPLACE	replaceRE	layouts/page.html	<p>{{ replaceRE "-" " " .x }}</p>	replaceRE replaces with ' ', which holds whitespace or markup	2
-LITERALS_REPLACE	strings.ReplaceRE	layouts/page.html	<p>{{ strings.ReplaceRE "-" "&#32;" .x }}</p>	strings.ReplaceRE replaces with '&#32;', which holds whitespace or markup	2
+LITERALS_REPLACE	replaceRE	layouts/page.html	<p>{{ replaceRE "-" " " .x }}</p>	replaceRE replaces with ' ', which holds whitespace or markup	3
+LITERALS_REPLACE	strings.ReplaceRE	layouts/page.html	<p>{{ strings.ReplaceRE "-" "&#32;" .x }}</p>	strings.ReplaceRE replaces with '&#32;', which holds whitespace or markup	3
+LITERALS_COMPARE_ONLY	replaceRE	layouts/_partials/box-label.html	{{ return replaceRE ", [^ ]+" "" .x }}	replaceRE only below a comparison	1
+LITERALS_COMPARE_ONLY	strings.ReplaceRE	layouts/_partials/box-label.html	{{ return strings.ReplaceRE ", [^ ]+" "" .x }}	strings.ReplaceRE only below a comparison	2
 LITERALS_CHOOSERS	cond	layouts/page.html	<p>{{ cond .x "free" "/" }}</p>	cond picks the literal 'free' as a value	1
 LITERALS_CHOOSERS	compare.Conditional	layouts/page.html	<p>{{ compare.Conditional .x "free" "/" }}</p>	compare.Conditional picks the literal 'free' as a value	2
 LITERALS_CHOOSERS	default	layouts/page.html	<p>{{ default "free" .x }}</p>	default picks the literal 'free' as a value	1
@@ -177,6 +179,16 @@ branch	url-path-in-alt	layouts/page.html	<img src="/x" alt="{{ "/free" | relURL 
 branch	label-reader-prints	layouts/_partials/label.html	{{ . }}	may print nothing but `return $v`	1
 branch	function-not-listed	layouts/page.html	<p>{{ urlize .x }}</p>	urlize: not on the list of functions a template may call (LITERALS_FUNCTIONS)	1
 branch	function-file-scoped	layouts/page.html	<p>{{ first 1 .x }}</p>	first: only layouts/home.html may call it, because it cuts a string	1
+branch	function-file-scoped-replacere	layouts/page.html	<p>{{ if ne (replaceRE "[!-~]" "" .x) "" }}{{ end }}</p>	replaceRE: only layouts/_partials/box-label.html may call it, because it cuts a string	1
+branch	dict-key-file-scoped	layouts/page.html	{{ range $k, $_ := dict "summary" . }}<p>{{ $k }}</p>{{ end }}	the dict key 'summary' is not on LITERALS_DICT_KEYS or on LITERALS_FILE_DICT_KEYS for this file	1
+branch	assign-in-group-compare	layouts/page.html	{{ $x := "" }}{{ if eq ($x = "fraudulent") "" }}{{ end }}<p>{{ $x }}</p>	an assignment inside parentheses ('=')	1
+branch	assign-in-group-compare-declare	layouts/page.html	{{ if ne ($x := "fraudulent") "" }}<p>{{ $x }}</p>{{ end }}	an assignment inside parentheses (':=')	1
+branch	assign-in-group-replacere	layouts/_partials/box-label.html	{{ $cut := "" }}{{ if eq ($cut = replaceRE ", [^ ]+" "" .x) "" }}{{ end }}{{ return $cut }}	an assignment inside parentheses ('=')	1
+branch	assign-in-group-replacere-declare	layouts/_partials/box-label.html	{{ $out := "" }}{{ if ne ($cut := replaceRE ", [^ ]+" "" .x) "" }}{{ $out = $cut }}{{ end }}{{ return $out }}	an assignment inside parentheses (':=')	1
+branch	assign-in-group-nested	layouts/page.html	{{ $x := "" }}{{ if eq (lower ($x = "fraudulent")) "" }}{{ end }}<p>{{ $x }}</p>	an assignment inside parentheses ('=')	1
+branch	assign-in-group-chained	layouts/page.html	{{ $x := "" }}{{ if eq ($x = .Params).fraud "" }}{{ end }}<p>{{ $x }}</p>	an assignment inside parentheses ('=')	1
+branch	assign-in-group-index	layouts/page.html	{{ $x := "" }}{{ $y := index $m ($x = "fraudulent") }}<p>{{ $x }}</p>	an assignment inside parentheses ('=')	1
+branch	assign-in-group-where	layouts/page.html	{{ $x := "" }}{{ $y := where .Pages ($x = "fraudulent") "a" }}<p>{{ $x }}</p>	an assignment inside parentheses ('=')	1
 branch	css-function-not-listed	assets/css/x.css	p { --a: {{ printf "%s" .x }}; }	printf: not on the list of functions a CSS template may call (LITERALS_CSS_FUNCTIONS)	1
 branch	member-not-listed	layouts/page.html	<p>{{ .Date.Weekday }}</p>	.Weekday is not on LITERALS_MEMBERS	1
 branch	static-robots	static/robots.txt	User-agent: *	a static file this check cannot read for copy	1

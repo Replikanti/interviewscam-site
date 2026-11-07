@@ -1,0 +1,11 @@
+{{- /* The two lookup page forms of a SHA-256 hash (ADR-0004 part 9), by
+  the listed_on value that names the service; printf one with the hash.
+  Returns the dict. artifacts.html links them and home.feed.json lists
+  them as lookup_urls, so both read this one copy; sitecheck render pins
+  the same forms independently (LOOKUPS, rules 7 and 12). Nothing links a
+  file, only these lookup pages. */ -}}
+{{- $lookups := dict
+  "malwarebazaar" "https://bazaar.abuse.ch/sample/%s/"
+  "virustotal" "https://www.virustotal.com/gui/file/%s"
+-}}
+{{- return $lookups -}}

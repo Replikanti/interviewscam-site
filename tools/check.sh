@@ -128,17 +128,21 @@ records_check() { sitecheck records --root "$1" --schemas "$2"; }
 # CSP meta from <root>/hugo.toml, and no live artifact in the build (R3).
 site_check() { sitecheck site --records "$1" --schemas "$2" "$3"; }
 
-# render_check <root> <schema dir> <built dir> [<fixtures dir>]: the markup
-# contract of the record pages (ADR-0004): one page per record and none
-# without one, the fixed titles, the D6, D7 and D10 wording, the campaign
-# line and attribution, artifacts and external links, structured data, no
-# hidden persona name anywhere, and the index lists. With a fixtures dir, no
-# record may share its slug or name with a fixture record under
-# <fixtures dir>/**/content/ (the fixture-leak check; production only).
+# render_check <root> <schema dir> <built dir> [<fixtures dir>] [no-feed]:
+# the markup contract of the record pages (ADR-0004): one page per record
+# and none without one, the fixed titles, the D6, D7 and D10 wording, the
+# campaign line and attribution, artifacts and external links, structured
+# data, no hidden persona name anywhere, the index lists, and the data feed
+# /feed.json against its schema, the records and /data-feed/ (rules 11 to
+# 13). With a fixtures dir, no record may share its slug or name with a
+# fixture record under <fixtures dir>/**/content/ (the fixture-leak check;
+# production only). no-feed (the self-test's render fixtures only) leaves
+# out rules 11 to 13; both builds always run them.
 render_check() {
-  local fixtures=()
+  local fixtures=() feed=()
   [[ -n "${4:-}" ]] && fixtures=(--fixtures "$4")
-  sitecheck render --records "$1" --schemas "$2" "${fixtures[@]}" "$3"
+  [[ "${5:-}" == no-feed ]] && feed=(--no-feed)
+  sitecheck render --records "$1" --schemas "$2" "${fixtures[@]}" "${feed[@]}" "$3"
 }
 
 # literals_check <root>: fixed public copy only from data/labels.toml

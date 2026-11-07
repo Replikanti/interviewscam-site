@@ -1,0 +1,1 @@
+public/data-feed/index.html: rule 13: /data-feed/ documents the field 'reports[][.]evidence' twice

@@ -116,8 +116,8 @@ for row in rows:
         for out_line in output.splitlines():
             print(f"     | {out_line}")
 # The flagging sets, taken from the code, and their pinned numbers.
-EXPECTED_FLAGGING_SETS = 15
-EXPECTED_PASSING_SETS = 30
+EXPECTED_FLAGGING_SETS = 16
+EXPECTED_PASSING_SETS = 31
 EXPECTED_END_TAG_MEMBERS = 10
 names = {n for n, v in vars(sitecheck).items()
          if n.startswith(("LITERALS_", "CSS_")) and isinstance(v, (set, frozenset, dict, tuple))}
@@ -163,6 +163,152 @@ if missing:
 else:
     print(f"ok   literals-members/coverage (every member of the {len(flagging)} flagging "
           f"sets has a fail row; {len(rows)} rows)")
+PY
+}
+
+# feed_fields_runner <sitecheck.py> <fields table> <base case> <schema dir>:
+# render rule 12 field by field (M3 PR 8 review 4). Every row of the table
+# sets one field of one entry of the base case's public/feed.json to another
+# value and runs the real cmd_render on a copy, which must exit 1 with
+# exactly the findings the row names; feed-fields/coverage fails when a
+# field the rule compares (the keys of feed_report_entry and
+# feed_campaign_entry on the base records, and the schema's entry
+# properties) has no row, or a row names a field neither has.
+# feed-fields/field-set-test-schema (#30 Known limit 3) runs rule 12's
+# field-set branch, which the real schema shadows (rule 11 rejects a missing
+# or extra field first): against a copy of the schema directory in which
+# reports[].evidence is optional and reports[].x_test is allowed, a feed
+# entry without evidence and with x_test must give exactly the two
+# field-set findings. The test schema lives only in a temporary directory
+# of this runner; check.sh always passes "$CHECK_ROOT/schema".
+# FEED_FIELDS_COVERAGE_ONLY=1 checks coverage alone. -B: no
+# tools/__pycache__.
+feed_fields_runner() {
+  python3 -I -B - "$1" "$2" "$3" "$4" <<'PY'
+import argparse
+import contextlib
+import importlib.util
+import io
+import json
+import os
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+table, base, schema_dir = Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
+
+
+def render(root, schemas):
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        rc = sitecheck.cmd_render(argparse.Namespace(
+            records=str(root), schemas=str(schemas), fixtures=None, no_feed=False,
+            public=str(root / "public")))
+    output = buffer.getvalue()
+    return rc, output, sum(line.startswith("FAIL: ") for line in output.splitlines())
+
+
+def judge(name, rc, output, findings, expects, count):
+    if rc == 1 and findings == count and all(e in output for e in expects):
+        print(f"ok   {name} (failed as expected: {expects[0]})")
+    else:
+        print(f"FAIL {name}: expected exit 1, {count} finding(s) and {expects!r}; "
+              f"got exit {rc}, {findings} finding(s); output:")
+        for line in output.splitlines():
+            print(f"     | {line}")
+
+
+def with_feed(root, change):
+    path = root / "public" / "feed.json"
+    feed = json.loads(path.read_text(encoding="utf-8"))
+    change(feed)
+    path.write_text(json.dumps(feed, sort_keys=True, separators=(",", ":"),
+                               ensure_ascii=False), encoding="utf-8")
+
+
+rows = [line.split("\t") for line in table.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")]
+covered = {"reports": set(), "campaigns": set()}
+for row in rows:
+    if len(row) != 6 or row[0] not in covered:
+        print(f"FAIL feed-fields/table: malformed row {row!r}")
+        continue
+    kind, slug, field, value, expect, count = row
+    covered[kind].add(field)
+    if os.environ.get("FEED_FIELDS_COVERAGE_ONLY"):
+        continue
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "case"
+        shutil.copytree(base, root)
+
+        def change(feed, kind=kind, slug=slug, field=field, value=value):
+            entry = next(e for e in feed[kind] if e.get("slug") == slug)
+            entry[field] = json.loads(value)
+        with_feed(root, change)
+        rc, output, findings = render(root, schema_dir)
+    judge(f"feed-fields/{kind}/{field}", rc, output, findings, [expect], int(count))
+
+# The fields rule 12 compares, taken from the code and the schema.
+findings = sitecheck.Findings()
+records = sitecheck.load_records(base, schema_dir, findings)
+reports = [r for r in records if r.section == "reports"]
+campaigns = [r for r in records if r.section == "campaigns"]
+schema = json.loads((schema_dir / sitecheck.FEED_SCHEMA).read_text(encoding="utf-8"))
+compared = {"reports": set(), "campaigns": set()}
+if reports and campaigns and not findings.items:
+    compared["reports"] = set(sitecheck.feed_report_entry(reports[0]))
+    compared["campaigns"] = set(sitecheck.feed_campaign_entry(campaigns[0], reports))
+for kind in compared:
+    compared[kind] |= set(schema["properties"][kind]["items"]["properties"])
+missing = []
+if not reports or not campaigns or findings.items:
+    missing.append(f"the base case {base.name} needs a report and a campaign record and "
+                   "no record finding")
+for kind in compared:
+    for field in sorted(compared[kind] - covered[kind]):
+        missing.append(f"{kind}[].{field} has no row")
+    for field in sorted(covered[kind] - compared[kind]):
+        missing.append(f"{kind}[].{field} is not a field rule 12 compares")
+if missing:
+    print("FAIL feed-fields/coverage: " + "; ".join(missing))
+else:
+    print(f"ok   feed-fields/coverage (every compared field has a row; "
+          f"{sum(map(len, covered.values()))} fields)")
+if os.environ.get("FEED_FIELDS_COVERAGE_ONLY"):
+    sys.exit(0)
+
+# Rule 12's field set against a test-only schema (#30 Known limit 3).
+with tempfile.TemporaryDirectory() as tmp:
+    test_schemas = Path(tmp) / "schema"
+    shutil.copytree(schema_dir, test_schemas)
+    path = test_schemas / sitecheck.FEED_SCHEMA
+    test_schema = json.loads(path.read_text(encoding="utf-8"))
+    items = test_schema["properties"]["reports"]["items"]
+    items["required"].remove("evidence")
+    items["properties"]["x_test"] = {"type": "string",
+                                     "description": "A field only this test schema has."}
+    path.write_text(json.dumps(test_schema), encoding="utf-8")
+    root = Path(tmp) / "case"
+    shutil.copytree(base, root)
+
+    def change(feed):
+        entry = next(e for e in feed["reports"] if e.get("slug") == "example-front-company")
+        del entry["evidence"]
+        entry["x_test"] = "x"
+    with_feed(root, change)
+    page = root / "public" / "data-feed" / "index.html"
+    term = "<dt><code>reports[].evidence</code></dt>"
+    html = page.read_text(encoding="utf-8")
+    page.write_text(html.replace(term, "<dt><code>reports[].x_test</code></dt>"
+                                 "<dd>Text. A test field.</dd>" + term, 1), encoding="utf-8")
+    rc, output, found = render(root, test_schemas)
+judge("feed-fields/field-set-test-schema", rc, output, found,
+      ["rule 12: reports['example-front-company'] has no field evidence",
+       "rule 12: reports['example-front-company'] has the field 'x_test'"], 2)
 PY
 }
 
@@ -221,7 +367,7 @@ selftest_main() {
   bash "$SELFTEST_ROOT/tools/fetch-tools.sh" || return 1
 
   local n_passed=0 n_failed=0 html_total=0 html_run=0 reflow_total=0 reflow_run=0
-  local dir check name kind out rc expect leak_fixtures inputs_root
+  local dir check name kind out rc expect leak_fixtures feed_mode inputs_root
   out="$(mktemp)"
   # shellcheck disable=SC2064 # expand now: the path is fixed
   trap "rm -f '$out'" RETURN
@@ -314,11 +460,17 @@ selftest_main() {
         # <dir>/public the hand-written built pages that pin the markup
         # contract the record templates implement (ADR-0004). An optional
         # <dir>/fixtures stands in for tests/fixtures in the fixture-leak
-        # check of the production run.
+        # check of the production run. The feed rules (11 to 13) run only
+        # in a case with a feed.txt, which holds a public/feed.json and a
+        # public/data-feed/ page (or proves one missing): the other cases
+        # pin the page contract alone, as both builds of check.sh always
+        # run the feed rules.
         leak_fixtures=""
         [[ -d "$dir/fixtures" ]] && leak_fixtures="$dir/fixtures"
+        feed_mode=no-feed
+        [[ -f "$dir/feed.txt" ]] && feed_mode=""
         render_check "$dir" "$SELFTEST_ROOT/schema" "$dir/public" "$leak_fixtures" \
-          >"$out" 2>&1
+          "$feed_mode" >"$out" 2>&1
         rc=$?
         ;;
       lighthouse)
@@ -417,6 +569,128 @@ selftest_main() {
   else
     echo "FAIL wiring/render-fixture-leak: step_render in tools/check.sh does not pass" \
       "--fixtures \"\$CHECK_ROOT/tests/fixtures\" to sitecheck render (the fixture-leak check)"
+    n_failed=$((n_failed + 1))
+  fi
+
+  # Wiring: both builds run the feed rules (render rules 11 to 13): neither
+  # step_render nor step_render_fixtures, run against a stub sitecheck,
+  # passes --no-feed, and check_main runs the fixture-build render step.
+  local feed_args
+  feed_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render; step_render_fixtures)"
+  if ! declare -f check_main \
+      | grep -qE '^ *run_step "render \(fixture build\)" step_render_fixtures;?$'; then
+    echo "FAIL wiring/render-feed-rules: check_main in tools/check.sh does not run" \
+      "the fixture-build render step (run_step \"render (fixture build)\" step_render_fixtures)"
+    n_failed=$((n_failed + 1))
+  elif [[ "$(grep -c '^render$' <<<"$feed_args")" != 2 ]] || grep -qx -- '--no-feed' <<<"$feed_args"; then
+    echo "FAIL wiring/render-feed-rules: step_render or step_render_fixtures in" \
+      "tools/check.sh does not run sitecheck render with the feed rules (it passes --no-feed)"
+    n_failed=$((n_failed + 1))
+  else
+    echo "ok   wiring/render-feed-rules (both render steps run rules 11 to 13; no --no-feed)"
+    n_passed=$((n_passed + 1))
+  fi
+
+  # Wiring: sitecheck takes no abbreviated option (allow_abbrev=False on
+  # every parser), so the grep for --no-feed above sees every form that
+  # switches the feed rules off: argparse would read --no or --no-f as
+  # --no-feed (M3 PR 8 review 2). Two halves. The parsers come from the
+  # code (review2 3): the tree build_parser returns is walked, every long
+  # option of every parser (--help included, so no parser is skipped) is
+  # given cut by one character as `--opt=x` with its required flags off,
+  # and each must stay an unrecognized argument; and every
+  # ArgumentParser(...) and add_parser(...) call in tools/sitecheck.py,
+  # inside build_parser or not, must pass allow_abbrev=False. Then the real
+  # command line: render --no on a feed case, reflow --launch (for
+  # --launch-timeout) and the top-level --he (for --help, exit 0) must each
+  # be a usage error, exit 2. -B as above.
+  local abbrev_case abbrev_rc abbrev_bad="" abbrev_tree=""
+  local abbrev_dir="$FIXTURES/render/fail-feed-missing"
+  python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
+import argparse
+import ast
+import contextlib
+import importlib.util
+import io
+import sys
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+
+
+def walk(parser, name):
+    yield name, parser
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for sub_name, sub in action.choices.items():
+                yield from walk(sub, f"{name} {sub_name}")
+
+
+bad, parsers, options = [], 0, 0
+for name, parser in walk(sitecheck.build_parser(), "sitecheck"):
+    parsers += 1
+    for action in parser._actions:
+        action.required = False  # only the abbreviation can fail the parse
+    for option in sorted({o for a in parser._actions for o in a.option_strings
+                          if o.startswith("--")}):
+        options += 1
+        arg = option[:-1] + "=x"
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                extras = parser.parse_known_args([arg])[1]
+        except SystemExit:
+            extras = None
+        if extras != [arg]:
+            bad.append(f"{name} {arg} (read as {option})")
+
+calls = 0
+tree = ast.parse(open(sys.argv[1], encoding="utf-8").read())
+for item in ast.walk(tree):
+    if not isinstance(item, ast.Call):
+        continue
+    func = item.func
+    called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+    if called not in ("ArgumentParser", "add_parser"):
+        continue
+    calls += 1
+    if not any(k.arg == "allow_abbrev" and isinstance(k.value, ast.Constant)
+               and k.value.value is False for k in item.keywords):
+        bad.append(f"{called}(...) at tools/sitecheck.py:{item.lineno} "
+                   "without allow_abbrev=False")
+if parsers < 2 or calls < parsers:
+    bad.append(f"walked {parsers} parsers, found {calls} parser calls")
+for line in bad:
+    print(f"bad: {line}")
+print(f"tree: {parsers} parsers, {options} long options, {calls} parser calls")
+PY
+  abbrev_tree="$(sed -n 's/^tree: //p' "$out")"
+  if grep -q '^bad: ' "$out" || [[ -z "$abbrev_tree" ]]; then
+    abbrev_bad+=" $(grep '^bad: ' "$out" | sed 's/^bad: //' | paste -sd ';' -)"
+    [[ -n "$abbrev_tree" ]] || abbrev_bad+=" (the tree walk did not finish: $(tail -n 1 "$out"))"
+  fi
+  for abbrev_case in render reflow top; do
+    case "$abbrev_case" in
+      render) sitecheck render --records "$abbrev_dir" --schemas "$SELFTEST_ROOT/schema" \
+        --no "$abbrev_dir/public" >"$out" 2>&1 ;;
+      reflow) sitecheck reflow --chrome /nonexistent --launch 1 "$abbrev_dir/public" \
+        >"$out" 2>&1 ;;
+      top) sitecheck --he >"$out" 2>&1 ;;
+    esac
+    abbrev_rc=$?
+    if [[ $abbrev_rc -ne 2 ]] || { [[ $abbrev_case != top ]] \
+        && ! grep -qF 'unrecognized arguments: --' "$out"; }; then
+      abbrev_bad+=" $abbrev_case (exit $abbrev_rc)"
+    fi
+  done
+  if [[ -z "$abbrev_bad" ]]; then
+    echo "ok   wiring/sitecheck-no-abbreviations ($abbrev_tree, none abbreviable;" \
+      "render --no, reflow --launch and --he are usage errors)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL wiring/sitecheck-no-abbreviations: sitecheck accepted an abbreviated option:$abbrev_bad;" \
+      "every argparse parser in tools/sitecheck.py needs allow_abbrev=False"
     n_failed=$((n_failed + 1))
   fi
 
@@ -611,6 +885,39 @@ PINNED
     fi
   done
   rm -f "$allow_table"
+
+  # feed-fields (M3 PR 8 review 4, #30 Known limit 3): render rule 12 field
+  # by field from tests/fixtures/render/feed-fields.tsv on the feed of
+  # render/pass-feed, its coverage of every compared field, and the
+  # field-set branch against a test-only schema (feed_fields_runner above).
+  # coverage-fails-on-field-without-row proves the coverage on the table
+  # without the reports label row.
+  feed_fields_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render/feed-fields.tsv" \
+    "$FIXTURES/render/pass-feed" "$SELFTEST_ROOT/schema" >"$out" 2>&1
+  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+  if ! grep -qE '^(ok   |FAIL )feed-fields/field-set-test-schema' "$out"; then
+    echo "FAIL feed-fields: the runner did not finish; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+  local fields_table
+  fields_table="$(mktemp)"
+  grep -v $'^reports\texample-front-company\tlabel\t' "$FIXTURES/render/feed-fields.tsv" \
+    >"$fields_table"
+  FEED_FIELDS_COVERAGE_ONLY=1 feed_fields_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+    "$fields_table" "$FIXTURES/render/pass-feed" "$SELFTEST_ROOT/schema" >"$out" 2>&1
+  if grep -q '^FAIL feed-fields/coverage: reports\[\]\.label has no row' "$out" \
+      && ! grep -q '^ok   feed-fields/coverage' "$out"; then
+    echo "ok   feed-fields/coverage-fails-on-field-without-row (failed as expected: reports[].label has no row)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL feed-fields/coverage-fails-on-field-without-row: the coverage passed on a table without the label row; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+  rm -f "$fields_table"
 
   # Wiring: the fixture build classifies its inputs before it copies them
   # (ADR-0004 part 10, amended), and copies exactly the FIXTURE_COPY

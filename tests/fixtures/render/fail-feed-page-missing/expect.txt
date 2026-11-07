@@ -1,0 +1,1 @@
+public/data-feed/index.html: rule 13: the documentation page /data-feed/ is missing

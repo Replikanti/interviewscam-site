@@ -82,17 +82,17 @@ jobs:
     # its own job from process memory (ADR-0003 part 2).
     permissions: {}
     # ceil(2 x (T_setup + 16 pages x 3 runs x T_run)), ADR-0004 Numbers
-    # ("lighthouse timeout"), from the six green runs of PR #23 on 13 pages
-    # (8 production pages plus the 5 fixture pages, 2026-11-05; the QA
-    # mutant runs left out). Jobs took 455 to 487 s, a spread of 1.07, so
-    # the factor is 2. T_setup = job time minus its 39 audits, at most
-    # 29.1 s (job set up, artifact download, resolve, digest, install,
-    # server start); T_run = the mean audit per job, at most 11.8 s (single
-    # audits up to 40.2 s). 2 x (29.1 + 48 x 11.8) s = 1191 s -> 20 min.
+    # ("lighthouse timeout"), re-derived in M3 PR 8 (#30, 2026-11-07) from
+    # its three green runs on 14 pages (9 production pages with /data-feed/
+    # plus the 5 fixture pages). Jobs took 458 to 499 s, a spread of 1.09,
+    # so the factor is 2. T_setup = job time minus its 42 audits, at most
+    # 21.4 s (job set up, artifact download, resolve, digest, install,
+    # server start); T_run = the mean audit per job, at most 11.4 s (single
+    # audits up to 13.1 s). 2 x (21.4 + 48 x 11.4) s = 1137 s -> 19 min.
     # 16 pages: Home, 404, the seven static pages (with /data-feed/ from
-    # M3 PR 5), the two production section pages from M5 and the five
+    # M3 PR 8), the two production section pages from M5 and the five
     # fixture pages, so the value holds through M5.
-    timeout-minutes: 20
+    timeout-minutes: 19
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

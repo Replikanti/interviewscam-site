@@ -315,6 +315,7 @@ LITERALS_FUNCTIONS	printf
 LITERALS_FUNCTIONS	reflect.IsMap
 LITERALS_FUNCTIONS	reflect.IsSlice
 LITERALS_FUNCTIONS	relURL
+LITERALS_FUNCTIONS	replaceRE
 LITERALS_FUNCTIONS	resources.Concat
 LITERALS_FUNCTIONS	resources.ExecuteAsTemplate
 LITERALS_FUNCTIONS	resources.Fingerprint
@@ -334,6 +335,7 @@ LITERALS_CSS_FUNCTIONS	replace
 LITERALS_CSS_FUNCTIONS	safeCSS
 LITERALS_CSS_FUNCTIONS	slice
 LITERALS_FILE_FUNCTIONS	first	layouts/home.html
+LITERALS_FILE_FUNCTIONS	replaceRE	layouts/_partials/box-label.html
 LITERALS_FILE_FUNCTIONS	resources.Concat	layouts/baseof.html
 LITERALS_FILE_FUNCTIONS	resources.ExecuteAsTemplate	layouts/baseof.html
 LITERALS_FILE_FUNCTIONS	resources.Fingerprint	layouts/baseof.html
@@ -361,6 +363,7 @@ LITERALS_MEMBERS	Reverse
 LITERALS_MEMBERS	Section
 LITERALS_MEMBERS	Sections
 LITERALS_MEMBERS	Title
+LITERALS_FILE_DICT_KEYS	layouts/home.feed.json	aliases artifact artifacts attribution basis campaign campaigns delivery documentation_url evidence first_seen home_page_url independent_reports last_reviewed last_seen lookup_urls name_hidden name_label name_type published related report_slugs reports slug source_id sources state state_basis statement steals summary targeted_os updated version
 LITERALS_DICT_KEYS	check
 LITERALS_DICT_KEYS	details
 LITERALS_DICT_KEYS	fields
@@ -382,8 +385,6 @@ LITERALS_DICT_KEYS	title
 LITERALS_DICT_KEYS	value
 LITERALS_DICT_KEYS	virustotal
 LITERALS_DICT_KEYS	warning
-LITERALS_COLLECTION_VALUES	layouts/_partials/artifacts.html	https://bazaar.abuse.ch/sample/%s/
-LITERALS_COLLECTION_VALUES	layouts/_partials/artifacts.html	https://www.virustotal.com/gui/file/%s
 LITERALS_COLLECTION_VALUES	layouts/_partials/breadcrumb.html	1
 LITERALS_COLLECTION_VALUES	layouts/_partials/breadcrumb.html	2
 LITERALS_COLLECTION_VALUES	layouts/_partials/breadcrumb.html	3
@@ -398,7 +399,10 @@ LITERALS_COLLECTION_VALUES	layouts/_partials/header.html	/about/
 LITERALS_COLLECTION_VALUES	layouts/_partials/header.html	/before-your-call/
 LITERALS_COLLECTION_VALUES	layouts/_partials/header.html	/methodology/
 LITERALS_COLLECTION_VALUES	layouts/_partials/jsonld.html	https://schema.org
+LITERALS_COLLECTION_VALUES	layouts/_partials/lookups.html	https://bazaar.abuse.ch/sample/%s/
+LITERALS_COLLECTION_VALUES	layouts/_partials/lookups.html	https://www.virustotal.com/gui/file/%s
 LITERALS_COLLECTION_VALUES	layouts/_partials/record-item.html	chip
+LITERALS_COLLECTION_VALUES	layouts/home.feed.json	1
 LITERALS_COLLECTION_VALUES	layouts/reports/page.html	basis
 LITERALS_COLLECTION_VALUES	layouts/reports/page.html	summary
 LITERALS_DATE_LAYOUTS	2006-01-02
@@ -440,6 +444,7 @@ LITERALS_PASSING_SETS	LITERALS_CSS_FUNCTIONS
 LITERALS_PASSING_SETS	LITERALS_DATA_ROOTS
 LITERALS_PASSING_SETS	LITERALS_DATE_LAYOUTS
 LITERALS_PASSING_SETS	LITERALS_DICT_KEYS
+LITERALS_PASSING_SETS	LITERALS_FILE_DICT_KEYS
 LITERALS_PASSING_SETS	LITERALS_ELEMENTS
 LITERALS_PASSING_SETS	LITERALS_FIELD_FUNCS
 LITERALS_PASSING_SETS	LITERALS_FILE_FUNCTIONS
@@ -502,6 +507,10 @@ HUGO_CONFIG_PINNED	locale	en
 HUGO_CONFIG_PINNED	markup.goldmark.extensions.linkify	false
 HUGO_CONFIG_PINNED	markup.goldmark.renderer.unsafe	false
 HUGO_CONFIG_PINNED	markup.highlight.noClasses	false
+HUGO_CONFIG_PINNED	outputFormats.feed.baseName	feed
+HUGO_CONFIG_PINNED	outputFormats.feed.isPlainText	true
+HUGO_CONFIG_PINNED	outputFormats.feed.mediaType	application/json
+HUGO_CONFIG_PINNED	outputs.home	["html", "feed"]
 HUGO_CONFIG_PINNED	privacy.disqus.disable	true
 HUGO_CONFIG_PINNED	privacy.googleAnalytics.disable	true
 HUGO_CONFIG_PINNED	privacy.instagram.disable	true

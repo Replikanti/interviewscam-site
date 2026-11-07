@@ -1,0 +1,2 @@
+This case runs render rules 11 to 13 (the data feed): selftest.sh leaves
+out --no-feed when a render case has this file.

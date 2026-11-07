@@ -87,6 +87,7 @@ if sys.version_info < (3, 11):
     sys.exit(2)
 
 import argparse
+import copy
 import datetime
 import decimal
 import encodings.idna
@@ -2214,9 +2215,9 @@ LOOKUP_PAGE = re.compile(r"https://bazaar\.abuse\.ch/sample/[0-9a-f]{64}/"
                          r"|https://www\.virustotal\.com/gui/file/[0-9a-f]{64}")
 # Rule 7 on every page: an internal link (relative or to the site's own
 # host) points to a page path, which ends in "/", or to one of these
-# non-page files. The production build and the fixtures link none today
-# (404.html is served, never linked); PR 8 adds /feed.json.
-INTERNAL_FILES = frozenset()
+# non-page files: the data feed, which /data-feed/ links (M3 PR 8).
+# 404.html is served, never linked.
+INTERNAL_FILES = frozenset({"/feed.json"})
 # The one written form of an absolute link to the site's own host.
 OWN_URL = re.compile(r"https://interviewscam\.com(?:[/?#]|$)")
 # Rule 3: a link to a report page, and the list-item contract around it.
@@ -2860,15 +2861,36 @@ def plain_box(el):
     return bool(text) and all(c in BOX_CHARS for c in text)
 
 
+def labelled_box(el):
+    """Rule 4, the labelled variant (ADR-0004 part 5, M3 PR 8; #27 Known
+    limit 4): the box holds nothing but text, and the first child of its
+    parent after it, past whitespace-only text, is a visible persona-label
+    element, which the rule reads as exactly PERSONA_LABEL. An own
+    artifact that is not pure printable ASCII is shown this way, so its
+    name never renders without the label right next to it."""
+    if any(not isinstance(child, str) for child in el.children) or el.parent is None:
+        return False
+    siblings = el.parent.children
+    after = siblings[next(i for i, c in enumerate(siblings) if c is el) + 1:]
+    for child in after:
+        if isinstance(child, str):
+            if child.strip(" \t\n\r\f"):
+                return False
+            continue
+        return "persona-label" in child.classes and not child.concealed()
+    return False
+
+
 def own_artifact_boxes(page, record):
     """Rule 4 on a visible persona's own page (ADR-0004 part 5): the code
     boxes that may hold the persona's own name, as its own artifacts do.
     Only when the page's single h1 reads exactly the labelled title; then
     every <code> outside hidden content whose whole text equals a declared
-    artifact value of the record as stored and is a plain box (plain_box:
-    a handle or a mailbox built from the name, never the name as a name),
-    and that carries the class artifact or is the <code> child of the
-    page's single campaign-line element. Their attributes stay in the scan."""
+    artifact value of the record as stored, that is a plain box (plain_box:
+    a handle or a mailbox built from the name, never the name as a name)
+    or a labelled one (labelled_box: the D10 label right after it), and
+    that carries the class artifact or is the <code> child of the page's
+    single campaign-line element. Their attributes stay in the scan."""
     h1s = by_tag(page, "h1")
     if len(h1s) != 1 or h1s[0].text() != record_title(record):
         return set()
@@ -2876,7 +2898,8 @@ def own_artifact_boxes(page, record):
     lines = by_class(page, "campaign-line")
     line = lines[0] if len(lines) == 1 else None
     return {el for el in by_tag(page, "code")
-            if not el.concealed() and el.text() in values and plain_box(el)
+            if not el.concealed() and el.text() in values
+            and (plain_box(el) or labelled_box(el))
             and ("artifact" in el.classes or (line is not None and el.parent is line))}
 
 
@@ -2992,6 +3015,11 @@ def campaign_line_problems(page, record, campaigns, page_path):
     want = CAMPAIGN_LINE.format(campaign=squash(name), source=source_ref(source))
     if campaign.get("basis") == "artifact" and isinstance(campaign.get("artifact"), str):
         want += CAMPAIGN_LINE_ARTIFACT.format(artifact=campaign["artifact"])
+        # The labelled variant (rule 4): on a visible persona's page an
+        # artifact that is not pure printable ASCII carries the label.
+        if is_persona(record) and not is_hidden(record) and \
+                any(c not in BOX_CHARS for c in campaign["artifact"]):
+            want += " " + PERSONA_LABEL
     want = squash(want)
     if el.text() != want:
         problems.append(f"rule 6: the campaign line reads {show(el.text())}, the fixed "
@@ -3455,6 +3483,273 @@ def linked_paths(page, page_path):
         - {None}
 
 
+# Rules 11 to 13: the data feed /feed.json (SPEC section 5, ADR-0004 part
+# 7), its schema and its documentation page. The fixed values live here on
+# purpose, independently of layouts/home.feed.json, like the page wording.
+FEED_REL = "public/feed.json"
+FEED_SCHEMA = "feed.schema.json"
+FEED_PAGE_REL = "public/data-feed/index.html"
+FEED_VERSION = 1  # ADR-0004 Numbers: the first published form
+FEED_HOME_URL = SITE_ORIGIN + "/"
+FEED_DOC_URL = SITE_ORIGIN + "/data-feed/"
+
+
+def feed_report_entry(record):
+    """Rule 12: the feed entry a report record must have, field by field
+    (schema/feed.schema.json, ADR-0004 part 7). A hidden persona has name
+    null, aliases [] and name_label null; a visible persona's name_label
+    is the D10 label; every other name_label is null."""
+    p = record.params
+    persona, hidden = is_persona(record), is_hidden(record)
+    campaign = p.get("campaign")
+    line = None
+    if isinstance(campaign, dict):
+        line = {"slug": campaign.get("slug"),
+                "url": f"{SITE_ORIGIN}/campaigns/{campaign.get('slug')}/",
+                "basis": campaign.get("basis"), "artifact": campaign.get("artifact"),
+                "source_id": campaign.get("source")}
+    artifacts = copy.deepcopy(p.get("artifacts")) if isinstance(p.get("artifacts"), dict) else {}
+    hashes = artifacts.get("sha256")
+    for entry in hashes if isinstance(hashes, list) else []:
+        if isinstance(entry, dict):
+            on = entry.get("listed_on") if isinstance(entry.get("listed_on"), list) else []
+            entry["lookup_urls"] = [LOOKUPS[s].format(entry.get("value")) for s in on
+                                    if s in LOOKUPS]
+    return {
+        "slug": record.slug, "url": f"{SITE_ORIGIN}/reports/{record.slug}/",
+        "name": None if hidden else p.get("name"), "name_hidden": hidden,
+        "name_label": PERSONA_LABEL if persona and not hidden else None,
+        "aliases": [] if hidden else p.get("aliases", []),
+        "name_type": p.get("name_type"), "state": p.get("state"),
+        "state_basis": p.get("state_basis"), "campaign": line,
+        "related": p.get("related", []), "summary": p.get("summary"),
+        "evidence": p.get("evidence"), "first_seen": p.get("first_seen"),
+        "last_seen": p.get("last_seen"), "last_reviewed": p.get("last_reviewed"),
+        "published": record.data.get("date"),
+        "independent_reports": p.get("independent_reports"),
+        "label": record_label(record), "artifacts": artifacts,
+        "sources": p.get("sources", []),
+    }
+
+
+def feed_campaign_entry(record, reports):
+    """Rule 12: the feed entry a campaign record must have."""
+    p = record.params
+    attribution = p.get("attribution", [])
+    return {
+        "slug": record.slug, "url": f"{SITE_ORIGIN}/campaigns/{record.slug}/",
+        "name": p.get("name"), "aliases": p.get("aliases", []),
+        "summary": p.get("summary"), "first_seen": p.get("first_seen"),
+        "last_seen": p.get("last_seen"), "delivery": p.get("delivery"),
+        "targeted_os": p.get("targeted_os"), "steals": p.get("steals"),
+        "attribution": [{"statement": a.get("statement"), "source_id": a.get("source")}
+                        for a in attribution if isinstance(a, dict)]
+        if isinstance(attribution, list) else attribution,
+        "report_slugs": sorted(r.slug for r in reports
+                               if isinstance(r.params.get("campaign"), dict)
+                               and r.params["campaign"].get("slug") == record.slug),
+        "sources": p.get("sources", []),
+    }
+
+
+def feed_field_paths(schema, prefix=""):
+    """Rule 13: every field path the feed schema defines, for example
+    reports[].artifacts.sha256[].value: each property, then the properties
+    of an object value (path.) and of the objects of a list (path[].)."""
+    paths = []
+    for name, sub in (schema.get("properties") or {}).items():
+        path = prefix + name
+        paths.append(path)
+        if isinstance(sub, dict):
+            paths += feed_field_paths(sub, path + ".")
+            items = sub.get("items")
+            if isinstance(items, dict):
+                paths += feed_field_paths(items, path + "[].")
+    return paths
+
+
+def feed_entry_problems(kind, got, want):
+    """Rule 12: the entry has exactly the fields sitecheck computes, and
+    every one equals the record's value. The field set is pinned here
+    too, so a field renamed in the template, the schema and /data-feed/
+    together still fails until this check learns it (a breaking change)."""
+    problems = []
+    for key in sorted(set(want) - set(got)):
+        problems.append(f"rule 12: {kind}[{show(want['slug'])}] has no field {key}, "
+                        "which sitecheck render computes from the record (ADR-0004 part 7)")
+    for key in sorted(set(got) - set(want)):
+        problems.append(f"rule 12: {kind}[{show(want['slug'])}] has the field {show(key)}, "
+                        "which sitecheck render does not know (ADR-0004 part 7)")
+    for key in want:
+        if key in got and not same_json(got[key], want[key]):
+            problems.append(f"rule 12: {kind}[{show(want['slug'])}].{key} is "
+                            f"{show(json.dumps(got[key], ensure_ascii=False))}, the record "
+                            f"gives {show(json.dumps(want[key], ensure_ascii=False))} "
+                            "(ADR-0004 part 7)")
+    return problems
+
+
+def feed_list_problems(kind, entries, records):
+    """Rule 12: one entry per record, sorted by slug, and none without one."""
+    problems = []
+    slugs = [e.get("slug") for e in entries]
+    want = sorted(r.slug for r in records)
+    for slug in want:
+        if slug not in slugs:
+            problems.append(f"rule 12: the record {kind}/{slug} has no entry in "
+                            f"{kind} (SPEC section 5: every published record)")
+    for slug in slugs:
+        if slug not in want:
+            problems.append(f"rule 12: the {kind} entry {show(slug)} has no record; the "
+                            "feed lists exactly the published records")
+    if len(set(slugs)) != len(slugs):
+        problems.append(f"rule 12: {kind} lists a slug twice")
+    if slugs != sorted(slugs, key=str):
+        problems.append(f"rule 12: {kind} is not sorted by slug")
+    return problems
+
+
+def feed_name_exempt(path, entries, persona):
+    """Rule 12 (the boundary of #23 STOP 2 decision 1): a visible persona's
+    name may appear only in its own entry, whose name_label is the D10
+    label, as that entry's name, an alias, or a value under its artifacts
+    or its campaign.artifact (an own artifact, as on its page)."""
+    match = re.match(r"reports\[(\d+)\]\.(.*)", path)
+    if not match:
+        return False
+    entry = entries[int(match.group(1))]
+    if entry.get("slug") != persona.slug or entry.get("name_label") != PERSONA_LABEL:
+        return False
+    field = match.group(2)
+    return (field == "name" or re.fullmatch(r"aliases\[\d+\]", field) is not None
+            or field.startswith("artifacts.") or field == "campaign.artifact")
+
+
+def next_element(el):
+    """The next element sibling of el, past whitespace-only text, or None
+    (also when text with other characters comes first)."""
+    if el.parent is None:
+        return None
+    siblings = el.parent.children
+    for child in siblings[next(i for i, c in enumerate(siblings) if c is el) + 1:]:
+        if isinstance(child, str):
+            if child.strip(" \t\n\r\f"):
+                return None
+            continue
+        return child
+    return None
+
+
+def feed_problems(public, schema_dir, records, personas, pages):
+    """Rules 11 to 13 on public/feed.json and public/data-feed/index.html:
+    (rel, problem) pairs, and the feed part of the summary line."""
+    out = []
+    summary = "; feed: not read"
+    path = public / "feed.json"
+    try:
+        schema = json.loads((schema_dir / FEED_SCHEMA).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return [(f"schema/{FEED_SCHEMA}", f"rule 11: cannot read the feed schema: "
+                 f"{exc}")], summary
+    bad = schema_problems(schema, "#")
+    if bad:
+        return [(f"schema/{FEED_SCHEMA}", f"rule 11: {b}") for b in bad], summary
+    # Rule 13: the field list on /data-feed/ is exactly the schema's paths.
+    want_paths = feed_field_paths(schema)
+    page = pages.get(FEED_PAGE_REL)
+    if page is None:
+        out.append((FEED_PAGE_REL, "rule 13: the documentation page /data-feed/ is "
+                    "missing or has a markup: finding (SPEC section 6, ADR-0004 part 7)"))
+    else:
+        documented = []
+        for dt in by_tag(page, "dt"):
+            if dt.concealed():
+                continue
+            codes = [c for c in dt.children if not isinstance(c, str)]
+            if len(codes) != 1 or codes[0].tag != "code" or dt.text() != codes[0].text():
+                out.append((FEED_PAGE_REL, f"rule 13: the field-list term {show(dt.text())} "
+                            "is not one <code> holding a field path"))
+                continue
+            # A hidden term documents nothing (above), and neither does a
+            # visible term whose description is hidden, empty or missing.
+            dd = next_element(dt)
+            if dd is None or dd.tag != "dd" or dd.concealed() or not dd.text():
+                out.append((FEED_PAGE_REL, f"rule 13: the field-list term {show(dt.text())} "
+                            "has no visible <dd> description right after it"))
+                continue
+            documented.append(dt.text())
+        for field in want_paths:
+            if field not in documented:
+                out.append((FEED_PAGE_REL, f"rule 13: the feed field {field} of "
+                            f"schema/{FEED_SCHEMA} is not documented on /data-feed/"))
+        for field in dict.fromkeys(documented):
+            if field not in want_paths:
+                out.append((FEED_PAGE_REL, f"rule 13: /data-feed/ documents the field "
+                            f"{show(field)}, which schema/{FEED_SCHEMA} does not define"))
+            if documented.count(field) > 1:
+                out.append((FEED_PAGE_REL, f"rule 13: /data-feed/ documents the field "
+                            f"{show(field)} twice"))
+    # Rule 11: the feed exists, parses and validates against the schema.
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return out + [(FEED_REL, "rule 11: /feed.json is missing; the home page builds it "
+                       "(hugo.toml outputs, layouts/home.feed.json; SPEC section 5)")], summary
+    except (OSError, UnicodeDecodeError) as exc:
+        return out + [(FEED_REL, f"rule 11: cannot read /feed.json: {exc}")], summary
+    try:
+        feed = json.loads(raw)
+    except (json.JSONDecodeError, RecursionError) as exc:
+        return out + [(FEED_REL, f"rule 11: /feed.json is not JSON: {exc}")], summary
+    for key in dict.fromkeys(jsonld_duplicate_keys(raw)):
+        out.append((FEED_REL, f"rule 11: the key {show(key)} occurs twice in one object"))
+    errors = []
+    validate(feed, schema, "", errors, [])
+    if not isinstance(feed, dict) or "version" not in feed:
+        errors.insert(0, "the version field is missing")
+    for error in errors:
+        out.append((FEED_REL, f"rule 11: does not match schema/{FEED_SCHEMA}: {error}"))
+    if errors:
+        return out, summary
+    summary = (f"; feed: {len(feed['reports'])} reports, {len(feed['campaigns'])} "
+               f"campaigns, {len(want_paths)} fields")
+    # Rule 12: the entries equal the record set and the records.
+    reports = [r for r in records if r.section == "reports"]
+    campaigns = [r for r in records if r.section == "campaigns"]
+    for kind, entries, recs in (("reports", feed["reports"], reports),
+                                ("campaigns", feed["campaigns"], campaigns)):
+        out += [(FEED_REL, p) for p in feed_list_problems(kind, entries, recs)]
+        by_slug = {r.slug: r for r in recs}
+        for entry in entries:
+            record = by_slug.get(entry.get("slug"))
+            if record is None:
+                continue
+            want = feed_report_entry(record) if kind == "reports" else \
+                feed_campaign_entry(record, reports)
+            out += [(FEED_REL, p) for p in feed_entry_problems(kind, entry, want)]
+    dates = [r.data.get("date") for r in records] + \
+        [r.params.get("last_reviewed") for r in reports]
+    dates = [d for d in dates if isinstance(d, str)]
+    updated = max(dates) if dates else None
+    if feed["updated"] != updated:
+        out.append((FEED_REL, f"rule 12: updated is {show(feed['updated'])}, the latest "
+                    f"record date or review date is {show(updated)}"))
+    # Rule 12, D10 (#23 STOP 2 decision 1): a visible persona's name, matched
+    # as rule 4 matches it, appears only inside its own labelled entry.
+    strings = list(iter_strings(feed, ""))
+    for persona in personas:
+        for field, name in record_names(persona):
+            pattern = name_pattern(name)
+            for where, text in strings:
+                if pattern.search(fold_words(text)) and \
+                        not feed_name_exempt(where, feed["reports"], persona):
+                    out.append((FEED_REL, f"rule 12: the {field} of the persona record "
+                                f"{persona.rel} appears in {where}; in the feed it may "
+                                "appear only as its own entry's name and aliases, with "
+                                "name_label set, and in that entry's artifacts (D10)"))
+    return out, summary
+
+
 def index_link_problems(pages, records):
     """Rule 10: /reports/ links every report, /campaigns/ every campaign, and
     Home the five latest reports and every campaign."""
@@ -3615,6 +3910,14 @@ def cmd_render(args):
             findings.add(rel, problem)
     for rel, problem in index_link_problems(pages, records):
         findings.add(rel, problem)
+    # Rules 11 to 13 run on every site build; --no-feed is for the
+    # self-test's render fixtures, which pin the page contract without a
+    # feed (selftest.sh passes it unless the case has a feed.txt).
+    feed_summary = ""
+    if not args.no_feed:
+        problems, feed_summary = feed_problems(public, schema_dir, records, personas, pages)
+        for rel, problem in problems:
+            findings.add(rel, problem)
     if not pages:
         findings.add("public", "no HTML pages found; nothing was checked")
     n_reports = sum(r.section == "reports" for r in records)
@@ -3622,7 +3925,7 @@ def cmd_render(args):
     return findings.report(
         f"render checked: {len(records)} records (reports {n_reports}, campaigns "
         f"{len(records) - n_reports}), {n_record_pages} record pages, {len(pages)} "
-        f"HTML pages, {len(files)} files")
+        f"HTML pages, {len(files)} files{feed_summary}")
 
 
 # ---------------------------------------------------------------------------
@@ -4043,6 +4346,12 @@ LITERALS_TEXT_SHAPERS = {"humanize", "inflect.Humanize", "title", "strings.Title
 # whitespace and no markup (tokens.css turns "_" into "-") ...
 LITERALS_REPLACE = {"replace": 3, "strings.Replace": 3, "replaceRE": 2,
                     "strings.ReplaceRE": 2}
+# ... and replaceRE only below a comparison (an operand of eq, ne, ..., at
+# any depth): a pattern with no letter passes the rule above and can still
+# cut a label (`replaceRE ", [^ ]+" ""` turns the D10 label into "(name used
+# by the campaign a stolen identity)"), so its result may only decide a
+# bool, as in box-label.html (M3 PR 8 review 7) ...
+LITERALS_COMPARE_ONLY = {"replaceRE", "strings.ReplaceRE"}
 # ... the value operands of cond, default, or and and are copy unless they
 # have a shape that is never text: a path or URL, a vocabulary word or a
 # heading element name (checklist.html picks h2 or h3) ...
@@ -4150,13 +4459,18 @@ LITERALS_BANNED_STATE = {"newScratch", "collections.NewScratch", "emojify",
 #   LITERALS_FUNCTIONS      the functions a template outside a CSS template
 #                           may call (site.* and hugo.* chains have L4's
 #                           own rules). No function on it cuts a string or
-#                           changes its case upwards, except the two scoped
-#                           below.
+#                           changes its case upwards, except the three
+#                           scoped below.
 #   LITERALS_CSS_FUNCTIONS  the same for CSS templates (L5 reads what they
 #                           print).
 #   LITERALS_FILE_FUNCTIONS functions only some files may call: split cuts a
 #                           string (the label key) and first cuts one too
-#                           (`first 2 "warning"` prints "wa"); the resources.*
+#                           (`first 2 "warning"` prints "wa"); replaceRE
+#                           can cut or rewrite one, so only box-label.html
+#                           calls it, and only below a comparison
+#                           (LITERALS_COMPARE_ONLY: its result decides
+#                           whether the D10 label follows a box; M3 PR 8);
+#                           the resources.*
 #                           functions run only in baseof.html, because a
 #                           resource prints its raw file through .Content
 #                           and its name through .Title (review3 3).
@@ -4166,12 +4480,13 @@ LITERALS_BANNED_STATE = {"newScratch", "collections.NewScratch", "emojify",
 LITERALS_FUNCTIONS = frozenset("""
 absURL add and append cond default dict eq errorf first ge htmlEscape in index int
 jsonify len lower merge ne not partial printf reflect.IsMap reflect.IsSlice relURL
-resources.Concat resources.ExecuteAsTemplate resources.Fingerprint resources.Get
+replaceRE resources.Concat resources.ExecuteAsTemplate resources.Fingerprint resources.Get
 resources.Minify safeHTML safeJS slice sort split time.Format where
 """.split())
 LITERALS_CSS_FUNCTIONS = frozenset("div float index replace safeCSS slice".split())
 LITERALS_FILE_FUNCTIONS = {"split": frozenset(LITERALS_LABELS_READERS),
                            "first": frozenset({"layouts/home.html"}),
+                           "replaceRE": frozenset({"layouts/_partials/box-label.html"}),
                            **{f: frozenset({"layouts/baseof.html"}) for f in (
                                "resources.Concat", "resources.ExecuteAsTemplate",
                                "resources.Fingerprint", "resources.Get",
@@ -4222,13 +4537,24 @@ Sections Title
 #                               its build; fix round 3: the name was any
 #                               literal before); the label partials take
 #                               their key.
+#   LITERALS_FILE_DICT_KEYS     file -> the dict keys only that file may use:
+#                               the field names of /feed.json, plain English
+#                               words, only in layouts/home.feed.json, which
+#                               prints them as JSON keys (M3 PR 8 review 1).
 LITERALS_DICT_KEYS = frozenset("""
 check details fields first head html icon id items jsonld key label
 malwarebazaar page part search tile title value virustotal warning
 """.split())
+LITERALS_FILE_DICT_KEYS = {"layouts/home.feed.json": frozenset("""
+aliases artifact artifacts attribution basis campaign campaigns delivery
+documentation_url evidence first_seen home_page_url independent_reports
+last_reviewed last_seen lookup_urls name_hidden name_label name_type published
+related report_slugs reports slug source_id sources state state_basis statement
+steals summary targeted_os updated version
+""".split())}
 LITERALS_COLLECTION_VALUES = frozenset({
-    ("layouts/_partials/artifacts.html", "https://bazaar.abuse.ch/sample/%s/"),
-    ("layouts/_partials/artifacts.html", "https://www.virustotal.com/gui/file/%s"),
+    ("layouts/_partials/lookups.html", "https://bazaar.abuse.ch/sample/%s/"),
+    ("layouts/_partials/lookups.html", "https://www.virustotal.com/gui/file/%s"),
     ("layouts/_partials/breadcrumb.html", "1"),
     ("layouts/_partials/breadcrumb.html", "2"),
     ("layouts/_partials/breadcrumb.html", "3"),
@@ -4244,6 +4570,7 @@ LITERALS_COLLECTION_VALUES = frozenset({
     ("layouts/_partials/header.html", "/about/"),
     ("layouts/_partials/jsonld.html", "https://schema.org"),
     ("layouts/_partials/record-item.html", "chip"),
+    ("layouts/home.feed.json", "1"),  # the feed's version (ADR-0004 part 7)
     ("layouts/reports/page.html", "summary"),
     ("layouts/reports/page.html", "basis"),
 })
@@ -4267,8 +4594,8 @@ LITERALS_PASSING_SETS = (
     "LITERALS_ELEMENTS", "LITERALS_SITE_MEMBERS", "LITERALS_SITE_PARAMS",
     "LITERALS_HUGO_DATA", "LITERALS_HUGO_MEMBERS", "LITERALS_FUNCTIONS",
     "LITERALS_CSS_FUNCTIONS", "LITERALS_FILE_FUNCTIONS", "LITERALS_MEMBERS",
-    "LITERALS_DICT_KEYS", "LITERALS_COLLECTION_VALUES", "LITERALS_DATE_LAYOUTS",
-    "LITERALS_CONTEXT_PARTIALS", "LITERALS_PRINTF_VERBS", "LITERALS_KEY_OPERANDS",
+    "LITERALS_DICT_KEYS", "LITERALS_FILE_DICT_KEYS", "LITERALS_COLLECTION_VALUES",
+    "LITERALS_DATE_LAYOUTS", "LITERALS_CONTEXT_PARTIALS", "LITERALS_PRINTF_VERBS", "LITERALS_KEY_OPERANDS",
     "LITERALS_RESOURCE_KEYS", "LITERALS_LABEL_ASSIGNS", "LITERALS_PASSING_SETS",
 )
 # The allowlists whose contents the self-test pins entry by entry in
@@ -4376,9 +4703,10 @@ class Group:
 
 
 class Pipeline:
-    def __init__(self, commands, declared):
+    def __init__(self, commands, declared, assign=None):
         self.commands = commands  # each a list of Token and Group operands
         self.declared = declared  # $x := ... or $x = ... at this level
+        self.assign = assign  # the := or = token of that assignment
 
 
 class TemplateError(Exception):
@@ -4456,7 +4784,7 @@ def lex_action(text, start):
 def parse_pipeline(tokens, i=0, depth=0):
     """(Pipeline, next index). Parentheses become Group operands; a field
     chain right after a group (`(x).Y`) stays with it."""
-    commands, cur, declared = [], [], False
+    commands, cur, declared, assign = [], [], False, None
     while i < len(tokens):
         t = tokens[i]
         if t.kind == "rparen":
@@ -4477,14 +4805,14 @@ def parse_pipeline(tokens, i=0, depth=0):
             commands.append(cur)
             cur = []
         elif t.kind == "assign":
-            declared, cur = True, []
+            declared, assign, cur = True, t, []
         elif t.kind == "comma":
             cur = []
         else:
             cur.append(t)
         i += 1
     commands.append(cur)
-    return Pipeline(commands, declared), i
+    return Pipeline(commands, declared, assign), i
 
 
 def pipeline_literals(pipeline, exempt=False):
@@ -4732,6 +5060,41 @@ def value_problems(pipeline, quiet=False, first=True):
                 yield from value_problems(operand.pipeline, inner, False)
 
 
+def compare_only_problems(pipeline, below=False):
+    """(token, message) for a LITERALS_COMPARE_ONLY call whose result is not
+    an operand of a comparison: in a group under eq, ne, lt, le, gt, ge, in
+    or not, at any depth. A pipe into a comparison, a variable or a with
+    fails closed."""
+    for command in pipeline.commands:
+        fn = command_head(command)
+        if fn in LITERALS_COMPARE_ONLY and not below:
+            yield command[0], (f"{fn} only below a comparison (`ne ({fn} ...) \"\"`): its "
+                               "result can cut or rewrite a label, so it may only "
+                               "decide a bool (L3, M3 PR 8)")
+        for operand in command:
+            if isinstance(operand, Group):
+                yield from compare_only_problems(operand.pipeline,
+                                                 below or fn in LITERALS_COMPARE)
+
+
+def group_assign_problems(pipeline):
+    """(token, message) for an assignment inside parentheses at any depth,
+    `eq ($x = "free") ""` or `ne ($x := replaceRE ...) ""`: the value leaves
+    the comparison through the variable, so the quiet position and
+    LITERALS_COMPARE_ONLY would pass what a later action prints. No layout
+    needs one, so it fails closed (M3 PR 8 review2 1 and 2)."""
+    for command in pipeline.commands:
+        for operand in command:
+            if isinstance(operand, Group):
+                if operand.pipeline.declared:
+                    yield operand.pipeline.assign, (
+                        f"an assignment inside parentheses ({show(operand.pipeline.assign.text)}"
+                        "): its value leaves the group through the variable, so a "
+                        "comparison does not keep it quiet; assign in an action of its "
+                        "own (L3, M3 PR 8)")
+                yield from group_assign_problems(operand.pipeline)
+
+
 def value_shape(value):
     """A literal in a value position whose shape is never copy: no letter or
     digit once markup, verbs and entities are gone, a word of the JSON-LD
@@ -4834,8 +5197,10 @@ def position_problems(rel, pipeline, binds, keywords):
         text = token.text
         fn = command_head(command) or "the action"
         if kind == "dict-key":
-            if not (string and (value_shape(text) or text in LITERALS_DICT_KEYS)):
-                yield command, token, (f"the dict key {show(text)} is not on LITERALS_DICT_KEYS; a "
+            if not (string and (value_shape(text) or text in LITERALS_DICT_KEYS
+                                or text in LITERALS_FILE_DICT_KEYS.get(rel, ()))):
+                yield command, token, (f"the dict key {show(text)} is not on LITERALS_DICT_KEYS "
+                              "or on LITERALS_FILE_DICT_KEYS for this file; a "
                               "key prints wherever the dict goes (L3)")
         elif kind == "collection":
             if not ((string and value_shape(text))
@@ -5378,6 +5743,10 @@ def template_literal_problems(rel, text, findings, counts, markup, root, defines
             report(first[0], "the action prints a value computed from literals alone "
                    "(`upper \"free\"`, `cond true \"a\" \"b\"`), which is fixed copy (L3)")
         for t, problem in value_problems(pipeline):
+            report(t, problem)
+        for t, problem in compare_only_problems(pipeline):
+            report(t, problem)
+        for t, problem in group_assign_problems(pipeline):
             report(t, problem)
         for t, problem in partial_problems(pipeline, root):
             report(t, problem)
@@ -6819,6 +7188,14 @@ HUGO_CONFIG_PINNED = {
     "disableKinds": ["taxonomy", "term", "rss"],
     "disableHugoGeneratorInject": True,
     "refLinksErrorLevel": "ERROR",
+    # The data feed /feed.json (ADR-0004 part 7, M3 PR 8): the home page's
+    # second output and its format. A plain-text JSON format prints only
+    # what layouts/home.feed.json prints, and application/json is a
+    # built-in media type, so no [mediaTypes] key is allowed.
+    "outputs.home": ["html", "feed"],
+    "outputFormats.feed.mediaType": "application/json",
+    "outputFormats.feed.baseName": "feed",
+    "outputFormats.feed.isPlainText": True,
     "markup.goldmark.renderer.unsafe": False,
     "markup.goldmark.extensions.linkify": False,
     "markup.highlight.noClasses": False,
@@ -7431,31 +7808,37 @@ def positive_seconds(text):
     return value
 
 
-def main(argv):
-    parser = argparse.ArgumentParser(prog="sitecheck", description=__doc__.split("\n")[0])
+def build_parser():
+    """The command line. allow_abbrev=False on every parser (each subparser
+    takes its own): argparse would read --no as --no-feed and switch rules
+    11 to 13 off (M3 PR 8 review 2). The self-test walks this tree, so a new
+    parser without it fails wiring/sitecheck-no-abbreviations."""
+    parser = argparse.ArgumentParser(prog="sitecheck", description=__doc__.split("\n")[0],
+                                     allow_abbrev=False)
     sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("records")
+    p = sub.add_parser("records", allow_abbrev=False)
     p.add_argument("--root", default=".")
     p.add_argument("--schemas")
     p.set_defaults(func=cmd_records)
-    p = sub.add_parser("site")
+    p = sub.add_parser("site", allow_abbrev=False)
     p.add_argument("--records", required=True)
     p.add_argument("--schemas")
     p.add_argument("public")
     p.set_defaults(func=cmd_site)
-    p = sub.add_parser("render")
+    p = sub.add_parser("render", allow_abbrev=False)
     p.add_argument("--records", required=True)
     p.add_argument("--schemas")
     p.add_argument("--fixtures")
+    p.add_argument("--no-feed", action="store_true")
     p.add_argument("public")
     p.set_defaults(func=cmd_render)
-    p = sub.add_parser("tokens")
+    p = sub.add_parser("tokens", allow_abbrev=False)
     p.add_argument("--root", default=".")
     p.set_defaults(func=cmd_tokens)
-    p = sub.add_parser("literals")
+    p = sub.add_parser("literals", allow_abbrev=False)
     p.add_argument("--root", default=".")
     p.set_defaults(func=cmd_literals)
-    p = sub.add_parser("reflow")
+    p = sub.add_parser("reflow", allow_abbrev=False)
     p.add_argument("--chrome", required=True)
     # Self-test only: check.sh never passes it, so CI keeps
     # REFLOW_LAUNCH_TIMEOUT.
@@ -7463,18 +7846,23 @@ def main(argv):
                    default=REFLOW_LAUNCH_TIMEOUT)
     p.add_argument("public")
     p.set_defaults(func=cmd_reflow)
-    p = sub.add_parser("guard")
+    p = sub.add_parser("guard", allow_abbrev=False)
     p.add_argument("--root", default=".")
     p.add_argument("--hugo")
     p.set_defaults(func=cmd_guard)
-    p = sub.add_parser("lighthouse")
+    p = sub.add_parser("lighthouse", allow_abbrev=False)
     p.add_argument("--reports", required=True)
     p.add_argument("--version", required=True)
     p.set_defaults(func=cmd_lighthouse)
-    p = sub.add_parser("tree-digest")
+    p = sub.add_parser("tree-digest", allow_abbrev=False)
     p.add_argument("lockfile")
     p.add_argument("--expect", required=True)
     p.set_defaults(func=cmd_tree_digest)
+    return parser
+
+
+def main(argv):
+    parser = build_parser()
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:

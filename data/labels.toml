@@ -40,6 +40,8 @@ nav_label = "Site"
 methodology = "Methodology"
 corrections = "Corrections and removal"
 privacy = "Privacy"
+# The link to /data-feed/, the documentation of /feed.json (SPEC section 6).
+data_feed = "Data feed"
 promise = "No trackers, no cookies, no third-party scripts."
 
 # The 404 page. title is the h1 and, with " · interviewscam.com", the

@@ -1,0 +1,1 @@
+public/data-feed/index.html: rule 13: the feed field reports[].evidence of schema/feed.schema.json is not documented

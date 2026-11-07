@@ -1,0 +1,625 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "The data feed /feed.json (SPEC section 5, ADR-0004 part 7), built by layouts/home.feed.json. sitecheck render rule 11 validates the built file with the subset validator of tools/sitecheck.py (ADR-0002 part 4), rule 12 compares it with the records, and rule 13 requires the field list on /data-feed/ (content/data-feed.md) to equal the field paths of this schema. No x-defang here: rule 12 requires every artifact to equal its record's value, which the records check validated.",
+  "title": "interviewscam.com data feed",
+  "description": "Every published report and campaign family as one document, for researchers and tools.",
+  "type": "object",
+  "required": [
+    "version",
+    "home_page_url",
+    "documentation_url",
+    "updated",
+    "reports",
+    "campaigns"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "description": "The feed's version, an integer. It increases only on a breaking change: a field removed, renamed or retyped, or its meaning changed. A new field keeps the version and is listed on this page with its date.",
+      "type": "integer",
+      "const": 1
+    },
+    "home_page_url": {
+      "description": "The site's home page.",
+      "type": "string",
+      "const": "https://interviewscam.com/"
+    },
+    "documentation_url": {
+      "description": "This documentation page.",
+      "type": "string",
+      "const": "https://interviewscam.com/data-feed/"
+    },
+    "updated": {
+      "description": "The latest publication or review date of any record (YYYY-MM-DD). null when there are no records.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date"
+    },
+    "reports": {
+      "description": "Every published report, sorted by slug.",
+      "type": "array",
+      "items": {
+        "description": "One report: one name a candidate sees.",
+        "type": "object",
+        "required": [
+          "slug",
+          "url",
+          "name",
+          "name_hidden",
+          "name_label",
+          "aliases",
+          "name_type",
+          "state",
+          "state_basis",
+          "campaign",
+          "related",
+          "summary",
+          "evidence",
+          "first_seen",
+          "last_seen",
+          "last_reviewed",
+          "published",
+          "independent_reports",
+          "label",
+          "artifacts",
+          "sources"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "slug": {
+            "description": "The report's slug; its page is /reports/<slug>/. A persona report's slug is persona-N and never contains a name.",
+            "type": "string",
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+          },
+          "url": {
+            "description": "The URL of the report page.",
+            "type": "string",
+            "pattern": "^https://interviewscam\\.com/reports/[a-z0-9-]+/$"
+          },
+          "name": {
+            "description": "The name, defanged. null when the name is hidden on request (name_hidden).",
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "name_hidden": {
+            "description": "true when a persona's name is hidden on request; name is then null and aliases empty.",
+            "type": "boolean"
+          },
+          "name_label": {
+            "description": "For a recruiter persona whose name is shown: the label \"(name used by the campaign, possibly a stolen identity)\", which belongs with the name and every alias wherever they are shown. null for every other report.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "aliases": {
+            "description": "Other spellings of the name, defanged. Empty when there are none or the name is hidden.",
+            "type": "array",
+            "items": {
+              "description": "One alias.",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "name_type": {
+            "description": "What kind of name this is: company, persona, meeting_app, domain, repository or package.",
+            "enum": [
+              "company",
+              "persona",
+              "meeting_app",
+              "domain",
+              "repository",
+              "package"
+            ]
+          },
+          "state": {
+            "description": "name_abused: a real party's name used without their involvement. front: no real party was found behind the name; state_basis lists what was checked.",
+            "enum": [
+              "name_abused",
+              "front"
+            ]
+          },
+          "state_basis": {
+            "description": "What was checked to reach the state.",
+            "type": "array",
+            "items": {
+              "description": "One check.",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "campaign": {
+            "description": "The campaign family that used this name, only when a cited source links the name or one of its artifacts to it. null when the report is unattributed.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "required": [
+              "slug",
+              "url",
+              "basis",
+              "artifact",
+              "source_id"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "slug": {
+                "description": "The campaign's slug, an entry of campaigns.",
+                "type": "string",
+                "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+              },
+              "url": {
+                "description": "The URL of the campaign page.",
+                "type": "string",
+                "pattern": "^https://interviewscam\\.com/campaigns/[a-z0-9-]+/$"
+              },
+              "basis": {
+                "description": "named: the source names this name. artifact: the source lists the artifact in artifact.",
+                "enum": [
+                  "named",
+                  "artifact"
+                ]
+              },
+              "artifact": {
+                "description": "With basis artifact: the artifact the source lists, one of this report's artifacts. null otherwise.",
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 1
+              },
+              "source_id": {
+                "description": "The id of the source in sources that links the name to the campaign.",
+                "type": "string",
+                "pattern": "^[a-z0-9-]+$"
+              }
+            }
+          },
+          "related": {
+            "description": "Slugs of related reports.",
+            "type": "array",
+            "items": {
+              "description": "One slug.",
+              "type": "string",
+              "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+            }
+          },
+          "summary": {
+            "description": "A short factual summary.",
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence": {
+            "description": "A summary of the evidence that was reviewed.",
+            "type": "string",
+            "minLength": 1
+          },
+          "first_seen": {
+            "description": "When the name was first seen in use (YYYY-MM-DD).",
+            "type": "string",
+            "format": "date"
+          },
+          "last_seen": {
+            "description": "When the name was last seen in use (YYYY-MM-DD).",
+            "type": "string",
+            "format": "date"
+          },
+          "last_reviewed": {
+            "description": "When the evidence was last reviewed (YYYY-MM-DD).",
+            "type": "string",
+            "format": "date"
+          },
+          "published": {
+            "description": "When the report was published (YYYY-MM-DD).",
+            "type": "string",
+            "format": "date"
+          },
+          "independent_reports": {
+            "description": "How many independent reports were reviewed. 0 for a report that rests on cited sources alone.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "label": {
+            "description": "The report's label as the page shows it, for example \"Reported 3 times, evidence reviewed on 2026-11-02\".",
+            "type": "string",
+            "minLength": 1
+          },
+          "artifacts": {
+            "description": "The artifacts of the report, as stored in the record and defanged: every dot of a host written [.], hxxp or hxxps for a scheme, [@] in an email address. Only the kinds the record declares appear.",
+            "type": "object",
+            "required": [],
+            "additionalProperties": false,
+            "properties": {
+              "domains": {
+                "description": "Domains, defanged.",
+                "type": "array",
+                "items": {
+                  "description": "One value, for example login[.]meeting[.]example.",
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "urls": {
+                "description": "URLs, defanged.",
+                "type": "array",
+                "items": {
+                  "description": "One value, for example hxxps://login[.]meeting[.]example/join.",
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "ips": {
+                "description": "IPv4 addresses, defanged.",
+                "type": "array",
+                "items": {
+                  "description": "One value, for example 198[.]51[.]100[.]23.",
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "emails": {
+                "description": "Email addresses, defanged.",
+                "type": "array",
+                "items": {
+                  "description": "One value, for example talent[@]company[.]example.",
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "repositories": {
+                "description": "Repositories, defanged.",
+                "type": "array",
+                "items": {
+                  "description": "One value, for example git[.]company[.]example/hiring/task.",
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "file_names": {
+                "description": "File names, defanged.",
+                "type": "array",
+                "items": {
+                  "description": "One value, for example Meeting-Setup[.]exe.",
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "handles": {
+                "description": "Handles on messaging and social platforms.",
+                "type": "array",
+                "items": {
+                  "description": "One handle.",
+                  "type": "object",
+                  "required": [
+                    "platform",
+                    "value"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "platform": {
+                      "description": "The platform: telegram, linkedin, x, discord, whatsapp, skype, github or other.",
+                      "enum": [
+                        "telegram",
+                        "linkedin",
+                        "x",
+                        "discord",
+                        "whatsapp",
+                        "skype",
+                        "github",
+                        "other"
+                      ]
+                    },
+                    "value": {
+                      "description": "The handle as the campaign used it, defanged.",
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              },
+              "packages": {
+                "description": "Packages on package registries.",
+                "type": "array",
+                "items": {
+                  "description": "One package.",
+                  "type": "object",
+                  "required": [
+                    "registry",
+                    "name"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "registry": {
+                      "description": "The registry: npm, pypi or other.",
+                      "enum": [
+                        "npm",
+                        "pypi",
+                        "other"
+                      ]
+                    },
+                    "name": {
+                      "description": "The package name, defanged.",
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              },
+              "sha256": {
+                "description": "File hashes, each with its lookup pages.",
+                "type": "array",
+                "items": {
+                  "description": "One file hash.",
+                  "type": "object",
+                  "required": [
+                    "value",
+                    "listed_on",
+                    "lookup_urls"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "description": "The SHA-256 of the file, 64 lowercase hex digits.",
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "file_name": {
+                      "description": "The file name the hash belongs to, defanged.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "listed_on": {
+                      "description": "The lookup services that list the hash.",
+                      "type": "array",
+                      "items": {
+                        "description": "malwarebazaar or virustotal.",
+                        "enum": [
+                          "malwarebazaar",
+                          "virustotal"
+                        ]
+                      }
+                    },
+                    "lookup_urls": {
+                      "description": "The lookup page of the hash on each service of listed_on, in the same order. Never a file download.",
+                      "type": "array",
+                      "items": {
+                        "description": "One lookup page URL.",
+                        "type": "string",
+                        "pattern": "^https://(bazaar\\.abuse\\.ch/sample/[0-9a-f]{64}/|www\\.virustotal\\.com/gui/file/[0-9a-f]{64})$"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "sources": {
+            "description": "The cited sources of the report. Empty when there are none.",
+            "type": "array",
+            "items": {
+              "description": "One cited source of the record.",
+              "type": "object",
+              "required": [
+                "id",
+                "title",
+                "publisher",
+                "date",
+                "url"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "description": "The source's id within its record; campaign.source_id and attribution[].source_id name it.",
+                  "type": "string",
+                  "pattern": "^[a-z0-9-]+$"
+                },
+                "title": {
+                  "description": "The title of the source, as published.",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "publisher": {
+                  "description": "Who published the source.",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "date": {
+                  "description": "The publication date of the source (YYYY-MM-DD).",
+                  "type": "string",
+                  "format": "date"
+                },
+                "url": {
+                  "description": "The live URL of the source. The only live links in the feed besides the site's own pages and the hash lookups.",
+                  "type": "string",
+                  "pattern": "^https://"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "campaigns": {
+      "description": "Every published campaign family, sorted by slug.",
+      "type": "array",
+      "items": {
+        "description": "One campaign family, as security researchers describe it.",
+        "type": "object",
+        "required": [
+          "slug",
+          "url",
+          "name",
+          "aliases",
+          "summary",
+          "first_seen",
+          "last_seen",
+          "delivery",
+          "targeted_os",
+          "steals",
+          "attribution",
+          "report_slugs",
+          "sources"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "slug": {
+            "description": "The campaign's slug; its page is /campaigns/<slug>/.",
+            "type": "string",
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+          },
+          "url": {
+            "description": "The URL of the campaign page.",
+            "type": "string",
+            "pattern": "^https://interviewscam\\.com/campaigns/[a-z0-9-]+/$"
+          },
+          "name": {
+            "description": "The name of the campaign family, defanged.",
+            "type": "string",
+            "minLength": 1
+          },
+          "aliases": {
+            "description": "Other names of the family, defanged. Empty when there are none.",
+            "type": "array",
+            "items": {
+              "description": "One alias.",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "summary": {
+            "description": "A short factual summary.",
+            "type": "string",
+            "minLength": 1
+          },
+          "first_seen": {
+            "description": "When the family was first seen (YYYY-MM-DD).",
+            "type": "string",
+            "format": "date"
+          },
+          "last_seen": {
+            "description": "When the family was last seen (YYYY-MM-DD).",
+            "type": "string",
+            "format": "date"
+          },
+          "delivery": {
+            "description": "How the family delivers its malware.",
+            "type": "array",
+            "items": {
+              "description": "fake_meeting_app, coding_test_repository, npm_package or terminal_command.",
+              "enum": [
+                "fake_meeting_app",
+                "coding_test_repository",
+                "npm_package",
+                "terminal_command"
+              ]
+            }
+          },
+          "targeted_os": {
+            "description": "The operating systems the family targets.",
+            "type": "array",
+            "items": {
+              "description": "windows, macos or linux.",
+              "enum": [
+                "windows",
+                "macos",
+                "linux"
+              ]
+            }
+          },
+          "steals": {
+            "description": "What the family steals.",
+            "type": "array",
+            "items": {
+              "description": "One kind of data.",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "attribution": {
+            "description": "Who is behind the family, only as the cited sources state it. Empty when they state no attribution.",
+            "type": "array",
+            "items": {
+              "description": "One attribution statement.",
+              "type": "object",
+              "required": [
+                "statement",
+                "source_id"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "statement": {
+                  "description": "Who is behind the campaign, as the cited source states it.",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "source_id": {
+                  "description": "The id of the source in sources that states it.",
+                  "type": "string",
+                  "pattern": "^[a-z0-9-]+$"
+                }
+              }
+            }
+          },
+          "report_slugs": {
+            "description": "Slugs of the reports this family used.",
+            "type": "array",
+            "items": {
+              "description": "One slug.",
+              "type": "string",
+              "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+            }
+          },
+          "sources": {
+            "description": "The cited sources of the campaign.",
+            "type": "array",
+            "items": {
+              "description": "One cited source of the record.",
+              "type": "object",
+              "required": [
+                "id",
+                "title",
+                "publisher",
+                "date",
+                "url"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "description": "The source's id within its record; campaign.source_id and attribution[].source_id name it.",
+                  "type": "string",
+                  "pattern": "^[a-z0-9-]+$"
+                },
+                "title": {
+                  "description": "The title of the source, as published.",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "publisher": {
+                  "description": "Who published the source.",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "date": {
+                  "description": "The publication date of the source (YYYY-MM-DD).",
+                  "type": "string",
+                  "format": "date"
+                },
+                "url": {
+                  "description": "The live URL of the source. The only live links in the feed besides the site's own pages and the hash lookups.",
+                  "type": "string",
+                  "pattern": "^https://"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

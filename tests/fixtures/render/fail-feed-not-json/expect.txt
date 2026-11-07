@@ -1,0 +1,1 @@
+public/feed.json: rule 11: /feed.json is not JSON
