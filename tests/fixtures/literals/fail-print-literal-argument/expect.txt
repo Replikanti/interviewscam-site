@@ -1,0 +1,1 @@
+print, printf or println prints the literal 'check' as a value (L3)

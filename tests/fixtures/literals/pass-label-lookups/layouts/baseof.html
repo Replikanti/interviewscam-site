@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta http-equiv="Content-Security-Policy" content="{{ site.Params.csp }}">
+<meta name="description" content="{{ .Description | default (partial "label.html" "site.description") }}">
+<meta name="theme-color" content="{{ hugo.Data.tokens.color.card }}">
+<title>{{ block "title" . }}{{ .Title }} · {{ site.Title }}{{ end }}</title>
+{{- /* A Comment With Copy: template comments are not read. */}}
+<!-- An HTML comment with copy is never rendered. -->
+</head>
+<body>
+<a class="visually-hidden" href="#main">{{ partial "label.html" "site.skip_link" }}</a>
+<nav aria-label="{{ partial "label.html" "header.nav_label" }}"><a href="{{ "/" | relURL }}">{{ partial "label.html" "header.brand" }}</a></nav>
+<main id="main" data-copy-target="artifact-1">{{ block "main" . }}{{ end }}</main>
+<footer><p>{{ partial "label.html" "footer.run_by" }} {{ site.Params.operator }} · <span>{{ site.Params.contact }}</span></p></footer>
+</body>
+</html>

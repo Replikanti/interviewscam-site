@@ -3,14 +3,14 @@
   link to Corrections and removal that every page must carry (D7). */ -}}
 <footer class="site-footer">
 <div class="container">
-<p>Run by {{ site.Params.operator }} · <span class="address">{{ site.Params.contact }}</span></p>
-<nav aria-label="Site">
+<p>{{ partial "label.html" "footer.run_by" }} {{ site.Params.operator }} · <span class="address">{{ site.Params.contact }}</span></p>
+<nav aria-label="{{ partial "label.html" "footer.nav_label" }}">
 <ul class="footer-links">
-<li><a href="{{ "/methodology/" | relURL }}">Methodology</a></li>
-<li><a href="{{ "/corrections/" | relURL }}">Corrections and removal</a></li>
-<li><a href="{{ "/privacy/" | relURL }}">Privacy</a></li>
+<li><a href="{{ "/methodology/" | relURL }}">{{ partial "label.html" "footer.methodology" }}</a></li>
+<li><a href="{{ "/corrections/" | relURL }}">{{ partial "label.html" "footer.corrections" }}</a></li>
+<li><a href="{{ "/privacy/" | relURL }}">{{ partial "label.html" "footer.privacy" }}</a></li>
 </ul>
 </nav>
-<p>No trackers, no cookies, no third-party scripts.</p>
+<p>{{ partial "label.html" "footer.promise" }}</p>
 </div>
 </footer>

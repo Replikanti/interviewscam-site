@@ -1,0 +1,223 @@
+# set	member	file	content	expect	findings
+# One fail case per member of every flagging set of sitecheck literals and per
+# rule branch without a case directory. tools/selftest.sh writes each row into
+# its own root (file, content plus a newline), runs the real literals check and
+# requires a failure printing expect with exactly <findings> findings; a member
+# of a set without a row fails the self-test too (literals-members/coverage).
+LITERALS_TEXT_ATTRS	alt	layouts/page.html	<p alt="Free money"></p>	visible attribute alt='Free money' (L2)	1
+LITERALS_TEXT_ATTRS	title	layouts/page.html	<p title="Free money"></p>	visible attribute title='Free money' (L2)	1
+LITERALS_TEXT_ATTRS	aria-label	layouts/page.html	<p aria-label="Free money"></p>	visible attribute aria-label='Free money' (L2)	1
+LITERALS_TEXT_ATTRS	aria-description	layouts/page.html	<p aria-description="Free money"></p>	visible attribute aria-description='Free money' (L2)	1
+LITERALS_TEXT_ATTRS	aria-roledescription	layouts/page.html	<p aria-roledescription="Free money"></p>	visible attribute aria-roledescription='Free money' (L2)	1
+LITERALS_TEXT_ATTRS	aria-valuetext	layouts/page.html	<p aria-valuetext="Free money"></p>	visible attribute aria-valuetext='Free money' (L2)	1
+LITERALS_TEXT_ATTRS	aria-placeholder	layouts/page.html	<p aria-placeholder="Free money"></p>	visible attribute aria-placeholder='Free money' (L2)	1
+LITERALS_TEXT_ATTRS	aria-braillelabel	layouts/page.html	<p aria-braillelabel="Free money"></p>	visible attribute aria-braillelabel='Free money' (L2)	1
+LITERALS_TEXT_ATTRS	aria-brailleroledescription	layouts/page.html	<p aria-brailleroledescription="Free money"></p>	visible attribute aria-brailleroledescription='Free money' (L2)	1
+LITERALS_TEXT_ATTRS	placeholder	layouts/page.html	<p placeholder="Free money"></p>	visible attribute placeholder='Free money' (L2)	1
+LITERALS_TEXT_ATTRS	label	layouts/page.html	<p label="Free money"></p>	visible attribute label='Free money' (L2)	1
+LITERALS_TEXT_ATTRS	value	layouts/page.html	<p value="Free money"></p>	visible attribute value='Free money' (L2)	1
+LITERALS_TEXT_ATTRS	abbr	layouts/page.html	<p abbr="Free money"></p>	visible attribute abbr='Free money' (L2)	1
+LITERALS_TEXT_ATTRS	summary	layouts/page.html	<p summary="Free money"></p>	visible attribute summary='Free money' (L2)	1
+LITERALS_TEXT_ATTRS	xlink:title	layouts/page.html	<p xlink:title="Free money"></p>	visible attribute xlink:title='Free money' (L2)	1
+LITERALS_TEXT_ATTRS	srcdoc	layouts/page.html	<p srcdoc="Free money"></p>	visible attribute srcdoc='Free money' (L2)	1
+LITERALS_TEXT_CONTENT_KEYS	property	layouts/page.html	<meta property="og:description" content="Free money">	visible attribute content='Free money' (L2)	1
+LITERALS_TEXT_CONTENT_KEYS	itemprop	layouts/page.html	<meta itemprop="og:description" content="Free money">	visible attribute content='Free money' (L2)	1
+CSS_TEXT_PROPERTIES	content	assets/css/site.css	p::before { content: "Free" }	content draws the text 'Free' (L5)	1
+CSS_TEXT_PROPERTIES	list-style	assets/css/site.css	p::before { list-style: "Free" }	list-style draws the text 'Free' (L5)	1
+CSS_TEXT_PROPERTIES	list-style-type	assets/css/site.css	p::before { list-style-type: "Free" }	list-style-type draws the text 'Free' (L5)	1
+CSS_TEXT_PROPERTIES	quotes	assets/css/site.css	p::before { quotes: "Free" }	quotes draws the text 'Free' (L5)	1
+CSS_TEXT_PROPERTIES	symbols	assets/css/site.css	p::before { symbols: "Free" }	symbols draws the text 'Free' (L5)	1
+CSS_TEXT_PROPERTIES	additive-symbols	assets/css/site.css	p::before { additive-symbols: "Free" }	additive-symbols draws the text 'Free' (L5)	1
+CSS_TEXT_PROPERTIES	prefix	assets/css/site.css	p::before { prefix: "Free" }	prefix draws the text 'Free' (L5)	1
+CSS_TEXT_PROPERTIES	suffix	assets/css/site.css	p::before { suffix: "Free" }	suffix draws the text 'Free' (L5)	1
+CSS_TEXT_PROPERTIES	pad	assets/css/site.css	p::before { pad: "Free" }	pad draws the text 'Free' (L5)	1
+CSS_TEXT_PROPERTIES	negative	assets/css/site.css	p::before { negative: "Free" }	negative draws the text 'Free' (L5)	1
+CSS_TEXT_PROPERTIES	text-overflow	assets/css/site.css	p::before { text-overflow: "Free" }	text-overflow draws the text 'Free' (L5)	1
+CSS_TEXT_PROPERTIES	hyphenate-character	assets/css/site.css	p::before { hyphenate-character: "Free" }	hyphenate-character draws the text 'Free' (L5)	1
+CSS_TEXT_PROPERTIES	text-emphasis	assets/css/site.css	p::before { text-emphasis: "Free" }	text-emphasis draws the text 'Free' (L5)	1
+CSS_TEXT_PROPERTIES	text-emphasis-style	assets/css/site.css	p::before { text-emphasis-style: "Free" }	text-emphasis-style draws the text 'Free' (L5)	1
+CSS_COUNTER_DESCRIPTORS	symbols	assets/css/site.css	@counter-style c { symbols: 3 Free }	symbols draws the identifiers 'Free' (L5)	1
+CSS_COUNTER_DESCRIPTORS	additive-symbols	assets/css/site.css	@counter-style c { additive-symbols: 3 Free }	additive-symbols draws the identifiers 'Free' (L5)	1
+CSS_COUNTER_DESCRIPTORS	prefix	assets/css/site.css	@counter-style c { prefix: 3 Free }	prefix draws the identifiers 'Free' (L5)	1
+CSS_COUNTER_DESCRIPTORS	suffix	assets/css/site.css	@counter-style c { suffix: 3 Free }	suffix draws the identifiers 'Free' (L5)	1
+CSS_COUNTER_DESCRIPTORS	pad	assets/css/site.css	@counter-style c { pad: 3 Free }	pad draws the identifiers 'Free' (L5)	1
+CSS_COUNTER_DESCRIPTORS	negative	assets/css/site.css	@counter-style c { negative: 3 Free }	negative draws the identifiers 'Free' (L5)	1
+LITERALS_BANNED_WORDS	T	layouts/page.html	<p>{{ T .x }}</p>	T: translations, file reads	1
+LITERALS_BANNED_WORDS	i18n	layouts/page.html	<p>{{ i18n .x }}</p>	i18n: translations, file reads	1
+LITERALS_BANNED_WORDS	readFile	layouts/page.html	<p>{{ readFile .x }}</p>	readFile: translations, file reads	1
+LITERALS_BANNED_WORDS	readDir	layouts/page.html	<p>{{ readDir .x }}</p>	readDir: translations, file reads	1
+LITERALS_BANNED_WORDS	unmarshal	layouts/page.html	<p>{{ unmarshal .x }}</p>	unmarshal: translations, file reads	1
+LITERALS_BANNED_WORDS	getenv	layouts/page.html	<p>{{ getenv .x }}</p>	getenv: translations, file reads	1
+LITERALS_BANNED_WORDS	getJSON	layouts/page.html	<p>{{ getJSON .x }}</p>	getJSON: translations, file reads	1
+LITERALS_BANNED_WORDS	getCSV	layouts/page.html	<p>{{ getCSV .x }}</p>	getCSV: translations, file reads	1
+LITERALS_BANNED_WORDS	try	layouts/page.html	{{ with try .x }}{{ . }}{{ end }}	try: it turns an errorf or warnf message	1
+LITERALS_BANNED_PREFIXES	lang.Translate	layouts/page.html	<p>{{ lang.Translate .x }}</p>	lang.Translate: translations, file reads	1
+LITERALS_BANNED_PREFIXES	os.	layouts/page.html	<p>{{ os.Stat .x }}</p>	os.Stat: translations, file reads	1
+LITERALS_BANNED_PREFIXES	transform.Unmarshal	layouts/page.html	<p>{{ transform.Unmarshal .x }}</p>	transform.Unmarshal: translations, file reads	1
+LITERALS_BANNED_PREFIXES	data.GetJSON	layouts/page.html	<p>{{ data.GetJSON .x }}</p>	data.GetJSON: translations, file reads	1
+LITERALS_BANNED_PREFIXES	data.GetCSV	layouts/page.html	<p>{{ data.GetCSV .x }}</p>	data.GetCSV: translations, file reads	1
+LITERALS_BANNED_PREFIXES	resources.GetRemote	layouts/page.html	<p>{{ resources.GetRemote .x }}</p>	resources.GetRemote: translations, file reads	1
+LITERALS_BANNED_METHODS	Language	layouts/page.html	<p>{{ .Language.Label }}</p>	.Language.Label: .Language reads hugo.toml or the repository	1
+LITERALS_BANNED_METHODS	Languages	layouts/page.html	<p>{{ .Languages }}</p>	.Languages: .Languages reads hugo.toml or the repository	1
+LITERALS_BANNED_METHODS	Sites	layouts/page.html	<p>{{ .Sites }}</p>	.Sites: .Sites reads hugo.toml or the repository	1
+LITERALS_BANNED_METHODS	GitInfo	layouts/page.html	<p>{{ .GitInfo.Subject }}</p>	.GitInfo.Subject: .GitInfo reads hugo.toml or the repository	1
+LITERALS_BANNED_METHODS	CodeOwners	layouts/page.html	<p>{{ .CodeOwners }}</p>	.CodeOwners: .CodeOwners reads hugo.toml or the repository	1
+LITERALS_BANNED_METHODS	Param	layouts/page.html	<p>{{ .Param .x }}</p>	.Param: .Param falls back to site params	1
+LITERALS_BANNED_METHODS	Sitemap	layouts/page.html	<p>{{ .Sitemap.ChangeFreq }}</p>	.Sitemap.ChangeFreq: .Sitemap reads hugo.toml	1
+LITERALS_BANNED_METHODS	Store	layouts/page.html	<p>{{ .Store.Get "a" }}</p>	.Store.Get: .Store keeps a value one action sets for another to print	1
+LITERALS_BANNED_METHODS	Scratch	layouts/page.html	<p>{{ .Scratch.Get "a" }}</p>	.Scratch.Get: .Scratch keeps a value one action sets for another to print	1
+LITERALS_TEXT_SHAPERS	humanize	layouts/page.html	<p>{{ humanize .x }}</p>	humanize turns tokens into words, capitals or sentences	1
+LITERALS_TEXT_SHAPERS	inflect.Humanize	layouts/page.html	<p>{{ inflect.Humanize .x }}</p>	inflect.Humanize turns tokens into words, capitals or sentences	1
+LITERALS_TEXT_SHAPERS	title	layouts/page.html	<p>{{ title .x }}</p>	title turns tokens into words, capitals or sentences	1
+LITERALS_TEXT_SHAPERS	strings.Title	layouts/page.html	<p>{{ strings.Title .x }}</p>	strings.Title turns tokens into words, capitals or sentences	1
+LITERALS_TEXT_SHAPERS	upper	layouts/page.html	<p>{{ upper .x }}</p>	upper turns tokens into words, capitals or sentences	1
+LITERALS_TEXT_SHAPERS	strings.ToUpper	layouts/page.html	<p>{{ strings.ToUpper .x }}</p>	strings.ToUpper turns tokens into words, capitals or sentences	1
+LITERALS_TEXT_SHAPERS	strings.FirstUpper	layouts/page.html	<p>{{ strings.FirstUpper .x }}</p>	strings.FirstUpper turns tokens into words, capitals or sentences	1
+LITERALS_TEXT_SHAPERS	delimit	layouts/page.html	<p>{{ delimit .x }}</p>	delimit turns tokens into words, capitals or sentences	1
+LITERALS_TEXT_SHAPERS	collections.Delimit	layouts/page.html	<p>{{ collections.Delimit .x }}</p>	collections.Delimit turns tokens into words, capitals or sentences	1
+LITERALS_TEXT_SHAPERS	println	layouts/page.html	<p>{{ println .x }}</p>	println turns tokens into words, capitals or sentences	1
+LITERALS_TEXT_SHAPERS	fmt.Println	layouts/page.html	<p>{{ fmt.Println .x }}</p>	fmt.Println turns tokens into words, capitals or sentences	1
+LITERALS_TEXT_SHAPERS	apply	layouts/page.html	<p>{{ apply .x }}</p>	apply turns tokens into words, capitals or sentences	1
+LITERALS_TEXT_SHAPERS	collections.Apply	layouts/page.html	<p>{{ collections.Apply .x }}</p>	collections.Apply turns tokens into words, capitals or sentences	1
+LITERALS_TEXT_SHAPERS	replacePairs	layouts/page.html	<p>{{ replacePairs .x }}</p>	replacePairs turns tokens into words, capitals or sentences	1
+LITERALS_TEXT_SHAPERS	strings.ReplacePairs	layouts/page.html	<p>{{ strings.ReplacePairs .x }}</p>	strings.ReplacePairs turns tokens into words, capitals or sentences	1
+LITERALS_REPLACE	replace	assets/css/x.css	p { --a: {{ replace .x "-" " " }}; }	replace replaces with ' ', which holds whitespace or markup	1
+LITERALS_REPLACE	strings.Replace	layouts/page.html	<p>{{ strings.Replace .x "-" "<br>" }}</p>	strings.Replace replaces with '<br>', which holds whitespace or markup	2
+LITERALS_REPLACE	replaceRE	layouts/page.html	<p>{{ replaceRE "-" " " .x }}</p>	replaceRE replaces with ' ', which holds whitespace or markup	2
+LITERALS_REPLACE	strings.ReplaceRE	layouts/page.html	<p>{{ strings.ReplaceRE "-" "&#32;" .x }}</p>	strings.ReplaceRE replaces with '&#32;', which holds whitespace or markup	2
+LITERALS_CHOOSERS	cond	layouts/page.html	<p>{{ cond .x "free" "/" }}</p>	cond picks the literal 'free' as a value	1
+LITERALS_CHOOSERS	compare.Conditional	layouts/page.html	<p>{{ compare.Conditional .x "free" "/" }}</p>	compare.Conditional picks the literal 'free' as a value	2
+LITERALS_CHOOSERS	default	layouts/page.html	<p>{{ default "free" .x }}</p>	default picks the literal 'free' as a value	1
+LITERALS_CHOOSERS	compare.Default	layouts/page.html	<p>{{ compare.Default "free" .x }}</p>	compare.Default picks the literal 'free' as a value	2
+LITERALS_CHOOSERS	or	layouts/page.html	<p>{{ or .x "free" }}</p>	or picks the literal 'free' as a value	2
+LITERALS_CHOOSERS	and	layouts/page.html	<p>{{ and .x "free" }}</p>	and picks the literal 'free' as a value	1
+LITERALS_BUILDERS	slice	layouts/page.html	{{ range slice "free" "/" }}<p>{{ . }}</p>{{ end }}	the slice value 'free' is not on LITERALS_COLLECTION_VALUES	1
+LITERALS_BUILDERS	collections.Slice	layouts/page.html	{{ range collections.Slice "free" "/" }}<p>{{ . }}</p>{{ end }}	the collections.Slice value 'free' is not on LITERALS_COLLECTION_VALUES	2
+LITERALS_BUILDERS	append	layouts/page.html	{{ range append "free" "/" }}<p>{{ . }}</p>{{ end }}	the append value 'free' is not on LITERALS_COLLECTION_VALUES	1
+LITERALS_BUILDERS	collections.Append	layouts/page.html	{{ range collections.Append "free" "/" }}<p>{{ . }}</p>{{ end }}	the collections.Append value 'free' is not on LITERALS_COLLECTION_VALUES	2
+LITERALS_BUILDERS	dict	layouts/page.html	{{ range $k, $v := dict "free" "/" }}<p>{{ $k }}</p>{{ end }}	the dict key 'free' is not on LITERALS_DICT_KEYS	1
+LITERALS_BUILDERS	collections.Dictionary	layouts/page.html	{{ range $k, $v := collections.Dictionary "free" "/" }}<p>{{ $k }}</p>{{ end }}	the dict key 'free' is not on LITERALS_DICT_KEYS	2
+LITERALS_BUILDERS	split	layouts/page.html	{{ range split "free-x" "-" }}<p>{{ . }}</p>{{ end }}	the split value 'free-x' is not on LITERALS_COLLECTION_VALUES	2
+LITERALS_BUILDERS	strings.Split	layouts/page.html	{{ range strings.Split "free-x" "-" }}<p>{{ . }}</p>{{ end }}	the strings.Split value 'free-x' is not on LITERALS_COLLECTION_VALUES	2
+LITERALS_PRINT_FUNCS	print	layouts/page.html	<p>{{ print .x "free" }}</p>	prints the literal 'free' as a value (L3)	2
+LITERALS_PRINT_FUNCS	fmt.Print	layouts/page.html	<p>{{ fmt.Print .x "free" }}</p>	prints the literal 'free' as a value (L3)	2
+LITERALS_PRINT_FUNCS	printf	layouts/page.html	<p>{{ printf "%s%s" .x "free" }}</p>	prints the literal 'free' as a value (L3)	1
+LITERALS_PRINT_FUNCS	fmt.Printf	layouts/page.html	<p>{{ fmt.Printf "%s%s" .x "free" }}</p>	prints the literal 'free' as a value (L3)	2
+LITERALS_PRINT_FUNCS	println	layouts/page.html	<p>{{ println .x "free" }}</p>	prints the literal 'free' as a value (L3)	2
+LITERALS_PRINT_FUNCS	fmt.Println	layouts/page.html	<p>{{ fmt.Println .x "free" }}</p>	prints the literal 'free' as a value (L3)	2
+LITERALS_PARTIAL_FUNCS	partial	layouts/page.html	<p>{{ partial "pagination.html" . }}</p>	partial 'pagination[.]html' is not a file under layouts/_partials/	1
+LITERALS_PARTIAL_FUNCS	partialCached	layouts/page.html	<p>{{ partialCached "pagination.html" . }}</p>	partial 'pagination[.]html' is not a file under layouts/_partials/	2
+LITERALS_PARTIAL_FUNCS	partials.Include	layouts/page.html	<p>{{ partials.Include "pagination.html" . }}</p>	partial 'pagination[.]html' is not a file under layouts/_partials/	2
+LITERALS_PARTIAL_FUNCS	partials.IncludeCached	layouts/page.html	<p>{{ partials.IncludeCached "pagination.html" . }}</p>	partial 'pagination[.]html' is not a file under layouts/_partials/	2
+LITERALS_BANNED_STATE	newScratch	layouts/page.html	<p>{{ newScratch }}</p>	newScratch: a scratch store or emoji shortcode carries copy past the literal rules (L4)	1
+LITERALS_BANNED_STATE	collections.NewScratch	layouts/page.html	<p>{{ collections.NewScratch }}</p>	collections.NewScratch: a scratch store or emoji shortcode carries copy past the literal rules (L4)	1
+LITERALS_BANNED_STATE	emojify	layouts/page.html	<p>{{ emojify .x }}</p>	emojify: a scratch store or emoji shortcode carries copy past the literal rules (L4)	1
+LITERALS_BANNED_STATE	transform.Emojify	layouts/page.html	<p>{{ transform.Emojify .x }}</p>	transform.Emojify: a scratch store or emoji shortcode carries copy past the literal rules (L4)	1
+branch	constant-print	layouts/page.html	<p>{{ cond true "/" "#" }}</p>	the action prints a value computed from literals alone	1
+branch	dynamic-partial	layouts/page.html	<p>{{ partial .name . }}</p>	partial without a literal name	1
+branch	partial-outside-dir	layouts/page.html	<p>{{ partial "../page.html" . }}</p>	partial '[.][.]/page[.]html' is not a file under layouts/_partials/	1
+branch	template-undefined	layouts/page.html	{{ template "pagination.html" . }}	template 'pagination[.]html' is not defined by a layout	1
+branch	url-path-as-text	layouts/page.html	<p>{{ "/free" | relURL }}</p>	the action prints the path '/free' as text	1
+branch	replace-from-pipe	assets/css/x.css	p { --a: {{ .x | replace "-" }}; }	replace takes its replacement from the pipe	1
+branch	replace-from-value	assets/css/x.css	p { --a: {{ replace .x "-" .y }}; }	replace takes its replacement from a value	1
+branch	markup-tag-splits-words	layouts/page.html	<p>{{ .x | printf "%s free<br>money" }}</p>	string literal '%s free<br>money' is copy (L3)	1
+branch	hugo-member	layouts/page.html	<p>{{ hugo.Environment }}</p>	hugo.Environment is not a member a template may read	1
+branch	site-chain-inner	layouts/page.html	<p>{{ site.Home.Site.Params.blurb }}</p>	site.Home.Site.Params.blurb: site.Params only as operator, contact or csp (L4)	1
+branch	tokens-not-color	layouts/page.html	<p>{{ hugo.Data.tokens.font.body }}</p>	outside a CSS template, data/tokens.toml only as hugo.Data.tokens.color	1
+branch	css-var	assets/css/site.css	p::before { content: var(--m) }	content draws a custom property with var()	1
+branch	css-custom-property	assets/css/site.css	:root { --m: "Free" }	custom property --m holds the text 'Free'	1
+branch	css-style-attribute	layouts/page.html	<p style="--m: &quot;Free&quot;"></p>	style attribute: custom property --m holds the text 'Free'	1
+branch	css-action-in-text-property	assets/css/x.css	p::before { content: {{ .x }} }	content takes a value printed by a template action	1
+branch	letter-symbol-nfkc	layouts/page.html	<p>ⓕⓡⓔⓔ</p>	outside template actions (L1)	1
+branch	letter-symbol-name	layouts/page.html	<p>🅵🆁🅴🅴</p>	outside template actions (L1)	1
+branch	braille	layouts/page.html	<p>⠋⠗⠑⠑</p>	outside template actions (L1)	1
+branch	abrupt-comment	layouts/page.html	<p><!--></p>	abrupt comment '<!-->'	1
+branch	abrupt-comment-dash	layouts/page.html	<p><!---></p>	abrupt comment '<!--->'	1
+branch	bang-comment-end	layouts/page.html	<!-- x --!>	'--!>' ends a comment	1
+branch	cdata	layouts/page.html	<p><![CDATA[x]]></p>	marked section '<![' (CDATA)	1
+branch	unterminated-comment	layouts/page.html	<p></p><!-- x	unterminated HTML comment	1
+branch	static-other-type	static/x.js	document.title = 1;	a static file this check cannot read for copy	1
+branch	raster-image	assets/badge.png	x	a raster image: it can draw text this check cannot read	1
+branch	collection-number	layouts/page.html	{{ range slice 70 }}<p>{{ . }}</p>{{ end }}	the slice value '70' is not on LITERALS_COLLECTION_VALUES for this file	1
+branch	collection-path	layouts/page.html	{{ range slice "/send-your-seed-phrase/" }}<p>{{ . }}</p>{{ end }}	the slice value '/send-your-seed-phrase/' is not on LITERALS_COLLECTION_VALUES	1
+branch	collection-nested	layouts/page.html	{{ range slice (dict "title" "free") }}<p>{{ .title }}</p>{{ end }}	the dict value 'free' is not on LITERALS_COLLECTION_VALUES for this file	1
+branch	collection-other-file	layouts/page.html	{{ range slice "warning" }}<p>{{ . }}</p>{{ end }}	the slice value 'warning' is not on LITERALS_COLLECTION_VALUES for this file	1
+branch	collection-into-partial	layouts/page.html	<p>{{ partial "icon.html" (dict "a" "free") }}</p>	the dict value 'free' is not on LITERALS_COLLECTION_VALUES for this file	3
+branch	value-group-in-print	layouts/page.html	<p>{{ printf "%s %s" (lower "free") .x }}</p>	the literal 'free' sits in a value position of lower	1
+branch	value-format-token	layouts/page.html	<p>{{ printf "free%s" .x }}</p>	the printf format 'free%s' holds copy	1
+branch	bind-literal-only	layouts/page.html	{{ $a := lower "free" }}<p>{{ $a }}</p>	the action binds a value computed from literals alone ('free')	1
+branch	bind-with-literal-only	layouts/page.html	{{ with lower "free" }}<p>{{ . }}</p>{{ end }}	the action binds a value computed from literals alone ('free')	1
+branch	date-layout-method	layouts/page.html	<p>{{ .Date.Format ":date_full" }}</p>	the date layout ':date_full' is not on LITERALS_DATE_LAYOUTS	1
+branch	date-layout-function	layouts/page.html	<p>{{ time.Format "free" .Date }}</p>	the date layout 'free' is not on LITERALS_DATE_LAYOUTS	1
+branch	context-literal	layouts/page.html	<p>{{ partial "x.html" "free" }}</p>	the partial 'x[.]html' takes the bare literal 'free' as its context	2
+branch	verb-c	layouts/page.html	<p>{{ printf "%c" .x }}</p>	printf verb '%c'	1
+branch	verb-q	layouts/page.html	<p>{{ printf "%q" .x }}</p>	printf verb '%q'	1
+branch	verb-x	layouts/page.html	<p>{{ printf "%x" .x }}</p>	printf verb '%x'	1
+branch	verb-U	layouts/page.html	<p>{{ printf "%U" .x }}</p>	printf verb '%U'	1
+branch	verb-precision	layouts/page.html	<p>{{ printf "%.2s" .x }}</p>	printf verb '%.2s'	1
+branch	verb-width	layouts/page.html	<p>{{ printf "%5s" .x }}</p>	printf verb '%5s'	1
+branch	verb-index	layouts/page.html	<p>{{ printf "%[1]s" .x }}</p>	printf verb '%[1]s'	1
+branch	amp-incomplete-entity	layouts/page.html	<p>{{ printf "&#%s;" .x | safeHTML }}</p>	holds an & that does not start a complete entity	1
+branch	data-url-attribute	layouts/page.html	<img src="data:image/png;base64,AAAA">	holds a data: URL	1
+branch	data-url-css	assets/css/site.css	p { background: url(data:image/png;base64,AAAA) }	a data: URL can embed an image	1
+branch	data-url-literal	layouts/page.html	{{ if eq .x "data:x" }}{{ end }}	holds a data: URL	1
+branch	symbol-text	layouts/page.html	<p>🆓</p>	U+1F193 SQUARED FREE	1
+branch	symbol-attribute	layouts/page.html	<p title="→"></p>	U+2192 RIGHTWARDS ARROW	1
+branch	symbol-literal	layouts/page.html	{{ if eq .x "→" }}{{ end }}	U+2192 RIGHTWARDS ARROW	1
+branch	symbol-css	assets/css/site.css	p::before { content: "→" }	U+2192 RIGHTWARDS ARROW	1
+branch	closed-attribute-aria-rowindextext	layouts/page.html	<p aria-rowindextext="Free money"></p>	attribute aria-rowindextext='Free money' is not on LITERALS_PLAIN_ATTRS	1
+branch	closed-attribute-aria-colindextext	layouts/page.html	<p aria-colindextext="Free money"></p>	attribute aria-colindextext='Free money' is not on LITERALS_PLAIN_ATTRS	1
+branch	closed-attribute-aria-keyshortcuts	layouts/page.html	<p aria-keyshortcuts="Free money"></p>	attribute aria-keyshortcuts='Free money' is not on LITERALS_PLAIN_ATTRS	1
+branch	closed-attribute-mathml-alttext	layouts/page.html	<math alttext="Free money"></math>	attribute alttext='Free money' is not on LITERALS_PLAIN_ATTRS	1
+branch	closed-attribute-in-markup-literal	layouts/page.html	<p>{{ printf `<span aria-keyshortcuts="Free money">%s</span>` .x | safeHTML }}</p>	attribute aria-keyshortcuts='Free money' in a markup literal is not on LITERALS_PLAIN_ATTRS	1
+branch	doctype-svg	static/x.svg	<!DOCTYPE svg><svg></svg>	DOCTYPE '<!DOCTYPE svg>': only `<!doctype html>` in an HTML file	1
+branch	doctype-internal-subset	assets/x.svg	<!DOCTYPE svg [<!ENTITY a "b">]><svg></svg>	an <!ENTITY declaration: an XML parser expands it	2
+branch	url-path-after-lt	layouts/page.html	<p>< {{ "/free" | relURL }}</p>	the action prints the path '/free' as text	1
+branch	url-path-in-alt	layouts/page.html	<img src="/x" alt="{{ "/free" | relURL }}">	the action prints the path '/free' as text	1
+branch	label-reader-prints	layouts/_partials/label.html	{{ . }}	may print nothing but `return $v`	1
+branch	function-not-listed	layouts/page.html	<p>{{ urlize .x }}</p>	urlize: not on the list of functions a template may call (LITERALS_FUNCTIONS)	1
+branch	function-file-scoped	layouts/page.html	<p>{{ first 1 .x }}</p>	first: only layouts/home.html may call it, because it cuts a string	1
+branch	css-function-not-listed	assets/css/x.css	p { --a: {{ printf "%s" .x }}; }	printf: not on the list of functions a CSS template may call (LITERALS_CSS_FUNCTIONS)	1
+branch	member-not-listed	layouts/page.html	<p>{{ .Date.Weekday }}</p>	.Weekday is not on LITERALS_MEMBERS	1
+branch	static-robots	static/robots.txt	User-agent: *	a static file this check cannot read for copy	1
+LITERALS_RAWTEXT_ELEMENTS	title	layouts/page.html	<p></p><title><</title>	<title> holds '<'	1
+LITERALS_RAWTEXT_ELEMENTS	textarea	layouts/page.html	<p></p><textarea><</textarea>	<textarea> holds '<'	1
+LITERALS_RAWTEXT_ELEMENTS	xmp	layouts/page.html	<p></p><xmp><</xmp>	<xmp> holds '<'	1
+LITERALS_RAWTEXT_ELEMENTS	plaintext	layouts/page.html	<p></p><plaintext><</plaintext>	<plaintext>: everything after it is text to the browser	1
+LITERALS_RAWTEXT_ELEMENTS	noembed	layouts/page.html	<p></p><noembed><</noembed>	<noembed> holds '<'	1
+LITERALS_RAWTEXT_ELEMENTS	noframes	layouts/page.html	<p></p><noframes><</noframes>	<noframes> holds '<'	1
+LITERALS_RAWTEXT_ELEMENTS	iframe	layouts/page.html	<p></p><iframe><</iframe>	<iframe> holds '<'	1
+LITERALS_RAWTEXT_ELEMENTS	noscript	layouts/page.html	<p></p><noscript><</noscript>	<noscript> holds '<'	1
+RAWTEXT_END_TAG	script	layouts/page.html	<p></p><script></script x>	end tag '</script x>': a script end tag	1
+RAWTEXT_END_TAG	style	layouts/page.html	<p></p><style></style x>	end tag '</style x>': a style end tag	1
+RAWTEXT_END_TAG	title	layouts/page.html	<p></p><title></title x>	end tag '</title x>': a title end tag	1
+RAWTEXT_END_TAG	textarea	layouts/page.html	<p></p><textarea></textarea x>	end tag '</textarea x>': a textarea end tag	1
+RAWTEXT_END_TAG	xmp	layouts/page.html	<p></p><xmp></xmp x>	end tag '</xmp x>': a xmp end tag	1
+RAWTEXT_END_TAG	plaintext	layouts/page.html	<p></p><plaintext></plaintext x>	end tag '</plaintext x>': a plaintext end tag	2
+RAWTEXT_END_TAG	noembed	layouts/page.html	<p></p><noembed></noembed x>	end tag '</noembed x>': a noembed end tag	1
+RAWTEXT_END_TAG	noframes	layouts/page.html	<p></p><noframes></noframes x>	end tag '</noframes x>': a noframes end tag	1
+RAWTEXT_END_TAG	iframe	layouts/page.html	<p></p><iframe></iframe x>	end tag '</iframe x>': a iframe end tag	1
+RAWTEXT_END_TAG	noscript	layouts/page.html	<p></p><noscript></noscript x>	end tag '</noscript x>': a noscript end tag	1
+branch	chained-group-literal	layouts/page.html	<p>{{ (dict "title" "free").title }}</p>	the dict value 'free' is not on LITERALS_COLLECTION_VALUES for this file	1
+branch	resources-outside-baseof	layouts/page.html	{{ with resources.Get "favicon.svg" }}<link rel="icon" href="{{ .RelPermalink }}">{{ end }}	resources.Get: only layouts/baseof.html may call it	1
+branch	resource-key-not-listed	layouts/baseof.html	{{ with resources.Get "x.css" }}<link rel="stylesheet" href="{{ .RelPermalink }}">{{ end }}	resources.Get takes 'x[.]css', which is not a literal on LITERALS_RESOURCE_KEYS	1
+branch	resource-key-not-literal	layouts/baseof.html	{{ with resources.Get .Kind }}<link rel="stylesheet" href="{{ .RelPermalink }}">{{ end }}	resources.Get takes '[.]Kind', which is not a literal on LITERALS_RESOURCE_KEYS	1
+branch	resource-context-not-dot	layouts/baseof.html	{{ with resources.Get "favicon.svg" | resources.ExecuteAsTemplate "favicon.svg" .Params }}<link rel="icon" href="{{ .RelPermalink }}">{{ end }}	resources.ExecuteAsTemplate takes the bare `.` (the page) as its context	1
+branch	resource-context-value	layouts/baseof.html	{{ with resources.Get "favicon.svg" | resources.ExecuteAsTemplate "favicon.svg" (slice "free") }}<link rel="icon" href="{{ .RelPermalink }}">{{ end }}	the slice value 'free' is not on LITERALS_COLLECTION_VALUES for this file	2
+branch	content-not-bare	layouts/page.html	<p>{{ $x.Content }}</p>	$x.Content: .Content only as the bare `.Content` of the page	1
+branch	content-chained	layouts/page.html	<p>{{ (site.GetPage "/x/").Content }}</p>	.Content: .Content only as the bare `.Content` of the page	1
+branch	content-in-baseof	layouts/baseof.html	<p>{{ .Content }}</p>	.Content: none in baseof.html	1
+branch	baseof-context-not-dot	layouts/baseof.html	{{ block "main" .Params }}{{ end }}	in baseof.html every block, template and partial takes the bare `.`	1
+branch	baseof-context-in-with	layouts/baseof.html	{{ with .Params }}{{ block "main" . }}{{ end }}{{ end }}	in baseof.html every block, template and partial takes the bare `.`	1
+branch	baseof-partial-in-group	layouts/baseof.html	{{ printf "%s" (partial "x.html" .Params) | safeHTML }}	in baseof.html every block, template and partial takes the bare `.`	2
+branch	label-assign	layouts/_partials/label.html	{{ $v = $key }}	assigns `$v = $key`, which is not one of its forms on LITERALS_LABEL_ASSIGNS	1
+branch	rawtext-action	layouts/page.html	<textarea>{{ .Kind }}</textarea>	<textarea> holds a template action	1
+branch	rawtext-end-tag-boundary	layouts/page.html	<textarea></textareax><</textarea>	<textarea> holds '<'	1
+branch	rawtext-literal	layouts/page.html	{{ if eq .Kind "<textarea>" }}{{ end }}	opens a raw-text element (LITERALS_RAWTEXT_ELEMENTS)	1
+branch	csp-outside-meta	layouts/baseof.html	<p>{{ site.Params.csp }}</p>	site.Params.csp: params.csp only as the whole action	1
+branch	csp-meta-other-file	layouts/page.html	<meta http-equiv="Content-Security-Policy" content="{{ site.Params.csp }}">	site.Params.csp: params.csp only as the whole action	1
+branch	content-shortcode	content/about.md	The policy is {{< param csp >}}.	shortcode '{{< param csp >}}	1
+branch	content-shortcode-percent	content/about.md	Run by {{% param operator %}}.	shortcode '{{% param operator %}}	1
+branch	tokens-color-whole	layouts/page.html	<p>{{ range $k, $_ := hugo.Data.tokens.color }}{{ $k }}{{ end }}</p>	hugo.Data.tokens.color: outside a CSS template, a colour only by its key	1
+branch	context-literal-unlisted-name	layouts/page.html	<p>{{ partial "icon.html" "send-your-seed-phrase" }}</p>	the partial 'icon[.]html' takes the bare literal 'send-your-seed-phrase', which is not one of its names on LITERALS_CONTEXT_PARTIALS	2
+branch	site-baseurl	layouts/page.html	<p>{{ site.BaseURL }}</p>	site.BaseURL: site.BaseURL is not a member a template may read	1

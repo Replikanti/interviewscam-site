@@ -1,0 +1,1 @@
+static/extra.css:1: content draws the text 'New' (L5)

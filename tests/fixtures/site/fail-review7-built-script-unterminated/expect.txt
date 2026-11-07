@@ -1,0 +1,1 @@
+(i) an unterminated <script> or <style>

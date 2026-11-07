@@ -2,5 +2,4 @@
   magnifier, colours from data/tokens.toml (SPEC section 7). Linking it from
   every page also stops the browser's own /favicon.ico request, which would
   answer 404. Same drawing as the "search" icon in _partials/icon.html. */ -}}
-{{- $c := hugo.Data.tokens.color -}}
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="{{ $c.primary }}"/><g fill="none" stroke="{{ $c.on_fill }}" stroke-width="3" stroke-linecap="round"><circle cx="14" cy="14" r="7"/><path d="m19.5 19.5 5.5 5.5"/></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="{{ hugo.Data.tokens.color.primary }}"/><g fill="none" stroke="{{ hugo.Data.tokens.color.on_fill }}" stroke-width="3" stroke-linecap="round"><circle cx="14" cy="14" r="7"/><path d="m19.5 19.5 5.5 5.5"/></g></svg>

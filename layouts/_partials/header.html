@@ -6,15 +6,15 @@
 <header class="site-header">
 <div class="container">
 <div class="header-row">
-<a class="brand" href="{{ "/" | relURL }}"><span class="brand-tile">{{ partial "icon.html" "search" }}</span><span>interviewscam<span class="brand-tld">.com</span></span></a>
-<a class="cta" href="{{ "/report-a-scam/" | relURL }}">Report a scam</a>
+<a class="brand" href="{{ "/" | relURL }}"><span class="brand-tile">{{ partial "icon.html" "search" }}</span><span>{{ partial "label.html" "header.brand" }}<span class="brand-tld">{{ partial "label.html" "header.brand_tld" }}</span></span></a>
+<a class="cta" href="{{ "/report-a-scam/" | relURL }}">{{ partial "label.html" "header.cta" }}</a>
 </div>
-<nav aria-label="Main">
+<nav aria-label="{{ partial "label.html" "header.nav_label" }}">
 <ul class="nav">
 {{- range slice
-  (dict "url" "/before-your-call/" "label" "Before your call")
-  (dict "url" "/methodology/" "label" "Methodology")
-  (dict "url" "/about/" "label" "About") }}
+  (dict "url" "/before-your-call/" "label" (partial "label.html" "header.nav_before_your_call"))
+  (dict "url" "/methodology/" "label" (partial "label.html" "header.nav_methodology"))
+  (dict "url" "/about/" "label" (partial "label.html" "header.nav_about")) }}
 <li><a class="pill" href="{{ .url | relURL }}"{{ if eq $current.RelPermalink (.url | relURL) }} aria-current="page"{{ end }}>{{ .label }}</a></li>
 {{- end }}
 </ul>

@@ -1,0 +1,1 @@
+<xmp> holds '<': its content is text to the browser

@@ -1,0 +1,9 @@
+/* Generated text: "/" between breadcrumb items, a counter, a middle dot. */
+.breadcrumb li + li::before {
+  content: "/";
+}
+.steps li::before {
+  content: counter(step) ". ";
+}
+.next::after { content: "\b7"; }
+.pill[aria-current="page"] { font-weight: 650; }

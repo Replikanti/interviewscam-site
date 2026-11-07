@@ -1,0 +1,9 @@
+# HUGO_PARAMS_CONTACT is named here, so a step could set it.
+permissions:
+  contents: read
+on: push
+jobs:
+  x:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: bash tools/example.sh

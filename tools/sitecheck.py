@@ -39,6 +39,16 @@ internal error, so a crash never reads as a finding or as a pass.
       data/tokens.toml is well formed and every listed colour pair meets its
       WCAG 2.2 contrast minimum with the ratio it states. No colour literal
       appears in assets/, layouts/, static/ or hugo.toml.
+  literals [--root DIR]
+      Fixed public copy lives only in data/labels.toml (ADR-0004 part 13):
+      no letter or digit in template text (L1) or in a visible attribute
+      (L2, every attribute off a closed list), no string literal in a
+      template action that is copy, no action that prints a bare literal,
+      and a literal in a value position only with a never-copy shape or from
+      a fixed list (L3), only listed functions and members, copy read only
+      through label.html and label-list.html (L4), no generated text in CSS
+      (L5), and a template that cannot be read fails closed (L6). Reads
+      layouts/, assets/ and the markup and CSS files of static/.
   reflow --chrome BIN [--launch-timeout SECONDS] PUBLIC
       Every HTML page in PUBLIC, loaded in headless Chrome at a 320 CSS px
       viewport, has no page-level horizontal overflow, and every word and
@@ -84,6 +94,7 @@ import fcntl
 import functools
 import hashlib
 import html
+import html.entities
 import html.parser
 import http.server
 import ipaddress
@@ -1404,7 +1415,10 @@ REQUEST_ATTRS = {
 # Space-separated URL lists.
 URL_LIST_ATTRS = {("a", "ping"), ("area", "ping")}
 SRCSET_ATTRS = {"srcset", "imagesrcset"}
-SAME_ORIGIN = re.compile(r"(?i)^https://interviewscam\.com(?:[/?#]|$)")
+# review5 A3 audit: ASCII case only. Python folded U+0131 into `i`, so
+# `https://` U+0131 `nterviewscam.com` passed as this origin; a browser maps
+# that host to its own punycode name, another origin.
+SAME_ORIGIN = re.compile(r"^https://interviewscam\.com(?:[/?#]|$)", re.I | re.A)
 HAS_SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:")
 HTML_SUFFIXES = {".html", ".htm", ".xhtml"}
 # XML outputs (sitemap, M3 feeds, XSL) get no CSP on Pages, so every
@@ -1581,20 +1595,41 @@ def svg_request_problems(page):
 
 CSP_SOURCES = {"'self'", "'none'"}
 CSP_REPORTING = {"report-uri", "report-to"}
+# The directive names of Content Security Policy Level 3 (W3C, section 6:
+# fetch, document, navigation and reporting directives) plus
+# upgrade-insecure-requests. A browser ignores any other name, so an unknown
+# "directive" is free text in hugo.toml; it fails (review3 6). With the
+# sources limited to CSP_SOURCES, params.csp is a closed vocabulary.
+CSP_DIRECTIVES = frozenset("""
+base-uri child-src connect-src default-src font-src form-action frame-ancestors
+frame-src img-src manifest-src media-src object-src report-to report-uri sandbox
+script-src script-src-attr script-src-elem style-src style-src-attr style-src-elem
+upgrade-insecure-requests worker-src
+""".split())
+
+
+CSP_WHITESPACE = "\t\n\f\r "
 
 
 def csp_problems(policy):
-    """A policy may only use 'self' and 'none', and must set default-src."""
+    """A policy may only use 'self' and 'none', directive names from
+    CSP_DIRECTIVES, and must set default-src."""
     problems = []
     seen = set()
-    for directive in (d.strip() for d in policy.split(";")):
+    # review4 A1: CSP splits on ASCII whitespace only, so a no-break space
+    # stays inside a token (an unknown directive or source) and fails.
+    for directive in (d.strip(CSP_WHITESPACE) for d in policy.split(";")):
         if not directive:
             continue
-        name, *sources = directive.split()
+        name, *sources = re.split(f"[{CSP_WHITESPACE}]+", directive)
         name = name.lower()
         if name in seen:
             problems.append(f"duplicate CSP directive {name}")
         seen.add(name)
+        if name not in CSP_DIRECTIVES:
+            problems.append(f"CSP directive {show(name)} is not a CSP Level 3 directive "
+                            "(CSP_DIRECTIVES); a browser ignores it, so it would be free "
+                            "text (review3 6)")
         if name in CSP_REPORTING:
             problems.append(f"CSP reporting directive {name} sends requests")
         for source in sources:
@@ -1733,7 +1768,10 @@ VH_REQUIRED = {
 # Allowed in the definition with any value: they only shrink or reset the box,
 # and the runtime 1 x 1 px check in reflow catches a value that grows it.
 VH_OPTIONAL = {"margin", "padding", "border", "clip"}
-IMPORTANT = re.compile(r"(?i)!\s*important")
+# review5 A3: re.ASCII and CSS whitespace, because a browser matches the
+# keyword in ASCII case only (`!` U+0131 `mportant` is no `!important`; the
+# browser drops that declaration).
+IMPORTANT = re.compile(r"![\t\n\f\r ]*important", re.I | re.A)
 CLASS_ATTRIBUTE_SELECTOR = re.compile(r"(?i)\[\s*(?:[\w*-]*\|)?class\s*(?:[~|^$*]?=|\])")
 
 
@@ -2013,6 +2051,8 @@ def cmd_site(args):
                         for problem in csp_problems(attrs.get("content", "")):
                             findings.add(rel, problem)
                 for problem in markup_problems(page, path.relative_to(public).as_posix()):
+                    findings.add(rel, problem)
+                for problem in rawtext_built_problems(text):
                     findings.add(rel, problem)
                 if any(VISUALLY_HIDDEN in attrs.get("class", "").split()
                        for _, attrs in page.elements):
@@ -3933,6 +3973,1881 @@ def cmd_tokens(args):
 
 
 # ---------------------------------------------------------------------------
+# Fixed copy only from data/labels.toml (ADR-0004 part 13, M3 PR 7). Every
+# fixed public string of the templates lives in data/labels.toml, so a copy
+# change is a labels diff, which the operator reviews as content. This check
+# reads the template sources and fails on copy written anywhere else.
+
+LITERALS_LABELS_READERS = {"layouts/_partials/label.html",
+                           "layouts/_partials/label-list.html"}
+# L2: the attributes a browser shows or reads out as text (a screen reader
+# or a braille display reads every aria- one of them; srcdoc is a whole
+# document), plus the content of <meta name="description"> and of any
+# element with property or itemprop (Open Graph and microdata text that
+# search results and link previews show).
+LITERALS_TEXT_ATTRS = {"alt", "title", "aria-label", "aria-description",
+                       "aria-roledescription", "aria-valuetext", "aria-placeholder",
+                       "aria-braillelabel", "aria-brailleroledescription",
+                       "placeholder", "label", "value", "abbr", "summary",
+                       "xlink:title", "srcdoc"}
+LITERALS_TEXT_CONTENT_KEYS = {"property", "itemprop"}
+# L2, closed world (fix round 2, review2 3): the attributes whose value is
+# never shown or read out as text (names, references, enumerated tokens,
+# geometry), exactly those today's templates use plus src. Any other
+# attribute whose value holds a letter or digit is a finding, so an ARIA or
+# MathML text attribute nobody listed (aria-rowindextext, alttext, ...)
+# fails instead of passing. data-*, the content of a meta and style keep
+# their own rules.
+LITERALS_PLAIN_ATTRS = frozenset("""
+action aria-current aria-hidden aria-labelledby autocomplete charset class cx cy
+d datetime fill for height href http-equiv id lang method name r rel role rx
+spellcheck src stroke stroke-linecap stroke-linejoin stroke-width tabindex type
+viewbox width xmlns
+""".split())
+# The attribute values a path piped into relURL or absURL may fill (A1).
+LITERALS_URL_ATTRS = frozenset({"href", "src", "action"})
+# A3: the only non-ASCII symbols (characters that are not a letter or digit)
+# a template, asset or static file may hold in text, an attribute, a literal
+# or a CSS string: what today's tree uses. Every other one (an emoji such as
+# U+1F193 SQUARED FREE, an arrow, a dash, a no-break or zero-width space)
+# fails.
+LITERALS_SYMBOLS = frozenset({"·"})
+# L3: what a literal may be when it is not copy. One lowercase token (keys,
+# paths, class names, date layouts, URLs) ...
+LITERALS_TOKEN = re.compile(r"[a-z0-9_.:/#?=&%@+-]+")
+# ... a word of render rule 8's JSON-LD vocabulary (the only allowlist; it
+# grows only with the JSON-LD contract) ...
+LITERALS_VOCABULARY = frozenset(JSONLD_TYPES).union(*JSONLD_KEYS.values())
+# ... or, by position, the field argument of where/sort: a page field such as
+# Section or Params.campaign.slug, never printed.
+LITERALS_FIELD_FUNCS = {"where", "sort"}
+LITERALS_FIELD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+LITERALS_MESSAGE_FUNCS = {"errorf", "warnf"}
+# Actions that do not print their pipeline. `return` does: a partial returns
+# it to the caller, which prints it. (Hugo's `try` is a function, not a
+# keyword, and is banned: it turns an errorf or warnf message into a value
+# the page can print, L4.)
+LITERALS_CONTROL = {"if", "else", "end", "range", "with", "define", "block",
+                    "template", "break", "continue"}
+LITERALS_URL_FUNCS = {"relURL", "absURL"}
+# L3, value positions (Known limit 1 of M3 PR 7, closed as far as the
+# sources prove it). Every literal is one lowercase token at most, so these
+# functions, which turn tokens into words, capitals or sentences, are
+# banned outright (no template uses them)...
+LITERALS_TEXT_SHAPERS = {"humanize", "inflect.Humanize", "title", "strings.Title",
+                         "upper", "strings.ToUpper", "strings.FirstUpper",
+                         "delimit", "collections.Delimit", "println", "fmt.Println",
+                         "apply", "collections.Apply", "replacePairs",
+                         "strings.ReplacePairs"}
+# ... replace and replaceRE only with a replacement literal that holds no
+# whitespace and no markup (tokens.css turns "_" into "-") ...
+LITERALS_REPLACE = {"replace": 3, "strings.Replace": 3, "replaceRE": 2,
+                    "strings.ReplaceRE": 2}
+# ... the value operands of cond, default, or and and are copy unless they
+# have a shape that is never text: a path or URL, a vocabulary word or a
+# heading element name (checklist.html picks h2 or h3) ...
+LITERALS_CHOOSERS = {"cond", "compare.Conditional", "default", "compare.Default",
+                     "or", "and"}
+LITERALS_HEADING = re.compile(r"h[1-6]")
+# ... the commands that build a collection from their operands: every
+# literal they hold is a key or a value of the collection, which can print
+# wherever the collection goes (the closed-world rule below) ...
+LITERALS_BUILDERS = {"slice", "collections.Slice", "dict", "collections.Dictionary",
+                     "append", "collections.Append", "split", "strings.Split"}
+# ... and nothing below a comparison is ever printed: its result is a bool.
+LITERALS_COMPARE = {"eq", "ne", "lt", "le", "gt", "ge", "in", "not",
+                    "compare.Eq", "compare.Ne", "compare.Lt", "compare.Le",
+                    "compare.Gt", "compare.Ge", "collections.In", "hasPrefix",
+                    "hasSuffix", "strings.HasPrefix", "strings.HasSuffix",
+                    "strings.Contains", "strings.ContainsAny"}
+# The print functions whose operands print as values.
+LITERALS_PRINT_FUNCS = {"print", "printf", "println", "fmt.Print", "fmt.Printf",
+                        "fmt.Println"}
+LITERALS_LABEL_PARTIALS = {"label.html", "label-list.html"}
+LITERALS_PARTIAL_FUNCS = {"partial", "partialCached", "partials.Include",
+                          "partials.IncludeCached"}
+# A function word that reads data rather than literals (the first segment):
+# a call of it is never a constant.
+LITERALS_DATA_ROOTS = {"partial", "partialCached", "partials", "site", "hugo", "now",
+                       "page", "resources", "templates", "time.Now", "math.Rand"}
+LITERALS_NUMBER = re.compile(r"[-+]?(?:0[xXoObB])?[0-9][0-9a-fA-F_]*(?:\.[0-9_]*)?"
+                             r"(?:[eEpP][-+]?[0-9]+)?|'.'")
+LITERALS_FUNC_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?")
+# A printf verb: flags, argument index, width, precision, verb.
+PRINTF_VERB = re.compile(r"%[-+# 0]*(?:\[\d+\])?(?:\d+|\*)?(?:\.(?:\d+|\*)?)?"
+                         r"(?:\[\d+\])?[A-Za-z%]")
+# Markup inside a literal: a tag named by a known element or by a printf
+# verb, with its attributes. Any other <...> stays and is read as text.
+LITERALS_ATTR = re.compile(r"""([^\s<>"'/=]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s<>"'=`]+))?""")
+LITERALS_TAG = re.compile(
+    r"<(/?)(%[-+# 0]*(?:\[\d+\])?(?:\d+|\*)?(?:\.(?:\d+|\*)?)?(?:\[\d+\])?[A-Za-z]"
+    r"|[A-Za-z][A-Za-z0-9-]*)"
+    r"((?:\s+[^\s<>\"'/=]+(?:\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s<>\"'=`]+))?)*)\s*/?>")
+HTML_ELEMENTS = frozenset("""
+a abbr address area article aside audio b base bdi bdo blockquote body br button
+canvas caption cite code col colgroup data datalist dd del details dfn dialog div
+dl dt em embed fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 head header
+hgroup hr html i iframe img input ins kbd label legend li link main map mark menu
+meta meter nav noscript object ol optgroup option output p picture pre progress q
+rp rt ruby s samp script search section select slot small source span strong style
+sub summary sup table tbody td template textarea tfoot th thead time title tr track
+u ul var video wbr
+""".split())
+SVG_ELEMENTS = frozenset(e.lower() for e in """
+svg g defs symbol use image switch foreignObject desc metadata title circle ellipse
+line path polygon polyline rect text textPath tspan marker mask pattern clipPath
+linearGradient radialGradient stop filter feBlend feColorMatrix feComponentTransfer
+feComposite feConvolveMatrix feDiffuseLighting feDisplacementMap feDistantLight
+feDropShadow feFlood feFuncA feFuncB feFuncG feFuncR feGaussianBlur feImage feMerge
+feMergeNode feMorphology feOffset fePointLight feSpecularLighting feSpotLight feTile
+feTurbulence view a script style
+""".split())
+LITERALS_ELEMENTS = HTML_ELEMENTS | SVG_ELEMENTS
+# L4: the members of `site` a template may read. Params and Data have their
+# own rules; anything else (Menus, Copyright, Language, ...) is a copy source
+# in hugo.toml and fails closed. BaseURL is off since fix round 3: no template
+# reads it, and baseURL reaches a page only inside the permalinks.
+LITERALS_SITE_MEMBERS = {"Title", "Home", "RegularPages", "Pages", "GetPage",
+                         "Sections", "Params", "Data"}
+LITERALS_SITE_PARAMS = {"operator", "contact", "csp"}
+LITERALS_HUGO_DATA = {"labels", "tokens"}
+# hugo: only Data (hugo.Sites, hugo.Environment, ... read config).
+LITERALS_HUGO_MEMBERS = {"Data"}
+# Every occurrence, overlapping: site.Home.Site.Params.x has two.
+SITE_CHAIN = re.compile(r"(?=(?:^site|\.Site)(?![\w])(?:\.(\w+))?(?:\.(\w+))?)")
+HUGO_CHAIN = re.compile(r"^hugo(?![\w])(?:\.(\w+))?(?:\.(\w+))?")
+# Page methods that read config or the repository, or carry a value past
+# the literal rules, each with its reason: .Language (its Label,
+# LanguageName, ... come from hugo.toml), .Languages, .GitInfo and
+# .CodeOwners (commit subjects, CODEOWNERS), .Param (falls back to site
+# params), .Sitemap (changeFreq and priority come from hugo.toml), .Store
+# and .Scratch (a value set in one action prints in another, review2 1e).
+LITERALS_BANNED_METHODS = {
+    "Language": "reads hugo.toml or the repository",
+    "Languages": "reads hugo.toml or the repository",
+    "Sites": "reads hugo.toml or the repository",
+    "GitInfo": "reads hugo.toml or the repository",
+    "CodeOwners": "reads hugo.toml or the repository",
+    "Param": "falls back to site params, a copy source in hugo.toml",
+    "Sitemap": "reads hugo.toml (its changeFreq and priority)",
+    "Store": "keeps a value one action sets for another to print, past the literal rules",
+    "Scratch": "keeps a value one action sets for another to print, past the literal rules",
+}
+# L4: functions that read copy from somewhere this check cannot see:
+# translations, files, the environment and remote data.
+LITERALS_BANNED_WORDS = {"T", "i18n", "readFile", "readDir", "unmarshal", "getenv",
+                         "getJSON", "getCSV", "try"}
+LITERALS_BANNED_PREFIXES = ("lang.Translate", "os.", "transform.Unmarshal",
+                            "data.GetJSON", "data.GetCSV", "resources.GetRemote")
+# L4: a scratch store carries a value past the literal rules like .Store,
+# and emojify turns a token (:free:) into a symbol (review2 1e).
+LITERALS_BANNED_STATE = {"newScratch", "collections.NewScratch", "emojify",
+                         "transform.Emojify"}
+# L3 and L4, closed world (fix round 2, review2 1). Deny lists kept
+# leaking, so what a template may call and read is an allowlist of what
+# today's templates use, and everything else fails. A new function or
+# member comes with its own review of what it can print.
+#   LITERALS_FUNCTIONS      the functions a template outside a CSS template
+#                           may call (site.* and hugo.* chains have L4's
+#                           own rules). No function on it cuts a string or
+#                           changes its case upwards, except the two scoped
+#                           below.
+#   LITERALS_CSS_FUNCTIONS  the same for CSS templates (L5 reads what they
+#                           print).
+#   LITERALS_FILE_FUNCTIONS functions only some files may call: split cuts a
+#                           string (the label key) and first cuts one too
+#                           (`first 2 "warning"` prints "wa"); the resources.*
+#                           functions run only in baseof.html, because a
+#                           resource prints its raw file through .Content
+#                           and its name through .Title (review3 3).
+#   LITERALS_MEMBERS        the capitalised members (Hugo's page and site
+#                           methods) a chain may read; lowercase segments
+#                           are params and dict keys, which are data.
+LITERALS_FUNCTIONS = frozenset("""
+absURL add and append cond default dict eq errorf first ge htmlEscape in index int
+jsonify len lower merge ne not partial printf reflect.IsMap reflect.IsSlice relURL
+resources.Concat resources.ExecuteAsTemplate resources.Fingerprint resources.Get
+resources.Minify safeHTML safeJS slice sort split time.Format where
+""".split())
+LITERALS_CSS_FUNCTIONS = frozenset("div float index replace safeCSS slice".split())
+LITERALS_FILE_FUNCTIONS = {"split": frozenset(LITERALS_LABELS_READERS),
+                           "first": frozenset({"layouts/home.html"}),
+                           **{f: frozenset({"layouts/baseof.html"}) for f in (
+                               "resources.Concat", "resources.ExecuteAsTemplate",
+                               "resources.Fingerprint", "resources.Get",
+                               "resources.Minify")}}
+# The literal operands a resources.* call may take (review3 3): a resource
+# prints its name (`{{ . }}`, .Title, .RelPermalink, and the target name of
+# ExecuteAsTemplate or Concat is any string), so the names are a closed
+# list, exactly the three today's baseof.html uses. ExecuteAsTemplate's
+# context is the bare dot, nothing else.
+LITERALS_RESOURCE_KEYS = frozenset({"favicon.svg", "css/tokens.css", "css/site.css"})
+# Every action of label.html and label-list.html that assigns a variable, in
+# its token form (review3 4): one of today's forms, so $v holds only a value
+# of data/labels.toml (or "") when `return $v` returns it.
+LITERALS_LABEL_ASSIGNS = frozenset({
+    "$key := .", "$v := hugo.Data.labels", "$v = index $v .", '$v = ""',
+    "$key := .key", "$fields := .fields", "$s := index $entry .",
+    "range $i , $entry := $v"})
+# Elements whose content a browser reads as text, not markup (review3 5):
+# RCDATA (title, textarea), raw text (xmp, noembed, noframes, iframe, and
+# noscript with scripting on) and plaintext, which never ends. html.parser
+# reads title and textarea as markup up to CPython 3.12.3 and as text in
+# later releases, so this check reads them itself.
+LITERALS_RAWTEXT_ELEMENTS = ("title", "textarea", "xmp", "plaintext", "noembed",
+                             "noframes", "iframe", "noscript")
+LITERALS_MEMBERS = frozenset("""
+ByDate Content ContentBaseName Data Date Description File Format GetPage
+Home Kind Pages Params Path Permalink RegularPages RelPermalink Reverse Section
+Sections Title
+""".split())
+# The positions of the closed-world rule (L3). A literal in a value
+# position (one whose text can reach the page) passes only with a shape
+# that is never copy (value_shape: no letter or digit, a JSON-LD vocabulary
+# word or keyword, h1 to h6) or from these fixed lists; a path or URL is
+# not such a shape, because it holds words.
+#   LITERALS_DICT_KEYS          dict keys (a key prints through range $k or
+#                               %v).
+#   LITERALS_COLLECTION_VALUES  (file, literal) for the dict values, slice
+#                               and append elements and split inputs today's
+#                               templates build; numbers included (a number
+#                               prints as digits).
+#   LITERALS_DATE_LAYOUTS       the layout of time.Format and .Format (a
+#                               layout prints every character that is not a
+#                               layout element, ":date_full" included).
+#   LITERALS_CONTEXT_PARTIALS   the partials that may take a bare literal as
+#                               their context, each with the literals it may
+#                               take (icon.html: its three icon names, an
+#                               index key there, and any other name fails
+#                               its build; fix round 3: the name was any
+#                               literal before); the label partials take
+#                               their key.
+LITERALS_DICT_KEYS = frozenset("""
+check details fields first head html icon id items jsonld key label
+malwarebazaar page part search tile title value virustotal warning
+""".split())
+LITERALS_COLLECTION_VALUES = frozenset({
+    ("layouts/_partials/artifacts.html", "https://bazaar.abuse.ch/sample/%s/"),
+    ("layouts/_partials/artifacts.html", "https://www.virustotal.com/gui/file/%s"),
+    ("layouts/_partials/breadcrumb.html", "1"),
+    ("layouts/_partials/breadcrumb.html", "2"),
+    ("layouts/_partials/breadcrumb.html", "3"),
+    ("layouts/_partials/checklist.html", "title"),
+    ("layouts/_partials/checklist.html", "warning-signs"),
+    ("layouts/_partials/checklist.html", "tile-warn"),
+    ("layouts/_partials/checklist.html", "warning"),
+    ("layouts/_partials/checklist.html", "do-this-instead"),
+    ("layouts/_partials/checklist.html", "tile-ok"),
+    ("layouts/_partials/checklist.html", "check"),
+    ("layouts/_partials/header.html", "/before-your-call/"),
+    ("layouts/_partials/header.html", "/methodology/"),
+    ("layouts/_partials/header.html", "/about/"),
+    ("layouts/_partials/jsonld.html", "https://schema.org"),
+    ("layouts/_partials/record-item.html", "chip"),
+    ("layouts/reports/page.html", "summary"),
+    ("layouts/reports/page.html", "basis"),
+})
+LITERALS_DATE_LAYOUTS = frozenset({"2006-01-02"})
+LITERALS_CONTEXT_PARTIALS = {"icon.html": frozenset({"check", "search", "warning"})}
+# printf verbs, exactly (review2 1c): no %c, %q, %U or %x (they turn
+# numbers into letters), and no flag, width, precision or argument index
+# (%.2s cuts a string).
+LITERALS_PRINTF_VERBS = frozenset({"%s", "%d", "%v", "%T", "%%"})
+# A data: URL can embed an image or document that draws text no check
+# reads (A5); none is used, so it fails closed in markup, CSS and literals.
+DATA_URL = re.compile(r"(?i)(?<![\w.-])data\s*:")
+# The sets of this section that exempt, allow or name things instead of
+# flagging them. Every other LITERALS_* and CSS_* set is a flagging set, and
+# the self-test needs a fail row for each of its members (review2 5).
+LITERALS_PASSING_SETS = (
+    "LITERALS_LABELS_READERS", "LITERALS_PLAIN_ATTRS", "LITERALS_URL_ATTRS",
+    "LITERALS_SYMBOLS", "LITERALS_VOCABULARY", "LITERALS_FIELD_FUNCS",
+    "LITERALS_MESSAGE_FUNCS", "LITERALS_CONTROL", "LITERALS_URL_FUNCS",
+    "LITERALS_COMPARE", "LITERALS_LABEL_PARTIALS", "LITERALS_DATA_ROOTS",
+    "LITERALS_ELEMENTS", "LITERALS_SITE_MEMBERS", "LITERALS_SITE_PARAMS",
+    "LITERALS_HUGO_DATA", "LITERALS_HUGO_MEMBERS", "LITERALS_FUNCTIONS",
+    "LITERALS_CSS_FUNCTIONS", "LITERALS_FILE_FUNCTIONS", "LITERALS_MEMBERS",
+    "LITERALS_DICT_KEYS", "LITERALS_COLLECTION_VALUES", "LITERALS_DATE_LAYOUTS",
+    "LITERALS_CONTEXT_PARTIALS", "LITERALS_PRINTF_VERBS", "LITERALS_KEY_OPERANDS",
+    "LITERALS_RESOURCE_KEYS", "LITERALS_LABEL_ASSIGNS", "LITERALS_PASSING_SETS",
+)
+# The allowlists whose contents the self-test pins entry by entry in
+# tests/fixtures/literals/allowlists.tsv (review3 A3): every passing set of
+# this section plus the CSP and guard lists, defined further down.
+PINNED_ALLOWLISTS = LITERALS_PASSING_SETS + (
+    "CSP_DIRECTIVES", "CSP_SOURCES", "HUGO_ENV_ALLOWED", "HUGO_CONFIG_STRINGS",
+    "HUGO_CONFIG_PINNED")
+# L5: the CSS properties and @counter-style descriptors whose strings the
+# browser draws as text.
+CSS_TEXT_PROPERTIES = {"content", "list-style", "list-style-type", "quotes",
+                       "symbols", "additive-symbols", "prefix", "suffix", "pad",
+                       "negative", "text-overflow", "hyphenate-character",
+                       "text-emphasis", "text-emphasis-style"}
+# The @counter-style descriptors draw their identifiers too (`symbols: F r
+# e e` draws "Free"), not only their strings.
+CSS_COUNTER_DESCRIPTORS = {"symbols", "additive-symbols", "prefix", "suffix", "pad",
+                           "negative"}
+CSS_PROPERTY = re.compile(r"(?:^|(?<=[{;]))\s*([A-Za-z-]+)\s*:", re.M)
+LITERALS_FIX = ("fixed copy lives only in data/labels.toml; read it through "
+                "layouts/_partials/label.html or label-list.html")
+GO_ESCAPE = re.compile(r"\\(?:([abfnrtv\\'\"])|x([0-9A-Fa-f]{2})|u([0-9A-Fa-f]{4})"
+                       r"|U([0-9A-Fa-f]{8})|([0-7]{3}))")
+GO_ESCAPES = {"a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t",
+              "v": "\v", "\\": "\\", "'": "'", '"': '"'}
+
+
+def go_unquote(raw):
+    """The value of a Go interpreted string or char literal (quotes removed).
+    A \\x or octal escape is one byte; a run of them is decoded as UTF-8."""
+    out, pending = [], bytearray()
+
+    def flush():
+        if pending:
+            out.append(pending.decode("utf-8", "replace"))
+            pending.clear()
+
+    pos = 0
+    for match in GO_ESCAPE.finditer(raw):
+        if match.start() > pos:
+            flush()
+            out.append(raw[pos:match.start()])
+        simple, hexbyte, u4, u8, octal = match.groups()
+        if hexbyte or octal:
+            pending.append(int(hexbyte, 16) if hexbyte else int(octal, 8) & 0xFF)
+        else:
+            flush()
+            if simple:
+                out.append(GO_ESCAPES[simple])
+            else:
+                try:
+                    out.append(chr(int(u4 or u8, 16)))
+                except (ValueError, OverflowError):
+                    out.append("�")
+        pos = match.end()
+    flush()
+    out.append(raw[pos:])
+    return "".join(out)
+
+
+# A symbol that draws a letter or digit: circled, parenthesised, squared and
+# regional-indicator letters (category So) and braille cells, which a reader
+# reads as text (U+24D5 CIRCLED LATIN SMALL LETTER F, U+1F175, U+280B).
+LETTER_NAME = re.compile(r"\b(?:LETTER|DIGIT) \w|^BRAILLE PATTERN ")
+
+
+def copy_char(c, kinds="LN"):
+    """c is, or draws, a letter (kinds "L") or a letter or digit ("LN"):
+    by its category, by its NFKC form (U+2122 is "TM") or by its name."""
+    if unicodedata.category(c)[0] in kinds:
+        return True
+    if c.isascii():
+        return False
+    if any(unicodedata.category(d)[0] in kinds for d in unicodedata.normalize("NFKC", c)):
+        return True
+    name = unicodedata.name(c, "")
+    return bool(LETTER_NAME.search(name)) and ("N" in kinds or "DIGIT" not in name)
+
+
+def has_letter(text):
+    return any(copy_char(c, "L") for c in text)
+
+
+def has_copy(text):
+    """A letter or digit, or a symbol that draws one (copy_char): the test of
+    every rule. Whitespace, punctuation and other symbols pass."""
+    return any(copy_char(c) for c in text)
+
+
+class Token:
+    def __init__(self, kind, text, offset, space_before):
+        self.kind = kind  # word, str, lparen, rparen, pipe, assign, comma
+        self.text = text  # the word, or the value of a string literal
+        self.offset = offset  # in the file
+        self.space_before = space_before
+
+
+class Group:
+    """A parenthesised pipeline, one operand of its command. chained: a
+    field chain follows it (`(x).Y`), so its value is not the pipeline's."""
+
+    def __init__(self, pipeline, chained=False):
+        self.pipeline = pipeline
+        self.chained = chained
+
+
+class Pipeline:
+    def __init__(self, commands, declared):
+        self.commands = commands  # each a list of Token and Group operands
+        self.declared = declared  # $x := ... or $x = ... at this level
+
+
+class TemplateError(Exception):
+    def __init__(self, what, offset):
+        super().__init__(what)
+        self.what = what
+        self.offset = offset
+
+
+WORD_STOP = set(" \t\r\n()|,\"'`}=")
+
+
+def lex_action(text, start):
+    """The tokens of the action whose {{ ends at start. Returns (end offset
+    after }}, tokens, whether the action is only a comment). Raises
+    TemplateError for an action, comment or string that is not terminated."""
+    tokens, n, j, space = [], len(text), start, True
+    only_comment, seen_comment = True, False
+    if text.startswith("-", j) and j + 1 < n and text[j + 1] in " \t\r\n":
+        j += 1
+    while j < n:
+        c = text[j]
+        if text.startswith("}}", j):
+            return j + 2, tokens, seen_comment and only_comment
+        if c in " \t\r\n":
+            space = True
+            j += 1
+            continue
+        if text.startswith("/*", j):
+            end = text.find("*/", j + 2)
+            if end < 0:
+                raise TemplateError("comment", j)
+            seen_comment, space, j = True, True, end + 2
+            continue
+        if c == "-" and space and text.startswith("}}", j + 1):
+            j += 1
+            continue
+        only_comment = False
+        if c in "\"'":
+            k = j + 1
+            while k < n and text[k] != c and text[k] != "\n":
+                k += 2 if text[k] == "\\" else 1
+            if k >= n or text[k] != c:
+                raise TemplateError("string", j)
+            tokens.append(Token("str", go_unquote(text[j + 1:k]), j, space))
+            j = k + 1
+        elif c == "`":
+            k = text.find("`", j + 1)
+            if k < 0:
+                raise TemplateError("string", j)
+            tokens.append(Token("str", text[j + 1:k], j, space))
+            j = k + 1
+        elif c in "()|,":
+            kind = {"(": "lparen", ")": "rparen", "|": "pipe", ",": "comma"}[c]
+            tokens.append(Token(kind, c, j, space))
+            j += 1
+        elif c == "=" or text.startswith(":=", j):
+            width = 1 if c == "=" else 2
+            tokens.append(Token("assign", text[j:j + width], j, space))
+            j += width
+        elif c == "}":
+            # A single brace is not part of any word of the template language.
+            tokens.append(Token("word", c, j, space))
+            j += 1
+        else:
+            k = j
+            while k < n and text[k] not in WORD_STOP and not text.startswith(":=", k):
+                k += 1
+            tokens.append(Token("word", text[j:k], j, space))
+            j = k
+        space = False
+    raise TemplateError("action", start - 2)
+
+
+def parse_pipeline(tokens, i=0, depth=0):
+    """(Pipeline, next index). Parentheses become Group operands; a field
+    chain right after a group (`(x).Y`) stays with it."""
+    commands, cur, declared = [], [], False
+    while i < len(tokens):
+        t = tokens[i]
+        if t.kind == "rparen":
+            if depth:
+                i += 1
+                break
+            i += 1
+            continue
+        if t.kind == "lparen":
+            sub, i = parse_pipeline(tokens, i + 1, depth + 1)
+            chained = (i < len(tokens) and tokens[i].kind == "word"
+                       and tokens[i].text.startswith(".") and not tokens[i].space_before)
+            if chained:
+                i += 1
+            cur.append(Group(sub, chained))
+            continue
+        if t.kind == "pipe":
+            commands.append(cur)
+            cur = []
+        elif t.kind == "assign":
+            declared, cur = True, []
+        elif t.kind == "comma":
+            cur = []
+        else:
+            cur.append(t)
+        i += 1
+    commands.append(cur)
+    return Pipeline(commands, declared), i
+
+
+def pipeline_literals(pipeline, exempt=False):
+    """(token, exempt, field) for every string literal of a pipeline: exempt
+    inside an errorf/warnf command (the message never renders), field when it
+    is the argument right after the first operand of where/sort."""
+    for command in pipeline.commands:
+        fn = command[0].text if command and isinstance(command[0], Token) \
+            and command[0].kind == "word" else None
+        inner = exempt or fn in LITERALS_MESSAGE_FUNCS
+        for index, operand in enumerate(command):
+            if isinstance(operand, Group):
+                yield from pipeline_literals(operand.pipeline, inner)
+            elif operand.kind == "str":
+                yield operand, inner, fn in LITERALS_FIELD_FUNCS and index == 2
+
+
+def first_operand(pipeline):
+    command = pipeline.commands[0] if pipeline.commands else []
+    if not command:
+        return None
+    head = command[0]
+    return first_operand(head.pipeline) if isinstance(head, Group) else head
+
+
+def action_pipeline(tokens):
+    """(pipeline, prints, binds): the pipeline of an action without its
+    keywords (`else if`, `range`, `define`, `return`, ...), whether the
+    action prints it (no control keyword, or `return`), and whether it binds
+    its value for a later print (a declaration, `with` or `range`)."""
+    prints, binds = True, False
+    while tokens and tokens[0].kind == "word" and (
+            tokens[0].text in LITERALS_CONTROL or tokens[0].text == "return"):
+        prints = prints and tokens[0].text == "return"
+        binds = binds or tokens[0].text in ("with", "range")
+        tokens = tokens[1:]
+    pipeline = parse_pipeline(tokens)[0]
+    return pipeline, prints, binds or pipeline.declared
+
+
+def bound_literal(pipeline, binds):
+    """A literal with a letter that the action binds to a variable or to the
+    dot (`$x := "label"`, `with "label"`), which a later action prints, or None.
+    Its shape no longer matters there: L3 sees only the variable."""
+    if not binds or len(pipeline.commands) != 1 or len(pipeline.commands[0]) != 1:
+        return None
+    head = pipeline.commands[0][0]
+    if isinstance(head, Token) and head.kind == "str" and has_letter(head.text):
+        return head
+    return None
+
+
+def printed_arguments(pipeline):
+    """The literals with a letter that print, print or println print as
+    values: every literal operand except the format of printf."""
+    for command in pipeline.commands:
+        fn = command[0].text if command and isinstance(command[0], Token) \
+            and command[0].kind == "word" else None
+        if fn in LITERALS_PRINT_FUNCS:
+            operands = command[2:] if fn in ("printf", "fmt.Printf") else command[1:]
+            for operand in operands:
+                if isinstance(operand, Token) and operand.kind == "str" \
+                        and has_letter(operand.text):
+                    yield operand
+        for operand in command:
+            if isinstance(operand, Group):
+                yield from printed_arguments(operand.pipeline)
+
+
+def url_path_print(pipeline):
+    """`{{ "/about/" | relURL }}`: a path piped into relURL or absURL alone,
+    the one printed literal that is not copy."""
+    commands = pipeline.commands
+    return (len(commands) == 2 and len(commands[0]) == 1
+            and isinstance(commands[0][0], Token) and commands[0][0].kind == "str"
+            and commands[0][0].text.startswith("/") and len(commands[1]) == 1
+            and isinstance(commands[1][0], Token)
+            and commands[1][0].text in LITERALS_URL_FUNCS)
+
+
+def printed_literal(pipeline, prints):
+    """The literal an action prints bare, or None (url_path_print aside)."""
+    if not prints:
+        return None
+    if pipeline.declared:
+        return None
+    head = first_operand(pipeline)
+    if not isinstance(head, Token) or head.kind != "str":
+        return None
+    if url_path_print(pipeline):
+        return None
+    return head
+
+
+def command_head(command):
+    """The function word a command calls, or None."""
+    if command and isinstance(command[0], Token) and command[0].kind == "word":
+        return command[0].text
+    return None
+
+
+def banned_function(word):
+    """A function L3 or L4 bans outright, whose operands then add nothing."""
+    return (word in LITERALS_BANNED_WORDS or word in LITERALS_BANNED_STATE
+            or word in LITERALS_TEXT_SHAPERS
+            or any(m in LITERALS_BANNED_METHODS for m in re.findall(r"\.(\w+)", word))
+            or any(word.startswith(p) if p.endswith(".") else word == p
+                   or word.startswith(p + ".") for p in LITERALS_BANNED_PREFIXES))
+
+
+def data_function(word):
+    """A function word that reads data, not its operands (site, partial, now,
+    and the file, environment and translation readers L4 bans)."""
+    return (word in LITERALS_DATA_ROOTS or word.split(".")[0] in LITERALS_DATA_ROOTS
+            or word in LITERALS_BANNED_WORDS
+            or any(word.startswith(p) if p.endswith(".") else word == p
+                   or word.startswith(p + ".") for p in LITERALS_BANNED_PREFIXES))
+
+
+def literal_only(pipeline):
+    """The pipeline reads nothing but literals: every operand a string,
+    number or bool literal, every function a pure one with operands
+    (`upper "free"`, `cond true "a" "b"`); no field, variable, dot, niladic
+    function (`now`, `site`) or data function (`partial`, `site.GetPage`)."""
+    for index, command in enumerate(pipeline.commands):
+        if not command:
+            return False
+        for position, operand in enumerate(command):
+            if isinstance(operand, Group):
+                if operand.chained or not literal_only(operand.pipeline):
+                    return False
+                continue
+            if operand.kind == "str":
+                continue
+            if operand.kind != "word":
+                return False
+            word = operand.text
+            if word in ("true", "false", "nil") or LITERALS_NUMBER.fullmatch(word):
+                continue
+            if (position == 0 and LITERALS_FUNC_WORD.fullmatch(word)
+                    and not data_function(word) and (len(command) > 1 or index > 0)):
+                continue
+            return False
+    return True
+
+
+def literal_remainder(value):
+    """A literal as L3 reads its text: markup tags (known elements and printf
+    verbs) replaced by a space, so `free<br>money` stays two words, then
+    printf verbs removed and entities decoded."""
+    rest = LITERALS_TAG.sub(
+        lambda m: " " if m.group(2).startswith("%")
+        or m.group(2).lower() in LITERALS_ELEMENTS else m.group(0), value)
+    return html.unescape(PRINTF_VERB.sub("", rest))
+
+
+def never_text(value):
+    """A value-position literal whose shape is never copy: no letter or digit
+    once markup, verbs and entities are gone, a path or https URL, a word of
+    the JSON-LD vocabulary or keyword, or a heading element name."""
+    rest = literal_remainder(value).strip()
+    if not has_copy(rest):
+        return True
+    if value.startswith(("/", "https://")) and LITERALS_TOKEN.fullmatch(value):
+        return True
+    return (rest in LITERALS_VOCABULARY or rest in JSONLD_OBJECT_KEYS
+            or rest in JSONLD_GRAPH_KEYS or bool(LITERALS_HEADING.fullmatch(rest)))
+
+
+def label_partial_call(command):
+    fn = command_head(command)
+    return (fn in LITERALS_PARTIAL_FUNCS and len(command) > 1
+            and isinstance(command[1], Token) and command[1].kind == "str"
+            and command[1].text in LITERALS_LABEL_PARTIALS)
+
+
+def pipeline_commands(pipeline):
+    """Every command of a pipeline, its groups' commands included."""
+    for command in pipeline.commands:
+        yield command
+        for operand in command:
+            if isinstance(operand, Group):
+                yield from pipeline_commands(operand.pipeline)
+
+
+def token_form(tokens):
+    """An action's tokens as one line (strings quoted), for pinned forms."""
+    return " ".join(('""' if x.text == "" else repr(x.text)) if x.kind == "str"
+                    else x.text for x in tokens)
+
+
+def resource_operand_problems(command):
+    """(token, message) for a resources.* command: every operand a literal on
+    LITERALS_RESOURCE_KEYS, except the context of ExecuteAsTemplate, which is
+    the bare dot (review3 2 and 3)."""
+    fn = command[0].text
+    for i, operand in enumerate(command[1:], 1):
+        if fn == "resources.ExecuteAsTemplate" and i == 2:
+            if not (isinstance(operand, Token) and operand.kind == "word"
+                    and operand.text == "."):
+                yield command[0], ("resources.ExecuteAsTemplate takes the bare `.` (the "
+                                   "page) as its context, nothing else: the asset template "
+                                   "prints what it gets (L3, review3 2)")
+        elif not (isinstance(operand, Token) and operand.kind == "str"
+                  and operand.text in LITERALS_RESOURCE_KEYS):
+            what = show(operand.text) if isinstance(operand, Token) else "a group"
+            yield (operand if isinstance(operand, Token) else command[0]), (
+                f"{fn} takes {what}, which is not a literal on LITERALS_RESOURCE_KEYS; a "
+                "resource prints its name (`.Title`, `.RelPermalink`), so the names are "
+                "a closed list (L3, review3 3)")
+
+
+def value_problems(pipeline, quiet=False, first=True):
+    """(token, message) for L3's value positions: the text-shaping functions,
+    replace with a replacement that is not a plain literal, and a copy
+    literal among the values of cond, default, or and and. Nothing below a
+    comparison, an errorf/warnf or a label partial call counts (quiet)."""
+    for index, command in enumerate(pipeline.commands):
+        fn = command_head(command)
+        if fn in LITERALS_TEXT_SHAPERS:
+            yield command[0], (f"{fn} turns tokens into words, capitals or sentences, "
+                               "which only data/labels.toml may hold (L3)")
+        inner = quiet or fn in LITERALS_COMPARE or fn in LITERALS_MESSAGE_FUNCS \
+            or label_partial_call(command)
+        if not inner and fn in LITERALS_REPLACE:
+            at = LITERALS_REPLACE[fn]
+            new = command[at] if at < len(command) else None
+            if new is None:
+                yield command[0], (f"{fn} takes its replacement from the pipe; write "
+                                   "it as a literal (L3)")
+            elif not (isinstance(new, Token) and new.kind == "str"):
+                yield command[0], (f"{fn} takes its replacement from a value, not a "
+                                   "literal (L3)")
+            elif re.search(r"[\s<]", html.unescape(new.text)):
+                yield new, (f"{fn} replaces with {show(new.text)}, which holds "
+                            "whitespace or markup and so joins tokens into words (L3)")
+        if not inner and fn in LITERALS_CHOOSERS:
+            for operand in command[1:]:
+                if isinstance(operand, Token) and operand.kind == "str" \
+                        and not never_text(operand.text):
+                    yield operand, (f"{fn} picks the literal {show(operand.text)} as a "
+                                    "value, which can print (L3)")
+        for operand in command:
+            if isinstance(operand, Group):
+                yield from value_problems(operand.pipeline, inner, False)
+
+
+def value_shape(value):
+    """A literal in a value position whose shape is never copy: no letter or
+    digit once markup, verbs and entities are gone, a word of the JSON-LD
+    vocabulary or keyword, or a heading element name. Unlike never_text, a
+    path or URL is not such a shape: it holds words (A1)."""
+    rest = literal_remainder(value).strip()
+    if not has_copy(rest):
+        return True
+    return (rest in LITERALS_VOCABULARY or rest in JSONLD_OBJECT_KEYS
+            or rest in JSONLD_GRAPH_KEYS or bool(LITERALS_HEADING.fullmatch(rest)))
+
+
+def number_literal(token):
+    return (isinstance(token, Token) and token.kind == "word"
+            and bool(LITERALS_NUMBER.fullmatch(token.text)))
+
+
+# The operands of a command that are keys, never values: a name, a field, a
+# lookup key, a count, a resource or page path. (function, first operand
+# index; None: from that index on.)
+LITERALS_KEY_OPERANDS = {
+    "where": 2, "collections.Where": 2, "sort": 2, "collections.Sort": 2,
+    "index": 2, "collections.Index": 2, "isset": 2, "collections.IsSet": 2,
+    "resources.Get": 1, "resources.GetMatch": 1, "resources.ExecuteAsTemplate": 1,
+    "resources.Concat": 1, "site.GetPage": 1,
+}
+
+
+def literal_positions(pipeline, quiet=False, key=False):
+    """(token, kind, command) for every string, number and char literal of a
+    pipeline, by the position it sits in (L3, closed world, review2 1):
+      exempt      under errorf/warnf (the message never renders)
+      quiet       below a comparison or in a label partial call (a bool, a
+                  label key)
+      key         a name, field, lookup key, count or path (the operands of
+                  LITERALS_KEY_OPERANDS, a partial name, the count of first,
+                  a split separator)
+      dict-key    a key of dict
+      collection  a dict value, a slice or append element, a split input
+      layout      the layout of time.Format or .Format
+      context     a partial's bare context
+      format      the format of printf
+      value       anywhere else: its text can reach the page."""
+    for command in pipeline.commands:
+        fn = command_head(command) or ""
+        exempt = fn in LITERALS_MESSAGE_FUNCS
+        inner = quiet or fn in LITERALS_COMPARE or label_partial_call(command)
+        for i, operand in enumerate(command):
+            if exempt:
+                kind = "exempt"
+            elif inner:
+                kind = "quiet"
+            elif key:
+                kind = "key"
+            elif i == 0:
+                kind = "value"
+            elif fn in LITERALS_PARTIAL_FUNCS:
+                kind = "key" if i != 2 else "context"
+            elif fn in ("dict", "collections.Dictionary"):
+                kind = "dict-key" if i % 2 else "collection"
+            elif fn in ("split", "strings.Split"):
+                kind = "collection" if i == 1 else "key"
+            elif fn in LITERALS_BUILDERS:
+                kind = "collection"
+            elif fn in ("first", "collections.First", "last", "collections.Last",
+                        "after", "collections.After"):
+                kind = "key" if i == 1 else "value"
+            elif fn == "time.Format" or fn == "dateFormat" or fn.endswith(".Format"):
+                kind = "layout" if i == 1 else "value"
+            elif fn in ("printf", "fmt.Printf"):
+                kind = "format" if i == 1 else "value"
+            elif fn == "resources.ExecuteAsTemplate" and i == 2:
+                kind = "value"  # the context the asset template prints (review3 2)
+            elif fn in LITERALS_KEY_OPERANDS or fn.endswith(".GetPage"):
+                kind = "key" if i >= LITERALS_KEY_OPERANDS.get(fn, 1) else "value"
+            else:
+                kind = "value"
+            if isinstance(operand, Group):
+                yield from literal_positions(
+                    operand.pipeline, quiet or inner or exempt,
+                    key or kind == "key")
+                continue
+            if operand.kind == "str" or number_literal(operand):
+                yield operand, kind, command
+
+
+def position_problems(rel, pipeline, binds, keywords):
+    """(token, message) for the closed-world rule of L3 on one action (not
+    for CSS templates: L5 reads what they print). binds: the action binds
+    its value (a declaration, with or range)."""
+    name_key = any(k in ("define", "block", "template") for k in keywords)
+    whole_literal = literal_only(pipeline)
+    first = first_operand(pipeline)
+    for token, kind, command in literal_positions(pipeline):
+        if name_key and token is first:
+            continue  # the name of define, block or template
+        if url_path_print(pipeline) and token is first:
+            continue  # the path piped into relURL or absURL: rule A1
+        string = token.kind == "str"
+        text = token.text
+        fn = command_head(command) or "the action"
+        if kind == "dict-key":
+            if not (string and (value_shape(text) or text in LITERALS_DICT_KEYS)):
+                yield command, token, (f"the dict key {show(text)} is not on LITERALS_DICT_KEYS; a "
+                              "key prints wherever the dict goes (L3)")
+        elif kind == "collection":
+            if not ((string and value_shape(text))
+                    or (rel, text) in LITERALS_COLLECTION_VALUES):
+                yield command, token, (f"the {fn} value {show(text)} is not on "
+                              "LITERALS_COLLECTION_VALUES for this file; a collection "
+                              "value prints wherever the collection goes (L3)")
+        elif kind == "layout":
+            if not (string and text in LITERALS_DATE_LAYOUTS):
+                yield command, token, (f"the date layout {show(text)} is not on "
+                              "LITERALS_DATE_LAYOUTS; a layout prints its text (L3)")
+        elif kind == "context":
+            partial = command[1].text if isinstance(command[1], Token) else ""
+            if partial not in LITERALS_CONTEXT_PARTIALS:
+                yield command, token, (f"the partial {show(partial)} takes the bare literal "
+                              f"{show(text)} as its context, which it can print; only "
+                              "icon.html takes a bare literal (L3)")
+            elif not (string and text in LITERALS_CONTEXT_PARTIALS[partial]):
+                yield command, token, (f"the partial {show(partial)} takes the bare literal "
+                              f"{show(text)}, which is not one of its names on "
+                              "LITERALS_CONTEXT_PARTIALS; an edit of the partial could "
+                              "print it (L3, fix round 3)")
+        elif kind in ("value", "format"):
+            if string and value_shape(text):
+                continue
+            if binds and whole_literal:
+                yield command, token, (f"the action binds a value computed from literals alone "
+                              f"({show(text)}), which a later print shows (L3)")
+            elif kind == "format":
+                yield command, token, (f"the printf format {show(text)} holds copy, which it "
+                              "prints (L3)")
+            else:
+                yield command, token, (f"the literal {show(text)} sits in a value position of "
+                              f"{fn}, where its text can reach the page (L3)")
+
+
+def verb_problems(token):
+    """printf verbs other than exactly %s, %d, %v, %T and %% (review2 1c)."""
+    for match in PRINTF_VERB.finditer(token.text):
+        if match.group(0) not in LITERALS_PRINTF_VERBS:
+            yield token, (f"printf verb {match.group(0)!r} in {show(token.text)}: only "
+                          "%s, %d, %v, %T and %% (no flag, width or precision), because "
+                          "%c, %q, %x and %U turn numbers into letters and %.Ns cuts a "
+                          "string (L3)")
+
+
+ENTITY_START = re.compile(r"&(?:#[0-9]+;|#[xX][0-9A-Fa-f]+;|([A-Za-z][A-Za-z0-9]*;))")
+
+
+def amp_problems(token):
+    """An & that does not start a complete entity (review2 1d): `&#` plus a
+    number printed after it is a letter no check reads."""
+    for at in (m.start() for m in re.finditer("&", token.text)):
+        match = ENTITY_START.match(token.text, at)
+        if not match or (match.group(1) and match.group(1) not in html.entities.html5):
+            yield token, (f"the literal {show(token.text)} holds an & that does not start "
+                          "a complete entity; an entity completed by a printed value "
+                          "draws a letter no check reads (L3)")
+            return
+
+
+def symbol_problems(text):
+    """The non-ASCII symbols of text (characters that are not a letter or
+    digit, which L1 to L3 already flag) that are not on LITERALS_SYMBOLS
+    (A3), as one message part, or None."""
+    bad = sorted({c for c in text if not c.isascii() and not copy_char(c)
+                  and c not in LITERALS_SYMBOLS})
+    if not bad:
+        return None
+    return ", ".join(f"U+{ord(c):04X} {unicodedata.name(c, 'unnamed')}" for c in bad)
+
+
+def literal_problems(value, field):
+    """Why a string literal of a template action is copy, or []: markup with
+    its visible attributes, then the remainder without tags, printf verbs and
+    entities."""
+    problems = []
+    if field and LITERALS_FIELD.fullmatch(value):
+        return problems
+    for tag in LITERALS_TAG.finditer(value):
+        name = tag.group(2)
+        if not name.startswith("%") and name.lower() not in LITERALS_ELEMENTS:
+            continue
+        attrs = []
+        for attr in LITERALS_ATTR.finditer(tag.group(3)):
+            raw = attr.group(2) or ""
+            if raw[:1] in "\"'":
+                raw = raw[1:-1]
+            attrs.append((attr.group(1).lower(), html.unescape(PRINTF_VERB.sub("", raw))))
+        problems.extend(attribute_problems(name.lower(), attrs, " in a markup literal",
+                                           "L3"))
+    rest = literal_remainder(value).strip()
+    if (has_copy(rest) and not LITERALS_TOKEN.fullmatch(rest)
+            and rest not in LITERALS_VOCABULARY):
+        problems.append(f"string literal {show(value)} is copy (L3)")
+    return problems
+
+
+def copy_source_problems(rel, tokens, literals, css=False):
+    """L4: where a template may read copy from. css: a CSS template, the one
+    place data/tokens.toml may be read whole (L5 reads what it prints)."""
+    problems = []
+    for t in tokens:
+        if t.kind != "word":
+            continue
+        w = t.text
+        for match in SITE_CHAIN.finditer(w):
+            member, sub = match.group(1), match.group(2)
+            if member is None:
+                problems.append((t, f"{w} without a member; read site.Title, "
+                                 "site.Params.operator, site.Params.contact or "
+                                 "site.Params.csp directly (L4)"))
+            elif member == "Data":
+                problems.append((t, f"{w}: never site.Data or .Site.Data; "
+                                 "labels through label.html (L4)"))
+            elif member == "Params" and sub not in LITERALS_SITE_PARAMS:
+                problems.append((t, f"{w}: site.Params only as operator, contact or "
+                                 "csp (L4)"))
+            elif member not in LITERALS_SITE_MEMBERS:
+                problems.append((t, f"{w}: site.{member} is not a member a template "
+                                 "may read (L4)"))
+        match = HUGO_CHAIN.match(w)
+        if match:
+            member, sub = match.group(1), match.group(2)
+            if member is None:
+                problems.append((t, f"{w} without a member (L4)"))
+            elif member == "Data" and sub not in LITERALS_HUGO_DATA:
+                problems.append((t, f"{w}: hugo.Data only as hugo.Data.labels or "
+                                 "hugo.Data.tokens (L4)"))
+            elif member == "Data" and sub == "labels" and rel not in LITERALS_LABELS_READERS:
+                problems.append((t, f"{w}: data/labels.toml is read only inside "
+                                 "label.html and label-list.html (L4)"))
+            elif member not in LITERALS_HUGO_MEMBERS:
+                problems.append((t, f"{w}: hugo.{member} is not a member a template may "
+                                 "read; it reads the config or other sites (L4)"))
+            elif sub == "tokens" and not css and not w.startswith("hugo.Data.tokens.color"):
+                problems.append((t, f"{w}: outside a CSS template, data/tokens.toml only "
+                                 "as hugo.Data.tokens.color; its fonts and pair use "
+                                 "strings are text (L4)"))
+            elif sub == "tokens" and not css and not TOKENS_COLOR_KEY.fullmatch(w):
+                problems.append((t, f"{w}: outside a CSS template, a colour only by its "
+                                 "key, hugo.Data.tokens.color.<key>; the whole table "
+                                 "prints its keys (`range $k, $_`), which are words "
+                                 "(L4, review3 A1)"))
+        flagged = any(token is t for token, _ in problems)
+        for match in re.finditer(r"\.(\w+)(?![\w])", w):
+            method = match.group(1)
+            if method in LITERALS_BANNED_METHODS:
+                flagged = True
+                problems.append((t, f"{w}: .{method} {LITERALS_BANNED_METHODS[method]}, "
+                                 "not data/labels.toml (L4)"))
+        if not flagged and (w.startswith(("$", ".")) or SITE_CHAIN.match(w)
+                            or HUGO_CHAIN.match(w)):
+            for match in re.finditer(r"\.([A-Z]\w*)(?![\w])", w):
+                if match.group(1) not in LITERALS_MEMBERS:
+                    problems.append((t, f"{w}: .{match.group(1)} is not on "
+                                     "LITERALS_MEMBERS, the page and site members a "
+                                     "template may read (L4)"))
+                    break
+        if w in LITERALS_BANNED_STATE:
+            problems.append((t, f"{w}: a scratch store or emoji shortcode carries copy "
+                             "past the literal rules (L4)"))
+        elif w == "try":
+            problems.append((t, "try: it turns an errorf or warnf message into a "
+                             "value the page can print, so the message would be copy "
+                             "(L4)"))
+        elif w in LITERALS_BANNED_WORDS or any(
+                w.startswith(p) if p.endswith(".") else w == p or w.startswith(p + ".")
+                for p in LITERALS_BANNED_PREFIXES):
+            problems.append((t, f"{w}: translations, file reads, the environment and "
+                             "remote data are not a copy source (L4)"))
+        elif not (w.startswith(("$", ".")) or w in ("true", "false", "nil", "}")
+                  or w in LITERALS_CONTROL or w == "return"
+                  or LITERALS_NUMBER.fullmatch(w) or SITE_CHAIN.match(w)
+                  or HUGO_CHAIN.match(w) or w in LITERALS_TEXT_SHAPERS):
+            allowed = LITERALS_CSS_FUNCTIONS if css else LITERALS_FUNCTIONS
+            files = LITERALS_FILE_FUNCTIONS.get(w)
+            if w not in allowed:
+                problems.append((t, f"{w}: not on the list of functions a "
+                                 f"{'CSS ' if css else ''}template may call "
+                                 f"({'LITERALS_CSS_FUNCTIONS' if css else 'LITERALS_FUNCTIONS'}"
+                                 "); a new one comes with its own review of what it "
+                                 "can print (L3)"))
+            elif files is not None and rel not in files:
+                why = ("it cuts a string (L3)" if not w.startswith("resources.") else
+                       "a resource prints its raw file and its name (L4, review3 3)")
+                problems.append((t, f"{w}: only {', '.join(sorted(files))} may call it, "
+                                 f"because {why}"))
+    for t, _, _ in literals:
+        if t.text.startswith("_internal/"):
+            problems.append((t, f"internal template {show(t.text)}: its copy is not "
+                             "in data/labels.toml (L4)"))
+    return problems
+
+
+def attribute_problems(tag, attrs, where="", rule="L2"):
+    """L2 on one start tag (attrs: (name, value) pairs, names lowercase): the
+    visible attributes, the token-only ones, and L5 on a style attribute."""
+    first = {}
+    for name, value in attrs:
+        first.setdefault(name, value)
+    meta_name = (first.get("name") or "").lower() if tag == "meta" else None
+    text_content = meta_name == "description" or any(
+        key in first for key in LITERALS_TEXT_CONTENT_KEYS)
+    problems = []
+    for name, value in first.items():
+        if value is None:
+            continue
+        if name == "style":
+            # An inline custom property or text property (L5); site rule (c)
+            # bans the attribute in the built pages too.
+            problems.extend(f"style attribute{where}: {problem}"
+                            for _, problem in css_text_problems(value))
+            continue
+        visible = name in LITERALS_TEXT_ATTRS or (name == "content" and text_content)
+        token_only = name.startswith("data-") or (
+            name == "content" and bool(meta_name) and meta_name != "viewport")
+        if visible and has_copy(value):
+            problems.append(f"visible attribute {name}={show(value)}{where} ({rule})")
+        # A data-* value is read by script or CSS, and the content of
+        # another named meta by the reader's tools: they may hold a
+        # token (an id, a keyword), never words.
+        elif token_only:
+            if has_copy(value) and not LITERALS_TOKEN.fullmatch(value.strip()):
+                problems.append(f"attribute {name}={show(value)}{where} holds words, not "
+                                f"a token ({rule})")
+        # Closed world (review2 3): any other attribute off the list of
+        # attributes that never show text may hold no letter or digit.
+        elif (not visible and name != "content" and name not in LITERALS_PLAIN_ATTRS
+              and name not in LITERALS_TEXT_CONTENT_KEYS and has_copy(value)):
+            problems.append(f"attribute {name}={show(value)}{where} is not on "
+                            "LITERALS_PLAIN_ATTRS, the attributes that never show "
+                            f"text, and holds a letter or digit ({rule})")
+        if DATA_URL.search(value):
+            problems.append(f"attribute {name}={show(value)}{where} holds a data: URL, "
+                            "which can embed an image or document that draws text no "
+                            "check reads; fails closed (L6)")
+        bad = symbol_problems(value)
+        if bad:
+            problems.append(f"attribute {name}={show(value)}{where} holds non-ASCII "
+                            f"symbols that are not on LITERALS_SYMBOLS ({bad}) ({rule})")
+    return problems
+
+
+class LiteralsPage(html.parser.HTMLParser):
+    """L1 and L2 on a template whose actions are blanked: text runs and the
+    visible attributes, each with its line."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.problems = []  # (line, message)
+
+    def _attrs(self, tag, attrs):
+        line = self.getpos()[0]
+        for problem in attribute_problems(tag, attrs):
+            self.problems.append((line, problem))
+
+    def handle_starttag(self, tag, attrs):
+        self._attrs(tag, attrs)
+
+    def handle_startendtag(self, tag, attrs):
+        self._attrs(tag, attrs)
+
+    def handle_data(self, data):
+        if not has_copy(data):
+            bad = symbol_problems(data)
+            if bad:
+                self.problems.append((self.getpos()[0], "text outside template actions "
+                                      "holds non-ASCII symbols that are not on "
+                                      f"LITERALS_SYMBOLS ({bad}) (L1)"))
+            return
+        line = self.getpos()[0]
+        first = next(i for i, c in enumerate(data) if copy_char(c))
+        line += data.count("\n", 0, first)
+        self.problems.append((line, f"text {show(data.strip())} outside template "
+                              "actions (L1)"))
+
+
+def line_of(text, offset):
+    return text.count("\n", 0, offset) + 1
+
+
+def blank_actions(text, spans):
+    """(text, holes): text with every action replaced by one space plus its
+    newlines, so line numbers stay and no action text reaches the HTML
+    reading, and the offset of each blank in it."""
+    out, holes, pos, size = [], [], 0, 0
+    for start, end in spans:
+        out.append(text[pos:start])
+        size += start - pos
+        holes.append(size)
+        blank = " " + "\n" * text.count("\n", start, end)
+        out.append(blank)
+        size += len(blank)
+        pos = end
+    out.append(text[pos:])
+    return "".join(out), holes
+
+
+def css_text_problems(css, holes=()):
+    """L5: (offset, message) for every CSS string the browser draws as text,
+    every attr() that draws an attribute (which L2 does not cover), every
+    var() that draws a custom property (whose value no rule reads as text),
+    and every template action (holes: offsets of the blanked actions) that
+    prints into one of those values."""
+    stripped = CSS_COMMENT_OR_STRING.sub(
+        lambda m: m.group(0) if m.group(1) else re.sub(r"[^\n]", " ", m.group(0)), css)
+    problems = []
+    data_urls = [m.start() for m in DATA_URL.finditer(stripped)]
+    if not data_urls and DATA_URL.search(css_unescape(stripped)):
+        data_urls = [0]  # only an escaped one: no offset in the source
+    for offset in data_urls:
+        problems.append((offset, "a data: URL can embed an image that draws text no "
+                         "check reads; fails closed (L6)"))
+    for match in CSS_PROPERTY.finditer(stripped):
+        prop = match.group(1).lower()
+        custom = prop.startswith("--")
+        if prop not in CSS_TEXT_PROPERTIES and not custom:
+            continue
+        k, n, depth = match.end(), len(stripped), 0
+        while k < n:
+            ch = stripped[k]
+            if ch in "\"'":
+                k += 1
+                while k < n and stripped[k] != ch:
+                    k += 2 if stripped[k] == "\\" else 1
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth = max(0, depth - 1)
+            elif depth == 0 and ch in ";}":
+                break
+            k += 1
+        value = stripped[match.end():k]
+        for string in CSS_STRING_LITERAL.finditer(value):
+            text = css_unescape(string.group(0)[1:-1])
+            bad = symbol_problems(text)
+            if bad and not has_copy(text):
+                problems.append((match.start(1), f"{prop} holds non-ASCII symbols that "
+                                 f"are not on LITERALS_SYMBOLS ({bad}) (L5)"))
+            if has_copy(text) and custom:
+                problems.append((match.start(1), f"custom property {prop} holds the "
+                                 f"text {show(text)}, which a text property could "
+                                 "draw (L5)"))
+            elif has_copy(text):
+                problems.append((match.start(1), f"{prop} draws the text "
+                                 f"{show(text)} (L5)"))
+        if custom:
+            continue
+        if prop in CSS_COUNTER_DESCRIPTORS:
+            idents = re.sub(r"(?i)url\([^)]*\)", " ",
+                            CSS_STRING_LITERAL.sub(" ", css_unescape(value)))
+            idents = re.sub(r"(?<![\w-])[-+]?\d+(?:\.\d+)?(?:px|em|rem|%)?(?![\w-])",
+                            " ", idents)
+            if has_copy(idents):
+                problems.append((match.start(1), f"{prop} draws the identifiers "
+                                 f"{show(' '.join(idents.split()))} (L5)"))
+        if re.search(r"(?i)(?<![\w-])attr\s*\(", css_unescape(value)):
+            problems.append((match.start(1), f"{prop} draws an attribute with attr() "
+                             "(L5)"))
+        if re.search(r"(?i)(?<![\w-])var\s*\(", css_unescape(value)):
+            problems.append((match.start(1), f"{prop} draws a custom property with "
+                             "var(), whose value no rule reads as text (L5)"))
+        if any(match.end() <= hole < k for hole in holes):
+            problems.append((match.start(1), f"{prop} takes a value printed by a "
+                             "template action, which L5 cannot read (L5)"))
+    return problems
+
+
+def template_actions(rel, text, findings):
+    """(start, end, tokens, comment) for every action of a template, in
+    order; an unterminated one is an L6 finding and ends the file."""
+    actions, pos = [], 0
+    while True:
+        start = text.find("{{", pos)
+        if start < 0:
+            break
+        try:
+            end, tokens, comment = lex_action(text, start + 2)
+        except TemplateError as exc:
+            findings.add(f"{rel}:{line_of(text, exc.offset)}",
+                         f"unterminated {exc.what} (L6); the template cannot be read")
+            actions.append((start, len(text), None, True))
+            break
+        actions.append((start, end, tokens, comment))
+        pos = end
+    return actions
+
+
+def template_names(command_or_tokens):
+    """The name a `template` action calls, or None when it is not a literal."""
+    tokens = command_or_tokens
+    if len(tokens) > 1 and tokens[1].kind == "str":
+        return tokens[1].text
+    return None
+
+
+def partial_problems(pipeline, root):
+    """(token, message): every partial call names a file of
+    layouts/_partials/ as a literal. Hugo serves its embedded templates
+    (pagination.html, opengraph.html, ...) under any name that file does not
+    take, and their copy is not in data/labels.toml."""
+    base = (root / "layouts" / "_partials").resolve()
+    for command in pipeline.commands:
+        fn = command_head(command)
+        if fn in LITERALS_PARTIAL_FUNCS:
+            name = command[1] if len(command) > 1 else None
+            if not (isinstance(name, Token) and name.kind == "str"):
+                yield command[0], (f"{fn} without a literal name: a computed name "
+                                   "can reach an embedded Hugo template (L4)")
+            else:
+                path = (base / name.text).resolve()
+                if base not in path.parents or not path.is_file():
+                    yield name, (f"partial {show(name.text)} is not a file under "
+                                 "layouts/_partials/, so Hugo would use its embedded "
+                                 "template, whose copy is not in data/labels.toml (L4)")
+        for operand in command:
+            if isinstance(operand, Group):
+                yield from partial_problems(operand.pipeline, root)
+
+
+def printf_formats(pipeline, exempt=False):
+    """The literal formats of every printf command, outside errorf/warnf."""
+    for command in pipeline.commands:
+        fn = command_head(command)
+        inner = exempt or fn in LITERALS_MESSAGE_FUNCS
+        if (not inner and fn in ("printf", "fmt.Printf") and len(command) > 1
+                and isinstance(command[1], Token) and command[1].kind == "str"):
+            yield command[1]
+        for operand in command:
+            if isinstance(operand, Group):
+                yield from printf_formats(operand.pipeline, inner)
+
+
+# A1: the open value of an href, src or action attribute of a real start tag,
+# right where the action starts.
+# review3 6: the one place params.csp may print, and review3 5: a literal
+# that opens a raw-text element.
+TOKENS_COLOR_KEY = re.compile(r"hugo\.Data\.tokens\.color\.[a-z0-9_]+")
+SHORTCODE_OPEN = re.compile(r"\{\{[<%]")
+CONTENT_SHORTCODE = re.compile(r"\{\{< param (?:operator|contact) >\}\}")
+CSP_META_OPEN = '<meta http-equiv="Content-Security-Policy" content="'
+RAWTEXT_LITERAL = re.compile(r"(?i)<(?:%s)\b" % "|".join(LITERALS_RAWTEXT_ELEMENTS))
+# review4 1: every start and end tag is read as a browser's tokenizer reads
+# it (WHATWG HTML 13.2.5) and skipped whole, so a '<!--', '<' or quote in an
+# attribute value never counts as text: the tag name runs to whitespace, '/'
+# or '>', an attribute name to whitespace, '/', '>' or '=', and a value is
+# quoted or runs to whitespace or '>'. The groups are atomic, so a tag
+# without its '>' fails in linear time. review5 A3: re.ASCII and ASCII
+# lowercase, because Python folds case over Unicode (`<` U+017F `tyle>` read
+# as `<style>`, U+212A as `k`) and a browser lowercases A to Z only.
+TAG_ATTRS = (r"""(?>[\t\n\f\r /]|[^\t\n\f\r />][^\t\n\f\r />=]*+"""
+             r"""(?:[\t\n\f\r ]*+=[\t\n\f\r ]*+(?:"[^"]*+"|'[^']*+'|[^\t\n\f\r >"'][^\t\n\f\r >]*+)?)?)*+""")
+TAG_END = r"(?=[\t\n\f\r />])"
+# A browser reads `<!x`, `<?x` and `</ x` as a comment to the next '>'; Go's
+# escaper reads them as text (and escapes the '<'), so only the reading of a
+# built page skips them. A `<![CDATA[` is skipped as one too, and rule (i)
+# fails it closed.
+RAWTEXT_SCAN = re.compile(r"""<!--|<(/?)([A-Za-z][^\t\n\f\r />]*+)(%s)>"""
+                          r"""|<!|<\?|</(?![A-Za-z])""" % TAG_ATTRS, re.ASCII)
+ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+URL_ATTR_OPEN = re.compile(r"""<[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?\s([A-Za-z:-]+)\s*=\s*["']?$""")
+
+
+def template_literal_problems(rel, text, findings, counts, markup, root, defines,
+                              css=False):
+    """L1 to L4 and L6 on one template file; returns the file with its actions
+    blanked and the offsets of the blanks in it, for L5. markup: read the
+    text as HTML (not for CSS). css: a CSS template, whose actions print
+    into a stylesheet, where L5 reads the text (so the closed-world position
+    rule of L3 does not apply)."""
+    actions = template_actions(rel, text, findings)
+    spans = [(start, end) for start, end, _, _ in actions]
+    reported = set()
+    scope = []
+    flagged = set()  # token offsets with a finding: one defect, one finding
+    bare, holes = blank_actions(text, spans)
+
+    def in_url_attr(index):
+        """The action starts the value of an href, src or action attribute
+        of a real start tag (A1), not text or another attribute."""
+        before = bare[:holes[index]]
+        match = URL_ATTR_OPEN.search(before[before.rfind("<"):])
+        return bool(match) and match.group(1).lower() in LITERALS_URL_ATTRS
+
+    def report(token, message, fix=True):
+        key = (token.offset, message)
+        if key not in reported:
+            reported.add(key)
+            flagged.add(token.offset)
+            findings.add(f"{rel}:{line_of(text, token.offset)}",
+                         f"{message}; {LITERALS_FIX}" if fix else message)
+
+    def report_new(token, message):
+        if token.offset not in flagged:
+            report(token, message)
+
+    for index, (start, end, tokens, comment) in enumerate(actions):
+        if comment or tokens is None:
+            continue
+        counts["actions"] += 1
+        if tokens and tokens[0].kind == "word" and tokens[0].text == "template":
+            name = template_names(tokens)
+            if name is None or (name not in defines and not name.startswith("_internal/")):
+                report(tokens[0], f"template {show(name) if name else 'without a literal name'} "
+                       "is not defined by a layout, so Hugo would use an embedded "
+                       "template, whose copy is not in data/labels.toml (L4)")
+        pipeline, prints, binds = action_pipeline(tokens)
+        literals = list(pipeline_literals(pipeline))
+        counts["literals"] += len(literals)
+        printed = False
+        for t, exempt, field in literals:
+            if exempt:
+                continue
+            for problem in literal_problems(t.text, field):
+                printed = True  # one defect, one finding: no constant-print finding
+                report(t, problem)
+        head = printed_literal(pipeline, prints)
+        if head is not None:
+            printed = True
+            report(head, f"the action prints a bare literal {show(head.text)} (L3)")
+        bound = bound_literal(pipeline, binds)
+        if bound is not None:
+            report(bound, f"the action binds the bare literal {show(bound.text)} for a "
+                   "later print (L3)")
+        for arg in printed_arguments(pipeline):
+            if not any(t is arg for t, exempt, _ in literals if exempt):
+                printed = True
+                report(arg, f"print, printf or println prints the literal "
+                       f"{show(arg.text)} as a value (L3)")
+        if prints and url_path_print(pipeline) and not in_url_attr(index):
+            printed = True
+            report(tokens[0], f"the action prints the path {show(tokens[0].text)} as "
+                   "text; a path piped into relURL or absURL may only start the value "
+                   "of an href, src or action attribute (L3)")
+        first = pipeline.commands[0] if pipeline.commands else []
+        if (prints and not pipeline.declared and not printed and first
+                and command_head(first) not in LITERALS_MESSAGE_FUNCS
+                and not url_path_print(pipeline) and literal_only(pipeline)):
+            report(first[0], "the action prints a value computed from literals alone "
+                   "(`upper \"free\"`, `cond true \"a\" \"b\"`), which is fixed copy (L3)")
+        for t, problem in value_problems(pipeline):
+            report(t, problem)
+        for t, problem in partial_problems(pipeline, root):
+            report(t, problem)
+        for t, problem in copy_source_problems(rel, tokens, literals, css):
+            report(t, problem, fix=False)
+        keywords = []
+        for t in tokens:
+            if not (t.kind == "word" and (t.text in LITERALS_CONTROL or t.text == "return")):
+                break
+            keywords.append(t.text)
+        # The closed-world rules (fix round 2, review2 1, A3, A5).
+        if not css:
+            for command, t, problem in position_problems(rel, pipeline, binds, keywords):
+                head = command_head(command)
+                if not (head and banned_function(head)):
+                    report_new(t, problem)  # a banned function: one finding
+        for t in printf_formats(pipeline):
+            for _, problem in verb_problems(t):
+                report_new(t, problem)
+        for t, exempt, _ in literals:
+            if exempt:
+                continue
+            for _, problem in amp_problems(t):
+                report_new(t, problem)
+            value = html.unescape(t.text)
+            if RAWTEXT_LITERAL.search(value):
+                report_new(t, f"the literal {show(t.text)} opens a raw-text element "
+                           "(LITERALS_RAWTEXT_ELEMENTS), whose markup the browser shows "
+                           "as text; fails closed (L6, review3 5)")
+            if DATA_URL.search(value):
+                report_new(t, f"the literal {show(t.text)} holds a data: URL, which can "
+                           "embed an image or document that draws text no check reads; "
+                           "fails closed (L6)")
+            bad = symbol_problems(value)
+            if bad:
+                report_new(t, f"the literal {show(t.text)} holds non-ASCII symbols that "
+                           f"are not on LITERALS_SYMBOLS ({bad}) (L3)")
+        # Fix round 3 (review3 3, 4, 6).
+        if rel in LITERALS_LABELS_READERS and any(x.kind == "assign" for x in tokens):
+            form = token_form(tokens)
+            if form not in LITERALS_LABEL_ASSIGNS:
+                report_new(tokens[0], f"{rel} assigns `{form}`, which is not one of its "
+                           "forms on LITERALS_LABEL_ASSIGNS; `return $v` must return a "
+                           "value of data/labels.toml (L4, review3 4)")
+        for x in tokens:
+            if x.kind != "word":
+                continue
+            if re.search(r"\.Content(?![\w])", x.text):
+                if x.text != ".Content" or not x.space_before:
+                    report_new(x, f"{x.text}: .Content only as the bare `.Content` of "
+                               "the page; on a resource it prints the raw file, comments "
+                               "included (L4, review3 3)")
+                elif rel == "layouts/baseof.html":
+                    report_new(x, ".Content: none in baseof.html, where the dot of a "
+                               "`with` can be a resource (L4, review3 3)")
+            if any(m.group(1) == "Params" and m.group(2) == "csp"
+                   for m in SITE_CHAIN.finditer(x.text)) and not (
+                    rel == "layouts/baseof.html" and len(tokens) == 1
+                    and x.text == "site.Params.csp"
+                    and text[:start].endswith(CSP_META_OPEN)
+                    and text[end:].startswith('">')):
+                report_new(x, f"{x.text}: params.csp only as the whole action `{{{{ "
+                           "site.Params.csp }}` that fills the content of baseof.html's "
+                           f"{CSP_META_OPEN}\"> (L4, review3 6)")
+        for command in pipeline_commands(pipeline):
+            # The listed resources.* functions; any other one fails as unlisted.
+            if (command_head(command) or "").startswith("resources.") \
+                    and command_head(command) in LITERALS_FUNCTIONS:
+                for problem in resource_operand_problems(command):
+                    report_new(*problem)
+        if rel == "layouts/baseof.html":
+            # Every block, template and partial (label partials aside) takes
+            # the page, the bare dot, outside with and range: a resource
+            # never becomes another template's dot (review3 3).
+            kw = keywords[0] if keywords else None
+            calls = []
+            if kw in ("block", "template") and pipeline.commands and pipeline.commands[0]:
+                command = pipeline.commands[0]
+                calls.append((tokens[0], command[1] if len(command) > 1 else None))
+            for command in pipeline_commands(pipeline):
+                if command_head(command) in LITERALS_PARTIAL_FUNCS \
+                        and not label_partial_call(command):
+                    calls.append((command[0], command[2] if len(command) > 2 else None))
+            for at, ctx in calls:
+                if not (isinstance(ctx, Token) and ctx.kind == "word" and ctx.text == ".") \
+                        or any(s in ("with", "range") for s in scope):
+                    report_new(at, "in baseof.html every block, template and partial "
+                               "takes the bare `.` (the page), outside with and range, "
+                               "so a resource never becomes its dot (L4, review3 3)")
+            if kw in ("with", "range", "if", "define", "block"):
+                scope.append(kw)
+            elif kw == "end" and scope:
+                scope.pop()
+        # label.html and label-list.html return labels and nothing else, so
+        # the label key a call hands them (a quiet position) never prints.
+        if (rel in LITERALS_LABELS_READERS and prints and not pipeline.declared
+                and not (first and command_head(first) in LITERALS_MESSAGE_FUNCS)
+                and not (keywords == ["return"] and len(tokens) == 2
+                         and tokens[1].kind == "word" and tokens[1].text == "$v")):
+            report_new(tokens[0], f"{rel} may print nothing but `return $v` (a value "
+                       "of data/labels.toml), so the label key a call passes never "
+                       "reaches the page (L4)")
+    if markup:
+        markup_page_problems(rel, bare, findings, holes)
+    return bare, holes
+
+
+def markup_page_problems(rel, bare, findings, holes=()):
+    """L1, L2 and the markup forms of L6 on a file read as HTML."""
+    forms, normalised = markup_form_problems(bare, Path(rel).suffix.lower() in HTML_SUFFIXES,
+                                             holes, rel)
+    for offset, problem in forms:
+        findings.add(f"{rel}:{line_of(bare, offset)}", problem)
+    page = LiteralsPage()
+    page.feed(normalised)
+    page.close()
+    for line, problem in page.problems:
+        findings.add(f"{rel}:{line}", f"{problem}; {LITERALS_FIX}")
+
+
+# L6: comment and marked-section forms that browsers and Python versions
+# read differently (html.parser changed its comment rules in 3.13 and 3.14,
+# and CI's python3 is the runner's). They fail closed, and are rewritten to
+# the form a browser reads before html.parser sees them: `<!-->` and
+# `<!--->` are empty comments, `--!>` ends one.
+ABRUPT_COMMENT = re.compile(r"<!---?>")
+
+
+# review7 A1: the end tag of a script, a style or a raw-text element of
+# LITERALS_RAWTEXT_ELEMENTS. A browser ends the element at `</name` before
+# whitespace, `/` or `>` (`</style x>`, `</style/>`); html.parser before the
+# 2025 HTML5 tag fix (vanilla CPython 3.12.3) ends script and style only at
+# `</` + optional Unicode whitespace + name (Unicode case folding) + optional
+# Unicode whitespace + `>`, and stays in script or style to the end of the
+# file otherwise. Every such end tag but the name plus optional ASCII
+# whitespace before `>` fails closed, and is rewritten to `</name>` before
+# html.parser sees it. A Unicode-case spelling (`</ſtyle>`) is rewritten to
+# itself: tag names count in ASCII case only, so it is no end tag of a
+# style, and the file fails here on it. The pattern is
+# wider than the browser (leading whitespace, Unicode case and whitespace),
+# so it also takes the end tags only the old html.parser ends at.
+RAWTEXT_END_TAG = re.compile(r"</\s*(%s)(?=[\s/>]|\Z)[^>]*+>?" % "|".join(
+    ("script", "style") + LITERALS_RAWTEXT_ELEMENTS), re.I)
+RAWTEXT_END_TAG_PLAIN = re.compile(r"</(%s)[\t\n\f\r ]*>" % "|".join(
+    ("script", "style") + LITERALS_RAWTEXT_ELEMENTS), re.I | re.A)
+
+
+def rawtext_end_tags(text):
+    """(offset, name, token) for every end tag of RAWTEXT_END_TAG that is not
+    the name plus optional ASCII whitespace before `>`."""
+    for match in RAWTEXT_END_TAG.finditer(text):
+        if not RAWTEXT_END_TAG_PLAIN.fullmatch(match.group(0)):
+            yield match.start(), match.group(1).lower(), match.group(0)
+
+
+def plain_end_tag(name, token):
+    """`</name>` for an end tag of rawtext_end_tags, padded with its newlines
+    and spaces to its length where it is long enough, so line numbers stay."""
+    plain = f"</{name.lower()}>" + "\n" * token.count("\n")
+    return plain + " " * max(0, len(token) - len(plain))
+
+
+def rawtext_end_tag_message(name, token):
+    return (f"end tag {show(token)}: a {name} end tag may hold only its name and "
+            "ASCII whitespace before '>'; browsers and html.parser versions end the "
+            "element in different places, so what follows is read two ways; fails "
+            "closed")
+
+
+DOCTYPE = re.compile(r"(?i)<!doctype\b[^>]*>?")
+
+
+def rawtext_spans(text, built=False):
+    """(name, tag offset, content start, content end) for every raw-text
+    element of LITERALS_RAWTEXT_ELEMENTS and every script and style, read as
+    a browser reads it in HTML: HTML comments skipped, every other tag
+    skipped whole with its attributes, the content running to `</name`
+    before whitespace, `/` or `>`, or to the end of the file; plaintext never
+    ends; script and style content skipped. This does not track svg and
+    math, where script and style are markup (review5 A1): the callers fail
+    every script or style whose content holds '<' (rule (i)) or read its
+    text (L1). A script or style start tag that ends in `/>` comes out as
+    `/script` or `/style` with an empty content (review5 1: both checks fail
+    it closed). built: a built page, where bogus comments are skipped too."""
+    pos = 0
+    while True:
+        match = RAWTEXT_SCAN.search(text, pos)
+        if not match:
+            return
+        token = match.group(0)
+        if token == "<!--":
+            close = text.find("-->", match.end())
+            pos = len(text) if close < 0 else close + 3
+            continue
+        if match.group(2) is None:  # a bogus comment opener
+            if not built:
+                pos = match.start() + 1
+            else:
+                close = text.find(">", match.start() + 2)
+                pos = len(text) if close < 0 else close + 1
+            continue
+        pos = match.end()
+        if match.group(1):  # an end tag: skipped whole
+            continue
+        name = match.group(2).translate(ASCII_LOWER)
+        if name in LITERALS_RAWTEXT_ELEMENTS:
+            end = len(text)
+            if name != "plaintext":
+                close = re.compile(r"</%s%s" % (name, TAG_END), re.I | re.A).search(text, pos)
+                if close:
+                    end = close.start()
+            yield name, match.start(), pos, end
+            pos = max(pos, end)
+            continue
+        if name in ("script", "style"):
+            if token.endswith("/>"):
+                yield "/" + name, match.start(), pos, pos
+                continue
+            close = re.compile(r"</%s%s" % (name, TAG_END), re.I | re.A).search(text, pos)
+            end = len(text) if close is None else close.start()
+            yield name, match.start(), pos, end
+            pos = end
+
+def rawtext_built_problems(text):
+    """Site rule (i) on a built HTML page (review3 5): no '<' in the text of a
+    <title> or <textarea> once entities are decoded, because markup there
+    shows as text, and none of the obsolete raw-text elements. Read with a
+    pattern, not html.parser, whose reading changed after CPython 3.12.3.
+    review4 1: any '<!--' fails closed, because browsers end a comment at
+    `-->`, `--!>`, `<!-->` or `<!--->` and read one inside a script in its
+    own way (the minifier leaves none); a <noscript> holding '<' fails
+    closed, because a browser without scripting reads its content as
+    markup. review5 1: a self-closed script or style fails closed. review5
+    A1: so does a script or style whose content holds '<': inside svg or
+    math a browser reads that content as markup, and this check does not
+    track svg and math, so it fails wherever the element is; for the same
+    reason any `<![CDATA[` fails (the minifier leaves none). review7 A1: an
+    end tag of RAWTEXT_END_TAG that is more than its name and ASCII
+    whitespace, and a script or style without an end tag, fail closed:
+    html.parser before the 2025 HTML5 tag fix reads past them to the end of
+    the page (the minifier writes neither)."""
+    problems = []
+    if "<!--" in text:
+        problems.append("(i) '<!--': a comment opener in a built page; browsers "
+                        "and this check could end it in different places, so it "
+                        "fails closed")
+    if "<![CDATA[" in text:
+        problems.append("(i) '<![CDATA[': text to ']]>' inside svg or math and a "
+                        "comment to '>' elsewhere, so this check and a browser could "
+                        "read what follows differently; fails closed")
+    for _, name, token in rawtext_end_tags(text):
+        problems.append(f"(i) {rawtext_end_tag_message(name, token)} (review7 A1)")
+    if any(name in ("script", "style") and end == len(text)
+           for name, _, _, end in rawtext_spans(text, built=True)):
+        problems.append("(i) an unterminated <script> or <style>: html.parser versions "
+                        "read its content to the end of the file differently; fails "
+                        "closed (review7 A1)")
+    for name, tag, start, end in rawtext_spans(text, built=True):
+        if name.startswith("/"):
+            problems.append(f"(i) <{name[1:]}/>: a self-closed {name[1:]}, raw text in "
+                            "HTML but markup inside <svg>; fails closed")
+        elif name in ("script", "style"):
+            if "<" in text[start:end]:
+                problems.append(f"(i) <{name}> content holds '<': markup to a browser "
+                                "inside svg or math, which this check does not track; "
+                                "fails closed")
+        elif name in ("title", "textarea", "noscript", "iframe"):
+            if "<" in html.unescape(text[start:end]):
+                problems.append(f"(i) <{name}> text holds '<': markup there shows as "
+                                "text" + (" or, without scripting, is read as markup"
+                                          if name == "noscript" else ""))
+        elif name in ("xmp", "plaintext", "noembed", "noframes"):
+            problems.append(f"(i) <{name}>: an obsolete raw-text element, whose "
+                            "markup shows as text")
+    return problems
+
+
+def markup_form_problems(bare, html_page=True, holes=(), rel=""):
+    """([(offset, message)], text normalised as a browser reads it).
+    html_page: an HTML file, where `<!doctype html>` is the one DOCTYPE.
+    holes: the offsets of the blanked actions; rel: the file."""
+    problems = []
+    # review7 A1: every end tag of a script, a style or a raw-text element
+    # that is more than its name and ASCII whitespace fails closed and is
+    # rewritten to `</name>` (its newlines kept after it) before anything
+    # else reads the file, so the old and the patched html.parser end the
+    # element at the same place.
+    for offset, name, token in rawtext_end_tags(bare):
+        problems.append((offset, rawtext_end_tag_message(name, token) + " (L6, review7 A1)"))
+    bare = RAWTEXT_END_TAG.sub(lambda m: m.group(0) if RAWTEXT_END_TAG_PLAIN.fullmatch(
+        m.group(0)) else plain_end_tag(m.group(1), m.group(0)), bare)
+    # An internal DTD subset declares entities that an XML parser (an SVG or
+    # XML file opened on its own) expands into text, while html.parser keeps
+    # it inside the declaration: any DOCTYPE but the HTML one and any
+    # <!ENTITY fail closed (review2 4).
+    for match in DOCTYPE.finditer(bare):
+        # review5 A3: HTML whitespace and ASCII case only, as the tokenizer
+        # reads it (a no-break space makes another DOCTYPE name).
+        if not (html_page and re.fullmatch(r"<!doctype[\t\n\f\r ]+html[\t\n\f\r ]*>",
+                                           match.group(0), re.I | re.A)):
+            problems.append((match.start(), f"DOCTYPE {show(match.group(0))}: only "
+                             "`<!doctype html>` in an HTML file; any other, an internal "
+                             "subset above all, can declare entities an XML parser "
+                             "expands into text this check never reads; fails closed "
+                             "(L6)"))
+    # Raw-text elements (review3 5), read by this check, not by html.parser,
+    # whose reading of title and textarea changed after CPython 3.12.3. A
+    # flagged content is blanked before the parse, so the findings do not
+    # depend on the runner's Python either.
+    blank, closed = [], []
+    for name, tag, start, end in rawtext_spans(bare):
+        if name in ("script", "style"):
+            continue  # L1 reads their text
+        if name.startswith("/"):
+            closed.append(start - 2)
+            problems.append((tag, f"<{name[1:]}/>: a self-closed {name[1:]} is raw text "
+                             "in HTML but markup inside <svg>, so what follows is read "
+                             "two ways; fails closed (L6, review5 1)"))
+        elif name == "plaintext":
+            blank.append((start, end))
+            problems.append((tag, "<plaintext>: everything after it is text to the "
+                             "browser, to the end of the file; fails closed (L6, "
+                             "review3 5)"))
+        elif "<" in bare[start:end]:
+            blank.append((start, end))
+            problems.append((tag, f"<{name}> holds '<': its content is text to the "
+                             "browser, so markup there shows as text, and html.parser "
+                             "versions read it differently; fails closed (L6, review3 5)"))
+        elif any(start <= h < end for h in holes) and not (
+                rel == "layouts/baseof.html" and name == "title"):
+            problems.append((tag, f"<{name}> holds a template action: whatever it "
+                             "prints, markup included, shows as text; only the <title> "
+                             "of baseof.html holds one (L6, review3 5)"))
+    for match in re.finditer(r"(?i)<!entity", bare):
+        problems.append((match.start(), "an <!ENTITY declaration: an XML parser expands "
+                         "it into text this check never reads; fails closed (L6)"))
+    for match in ABRUPT_COMMENT.finditer(bare):
+        problems.append((match.start(), f"abrupt comment {match.group(0)!r}: browsers "
+                         "end the comment there, older html.parser versions do not; "
+                         "fails closed (L6)"))
+    for match in re.finditer(r"--!>", bare):
+        problems.append((match.start(), "'--!>' ends a comment in browsers but not in "
+                         "every html.parser version; fails closed (L6)"))
+    for match in re.finditer(r"<!\[", bare):
+        problems.append((match.start(), "marked section '<![' (CDATA): browsers and "
+                         "html.parser versions read its text differently, and Hugo's "
+                         "minifier can print it; fails closed (L6)"))
+    read = bare
+    for start, end in blank:
+        read = read[:start] + re.sub(r"[^\n]", " ", read[start:end]) + read[end:]
+    # A self-closed script or style (failed above) gets a space before its
+    # `/>`: html.parser before the 2025 fix reads `<style x=a/>` as
+    # self-closed, later ones as `x="a/"` and a style. html.parser 3.14.8
+    # reads `<style x=a />` as self-closed, but `<script x= />` as a script
+    # start tag with x="/" and what follows as script text (review 9 A3);
+    # vanilla 3.12.3 reads it differently, and the findings of such a file
+    # can differ between the two. The file already fails above.
+    for offset in sorted(closed, reverse=True):
+        read = read[:offset] + " " + read[offset:]
+    # A script or style with no end tag: html.parser before the 2025 fix
+    # drops its content at the end of the file, later ones read it as text.
+    # It fails closed, and the end tag is added, so L1 reads the content.
+    for name, tag, start, end in rawtext_spans(read):
+        if name in ("script", "style") and end == len(read):
+            problems.append((tag, f"unterminated <{name}>: html.parser versions read "
+                             "its content to the end of the file differently; fails "
+                             "closed (L6, review7 A1)"))
+            read += f"</{name}>"
+            break
+    text = ABRUPT_COMMENT.sub("<!---->", read).replace("--!>", "-->")
+    pos = 0
+    while True:
+        start = text.find("<!--", pos)
+        if start < 0:
+            break
+        end = text.find("-->", start + 4)
+        if end < 0:
+            problems.append((start, "unterminated HTML comment: what follows it is "
+                             "read differently by browsers and html.parser; fails "
+                             "closed (L6)"))
+            # Blanked, so html.parser never reads it (vanilla CPython
+            # 3.12.3 reads it as text).
+            text = text[:start] + re.sub(r"[^\n]", " ", text[start:])
+            break
+        pos = end + 3
+    return problems, text
+
+
+def cmd_literals(args):
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        raise UsageError(f"--root {root} is not a directory")
+    findings = Findings()
+    counts = {"layouts": 0, "other": 0, "actions": 0, "literals": 0}
+    # The names `define` and `block` give: the only names `template` may call.
+    defines = set()
+    for path in sorted((root / "layouts").rglob("*")) if (root / "layouts").is_dir() else []:
+        if path.is_file():
+            try:
+                defines.update(re.findall(r"\{\{-?\s*(?:define|block)\s+\"([^\"]+)\"",
+                                          path.read_text(encoding="utf-8")))
+            except (OSError, UnicodeDecodeError):
+                pass  # the scan below reports it
+    for top in ("layouts", "assets", "static"):
+        base = root / top
+        if not base.is_dir():
+            continue
+        for path in sorted(p for p in base.rglob("*") if p.is_file()):
+            rel = path.relative_to(root).as_posix()
+            suffix = path.suffix.lower()
+            if top != "layouts" and suffix in RASTER_SUFFIXES:
+                # An image can draw text that no check reads. None exists
+                # today; the first one comes with its own review rule.
+                findings.add(rel, "a raster image: it can draw text this check "
+                             "cannot read, so it fails closed until an image rule "
+                             "exists (L6)")
+                continue
+            if top == "static" and suffix not in MARKUP_SUFFIXES | {".css"}:
+                # robots.txt included (A2): M6 adds it with its own rule.
+                findings.add(rel, "a static file this check cannot read for copy "
+                             "(script, plain text, any type but HTML, SVG, XML and "
+                             "CSS); the browser can still show or run it, so it fails "
+                             "closed (L6)")
+                continue
+            counts["layouts" if top == "layouts" else "other"] += 1
+            try:
+                text = path.read_bytes().decode("utf-8")
+            except UnicodeDecodeError:
+                findings.add(rel, "not UTF-8 (L6); the check cannot read it, so it "
+                             "fails closed")
+                continue
+            except OSError as exc:
+                findings.add(rel, f"cannot read: {exc}")
+                continue
+            if top == "static":
+                # Copied as is, never run as a template.
+                bare, holes = text, []
+                if suffix != ".css":
+                    markup_page_problems(rel, text, findings)
+            else:
+                bare, holes = template_literal_problems(
+                    rel, text, findings, counts, suffix != ".css", root, defines,
+                    css=suffix == ".css")
+            if suffix == ".css":
+                for offset, problem in css_text_problems(bare, holes):
+                    findings.add(f"{rel}:{line_of(bare, offset)}",
+                                 f"{problem}; {LITERALS_FIX}")
+    # L4 (review3 6): a shortcode in content prints template output. The
+    # embedded `param` falls back to site params, so `{{< param csp >}}`
+    # would print the CSP as page text; content may call exactly the two
+    # forms it uses, for the D1 params.
+    content = root / "content"
+    for path in sorted(p for p in content.rglob("*") if p.is_file()) if content.is_dir() else []:
+        rel = path.relative_to(root).as_posix()
+        text = path.read_bytes().decode("utf-8", errors="replace")
+        for match in SHORTCODE_OPEN.finditer(text):
+            if not CONTENT_SHORTCODE.match(text, match.start()):
+                findings.add(f"{rel}:{line_of(text, match.start())}",
+                             f"shortcode {show(text[match.start():match.start() + 40].split(chr(10))[0])}: "
+                             "content may call only `{{< param operator >}}` and "
+                             "`{{< param contact >}}`; any other shortcode prints template "
+                             "or config output (params.csp through `param`) that no copy "
+                             "check reads (L4, review3 6)")
+    return findings.report(
+        f"literals checked: {counts['layouts']} layout files, {counts['actions']} "
+        f"actions, {counts['literals']} literals; {counts['other']} asset and static "
+        "files")
+
+
+# ---------------------------------------------------------------------------
 # Reflow at 320 CSS px (ADR-0003 part 6), CI only. The runner's Google Chrome
 # runs headless and is driven over --remote-debugging-pipe: the DevTools
 # protocol as NUL-separated JSON on file descriptors 3 (commands in) and 4
@@ -3948,14 +5863,12 @@ REFLOW_HEIGHT = 640
 # attempt alone outlasts the longest stall seen, at most 70.3 s (PR 5 job
 # 20, image 20261101), so it is absorbed whether a killed Chrome keeps its
 # progress, the stall lies outside the VM, or only a fresh Chrome helps.
-# Upper bound: the 7-minute workflow cap holds the slowest green run of PR
-# 4 (181 s), the reflow-launch self-test cases it did not have yet (15.4 s:
-# 13.4 s in CI for the first six, at most 2 s for default-budget,
-# log-dir-fallback and first-answer-deadline together), a fully used
-# window (2 x L) and one more 70 s stall, so L is at most 76.8 s; 75 s
-# leaves 3.6 s of the cap. Below 71 s job 20's shape depends on a restart
-# helping again; above 76.8 s an absorbed window plus a second stall is
-# cancelled at 7 minutes.
+# Upper bound: the 9-minute workflow cap (re-derived in M3 PR 7 fix round
+# 2, ADR-0004 Numbers) holds the slowest stall-free green run of that PR
+# (245 s), a fully used window (2 x L) and one more 70 s stall, so L is at
+# most 112.5 s; 75 s leaves 75 s of the cap. Below 71 s job 20's shape
+# depends on a restart helping again; above 112.5 s an absorbed window plus
+# a second stall is cancelled at 9 minutes.
 REFLOW_LAUNCH_TIMEOUT = 75
 # The budget of every later answer (ADR-0003 Numbers). A 23-page call makes
 # about 70 page-level calls in 1.9 to 2.8 s on the runner, and no later call
@@ -4893,6 +6806,47 @@ PAGES_RULES = [
     (re.compile(r"(?i)(?<![\w-])write-all(?![\w-])"), "permissions: write-all"),
 ]
 HUGO_PRIVACY = ("disqus", "googleAnalytics", "instagram", "vimeo", "x", "youtube")
+# Closed world for hugo.toml (fix round 2, review2 2): every key it may set,
+# with the value it has today; a missing key keeps Hugo's default. Any other
+# key fails, so config that prints on a page (the goldmark typographer
+# quotes and footnote backlinks, [sitemap], outputFormats, menus,
+# copyright, cascade, ...) cannot appear without a guard change. The
+# identity keys title, params.operator and params.contact (copy, D1) and
+# params.csp (the CSP, checked by site) take any string.
+HUGO_CONFIG_PINNED = {
+    "baseURL": "https://interviewscam.com/",
+    "locale": "en",
+    "disableKinds": ["taxonomy", "term", "rss"],
+    "disableHugoGeneratorInject": True,
+    "refLinksErrorLevel": "ERROR",
+    "markup.goldmark.renderer.unsafe": False,
+    "markup.goldmark.extensions.linkify": False,
+    "markup.highlight.noClasses": False,
+    "security.exec.allow": ["none"],
+    "security.http.urls": ["none"],
+    **{f"privacy.{key}.disable": True for key in HUGO_PRIVACY},
+}
+HUGO_CONFIG_STRINGS = ("title", "params.operator", "params.contact", "params.csp")
+# The HUGO_* environment variables the build may see: this repo's own tool
+# variables (tools/pins.env, tools/fetch-tools.sh), which Hugo maps to no
+# config key. Any other one (HUGO_TITLE, HUGO_PARAMS_OPERATOR,
+# HUGO_MARKUP_..., HUGO_ENVIRONMENT) overrides config without touching
+# hugo.toml, so it fails, in the guard's environment and in the text of a
+# workflow or tools/ script. Hugo reads every name that starts with HUGO and
+# takes the next character as the key delimiter, so HUGOxTITLE and
+# HUGO.TITLE set the title too (review3 A2, measured with the pinned Hugo),
+# and so do HUGO:TITLE and HUGO TITLE (review4 A2), and HUGO::TITLE and
+# HUGO::PARAMS:OPERATOR (review5 A2: Hugo cuts the first character after HUGO
+# as the delimiter and turns every further one into a key dot). The text scan
+# takes HUGO, then either a run of letters, digits, '_', '.' and '-' that ends
+# in a letter or digit, or one delimiter character d (any other but a newline
+# or '=') and a run of letters, digits, '_' and d that ends in a letter or
+# digit.
+# hugo_build in check.sh refuses the same names at run time, where no text
+# scan reaches (`export "HUGO_""TITLE=..."`).
+HUGO_ENV_ALLOWED = ("HUGO_BIN", "HUGO_VERSION", "HUGO_URL", "HUGO_SHA256")
+HUGO_ENV_NAME = re.compile(r"(?<![A-Za-z0-9_])HUGO(?:[A-Za-z0-9_.-]*[A-Za-z0-9]"
+                           r"|([^A-Za-z0-9_.\n=-])(?:\1|[A-Za-z0-9_])*[A-Za-z0-9])")
 ROOT_CONFIG = re.compile(r"(?i)(?:hugo|config)\.(?:toml|ya?ml|json)")
 
 
@@ -5016,6 +6970,31 @@ def guard_hugo_config(root, hugo_bin, findings):
             findings.add(where, f"must be {json.dumps(wanted)}, is "
                                 f"{json.dumps(actual)} ({why})")
 
+    def flatten(table, prefix=""):
+        for key, value in table.items():
+            if isinstance(value, dict) and value:
+                yield from flatten(value, f"{prefix}{key}.")
+            else:
+                yield f"{prefix}{key}", value
+
+    for key, value in flatten(source):
+        if key in HUGO_CONFIG_STRINGS:
+            if not isinstance(value, str):
+                findings.add(f"hugo.toml: {key}", f"must be a string, is {json.dumps(value)}")
+        elif key not in HUGO_CONFIG_PINNED:
+            findings.add(f"hugo.toml: {key}", "is not on the guard's list of hugo.toml "
+                         "keys (HUGO_CONFIG_PINNED); config such as typographer quotes, "
+                         "[sitemap] or outputFormats can print on a page, so a new key "
+                         "comes with its own guard rule (review2 2)")
+        else:
+            expect(f"hugo.toml: {key}", value, HUGO_CONFIG_PINNED[key],
+                   "the value pinned in HUGO_CONFIG_PINNED")
+    for name in sorted(os.environ):
+        if name.startswith("HUGO") and name not in HUGO_ENV_ALLOWED:
+            findings.add(f"environment: {name}", "a HUGO_* variable overrides the Hugo "
+                         "config without touching hugo.toml; only "
+                         f"{', '.join(HUGO_ENV_ALLOWED)} may be set (review2 2)")
+
     expect("hugo.toml: security.exec.allow", dig(source, "security", "exec", "allow"),
            ["none"], "ADR-0001, D3")
     expect("hugo.toml: security.http.urls", dig(source, "security", "http", "urls"),
@@ -5096,16 +7075,61 @@ def guard_hugo_config(root, hugo_bin, findings):
         mounts = []
     for mount in mounts:
         target = str(dig(mount, "target") or "").strip("/")
+        origin = str(dig(mount, "source") or "").strip("/")
         if target == "content" or target.startswith("content/"):
             if dig(mount, "source") != "content" or target != "content":
                 findings.add(where, f"content mount {json.dumps(mount)}: every "
                                     "content mount must be source \"content\" to "
                                     "target \"content\" (the records check reads "
                                     "only content/)")
+        elif origin != target:
+            # A layouts, assets, static, data or i18n mount from another
+            # directory (or layoutDir, staticDir, ... set elsewhere) builds
+            # files that sitecheck literals never reads and the fixture
+            # build never copies (M3 PR 7 review).
+            findings.add(where, f"mount {json.dumps(mount)}: every mount must read "
+                                "the directory it targets (source equal to target); "
+                                "sitecheck literals and the fixture build read only "
+                                "those")
+    # Git data is a copy source no check reads (.GitInfo prints commit
+    # subjects), and the fixture build has no .git; Hugo omits false.
+    gitinfo = effective.get("enablegitinfo")
+    if gitinfo not in (None, False):
+        findings.add(where, f"enableGitInfo is {json.dumps(gitinfo)}, must be false or "
+                            "absent (commit data would be page copy outside "
+                            "data/labels.toml)")
     csp = dig(source, "params", "csp")
     if dig(effective, "params", "csp") != csp:
         findings.add(where, "params.csp differs from params.csp in hugo.toml "
                             "(the single source of the CSP, D9)")
+    # The identity keys print on every page; the effective value must be
+    # the one the content-PR rule reviews in hugo.toml (review2 2).
+    for path in (("title",), ("params", "operator"), ("params", "contact")):
+        if dig(effective, *path) != dig(source, *path):
+            findings.add(where, f"{'.'.join(path)} differs from hugo.toml (an "
+                         "environment variable or another config source changes "
+                         "copy, D1)")
+
+
+def guard_hugo_env_names(root, files, findings):
+    """No HUGO_* name outside HUGO_ENV_ALLOWED in a workflow or a tools/
+    script (review2 2): a workflow env line or an export in check.sh would
+    change the config every build reads."""
+    for rel in files:
+        if not (rel.startswith(".github/workflows/") or (
+                rel.startswith("tools/") and rel != "tools/sitecheck.py")):
+            continue
+        try:
+            text = (root / rel).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            findings.add(rel, f"cannot read: {exc}")
+            continue
+        for n, line in enumerate(text.splitlines(), 1):
+            for match in HUGO_ENV_NAME.finditer(line):
+                if match.group(0) not in HUGO_ENV_ALLOWED:
+                    findings.add(f"{rel}:{n}", f"{match.group(0)}: a HUGO_* variable "
+                                 "overrides the Hugo config without touching hugo.toml; "
+                                 f"only {', '.join(HUGO_ENV_ALLOWED)} (review2 2)")
 
 
 def same_json(a, b):
@@ -5386,6 +7410,7 @@ def cmd_guard(args):
     guard_package_files(files, findings)
     guard_tool_invocations(root, files, findings)
     guard_hugo_config(root, hugo_bin, findings)
+    guard_hugo_env_names(root, files, findings)
     guard_workflows(root, files, findings)
     guard_lighthouse_workflow(root, files, findings)
     n_workflows = sum(f.startswith(".github/workflows/") for f in files)
@@ -5427,6 +7452,9 @@ def main(argv):
     p = sub.add_parser("tokens")
     p.add_argument("--root", default=".")
     p.set_defaults(func=cmd_tokens)
+    p = sub.add_parser("literals")
+    p.add_argument("--root", default=".")
+    p.set_defaults(func=cmd_literals)
     p = sub.add_parser("reflow")
     p.add_argument("--chrome", required=True)
     # Self-test only: check.sh never passes it, so CI keeps

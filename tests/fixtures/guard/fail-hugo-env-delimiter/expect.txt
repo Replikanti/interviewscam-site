@@ -1,0 +1,1 @@
+environment: HUGOxTITLE: a HUGO_* variable overrides the Hugo config

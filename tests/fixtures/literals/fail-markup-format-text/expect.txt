@@ -1,0 +1,1 @@
+string literal '<p>Note %s</p>' is copy (L3)

@@ -6,20 +6,20 @@
   scrolling or clipping (ADR-0003 part 6).
 
   A hash links only to the lookup pages its listed_on names (ADR-0004
-  part 9), never to a file. The two URL forms are the constants below. */ -}}
+  part 9), never to a file. The two URL forms are the constants below.
+  The groups, their order and headings come from artifact_group in
+  data/labels.toml, through label-list.html. */ -}}
 {{- $lookups := dict
   "malwarebazaar" "https://bazaar.abuse.ch/sample/%s/"
   "virustotal" "https://www.virustotal.com/gui/file/%s"
 -}}
-{{- $groups := hugo.Data.labels.artifact_group -}}
-{{- if not $groups }}{{ errorf "artifacts.html: data/labels.toml has no artifact_group list" }}{{ end -}}
+{{- $groups := partial "label-list.html" (dict "key" "artifact_group" "fields" (slice "key" "heading")) -}}
 {{- $artifacts := .Params.artifacts -}}
 <section class="card" aria-labelledby="artifacts">
-<h2 id="artifacts">Artifacts</h2>
+<h2 id="artifacts">{{ partial "label.html" "report.artifacts" }}</h2>
 {{- range $groups }}
 {{- $key := .key }}
 {{- $heading := .heading }}
-{{- if not (and $key $heading) }}{{ errorf "artifacts.html: an artifact_group in data/labels.toml lacks its key or heading" }}{{ end }}
 {{- with index $artifacts $key }}
 <h3>{{ $heading }}</h3>
 <ul class="artifact-list">
@@ -32,8 +32,8 @@
 {{- else if eq $key "sha256" -}}
 {{- $hash := .value -}}
 <code class="artifact">{{ $hash }}</code>
-{{- with .file_name }}<span class="artifact-meta">File name</span><code class="artifact">{{ . }}</code>{{ end -}}
-<span class="artifact-meta">Look up</span><ul class="lookup-links">
+{{- with .file_name }}<span class="artifact-meta">{{ partial "label.html" "report.file_name" }}</span><code class="artifact">{{ . }}</code>{{ end -}}
+<span class="artifact-meta">{{ partial "label.html" "report.look_up" }}</span><ul class="lookup-links">
 {{- range .listed_on }}<li><a href="{{ printf (index $lookups .) $hash }}">{{ partial "label.html" (printf "lookup.%s" .) }}</a></li>{{ end -}}
 </ul>
 {{- else -}}

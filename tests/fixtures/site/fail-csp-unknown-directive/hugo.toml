@@ -1,0 +1,2 @@
+[params]
+csp = "default-src 'self'; Send 'none'; your 'none'; seed 'none'; phrase 'none'"

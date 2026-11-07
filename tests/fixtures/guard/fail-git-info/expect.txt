@@ -1,0 +1,1 @@
+enableGitInfo is true, must be false or absent

@@ -1,0 +1,1 @@
+static/extra.html:2: text 'Extra page' outside template actions (L1)

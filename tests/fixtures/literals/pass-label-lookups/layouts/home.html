@@ -1,0 +1,21 @@
+{{ define "main" }}
+{{- if not .Title }}{{ errorf "home.html: The Page %q Has No Title" .Path }}{{ end }}
+{{- with where site.RegularPages "Section" "reports" }}
+<ul>
+{{- range sort . "Date" "desc" }}
+<li>{{ .Title }} <time datetime="{{ .Date.Format "2006-01-02" }}">{{ time.Format "2006-01-02" .Date }}</time></li>
+{{- end }}
+</ul>
+{{- end }}
+{{- $names := where (where site.RegularPages "Section" "reports") "Params.campaign.slug" "example" }}
+{{- $h := cond (eq .Kind "home") "h2" "h3" }}
+{{ printf `<%s id="%s">%s</%s>` $h .Section (partial "label.html" "home.latest") $h | safeHTML }}
+{{ printf `<ul><li aria-current="page">%s</li></ul>` (partial "label.html" "home.current") | safeHTML }}
+{{ partial "jsonld.html" . }}
+<p>{{ range $i, $x := .Params.list }}{{ if $i }}, {{ end }}{{ $x }}{{ end }}</p>
+{{- range partial "label-list.html" (dict "key" "checklist.warning" "fields" (slice "title")) }}
+<p class="item-title">{{ .title }}</p>
+{{- end }}
+<a href="{{ "/before-your-call/#already-ran" | absURL }}">{{ partial "label.html" "home.already_ran" }}</a>
+<p>{{ partial "icon.html" "search" }} &#183; &amp; ({{ .Params.x }}) · {{ .Params.y }}</p>
+{{ end }}

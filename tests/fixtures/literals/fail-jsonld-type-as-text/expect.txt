@@ -1,0 +1,1 @@
+layouts/page.html:2: text 'WebPage' outside template actions (L1)

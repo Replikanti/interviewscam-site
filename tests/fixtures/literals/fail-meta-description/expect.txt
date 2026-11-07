@@ -1,0 +1,1 @@
+visible attribute content='A registry' (L2)

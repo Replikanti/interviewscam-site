@@ -1,12 +1,117 @@
-# The fixed wording of the record pages (ADR-0004, SPEC section 5), the
-# single source for the templates under layouts/. The D6, D7 and D10 strings
-# are pinned a second time, independently, as constants in tools/sitecheck.py
-# (the render check), so a copy change here turns `render` red until the same
-# change lands there too and shows up in a safety-net diff (ADR-0004
-# Consequences). Read through hugo.Data.labels, never .Site.Data.
+# Every fixed public string of the templates under layouts/ (ADR-0004 part
+# 13, SPEC section 5): the site chrome, the static and record page parts, the
+# record wording and the checklist. A copy change is therefore a diff of this
+# file, which the operator reviews as content (D7), and `sitecheck literals`
+# fails on copy written anywhere else in the templates. The D6, D7 and D10
+# strings are pinned a second time, independently, as constants in
+# tools/sitecheck.py (the render check), so a change to them turns `render`
+# red until the same change lands there too and shows up in a safety-net
+# diff (ADR-0004 Consequences). Read only through
+# layouts/_partials/label.html (one string) and label-list.html (a list of
+# tables), never through .Site.Data.
 #
 # Strings with %s or %d are printf formats: the template fills in the name,
-# the count or the date, in that order.
+# the count or the date, in that order. Templates print every string through
+# Hugo's HTML escaping, so a string here is plain text, never markup.
+
+# The site itself. description is the <meta name="description"> of every
+# page without its own description front matter (SPEC section 8: the
+# Lighthouse SEO category).
+[site]
+description = "A community registry of fake job-interview scams that target developers."
+skip_link = "Skip to content"
+
+# The header on every page: the wordmark (name and its ".com" part), the one
+# call to action and the main nav.
+[header]
+brand = "interviewscam"
+brand_tld = ".com"
+cta = "Report a scam"
+nav_label = "Main"
+nav_before_your_call = "Before your call"
+nav_methodology = "Methodology"
+nav_about = "About"
+
+# The footer on every page. run_by comes before the operator's name
+# (params.operator in hugo.toml, D1).
+[footer]
+run_by = "Run by"
+nav_label = "Site"
+methodology = "Methodology"
+corrections = "Corrections and removal"
+privacy = "Privacy"
+promise = "No trackers, no cookies, no third-party scripts."
+
+# The 404 page. title is the h1 and, with " · interviewscam.com", the
+# <title>.
+[not_found]
+title = "Page not found"
+text = "There is no page at this address."
+home_link = "Go to the home page"
+report_link = "Report a scam"
+
+# Home. title is the h1 and, with " · interviewscam.com", the <title>.
+[home]
+title = "Check a name from your interview invite"
+lead = "Got a meeting link or a coding test from a recruiter you do not know? Look up the company, the app or the domain before you install or run anything."
+search_label = "Company, app, domain or recruiter"
+search_button = "Check"
+checklist_heading = "Before your call"
+checklist_link = "The full checklist"
+already_ran_link = "Already ran it? What to do now"
+latest_heading = "Latest reports"
+latest_link = "All names"
+families_heading = "Campaign families"
+families_link = "All campaign families"
+
+# How to send a report or a correction request today
+# (layouts/_partials/how-to-send.html): the address as plain text and the
+# fixed subject line of each channel.
+[how_to_send]
+heading = "How to send it"
+address = "Email address"
+subject = "Subject line"
+
+[how_to_send.subjects]
+report = "Report: <name of the company, app or person>"
+correction = "Correction: <page URL>"
+
+# The breadcrumb of record and section pages: the label of its <nav> and the
+# first item, in the nav and in the BreadcrumbList.
+[breadcrumb]
+nav_label = "Breadcrumb"
+home = "Home"
+
+# Parts that report and campaign pages share.
+[record]
+also_seen_as = "Also seen as:"
+first_seen = "First seen"
+last_seen = "Last seen"
+what_happened = "What happened"
+sources = "Sources"
+
+# Report pages (layouts/reports/page.html and its partials).
+[report]
+corrections_link = "Corrections and removal"
+warning_heading = "What to do now"
+warning_text = "If you were sent code, a repository or an app to run as part of an interview like this, do not install or run it."
+warning_before_link = "What to do before your call"
+warning_already_ran_link = "Already ran it? What to do now"
+last_reviewed = "Last reviewed"
+evidence = "Evidence reviewed"
+what_was_checked = "What was checked"
+related = "Related names"
+artifacts = "Artifacts"
+file_name = "File name"
+look_up = "Look up"
+
+# Campaign pages (layouts/campaigns/page.html).
+[campaign]
+delivery = "Delivery"
+targeted_os = "Targeted systems"
+steals = "What it steals"
+attribution = "Attribution"
+names = "Names this family used"
 
 # The two D6 states: the chip (neutral blue, chip_text on chip_bg, never
 # orange) and the sentence under the h1 of a report page.
@@ -141,3 +246,80 @@ terminal_command = "Terminal command"
 windows = "Windows"
 macos = "macOS"
 linux = "Linux"
+
+# The "before your call" checklist (SPEC section 6), the single source for
+# Home (titles only) and Before your call (titles and details), read through
+# layouts/_partials/label-list.html. Plain text, no Markdown and no links:
+# templates render it as text. The facts come from SPEC section 1; no entry
+# names a company.
+#
+# The three headings, then the lists:
+# [[checklist.warning]]      warning signs, shown with an orange warning tile
+# [[checklist.instead]]      what to do instead, shown with a blue check tile
+# [[checklist.already_ran]]  steps in the "if you already ran it" warning
+#                            panel
+# Each entry: `title` (required) and `detail` (optional, one paragraph).
+[checklist]
+warning_heading = "Warning signs"
+instead_heading = "Do this instead"
+already_ran_heading = "If you already ran it"
+
+[[checklist.warning]]
+title = "The meeting link arrives minutes before the call"
+detail = "A link sent at the last moment leaves you no time to check the app or the company."
+
+[[checklist.warning]]
+title = "The call needs a meeting app you have never heard of"
+detail = "The invite points to a new platform that wants you to download its own app. These apps change their name often, so a new name with no reports is no sign of safety."
+
+[[checklist.warning]]
+title = "You are asked to run a repo or a command"
+detail = "A take-home coding test you must clone and run, or a command to paste into a terminal, can install an info-stealer. Some of these tests are written in JavaScript or Python, so Linux is at risk too."
+
+[[checklist.warning]]
+title = "There are installers only for Windows and macOS"
+detail = "The Linux download is missing or does not work, or it serves the Windows build."
+
+[[checklist.instead]]
+title = "Ask to move the call to a tool you already use"
+detail = "A real recruiter can switch to a meeting tool you already have, or to one that runs in the browser."
+
+[[checklist.instead]]
+title = "Search the company, the app and the domain first"
+detail = "Look them up here and in a search engine before you install or run anything. A company with no footprint at all is a warning sign too."
+
+[[checklist.instead]]
+title = "Run test code only in a throwaway virtual machine"
+detail = "Never on the computer that holds your passwords, wallets or SSH keys. Use a new virtual machine with no shared folders, no shared clipboard, no forwarded SSH agent and no accounts you care about signed in. Delete it afterwards."
+
+[[checklist.instead]]
+title = "Take your time"
+detail = "Pressure to install something right now is part of how these scams work. A real interviewer can wait while you check."
+
+[[checklist.already_ran]]
+title = "Disconnect the computer from the network"
+detail = "Keep it offline and do not sign in to anything on it."
+
+[[checklist.already_ran]]
+title = "From another device, change your passwords and end your sessions"
+detail = "Start with email, GitHub, your password manager and Telegram. Sign out of every active session, because a stolen session works without the password."
+
+[[checklist.already_ran]]
+title = "Move funds from any wallet that computer could reach"
+detail = "Send them to a new wallet created on a clean device."
+
+[[checklist.already_ran]]
+title = "Revoke SSH keys and API tokens"
+detail = "Create new ones on a clean device."
+
+[[checklist.already_ran]]
+title = "Write down what you ran"
+detail = "With the computer still offline, note the names and SHA-256 hashes of the files you ran or installed. Keep the messages, the meeting link and the repository or package name. The Report a scam page shows how to get a hash."
+
+[[checklist.already_ran]]
+title = "Report the invite"
+detail = "Send what you noted from another device. Your report helps the next candidate who gets the same invite."
+
+[[checklist.already_ran]]
+title = "Reinstall the operating system"
+detail = "Wait only until the file names and hashes are written down on paper or on another device. You do not need to send the report first. Do not use the computer for anything else until it is reinstalled."

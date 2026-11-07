@@ -1,0 +1,1 @@
+hugo.toml: sitemap.changeFreq: is not on the guard's list of hugo.toml keys

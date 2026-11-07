@@ -1,11 +1,11 @@
-{{ define "title" }}Page not found · {{ site.Title }}{{ end }}
+{{ define "title" }}{{ partial "label.html" "not_found.title" }} · {{ site.Title }}{{ end }}
 {{ define "main" }}
 <div class="card">
-<h1>Page not found</h1>
-<p>There is no page at this address.</p>
+<h1>{{ partial "label.html" "not_found.title" }}</h1>
+<p>{{ partial "label.html" "not_found.text" }}</p>
 <ul class="link-list">
-<li><a href="{{ "/" | relURL }}">Go to the home page</a></li>
-<li><a href="{{ "/report-a-scam/" | relURL }}">Report a scam</a></li>
+<li><a href="{{ "/" | relURL }}">{{ partial "label.html" "not_found.home_link" }}</a></li>
+<li><a href="{{ "/report-a-scam/" | relURL }}">{{ partial "label.html" "not_found.report_link" }}</a></li>
 </ul>
 </div>
 {{ end }}

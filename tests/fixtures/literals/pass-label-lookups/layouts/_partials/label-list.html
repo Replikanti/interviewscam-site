@@ -1,0 +1,5 @@
+{{- /* Fixture stand-in for label-list.html: reads data/labels.toml. */ -}}
+{{- $v := hugo.Data.labels -}}
+{{- range split .key "." }}{{ $v = index $v . }}{{ end -}}
+{{- if not $v }}{{ errorf "label-list.html: data/labels.toml has no list at %q" .key }}{{ end -}}
+{{- return $v -}}

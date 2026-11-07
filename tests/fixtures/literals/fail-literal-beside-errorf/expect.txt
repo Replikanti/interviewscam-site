@@ -1,0 +1,1 @@
+string literal '%s Note' is copy (L3)

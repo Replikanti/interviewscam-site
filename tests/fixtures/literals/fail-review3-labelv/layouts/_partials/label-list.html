@@ -1,0 +1,30 @@
+{{- /* One list of tables of data/labels.toml by its dotted key, for example
+  "artifact_group" or "checklist.warning" (ADR-0004 part 13). Called with a
+  dict and returns the list:
+    key     the dotted key
+    fields  the keys every entry must carry as a non-empty string
+  A missing or empty list, an entry that is not a table, or an entry
+  without one of its fields fails the build with errorf naming the key, so
+  a list never renders an empty heading or item. label.html reads single
+  strings; together they are the only readers of data/labels.toml. */ -}}
+{{- $key := .key -}}
+{{- $v := hugo.Data.labels -}}
+{{- range split $key "." -}}
+  {{- if reflect.IsMap $v }}{{ $v = index $v . }}{{ else }}{{ $v = "" }}{{ end -}}
+{{- end -}}
+{{- if not (and (reflect.IsSlice $v) $v) -}}
+  {{- errorf "label-list.html: data/labels.toml has no non-empty list at %q" $key -}}
+{{- end -}}
+{{- $fields := .fields -}}
+{{- range $i, $entry := $v -}}
+  {{- if not (reflect.IsMap $entry) -}}
+    {{- errorf "label-list.html: entry %d of %q in data/labels.toml is not a table" (add $i 1) $key -}}
+  {{- end -}}
+  {{- range $fields -}}
+    {{- $s := index $entry . -}}
+    {{- if not (and (eq (printf "%T" $s) "string") $s) -}}
+      {{- errorf "label-list.html: entry %d of %q in data/labels.toml has no string %q" (add $i 1) $key . -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- return $v -}}

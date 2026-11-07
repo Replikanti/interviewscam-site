@@ -1,0 +1,1 @@
+attribute alttext='Send your seed phrase' is not on LITERALS_PLAIN_ATTRS

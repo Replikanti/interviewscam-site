@@ -1,0 +1,27 @@
+name: links-external
+
+# External links, weekly and on manual start (ADR-0002 part 7). Not a
+# required check: a third-party outage must never block a removal PR.
+on:
+  schedule:
+    # Mondays 06:17 UTC; off the hour to avoid the scheduler's peak.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  links-external:
+    runs-on: ubuntu-24.04
+    # Same derivation as the check job in ci.yml (3 x 22 s = 66 s -> 2 min):
+    # the same check.sh steps, and M1 has no external links to fetch. Revisit
+    # once milestone 5 adds sources.
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/check.sh --external
+        shell: bash
+        run: bash tools/check.sh --external

@@ -1,0 +1,1 @@
+internal template '_internal/opengraph[.]html'

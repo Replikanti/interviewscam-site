@@ -1,21 +1,21 @@
-{{ define "title" }}Check a name from your interview invite · {{ site.Title }}{{ end }}
+{{ define "title" }}{{ partial "label.html" "home.title" }} · {{ site.Title }}{{ end }}
 {{ define "main" }}
-<h1 class="home-title">Check a name from your interview invite</h1>
-<p class="lead">Got a meeting link or a coding test from a recruiter you do not know? Look up the company, the app or the domain before you install or run anything.</p>
+<h1 class="home-title">{{ partial "label.html" "home.title" }}</h1>
+<p class="lead">{{ partial "label.html" "home.lead" }}</p>
 {{- /* Search markup only; the search behaviour is milestone 4. The input sits on a card, because input_border is below 3:1 on the page ground (data/tokens.toml). */}}
 <form class="card search" role="search" method="get" action="{{ "/" | relURL }}">
-<label for="q">Company, app, domain or recruiter</label>
+<label for="q">{{ partial "label.html" "home.search_label" }}</label>
 <div class="search-row">
 <div class="search-field"><span class="search-icon">{{ partial "icon.html" "search" }}</span><input id="q" type="search" name="q" autocomplete="off" spellcheck="false"></div>
-<button class="button-primary" type="submit">Check</button>
+<button class="button-primary" type="submit">{{ partial "label.html" "home.search_button" }}</button>
 </div>
 </form>
 <section class="card" aria-labelledby="before-your-call">
-<h2 id="before-your-call">Before your call</h2>
+<h2 id="before-your-call">{{ partial "label.html" "home.checklist_heading" }}</h2>
 {{ partial "checklist.html" (dict "details" false) }}
 <ul class="link-list">
-<li><a href="{{ "/before-your-call/" | relURL }}">The full checklist</a></li>
-<li><a href="{{ "/before-your-call/#already-ran" | relURL }}">Already ran it? What to do now</a></li>
+<li><a href="{{ "/before-your-call/" | relURL }}">{{ partial "label.html" "home.checklist_link" }}</a></li>
+<li><a href="{{ "/before-your-call/#already-ran" | relURL }}">{{ partial "label.html" "home.already_ran_link" }}</a></li>
 </ul>
 </section>
 {{- /* The five latest reports by date (ADR-0004 Numbers: about 290 px at
@@ -23,23 +23,23 @@
   stay out of the page while there are no records. */}}
 {{- with first 5 (where site.RegularPages "Section" "reports").ByDate.Reverse }}
 <section class="card" aria-labelledby="latest">
-<h2 id="latest">Latest reports</h2>
+<h2 id="latest">{{ partial "label.html" "home.latest_heading" }}</h2>
 <ul class="record-list">
 {{- range . }}
 {{ partial "record-item.html" . }}
 {{- end }}
 </ul>
 <ul class="link-list">
-<li><a href="{{ "/reports/" | relURL }}">All names</a></li>
+<li><a href="{{ "/reports/" | relURL }}">{{ partial "label.html" "home.latest_link" }}</a></li>
 </ul>
 </section>
 {{- end }}
 {{- with where site.RegularPages "Section" "campaigns" }}
 <section class="card" aria-labelledby="families">
-<h2 id="families">Campaign families</h2>
+<h2 id="families">{{ partial "label.html" "home.families_heading" }}</h2>
 {{ partial "record-list.html" . }}
 <ul class="link-list">
-<li><a href="{{ "/campaigns/" | relURL }}">All campaign families</a></li>
+<li><a href="{{ "/campaigns/" | relURL }}">{{ partial "label.html" "home.families_link" }}</a></li>
 </ul>
 </section>
 {{- end }}

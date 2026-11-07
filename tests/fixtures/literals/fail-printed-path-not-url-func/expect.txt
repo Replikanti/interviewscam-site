@@ -1,0 +1,1 @@
+the action prints a bare literal '/about/' (L3)

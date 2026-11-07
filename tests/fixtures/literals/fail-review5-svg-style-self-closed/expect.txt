@@ -1,0 +1,1 @@
+<style/>: a self-closed style

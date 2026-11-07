@@ -1,0 +1,1 @@
+mount {"source": "docs/tpl", "target": "layouts"}: every mount must read the directory it targets

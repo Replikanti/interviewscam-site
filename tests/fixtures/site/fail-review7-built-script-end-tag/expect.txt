@@ -1,0 +1,1 @@
+(i) end tag '</script/>': a script end tag

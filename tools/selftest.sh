@@ -27,14 +27,15 @@ FIXTURES="$SELFTEST_ROOT/tests/fixtures"
 LIGHTHOUSE_FIXTURE_VERSION=13.6.0
 
 # guard_env <fixture dir>: read <dir>/env.txt into GUARD_ENV. Only HUGO_*
-# assignments are accepted, so a fixture cannot change anything else.
+# assignments are accepted (any name Hugo reads, with a delimiter other than
+# _ too), so a fixture cannot change anything else.
 guard_env() {
   GUARD_ENV=()
   [[ -f "$1/env.txt" ]] || return 0
   local line
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -z "$line" || "$line" == \#* ]] && continue
-    [[ "$line" =~ ^HUGO_[A-Z0-9_]+= ]] || return 1
+    [[ "$line" =~ ^HUGO[^=]+= ]] || return 1
     GUARD_ENV+=("$line")
   done < "$1/env.txt"
 }
@@ -64,14 +65,163 @@ logs_moved() {
   [[ $n -eq 2 ]]
 }
 
+# members_runner <sitecheck.py> <members table>: runs every row of the table
+# through the real cmd_literals and checks coverage (literals-members lines
+# below). LITERALS_MEMBERS_COVERAGE_ONLY=1 checks coverage alone. -B: no
+# tools/__pycache__.
+members_runner() {
+  python3 -I -B - "$1" "$2" <<'PY'
+import argparse
+import contextlib
+import importlib.util
+import io
+import os
+import re
+import sys
+import tempfile
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+
+rows = []
+for line in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines():
+    if line and not line.startswith("#"):
+        rows.append(line.split("\t"))
+covered = {}
+for row in rows:
+    if len(row) != 6:
+        print(f"FAIL literals-members/table: malformed row {row!r}")
+        continue
+    set_name, member, rel, content, expect, count = row
+    covered.setdefault(set_name, set()).add(member)
+    if os.environ.get("LITERALS_MEMBERS_COVERAGE_ONLY"):
+        continue
+    name = f"literals-members/{set_name}/{member}"
+    with tempfile.TemporaryDirectory() as root:
+        path = Path(root) / rel
+        path.parent.mkdir(parents=True)
+        path.write_text(content + "\n", encoding="utf-8")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            rc = sitecheck.cmd_literals(argparse.Namespace(root=root))
+    output = buffer.getvalue()
+    findings = sum(line.startswith("FAIL: ") for line in output.splitlines())
+    if rc == 1 and expect in output and findings == int(count):
+        print(f"ok   {name} (failed as expected: {expect})")
+    else:
+        print(f"FAIL {name}: expected exit 1, {count} finding(s) and '{expect}'; "
+              f"got exit {rc}, {findings} finding(s); output:")
+        for out_line in output.splitlines():
+            print(f"     | {out_line}")
+# The flagging sets, taken from the code, and their pinned numbers.
+EXPECTED_FLAGGING_SETS = 15
+EXPECTED_PASSING_SETS = 30
+EXPECTED_END_TAG_MEMBERS = 10
+names = {n for n, v in vars(sitecheck).items()
+         if n.startswith(("LITERALS_", "CSS_")) and isinstance(v, (set, frozenset, dict, tuple))}
+passing = set(sitecheck.LITERALS_PASSING_SETS)
+flagging = sorted(names - passing)
+missing = []
+if not rows:
+    missing.append("the table has no rows")
+for name in sorted(passing - names):
+    missing.append(f"LITERALS_PASSING_SETS names {name}, which tools/sitecheck.py does not define")
+if len(flagging) != EXPECTED_FLAGGING_SETS:
+    missing.append(f"tools/sitecheck.py has {len(flagging)} flagging sets, not the pinned "
+                   f"{EXPECTED_FLAGGING_SETS} ({', '.join(flagging)}); update the pin with rows")
+if len(passing) != EXPECTED_PASSING_SETS:
+    missing.append(f"LITERALS_PASSING_SETS has {len(passing)} names, not the pinned "
+                   f"{EXPECTED_PASSING_SETS}")
+# Sets with no LITERALS_/CSS_ name: the members of the raw-text end-tag rule
+# (RAWTEXT_END_TAG, review7 A1) are read from its pattern, so a name added to
+# the pattern needs a row too (review8 A3).
+derived = {}
+end_names = re.search(r"\(([a-z|]+)\)", sitecheck.RAWTEXT_END_TAG.pattern)
+derived["RAWTEXT_END_TAG"] = set(end_names.group(1).split("|")) if end_names else set()
+if len(derived["RAWTEXT_END_TAG"]) != EXPECTED_END_TAG_MEMBERS:
+    missing.append(f"RAWTEXT_END_TAG has {len(derived['RAWTEXT_END_TAG'])} members, not the "
+                   f"pinned {EXPECTED_END_TAG_MEMBERS}; update the pin with rows")
+for set_name in flagging + sorted(derived):
+    real = derived[set_name] if set_name in derived else set(getattr(sitecheck, set_name))
+    members = covered.get(set_name, set())
+    if not real:
+        missing.append(f"{set_name} is empty")
+    if not members:
+        missing.append(f"{set_name} has no rows")
+    for member in sorted(real - members):
+        missing.append(f"{set_name} member {member!r} has no row")
+    for member in sorted(members - real):
+        missing.append(f"{set_name} has no member {member!r} any more")
+for set_name in sorted(set(covered) - set(flagging) - set(derived) - {"branch"}):
+    missing.append(f"{set_name} is not a flagging set of tools/sitecheck.py")
+if "branch" not in covered:
+    missing.append("no branch rows")
+if missing:
+    print("FAIL literals-members/coverage: " + "; ".join(missing))
+else:
+    print(f"ok   literals-members/coverage (every member of the {len(flagging)} flagging "
+          f"sets has a fail row; {len(rows)} rows)")
+PY
+}
+
+# allowlists_runner <sitecheck.py> <allowlists table>: the contents of every
+# passing set of sitecheck literals (LITERALS_PASSING_SETS) and of the CSP
+# and guard allowlists, one line per entry, must equal the table (review3
+# A3): a widening (one more member, function or attribute) changes no
+# finding on today's tree, so only this pin shows it in review. -B: no
+# tools/__pycache__.
+allowlists_runner() {
+  python3 -I -B - "$1" "$2" <<'PY'
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+NAMES = sitecheck.PINNED_ALLOWLISTS
+
+
+def text(value):
+    if isinstance(value, (set, frozenset)):
+        return " ".join(sorted(map(str, value)))
+    if isinstance(value, tuple):
+        return "\t".join(map(str, value))
+    return value if isinstance(value, str) else json.dumps(value)
+
+
+got = set()
+for name in NAMES:
+    value = getattr(sitecheck, name)
+    if isinstance(value, dict):
+        got.update(f"{name}\t{key}\t{text(item)}" for key, item in value.items())
+    else:
+        got.update(f"{name}\t{text(item)}" for item in value)
+want = {line for line in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")}
+extra, missing = sorted(got - want), sorted(want - got)
+if extra or missing:
+    print("FAIL literals-allowlists: the code differs from the pinned table; "
+          + "; ".join([f"not pinned: {x!r}" for x in extra]
+                      + [f"pinned, not in the code: {x!r}" for x in missing]))
+else:
+    print(f"ok   literals-allowlists ({len(NAMES)} allowlists, {len(got)} entries "
+          "equal the pinned table)")
+PY
+}
+
 selftest_main() {
+  require_work_tree || return 1
   load_pins || return 1
   # Always re-verify: the fixtures must run against the pinned binaries, not
   # whatever is in .tools/ (cheap; the archives are cached).
   bash "$SELFTEST_ROOT/tools/fetch-tools.sh" || return 1
 
   local n_passed=0 n_failed=0 html_total=0 html_run=0 reflow_total=0 reflow_run=0
-  local dir check name kind out rc expect leak_fixtures
+  local dir check name kind out rc expect leak_fixtures inputs_root
   out="$(mktemp)"
   # shellcheck disable=SC2064 # expand now: the path is fixed
   trap "rm -f '$out'" RETURN
@@ -122,6 +272,26 @@ selftest_main() {
       links)
         links_check "$dir" >"$out" 2>&1
         rc=$?
+        ;;
+      literals)
+        # <dir> stands in for the repo root: the layouts/, assets/ and
+        # static/ the copy check reads.
+        literals_check "$dir" >"$out" 2>&1
+        rc=$?
+        ;;
+      fixture-inputs)
+        # <dir> stands in for the repo root, whose top-level entries the
+        # fixture build classifies; it is read from a copy without its
+        # expect.txt, which no repo root has.
+        inputs_root="$(mktemp -d)"
+        if cp -R "$dir/." "$inputs_root/" && rm -f "$inputs_root/expect.txt"; then
+          fixture_inputs "$inputs_root" >"$out" 2>&1
+          rc=$?
+        else
+          echo "copying the fixture failed" >"$out"
+          rc=2
+        fi
+        rm -rf "$inputs_root"
         ;;
       records)
         # Records fixtures run against the real schemas in schema/.
@@ -249,6 +419,238 @@ selftest_main() {
       "--fixtures \"\$CHECK_ROOT/tests/fixtures\" to sitecheck render (the fixture-leak check)"
     n_failed=$((n_failed + 1))
   fi
+
+  # Wiring: check_main must run the literals step (ADR-0004 part 13), which
+  # the fixtures above prove only through literals_check.
+  # shellcheck disable=SC2016 # the patterns match a literal $CHECK_ROOT
+  if declare -f check_main \
+      | grep -qE '^ *run_step "literals \(fixed copy only from data/labels\.toml\)" step_literals;?$' \
+      && declare -f step_literals | grep -qE '^ *literals_check "\$CHECK_ROOT";?$'; then
+    echo "ok   wiring/literals-step (check_main runs step_literals on the repo root)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL wiring/literals-step: check_main in tools/check.sh does not run" \
+      "step_literals, or step_literals does not check \"\$CHECK_ROOT\""
+    n_failed=$((n_failed + 1))
+  fi
+
+  # Wiring: hugo_build passes --panicOnWarning, so a warnf message fails
+  # the build instead of rendering; literals exempts warnf arguments only
+  # because of it (and bans try, the one function that catches a warning).
+  if declare -f hugo_build | grep -qE '(^| )--panicOnWarning( |$)'; then
+    echo "ok   wiring/hugo-build-panic-on-warning (hugo_build passes --panicOnWarning)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL wiring/hugo-build-panic-on-warning: hugo_build in tools/check.sh does not" \
+      "pass --panicOnWarning, so a warnf message could render (literals exempts it)"
+    n_failed=$((n_failed + 1))
+  fi
+
+  # Wiring (review3 A2): the build's whole command line and environment.
+  # hugo_build is compared with this pinned copy as bash itself prints both
+  # (declare -f, so the bash version does not matter and a later
+  # redefinition counts), so a flag such as --config or an assignment added
+  # to it fails here; check_main builds only through step_build, and the
+  # fixture build only through hugo_build. Then the refusal runs: a HUGO*
+  # name outside the four tool variables, a valid one and one bash cannot
+  # declare, stops hugo_build before Hugo starts, and the four pass.
+  # The two names are built at run time: the guard scans this file's text
+  # for HUGO* names.
+  local hugo_build_want hugo_build_pinned build_out_valid build_out_dot build_out_ok
+  local hx=HUGO
+  hugo_build_want="$(cat <<'PINNED'
+hugo_build() {
+  local entry name
+  while IFS= read -r -d '' entry; do
+    name="${entry%%=*}"
+    case "$name" in
+      HUGO_BIN | HUGO_VERSION | HUGO_URL | HUGO_SHA256) ;;
+      HUGO*)
+        echo "hugo_build: the environment holds $name, which Hugo reads as config; only HUGO_BIN, HUGO_VERSION, HUGO_URL and HUGO_SHA256 may be set" >&2
+        return 1
+        ;;
+    esac
+  done < <(env -0)
+  if [[ ! -x "$HUGO_BIN" ]]; then
+    echo "hugo not found at $HUGO_BIN; run tools/fetch-tools.sh" >&2
+    return 1
+  fi
+  "$HUGO_BIN" --source "$1" --gc --minify --panicOnWarning \
+    --cleanDestinationDir --destination "$2"
+}
+step_build() { hugo_build "$CHECK_ROOT" "$CHECK_ROOT/public"; }
+PINNED
+)"
+  hugo_build_pinned="$(eval "$hugo_build_want"; declare -f hugo_build step_build)"
+  build_out_valid="$(export "${hx}xTITLE=x"; HUGO_BIN=/nonexistent hugo_build /nonexistent /nonexistent 2>&1)"
+  # shellcheck disable=SC2016 # $1 expands in the child bash
+  build_out_dot="$(env "${hx}.TITLE=x" HUGO_BIN=/nonexistent bash -c \
+    'source "$1"; hugo_build /nonexistent /nonexistent' _ "$SELFTEST_ROOT/tools/check.sh" 2>&1)"
+  # shellcheck disable=SC2016 # $1 expands in the child bash
+  build_out_ok="$(env HUGO_VERSION=x HUGO_URL=x HUGO_SHA256=x HUGO_BIN=/nonexistent \
+    bash -c 'source "$1"; hugo_build /nonexistent /nonexistent' _ "$SELFTEST_ROOT/tools/check.sh" 2>&1)"
+  # shellcheck disable=SC2016 # the patterns match literal variable names
+  if [[ "$(declare -f hugo_build step_build)" != "$hugo_build_pinned" ]]; then
+    echo "FAIL wiring/hugo-build-pinned: hugo_build or step_build in tools/check.sh differs from the copy pinned in tools/selftest.sh"
+    n_failed=$((n_failed + 1))
+  elif ! declare -f check_main | grep -qE '^ *run_step build step_build;?$' \
+      || ! declare -f step_fixture_build \
+        | grep -qE '^ *hugo_build "\$FIXTURE_SITE" "\$FIXTURE_PUBLIC"( \|\| return 1)?;?$'; then
+    echo "FAIL wiring/hugo-build-pinned: check_main does not build through step_build, or step_fixture_build not through hugo_build"
+    n_failed=$((n_failed + 1))
+  else
+    echo "ok   wiring/hugo-build-pinned (hugo_build and step_build equal the pinned copy; both trees build through them)"
+    n_passed=$((n_passed + 1))
+  fi
+  if [[ "$build_out_valid" == "hugo_build: the environment holds ${hx}xTITLE,"* \
+      && "$build_out_dot" == "hugo_build: the environment holds ${hx}.TITLE,"* \
+      && "$build_out_ok" == "hugo not found at /nonexistent;"* ]]; then
+    echo "ok   wiring/hugo-build-env (${hx}xTITLE and ${hx}.TITLE stop hugo_build; HUGO_BIN, HUGO_VERSION, HUGO_URL and HUGO_SHA256 pass)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL wiring/hugo-build-env: got '$build_out_valid', '$build_out_dot' and '$build_out_ok'"
+    n_failed=$((n_failed + 1))
+  fi
+
+  # Wiring: outside a git work tree check.sh and selftest.sh stop at once
+  # with one message (the guard reads git; QA note of review round 2).
+  local tree_root tree_out
+  tree_root="$(mktemp -d)"
+  if tree_out="$(CHECK_ROOT="$tree_root" require_work_tree 2>&1)"; then
+    echo "FAIL wiring/work-tree-required: require_work_tree passed outside a git work tree"
+    n_failed=$((n_failed + 1))
+  elif [[ "$tree_out" == "FAIL: check.sh needs a git work tree (guard reads git)"* ]] \
+      && declare -f check_main | grep -qE '^ *require_work_tree \|\| return 1;?$' \
+      && declare -f selftest_main | grep -qE '^ *require_work_tree \|\| return 1;?$'; then
+    echo "ok   wiring/work-tree-required (check_main and selftest_main stop outside a git work tree with one message)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL wiring/work-tree-required: require_work_tree printed '$tree_out', or check_main or selftest_main does not call it first"
+    n_failed=$((n_failed + 1))
+  fi
+  rmdir "$tree_root"
+
+  # literals-members: one fail case per member of every flagging set of
+  # sitecheck literals (attributes, CSS properties, banned names, prefixes
+  # and methods, the value-position functions) and per rule branch without
+  # a case directory, from tests/fixtures/literals/members.tsv, each in its
+  # own root through the real cmd_literals, with exactly the findings the
+  # row names. literals-members/coverage fails when a flagging set member
+  # has no row or a row names a member its set no longer has, so dropping a
+  # member turns the self-test red (M3 PR 7 QA). The flagging sets are taken
+  # from the code (every LITERALS_*/CSS_* collection not in
+  # LITERALS_PASSING_SETS) and their number is pinned; the raw-text end-tag
+  # rule's ten names (RAWTEXT_END_TAG, no such prefix) are read from its
+  # pattern and need rows too (review8 A3); an empty table or
+  # a set left with no rows fails (review2 5); the two coverage-fail lines
+  # prove that on a table without rows and on the real table without one
+  # set's rows.
+  members_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/literals/members.tsv" \
+    >"$out" 2>&1
+  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+  if ! grep -q '^ok   literals-members/coverage' "$out"; then
+    grep -q '^FAIL literals-members/coverage' "$out" || {
+      echo "FAIL literals-members: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    }
+  fi
+  local members_table case_name
+  members_table="$(mktemp)"
+  for case_name in empty-table set-without-rows; do
+    if [[ $case_name == empty-table ]]; then
+      grep '^#' "$FIXTURES/literals/members.tsv" >"$members_table"
+    else
+      grep -v $'^LITERALS_TEXT_SHAPERS\t' "$FIXTURES/literals/members.tsv" >"$members_table"
+    fi
+    LITERALS_MEMBERS_COVERAGE_ONLY=1 members_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$members_table" >"$out" 2>&1
+    if grep -q '^FAIL literals-members/coverage' "$out" \
+        && ! grep -q '^ok   literals-members/coverage' "$out"; then
+      echo "ok   literals-members/coverage-fails-on-$case_name (failed as expected: $(grep -m1 -o 'FAIL literals-members/coverage: .\{0,80\}' "$out"))"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL literals-members/coverage-fails-on-$case_name: the coverage passed on a table it must reject; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  done
+  rm -f "$members_table"
+
+  # literals-allowlists (review3 A3): the contents of every allowlist are
+  # pinned in tests/fixtures/literals/allowlists.tsv; the two fail lines
+  # prove the comparison rejects a table with one entry more and one less.
+  allowlists_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/literals/allowlists.tsv" \
+    >"$out" 2>&1
+  if grep -q '^ok   literals-allowlists' "$out"; then
+    sed -n '/^ok   /p' "$out"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL literals-allowlists: the allowlists differ from tests/fixtures/literals/allowlists.tsv; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+  local allow_table
+  allow_table="$(mktemp)"
+  for case_name in widening narrowing; do
+    if [[ $case_name == widening ]]; then
+      grep -v $'^LITERALS_MEMBERS\tTitle$' "$FIXTURES/literals/allowlists.tsv" >"$allow_table"
+    else
+      { cat "$FIXTURES/literals/allowlists.tsv"; printf 'LITERALS_MEMBERS\tSummary\n'; } >"$allow_table"
+    fi
+    allowlists_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$allow_table" >"$out" 2>&1
+    if grep -q '^FAIL literals-allowlists: ' "$out"; then
+      echo "ok   literals-allowlists/fails-on-$case_name (failed as expected: $(grep -m1 -o 'the code differs .\{0,80\}' "$out"))"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL literals-allowlists/fails-on-$case_name: the comparison passed on a table it must reject; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  done
+  rm -f "$allow_table"
+
+  # Wiring: the fixture build classifies its inputs before it copies them
+  # (ADR-0004 part 10, amended), and copies exactly the FIXTURE_COPY
+  # entries; declare -f prints the function without comments.
+  # shellcheck disable=SC2016 # the patterns match literal $ names
+  if declare -f step_fixture_build | grep -qE '^ *fixture_inputs "\$CHECK_ROOT" \|\| return 1;?$' \
+      && declare -f step_fixture_build | grep -qF 'for item in "${FIXTURE_COPY[@]}"'; then
+    echo "ok   wiring/fixture-inputs-step (step_fixture_build classifies \$CHECK_ROOT, then copies FIXTURE_COPY)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL wiring/fixture-inputs-step: step_fixture_build in tools/check.sh does not" \
+      "call fixture_inputs \"\$CHECK_ROOT\" || return 1, or does not copy by iterating FIXTURE_COPY"
+    n_failed=$((n_failed + 1))
+  fi
+
+  # fixture-inputs/arrays-disjoint: the real arrays name every entry once,
+  # so fixture_inputs passes on an empty root. classified-twice: a name
+  # added to a second array fails it, with its own message.
+  inputs_root="$(mktemp -d)"
+  if fixture_inputs "$inputs_root" >"$out" 2>&1; then
+    echo "ok   fixture-inputs/arrays-disjoint (no name in two of FIXTURE_COPY, FIXTURE_CONTENT, FIXTURE_SKIP)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL fixture-inputs/arrays-disjoint: fixture_inputs fails on an empty root; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+  if (FIXTURE_SKIP+=(layouts); fixture_inputs "$inputs_root") >"$out" 2>&1; then
+    echo "FAIL fixture-inputs/classified-twice: layouts in FIXTURE_COPY and FIXTURE_SKIP passed; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  elif ! grep -qF "'layouts' classified twice" "$out"; then
+    echo "FAIL fixture-inputs/classified-twice: failed without the expected reason \"'layouts' classified twice\"; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  else
+    echo "ok   fixture-inputs/classified-twice (failed as expected: 'layouts' classified twice)"
+    n_passed=$((n_passed + 1))
+  fi
+  rm -rf "$inputs_root"
 
   # reflow-launch: the launch of sitecheck reflow (ADR-0003 part 6, #24)
   # against a stub browser, so the cases run locally and in CI, each with

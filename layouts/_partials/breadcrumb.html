@@ -8,9 +8,10 @@
 {{- $page := .page -}}
 {{- $section := site.GetPage (printf "/%s" $page.Section) -}}
 {{- $sectionTitle := partial "label.html" (printf "title.%s" $page.Section) -}}
+{{- $home := partial "label.html" "breadcrumb.home" -}}
 {{- $out := "" -}}
 {{- if .jsonld -}}
-  {{- $items := slice (dict "@type" "ListItem" "position" 1 "name" "Home" "item" site.Home.Permalink) -}}
+  {{- $items := slice (dict "@type" "ListItem" "position" 1 "name" $home "item" site.Home.Permalink) -}}
   {{- if eq $page.Kind "section" -}}
     {{- $items = $items | append (dict "@type" "ListItem" "position" 2 "name" $sectionTitle "item" $page.Permalink) -}}
   {{- else -}}
@@ -25,7 +26,7 @@
   {{- else -}}
     {{- $html = printf `<li><a href="%s">%s</a></li><li aria-current="page">%s</li>` $section.RelPermalink (htmlEscape $sectionTitle) (partial "record-name.html" (dict "page" $page "html" true)) -}}
   {{- end -}}
-  {{- $html = printf `<nav class="breadcrumb" aria-label="Breadcrumb"><ol><li><a href="%s">Home</a></li>%s</ol></nav>` ("/" | relURL) $html -}}
+  {{- $html = printf `<nav class="breadcrumb" aria-label="%s"><ol><li><a href="%s">%s</a></li>%s</ol></nav>` (htmlEscape (partial "label.html" "breadcrumb.nav_label")) ("/" | relURL) (htmlEscape $home) $html -}}
   {{- $out = $html | safeHTML -}}
 {{- end -}}
 {{- return $out -}}

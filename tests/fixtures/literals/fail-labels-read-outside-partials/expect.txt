@@ -1,0 +1,1 @@
+hugo.Data.labels.artifact_group: data/labels.toml is read only inside label.html and label-list.html (L4)

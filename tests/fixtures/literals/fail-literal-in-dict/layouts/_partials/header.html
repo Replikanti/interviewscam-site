@@ -1,0 +1,3 @@
+{{- range slice (dict "url" "/about/" "label" "About") }}
+<a href="{{ .url | relURL }}">{{ .label }}</a>
+{{- end }}

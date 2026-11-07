@@ -2,7 +2,7 @@
   section 5). Called with the record page. */ -}}
 {{- with .Params.sources -}}
 <section class="card" aria-labelledby="sources">
-<h2 id="sources">Sources</h2>
+<h2 id="sources">{{ partial "label.html" "record.sources" }}</h2>
 <ul class="sources">
 {{- range . }}
 <li>{{ partial "source-ref.html" . }}</li>

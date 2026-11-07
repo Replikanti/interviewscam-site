@@ -1,0 +1,9 @@
+{{- /* An icon from raw-string markup: known SVG elements with their attributes. */ -}}
+{{- $paths := dict
+  "search" `<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>`
+-}}
+{{- with index $paths . -}}
+<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">{{ . | safeHTML }}</svg>
+{{- else -}}
+{{- errorf "icon.html: Unknown Icon %q" . -}}
+{{- end -}}
