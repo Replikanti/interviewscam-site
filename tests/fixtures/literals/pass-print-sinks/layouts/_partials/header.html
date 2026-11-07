@@ -1,0 +1,23 @@
+{{- /* Site header (not sticky, so it can never cover a focused element,
+  SC 2.4.11). Row 1: the brand and the one call to action. Row 2: the nav
+  pills. Both rows wrap at narrow widths instead of overflowing. The footer
+  links the remaining pages, so header plus footer reach all six. */ -}}
+{{- $current := . -}}
+<header class="site-header">
+<div class="container">
+<div class="header-row">
+<a class="brand" href="{{ "/" | relURL }}"><span class="brand-tile">{{ partial "icon.html" "search" }}</span><span>{{ partial "label.html" "header.brand" }}<span class="brand-tld">{{ partial "label.html" "header.brand_tld" }}</span></span></a>
+<a class="cta" href="{{ "/report-a-scam/" | relURL }}">{{ partial "label.html" "header.cta" }}</a>
+</div>
+<nav aria-label="{{ partial "label.html" "header.nav_label" }}">
+<ul class="nav">
+{{- range slice
+  (dict "url" "/before-your-call/" "label" (partial "label.html" "header.nav_before_your_call"))
+  (dict "url" "/methodology/" "label" (partial "label.html" "header.nav_methodology"))
+  (dict "url" "/about/" "label" (partial "label.html" "header.nav_about")) }}
+<li><a class="pill" href="{{ .url | relURL }}"{{ if eq $current.RelPermalink (.url | relURL) }} aria-current="page"{{ end }}>{{ .label }}</a></li>
+{{- end }}
+</ul>
+</nav>
+</div>
+</header>

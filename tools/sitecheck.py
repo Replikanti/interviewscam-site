@@ -1773,6 +1773,19 @@ VH_OPTIONAL = {"margin", "padding", "border", "clip"}
 # keyword in ASCII case only (`!` U+0131 `mportant` is no `!important`; the
 # browser drops that declaration).
 IMPORTANT = re.compile(r"![\t\n\f\r ]*important", re.I | re.A)
+# ADR-0004 part 11 (M3 PR 9 fix round 1, review 6, #31 Known limit 2): an
+# author display value beats the browser's [hidden] rule, and a selector
+# need not name .copy to match the button (`dd > *`), so no check of the
+# selectors that set display can close it. Instead the Copy button is hidden
+# by exactly one top-level rule, `.copy[hidden] { display: none !important }`,
+# the second place !important is allowed: no rule without !important can
+# override it, and the only other !important declarations are those of
+# .visually-hidden, whose definition loses on specificity (0,1,0 against
+# 0,2,0) and whose :focus reveal cannot match an element display: none
+# keeps from focus. Inline style is banned by rule (c). The rule is required
+# exactly once on a site with a Copy button.
+COPY_HIDDEN = ".copy[hidden]"
+COPY_HIDDEN_DECLARATION = ("display", "none")
 CLASS_ATTRIBUTE_SELECTOR = re.compile(r"(?i)\[\s*(?:[\w*-]*\|)?class\s*(?:[~|^$*]?=|\])")
 
 
@@ -1793,6 +1806,7 @@ class CssRuleResult:
         self.problems = []
         self.definitions = 0
         self.reveals = 0
+        self.copy_hidden = 0
 
 
 def css_rule_problems(css):
@@ -1806,6 +1820,18 @@ def css_rule_problems(css):
         top_level = not rule.parents
         is_definition = top_level and selector == VH_DEFINITION
         is_reveal = top_level and all(p.strip() in VH_REVEAL for p in selector.split(","))
+        if top_level and selector == COPY_HIDDEN:
+            result.copy_hidden += 1
+            found = [(len(IMPORTANT.findall(css_unescape(d))), css_declaration(d))
+                     for d in rule.declarations]
+            attributed += sum(n for n, _ in found)
+            got = [(prop, css_value_text(value)) for _, (prop, value) in found]
+            if got != [COPY_HIDDEN_DECLARATION] or [n for n, _ in found] != [1]:
+                problems.append(f"{show(selector)}: the rule must be exactly `display: "
+                                f"none !important` (found {show('; '.join(rule.declarations))}"
+                                "); it hides the Copy button until the script reveals it, "
+                                "and no other rule may override it (ADR-0004 part 11)")
+            continue
         if not selector.startswith("@") and CLASS_ATTRIBUTE_SELECTOR.search(selector):
             problems.append(f"{show(selector)}: attribute selector on class; select "
                             "by class name (it could match .visually-hidden without "
@@ -1855,7 +1881,7 @@ def css_rule_problems(css):
             if found:
                 problems.append(f"{show(selector)}: !important outside the "
                                 ".visually-hidden definition and its reveal "
-                                f"({show(declaration)})")
+                                f"and the {COPY_HIDDEN} rule ({show(declaration)})")
     # Fail closed: an !important the block walk did not attribute to a
     # declaration (in a selector, an at-rule prelude, a stray statement).
     stripped = CSS_COMMENT_OR_STRING.sub(lambda m: m.group(0) if m.group(1) else " ", css)
@@ -1863,7 +1889,7 @@ def css_rule_problems(css):
     if total > attributed:
         problems.append(f"!important outside any declaration ({total - attributed} "
                         "occurrence(s)); it is allowed only in the .visually-hidden "
-                        "definition and its reveal")
+                        f"definition and its reveal and the {COPY_HIDDEN} rule")
     return result
 
 
@@ -1881,6 +1907,24 @@ def url_scheme(url):
     url = re.sub(r"[\t\n\r]", "", url).strip(C0_AND_SPACE)
     match = HAS_SCHEME.match(url)
     return match.group(0)[:-1].lower() if match else ""
+
+
+def applied_stylesheets(page, page_path):
+    """The site paths of the stylesheets an HTML page applies on screen: every
+    <link rel=stylesheet> (ASCII case, rel split on ASCII whitespace) without
+    `alternate`, `media` or `disabled`, whose href resolves against the page on
+    this site's origin (query and fragment dropped, as the server does)."""
+    out = set()
+    for tag, attrs in page.elements:
+        rel = re.split(r"[\t\n\f\r ]+", ascii_lower(attrs.get("rel", "")))
+        if tag != "link" or "stylesheet" not in rel or "alternate" in rel \
+                or "media" in attrs or "disabled" in attrs or "href" not in attrs:
+            continue
+        target = urllib.parse.urlsplit(urllib.parse.urljoin(SITE_ORIGIN + page_path,
+                                                            attrs["href"].strip()))
+        if (target.scheme, target.netloc) == ("https", OWN_HOST):
+            out.add(urllib.parse.unquote(target.path))
+    return out
 
 
 def own_path(rel):
@@ -2006,8 +2050,11 @@ def cmd_site(args):
     forms = live_forms(records)
 
     allowed = token_colors(root)
-    vh_definitions = vh_reveals = 0
-    vh_used = []
+    scripts = []  # (rel, page path, src) of every <script src>, for rule (j)
+    vh_definitions = vh_reveals = copy_hidden = 0
+    vh_used, copy_used = [], []
+    copy_hidden_files = set()  # site paths of the built CSS files holding the rule
+    stylesheets = {}  # page rel -> the site paths of the stylesheets it applies
     n_html = 0
     files = sorted(p for p in public.rglob("*") if p.is_file())
     for path in files:
@@ -2055,9 +2102,17 @@ def cmd_site(args):
                     findings.add(rel, problem)
                 for problem in rawtext_built_problems(text):
                     findings.add(rel, problem)
+                scripts += [(rel, own_path(path.relative_to(public).as_posix()),
+                             attrs["src"]) for tag, attrs in page.elements
+                            if tag == "script" and "src" in attrs]
                 if any(VISUALLY_HIDDEN in attrs.get("class", "").split()
                        for _, attrs in page.elements):
                     vh_used.append(rel)
+                if any(COPY_CLASS in attrs.get("class", "").split()
+                       for _, attrs in page.elements):
+                    copy_used.append(rel)
+                    stylesheets[rel] = applied_stylesheets(
+                        page, own_path(path.relative_to(public).as_posix()))
             else:
                 for problem in svg_request_problems(page):
                     findings.add(rel, f"third-party request: {problem} (D9)")
@@ -2075,6 +2130,9 @@ def cmd_site(args):
             result = css_rule_problems(text)
             vh_definitions += result.definitions
             vh_reveals += result.reveals
+            copy_hidden += result.copy_hidden
+            if result.copy_hidden:
+                copy_hidden_files.add("/" + path.relative_to(public).as_posix())
             for problem in result.problems:
                 findings.add(rel, f"CSS: {problem} (ADR-0003 part 6)")
             for problem in css_color_problems(text, allowed):
@@ -2098,6 +2156,23 @@ def cmd_site(args):
             if any(live in s for s in folded):
                 findings.add(rel, f"the live form of artifact {show(value)} "
                              f"({origin.rel}: {apath}) appears in the built site (R3)")
+    # (j) One script (ADR-0004 part 11, M3 PR 9): at most one .js file in the
+    # built site, and every <script src> names it, so a second script can
+    # reach a page only as a reviewed change of this rule. Every other
+    # <script> is a JSON-LD data block (rule (c)).
+    js_files = ["/" + p.relative_to(public).as_posix() for p in files
+                if p.suffix.lower() in (".js", ".mjs")]
+    if len(js_files) > 1:
+        findings.add("public", f"(j) {len(js_files)} script files ({', '.join(js_files)}); "
+                     "at most one .js file is allowed, the Copy button's (ADR-0004 part 11)")
+    for rel, page_path, src in scripts:
+        target = urllib.parse.urlsplit(urllib.parse.urljoin(SITE_ORIGIN + page_path,
+                                                            src.strip()))
+        if (target.scheme, target.netloc) != ("https", OWN_HOST) or target.query \
+                or target.fragment or urllib.parse.unquote(target.path) not in js_files[:1]:
+            findings.add(rel, f"(j) <script src={show(src)}> does not name the one script "
+                         f"file of the site ({js_files[0] if js_files else 'none'}); "
+                         "every <script src> names it (ADR-0004 part 11)")
     # Counted across ALL built CSS: a second file could otherwise redefine
     # the class with its own, equally !important, rule.
     if vh_definitions > 1:
@@ -2107,6 +2182,20 @@ def cmd_site(args):
     if vh_reveals > 1:
         findings.add("public", f"CSS: {vh_reveals} .visually-hidden reveal rules across "
                      "the built CSS; at most one is allowed (ADR-0003 part 6)")
+    if copy_hidden > 1:
+        findings.add("public", f"CSS: {copy_hidden} top-level {COPY_HIDDEN} rules across "
+                     "the built CSS; exactly one is allowed (ADR-0004 part 11)")
+    # Per page (fix round 2, delta review 3): the rule counts only in a
+    # stylesheet the page itself applies, so a built CSS file no page links
+    # (`static/css/print.css`) does not satisfy it.
+    for rel in copy_used:
+        if not stylesheets[rel] & copy_hidden_files:
+            findings.add(rel, f"CSS: the page has a Copy button (class copy), but no "
+                         f"built CSS holds the rule `{COPY_HIDDEN} {{ display: none "
+                         "!important }` in a stylesheet the page applies (a <link "
+                         "rel=stylesheet> of this site with no media, disabled or alternate), "
+                         "so an author display value could show it without the script "
+                         "(ADR-0004 part 11)")
     if vh_used and vh_definitions == 0:
         findings.add(vh_used[0], "CSS: the page uses class visually-hidden, but no "
                      "built CSS defines it (ADR-0003 part 6)")
@@ -3750,6 +3839,59 @@ def feed_problems(public, schema_dir, records, personas, pages):
     return out, summary
 
 
+COPY_CLASS = "copy"
+COPY_TARGET = "data-copy-target"
+
+
+def copy_button_problems(page, record, contact):
+    """Rule 14 (ADR-0004 part 11, M3 PR 9): every Copy button (a <button>
+    with the class copy) has type="button", so it never submits a form, and
+    the hidden attribute, so a page without the script shows none; its
+    data-copy-target names exactly one element of the page, whose text
+    (text only, no child element, entity-decoded, nothing dropped) is one of
+    the declared artifact values of the page's own record as stored, or
+    params.contact. copy.js copies that text unchanged, so the clipboard
+    gets a defanged value or the address, never a live one."""
+    problems = []
+    ids = {}
+    for el in page.root.walk():
+        if "id" in el.attrs:
+            ids.setdefault(el.attrs["id"], []).append(el)
+    allowed = {value for _, value in declared_artifacts(record)} if record else set()
+    if contact:
+        allowed.add(contact)
+    for el in page.root.walk():
+        if el.tag != "button" or COPY_CLASS not in el.classes:
+            continue
+        target = el.attrs.get(COPY_TARGET, "")
+        what = f"the Copy button for {show(target) if target else 'no target'}"
+        if el.attrs.get("type", "").strip().lower() != "button":
+            problems.append(f"rule 14: {what} has no type=\"button\"; a button in a form "
+                            "would submit it (ADR-0004 part 11)")
+        # Only the hidden state hides it: `hidden="until-found"` lays the box
+        # out, find-in-page reveals it (M3 PR 9 fix round 1, review 5).
+        hidden = el.attrs.get("hidden")
+        if hidden is None or ascii_lower(hidden) not in ("", "hidden"):
+            problems.append(f"rule 14: {what} is not hidden (hidden="
+                            f"{show(hidden) if hidden is not None else 'missing'}); it is "
+                            "in the markup with the hidden attribute, empty or `hidden`, "
+                            "and only copy.js reveals it, so a page without the script "
+                            "shows no dead button (ADR-0004 part 11)")
+        found = ids.get(target, []) if target else []
+        if len(found) != 1:
+            problems.append(f"rule 14: {what} names {len(found)} elements with that id on "
+                            "the page; it needs exactly one target (ADR-0004 part 11)")
+            continue
+        box = found[0]
+        text = "".join(c for c in box.children if isinstance(c, str))
+        if any(not isinstance(c, str) for c in box.children) or text not in allowed:
+            problems.append(f"rule 14: {what} copies {show(text)}, which is not a declared "
+                            "artifact value of this page's record as stored, nor "
+                            "params.contact, held as text only; the clipboard must get the "
+                            "defanged value or the address (ADR-0004 part 11)")
+    return problems
+
+
 def index_link_problems(pages, records):
     """Rule 10: /reports/ links every report, /campaigns/ every campaign, and
     Home the five latest reports and every campaign."""
@@ -3828,6 +3970,19 @@ def cmd_render(args):
 
     for rel, problem in record_set_problems(public, records):
         findings.add(rel, problem)
+    # Rule 14 compares a Copy target with params.contact (D1), read from the
+    # hugo.toml of the records root when it has one (the self-test's render
+    # fixtures bring one only where a button copies the address).
+    contact = None
+    try:
+        config = tomllib.loads((root / "hugo.toml").read_text(encoding="utf-8"))
+        contact = config.get("params", {}).get("contact")
+    except FileNotFoundError:
+        pass
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        findings.add("hugo.toml", f"cannot read params.contact for rule 14: {exc}")
+    if not isinstance(contact, str):
+        contact = None
     if fixtures is not None:
         for rel, problem in fixture_leak_problems(fixtures, records):
             findings.add(rel, problem)
@@ -3858,6 +4013,7 @@ def cmd_render(args):
                                 "the site never offers a file download (D8)")
             problems += url_problems(page)
             problems += internal_link_problems(page, page_path)
+            problems += copy_button_problems(page, by_page.get(rel), contact)
             problems += persona_label_problems(page, personas,
                                                own_record(by_page, rel, page))
             # JSON-LD does not depend on element nesting, so rule 8 reads the
@@ -4294,18 +4450,32 @@ LITERALS_TEXT_ATTRS = {"alt", "title", "aria-label", "aria-description",
                        "placeholder", "label", "value", "abbr", "summary",
                        "xlink:title", "srcdoc"}
 LITERALS_TEXT_CONTENT_KEYS = {"property", "itemprop"}
+# The content of a <meta> is shown or read out (a link preview, a search
+# result, an app name) unless the meta is on this closed list (M3 PR 9 fix
+# round 1, review 1): exactly the names today's baseof.html uses for browser
+# settings, and the CSP http-equiv. Any other meta content (twitter:title,
+# og:title given as name=, application-name, refresh) is a visible
+# attribute for L2 and the print sinks, and so is a meta with property or
+# itemprop, or with both a name and an http-equiv.
+LITERALS_META_PLAIN_NAMES = frozenset({"viewport", "color-scheme", "theme-color"})
+LITERALS_META_PLAIN_HTTP_EQUIV = frozenset({"content-security-policy"})
+# Attributes whose value assets/js/copy.js writes into the page as text
+# (the two statuses of a Copy button): a visible attribute for L2 and for
+# the print sinks (M3 PR 9), not a data-* token.
+LITERALS_SCRIPT_TEXT_ATTRS = frozenset({"data-copy-done", "data-copy-failed"})
 # L2, closed world (fix round 2, review2 3): the attributes whose value is
 # never shown or read out as text (names, references, enumerated tokens,
 # geometry), exactly those today's templates use plus src. Any other
 # attribute whose value holds a letter or digit is a finding, so an ARIA or
 # MathML text attribute nobody listed (aria-rowindextext, alttext, ...)
 # fails instead of passing. data-*, the content of a meta and style keep
-# their own rules.
+# their own rules. M3 PR 9 adds aria-live (the Copy button's status region,
+# an enumerated token) and integrity (the script's SHA-384, a hash).
 LITERALS_PLAIN_ATTRS = frozenset("""
-action aria-current aria-hidden aria-labelledby autocomplete charset class cx cy
-d datetime fill for height href http-equiv id lang method name r rel role rx
-spellcheck src stroke stroke-linecap stroke-linejoin stroke-width tabindex type
-viewbox width xmlns
+action aria-current aria-hidden aria-labelledby aria-live autocomplete charset class
+cx cy d datetime fill for height href http-equiv id integrity lang method name r rel
+role rx spellcheck src stroke stroke-linecap stroke-linejoin stroke-width tabindex
+type viewbox width xmlns
 """.split())
 # The attribute values a path piped into relURL or absURL may fill (A1).
 LITERALS_URL_ATTRS = frozenset({"href", "src", "action"})
@@ -4494,9 +4664,22 @@ LITERALS_FILE_FUNCTIONS = {"split": frozenset(LITERALS_LABELS_READERS),
 # The literal operands a resources.* call may take (review3 3): a resource
 # prints its name (`{{ . }}`, .Title, .RelPermalink, and the target name of
 # ExecuteAsTemplate or Concat is any string), so the names are a closed
-# list, exactly the three today's baseof.html uses. ExecuteAsTemplate's
-# context is the bare dot, nothing else.
-LITERALS_RESOURCE_KEYS = frozenset({"favicon.svg", "css/tokens.css", "css/site.css"})
+# list, exactly what today's baseof.html uses: three names and, from M3 PR 9,
+# the script js/copy.js and the algorithm of its fingerprint, sha384 (#29
+# Known limit 3). ExecuteAsTemplate's context is the bare dot, nothing else.
+LITERALS_RESOURCE_KEYS = frozenset({"favicon.svg", "css/tokens.css", "css/site.css",
+                                    "js/copy.js", "sha384"})
+# The resources.* functions whose first operand names the resource they
+# build (M3 PR 9 fix round 2, delta review 4): that name sets the served
+# file's path and suffix. Named as a script (a suffix of JS_SUFFIXES, ASCII
+# case) the result would be a script built from another asset, a template or
+# a string, past the pin of SCRIPT_SHA256, which holds only the source files
+# under assets/; so the served script comes only from `resources.Get` of a
+# pinned script. FromString and Copy are not on LITERALS_FUNCTIONS and fail
+# there too; they are listed so a later widening of that list keeps this rule.
+LITERALS_RESOURCE_TARGETS = frozenset({"resources.Concat", "resources.Copy",
+                                       "resources.ExecuteAsTemplate",
+                                       "resources.FromString"})
 # Every action of label.html and label-list.html that assigns a variable, in
 # its token form (review3 4): one of today's forms, so $v holds only a value
 # of data/labels.toml (or "") when `return $v` returns it.
@@ -4513,8 +4696,8 @@ LITERALS_RAWTEXT_ELEMENTS = ("title", "textarea", "xmp", "plaintext", "noembed",
                              "noframes", "iframe", "noscript")
 LITERALS_MEMBERS = frozenset("""
 ByDate Content ContentBaseName Data Date Description File Format GetPage
-Home Kind Pages Params Path Permalink RegularPages RelPermalink Reverse Section
-Sections Title
+Home Integrity Kind Pages Params Path Permalink RegularPages RelPermalink Reverse
+Section Sections Title
 """.split())
 # The positions of the closed-world rule (L3). A literal in a value
 # position (one whose text can reach the page) passes only with a shape
@@ -4565,9 +4748,11 @@ LITERALS_COLLECTION_VALUES = frozenset({
     ("layouts/_partials/checklist.html", "do-this-instead"),
     ("layouts/_partials/checklist.html", "tile-ok"),
     ("layouts/_partials/checklist.html", "check"),
+    ("layouts/_partials/footer.html", "contact"),  # the address's id (Copy, M3 PR 9)
     ("layouts/_partials/header.html", "/before-your-call/"),
     ("layouts/_partials/header.html", "/methodology/"),
     ("layouts/_partials/header.html", "/about/"),
+    ("layouts/_partials/how-to-send.html", "contact-send"),  # the address's id (Copy)
     ("layouts/_partials/jsonld.html", "https://schema.org"),
     ("layouts/_partials/record-item.html", "chip"),
     ("layouts/home.feed.json", "1"),  # the feed's version (ADR-0004 part 7)
@@ -4597,6 +4782,7 @@ LITERALS_PASSING_SETS = (
     "LITERALS_DICT_KEYS", "LITERALS_FILE_DICT_KEYS", "LITERALS_COLLECTION_VALUES",
     "LITERALS_DATE_LAYOUTS", "LITERALS_CONTEXT_PARTIALS", "LITERALS_PRINTF_VERBS", "LITERALS_KEY_OPERANDS",
     "LITERALS_RESOURCE_KEYS", "LITERALS_LABEL_ASSIGNS", "LITERALS_PASSING_SETS",
+    "LITERALS_PRINT_SOURCES", "LITERALS_META_PLAIN_NAMES", "LITERALS_META_PLAIN_HTTP_EQUIV",
 )
 # The allowlists whose contents the self-test pins entry by entry in
 # tests/fixtures/literals/allowlists.tsv (review3 A3): every passing set of
@@ -4695,11 +4881,13 @@ class Token:
 
 class Group:
     """A parenthesised pipeline, one operand of its command. chained: a
-    field chain follows it (`(x).Y`), so its value is not the pipeline's."""
+    field chain follows it (`(x).Y`), so its value is not the pipeline's;
+    chain is that field chain (`.Y`), which the print sinks follow."""
 
-    def __init__(self, pipeline, chained=False):
+    def __init__(self, pipeline, chained=False, chain=""):
         self.pipeline = pipeline
         self.chained = chained
+        self.chain = chain
 
 
 class Pipeline:
@@ -4797,9 +4985,10 @@ def parse_pipeline(tokens, i=0, depth=0):
             sub, i = parse_pipeline(tokens, i + 1, depth + 1)
             chained = (i < len(tokens) and tokens[i].kind == "word"
                        and tokens[i].text.startswith(".") and not tokens[i].space_before)
+            chain = tokens[i].text if chained else ""
             if chained:
                 i += 1
-            cur.append(Group(sub, chained))
+            cur.append(Group(sub, chained, chain))
             continue
         if t.kind == "pipe":
             commands.append(cur)
@@ -5119,7 +5308,7 @@ LITERALS_KEY_OPERANDS = {
     "where": 2, "collections.Where": 2, "sort": 2, "collections.Sort": 2,
     "index": 2, "collections.Index": 2, "isset": 2, "collections.IsSet": 2,
     "resources.Get": 1, "resources.GetMatch": 1, "resources.ExecuteAsTemplate": 1,
-    "resources.Concat": 1, "site.GetPage": 1,
+    "resources.Concat": 1, "resources.Fingerprint": 1, "site.GetPage": 1,
 }
 
 
@@ -5187,6 +5376,7 @@ def position_problems(rel, pipeline, binds, keywords):
     its value (a declaration, with or range)."""
     name_key = any(k in ("define", "block", "template") for k in keywords)
     whole_literal = literal_only(pipeline)
+    dict_keys = {}  # id of a dict command -> its literal keys so far
     first = first_operand(pipeline)
     for token, kind, command in literal_positions(pipeline):
         if name_key and token is first:
@@ -5197,6 +5387,13 @@ def position_problems(rel, pipeline, binds, keywords):
         text = token.text
         fn = command_head(command) or "the action"
         if kind == "dict-key":
+            seen = dict_keys.setdefault(id(command), set())
+            if string and text in seen:
+                yield command, token, (f"the dict key {show(text)} is repeated in one dict; "
+                              "Hugo keeps the last value, and the print sinks would read "
+                              "the dict in an order that changes from run to run (L3, #31 "
+                              "delta review 2)")
+            seen.add(text)
             if not (string and (value_shape(text) or text in LITERALS_DICT_KEYS
                                 or text in LITERALS_FILE_DICT_KEYS.get(rel, ()))):
                 yield command, token, (f"the dict key {show(text)} is not on LITERALS_DICT_KEYS "
@@ -5396,6 +5593,26 @@ def copy_source_problems(rel, tokens, literals, css=False):
     return problems
 
 
+def meta_content_plain(tag, first):
+    """The content attribute of this start tag (first: name -> its first
+    value) is a meta's browser setting, never shown: the meta has no
+    property or itemprop, and either a name on LITERALS_META_PLAIN_NAMES and
+    no http-equiv, or an http-equiv on LITERALS_META_PLAIN_HTTP_EQUIV and no
+    name (ASCII case-insensitive, as browsers match them)."""
+    if tag != "meta" or any(key in first for key in LITERALS_TEXT_CONTENT_KEYS):
+        return False
+    name, equiv = first.get("name"), first.get("http-equiv")
+    if name is not None and equiv is None:
+        return ascii_lower(name.strip()) in LITERALS_META_PLAIN_NAMES
+    if equiv is not None and name is None:
+        return ascii_lower(equiv.strip()) in LITERALS_META_PLAIN_HTTP_EQUIV
+    return False
+
+
+def ascii_lower(text):
+    return text.translate(ASCII_LOWER)
+
+
 def attribute_problems(tag, attrs, where="", rule="L2"):
     """L2 on one start tag (attrs: (name, value) pairs, names lowercase): the
     visible attributes, the token-only ones, and L5 on a style attribute."""
@@ -5403,8 +5620,8 @@ def attribute_problems(tag, attrs, where="", rule="L2"):
     for name, value in attrs:
         first.setdefault(name, value)
     meta_name = (first.get("name") or "").lower() if tag == "meta" else None
-    text_content = meta_name == "description" or any(
-        key in first for key in LITERALS_TEXT_CONTENT_KEYS)
+    plain_content = meta_content_plain(tag, first)
+    text_content = tag == "meta" and not plain_content
     problems = []
     for name, value in first.items():
         if value is None:
@@ -5415,9 +5632,10 @@ def attribute_problems(tag, attrs, where="", rule="L2"):
             problems.extend(f"style attribute{where}: {problem}"
                             for _, problem in css_text_problems(value))
             continue
-        visible = name in LITERALS_TEXT_ATTRS or (name == "content" and text_content)
+        visible = name in LITERALS_TEXT_ATTRS or name in LITERALS_SCRIPT_TEXT_ATTRS \
+            or (name == "content" and text_content)
         token_only = name.startswith("data-") or (
-            name == "content" and bool(meta_name) and meta_name != "viewport")
+            name == "content" and plain_content and meta_name != "viewport")
         if visible and has_copy(value):
             problems.append(f"visible attribute {name}={show(value)}{where} ({rule})")
         # A data-* value is read by script or CSS, and the content of
@@ -5429,7 +5647,8 @@ def attribute_problems(tag, attrs, where="", rule="L2"):
                                 f"a token ({rule})")
         # Closed world (review2 3): any other attribute off the list of
         # attributes that never show text may hold no letter or digit.
-        elif (not visible and name != "content" and name not in LITERALS_PLAIN_ATTRS
+        elif (not visible and not (name == "content" and plain_content)
+              and name not in LITERALS_PLAIN_ATTRS
               and name not in LITERALS_TEXT_CONTENT_KEYS and has_copy(value)):
             problems.append(f"attribute {name}={show(value)}{where} is not on "
                             "LITERALS_PLAIN_ATTRS, the attributes that never show "
@@ -5666,12 +5885,14 @@ URL_ATTR_OPEN = re.compile(r"""<[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?\s([A-Za-z:-]+
 
 
 def template_literal_problems(rel, text, findings, counts, markup, root, defines,
-                              css=False):
+                              css=False, record=None):
     """L1 to L4 and L6 on one template file; returns the file with its actions
     blanked and the offsets of the blanks in it, for L5. markup: read the
     text as HTML (not for CSS). css: a CSS template, whose actions print
     into a stylesheet, where L5 reads the text (so the closed-world position
-    rule of L3 does not apply)."""
+    rule of L3 does not apply). record: a dict that receives the file's
+    actions and the indexes of those with a finding, for the print sinks
+    (one defect, one finding)."""
     actions = template_actions(rel, text, findings)
     spans = [(start, end) for start, end, _, _ in actions]
     reported = set()
@@ -5812,6 +6033,18 @@ def template_literal_problems(rel, text, findings, counts, markup, root, defines
                            "site.Params.csp }}` that fills the content of baseof.html's "
                            f"{CSP_META_OPEN}\"> (L4, review3 6)")
         for command in pipeline_commands(pipeline):
+            # A built resource never takes a script name (reported even when
+            # the literal has another finding, so each listed function and
+            # each suffix shows on its own).
+            if command_head(command) in LITERALS_RESOURCE_TARGETS and len(command) > 1 \
+                    and isinstance(command[1], Token) and command[1].kind == "str" \
+                    and ascii_lower(command[1].text).endswith(tuple(JS_SUFFIXES)):
+                report(command[1], f"{command_head(command)} names the resource it "
+                           f"builds {show(command[1].text)}, a script: the served script "
+                           "comes only from resources.Get of a script pinned in "
+                           "SCRIPT_SHA256, so no resource built from another asset, a "
+                           "template or a string takes a script name "
+                           "(LITERALS_RESOURCE_TARGETS, L3, #31 delta review 4)", fix=False)
             # The listed resources.* functions; any other one fails as unlisted.
             if (command_head(command) or "").startswith("resources.") \
                     and command_head(command) in LITERALS_FUNCTIONS:
@@ -5851,6 +6084,10 @@ def template_literal_problems(rel, text, findings, counts, markup, root, defines
                        "reaches the page (L4)")
     if markup:
         markup_page_problems(rel, bare, findings, holes)
+    if record is not None:
+        record["actions"] = actions
+        record["flagged"] = {i for i, (start, end, _, _) in enumerate(actions)
+                             if any(start <= offset < end for offset in flagged)}
     return bare, holes
 
 
@@ -6135,12 +6372,1375 @@ def markup_form_problems(bare, html_page=True, holes=(), rel=""):
     return problems, text
 
 
+# L3 print sinks (M3 PR 9, #29 Known limit 1, ADR-0004 part 13). The
+# closed world above decides where a literal may sit; it does not follow a
+# value to the place it prints, so a never-copy shape, a listed token
+# (a collection value, a dict key, an icon or resource name), true or false
+# and the words Hugo writes for a value (.Kind, %T, a date with its zone)
+# could still reach the page text. Here every action is parsed with a marker,
+# so the check knows the sink it prints into: the page text, a visible
+# attribute (L2's list, the content of a description meta, the attributes
+# copy.js shows), a non-text attribute, a comment, an element name or a
+# JSON data block. Then the templates are run abstractly from the page
+# templates down every partial call, with the dot, every variable and
+# every partial result as a set of value kinds, and an action that prints
+# into the page text or a visible attribute may print only from the listed
+# sources (LITERALS_PRINT_SOURCES): a label partial, the output of a
+# partial that prints (its own text is checked in its own file), a content
+# field, site.Title, site.Params.operator or .contact, a date in the pinned
+# layout, and printf, htmlEscape, safeHTML, default, cond, and and or over
+# those. Everything else is a finding wherever it reaches text.
+#
+# The value kinds (a value is a frozenset of them):
+#   label             a string of data/labels.toml (label.html)
+#   content           a content field: front matter, title, body, a file name
+#   config            site.Title, site.Params.operator, site.Params.contact
+#   date              a date formatted with the pinned layout
+#   output            what a partial without return prints
+#   markup            a literal of markup without text, through safeHTML
+#   formatted         printf of listed sources with a format without tags
+#   formatted-markup  the same with tags, through safeHTML
+#   empty             the empty string, nothing
+#   and the kinds no text sink takes: ("lit", text) a template literal,
+#   markup-raw and formatted-markup-raw (markup not through safeHTML, which
+#   Hugo escapes into visible tags), escaped-markup, ("bool", b), number,
+#   nil, runtime (a word Hugo writes: .Kind, .Section, %T, a time, a
+#   resource name), url, json, csp, tokens, integrity, page, params, site,
+#   file, time, resource, label-entry, ("dict", items), ("list", value)
+#   and unknown (anything the analysis cannot follow, which fails closed).
+#   flagged is a value an action with a finding of the rules above computed
+#   (a bound literal, a range over a listed set): where it prints, the
+#   finding is already there, so it is not reported twice (one defect, one
+#   finding).
+LITERALS_PRINT_SOURCES = {
+    "text": frozenset({"label", "content", "config", "date", "output", "markup",
+                       "formatted", "formatted-markup", "empty"}),
+    "visible": frozenset({"label", "content", "config", "date", "formatted", "empty"}),
+}
+SINK_REPORTED = frozenset({"flagged"})  # already a finding where it was computed
+# Every value kind of the analysis (the list above; a tuple shape by its
+# first item). A printed value of any other kind fails closed, so a new kind
+# is registered here, and the self-test then needs a row for it: one
+# literals-members row per kind the page text rejects (M3 PR 9 fix round 1,
+# QA), so a kind added to LITERALS_PRINT_SOURCES["text"] turns a row red.
+SINK_KINDS = frozenset({
+    "label", "content", "config", "date", "output", "markup", "formatted",
+    "formatted-markup", "empty", "lit", "markup-raw", "formatted-markup-raw",
+    "escaped-markup", "bool", "number", "nil", "runtime", "url", "json", "csp",
+    "tokens", "integrity", "page", "params", "site", "hugo", "file", "time",
+    "resource", "resource-data", "siteparams", "hugodata", "label-entry", "dict",
+    "list", "unknown", "flagged"})
+# The JSON-LD keys whose values search results show as text: in a
+# `<script type="application/ld+json">` block they take only what a
+# visible attribute takes, or null. render rule 8 pins every other value of
+# a JSON-LD block (types, keys, URLs, dates, positions), and rule 12 pins
+# every field of /feed.json against the records, so the `.json` layout
+# needs no key rule.
+LITERALS_DATA_TEXT_KEYS = frozenset({"name", "description"})
+SINK_MARK = 0xF0000  # supplementary private use area A: one character per action
+SINK_MARKS = re.compile("[\U000F0000-\U000FFFFD]")
+SINK_TAG_OPEN = re.compile("<(/?)(?=[\U000F0000-\U000FFFFD])")
+SINK_TAG_NAME = re.compile(r"[A-Za-z][A-Za-z0-9-]*")
+# The parse state of plain page text (SinkPage), and the elements whose
+# content a browser does not read as markup: inside one, a define's call
+# site sees only the end tag of that element (script and style also have
+# their own JavaScript and CSS states, which this reading does not follow).
+SINK_PLAIN = ("data", None)
+SINK_RAW_ELEMENTS = frozenset(("script", "style") + LITERALS_RAWTEXT_ELEMENTS)
+GO_TRIM_SPACE = (" ", "\t", "\r", "\n")
+SINK_WHERE = {"text": "the page text", "visible": "a visible attribute",
+              "data": "a JSON data block", "tag": "an element name"}
+
+
+def sink_kind(tag, name, attrs):
+    """The sink of an attribute value: visible, plain (never shown) or text
+    for an attribute name nobody listed (fails closed)."""
+    first = {}
+    for key, value in attrs:
+        first.setdefault(key, value)
+    if name in LITERALS_TEXT_ATTRS or name in LITERALS_SCRIPT_TEXT_ATTRS:
+        return "visible"
+    if name == "content" and tag == "meta":
+        return "plain" if meta_content_plain(tag, first) else "visible"
+    if name.startswith("data-") or name in LITERALS_PLAIN_ATTRS:
+        return "plain"
+    return "visible"
+
+
+class SinkPage(html.parser.HTMLParser):
+    """Where each marker (one per action) sits in a file read as HTML, and
+    the parse state there (SINK_PLAIN, the open raw-text element or the one
+    attribute value; None for a tag or attribute name, a comment or a
+    declaration), so a define's end can be compared with its start."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.sinks = {}  # marker index -> (kind, where)
+        self.states = {}  # marker index -> parse state
+        self.raw = None  # the open script or style element: (tag, attrs)
+        self.inside = None  # the open script, style or raw-text element: (tag, position)
+
+    def _mark(self, text, kind, where, state=None):
+        for match in SINK_MARKS.finditer(text or ""):
+            self.sinks.setdefault(ord(match.group(0)) - SINK_MARK, (kind, where))
+            self.states.setdefault(ord(match.group(0)) - SINK_MARK, state)
+
+    def _tag(self, tag, attrs):
+        self._mark(tag, "tag", "an element name")
+        at = self.getpos()
+        for i, (name, value) in enumerate(attrs):
+            self._mark(name, "text", "an attribute name")
+            if value is not None:
+                self._mark(value, sink_kind(tag, name, attrs), f"the attribute {name}",
+                           ("attr", at, i))
+
+    def handle_starttag(self, tag, attrs):
+        self._tag(tag, attrs)
+        if tag in ("script", "style"):
+            self.raw = (tag, dict((k, v or "") for k, v in attrs))
+        if self.inside is None and tag in SINK_RAW_ELEMENTS:
+            self.inside = (tag, self.getpos())
+
+    def handle_startendtag(self, tag, attrs):
+        self._tag(tag, attrs)
+
+    def handle_endtag(self, tag):
+        self._mark(tag, "tag", "an element name")
+        if self.raw and tag == self.raw[0]:
+            self.raw = None
+        if self.inside and tag == self.inside[0]:
+            self.inside = None
+
+    def handle_data(self, data):
+        state = ("data", self.inside)
+        if self.raw and self.raw[0] == "script" \
+                and self.raw[1].get("type", "").strip().lower() == JSON_LD:
+            self._mark(data, "data", "a JSON-LD block", state)
+        else:
+            self._mark(data, "text", "the page text", state)
+
+    def handle_comment(self, data):
+        self._mark(data, "comment", "a comment")
+
+    def handle_decl(self, decl):
+        self._mark(decl, "text", "a declaration")
+
+    def unknown_decl(self, data):
+        self._mark(data, "text", "a declaration")
+
+    def handle_pi(self, data):
+        self._mark(data, "text", "a processing instruction")
+
+
+def marked_sinks(text, count, states=None):
+    """{index: (kind, where)} for count markers in text read as HTML; a
+    marker right after `<` or `</` is read as an element name. A marker the
+    parse never reaches is a text sink (fails closed), and its state, which
+    states (a dict, if given) receives per marker, is None."""
+    page = SinkPage()
+    page.feed(SINK_TAG_OPEN.sub(lambda m: "<" + m.group(1) + "x", text))
+    page.close()
+    if states is not None:
+        states.update({i: page.states.get(i) for i in range(count)})
+    return {i: page.sinks.get(i, ("text", "the page text")) for i in range(count)}
+
+
+def action_sinks(rel, text, actions, states=None):
+    """{action index: (kind, where)} for the actions of one template; states
+    (a dict, if given) receives the parse state at each action. A JSON or
+    text layout has no markup context: its state is SINK_PLAIN throughout."""
+    suffix = Path(rel).suffix.lower()
+    if suffix == ".json" or (suffix not in MARKUP_SUFFIXES and suffix != ".htm"):
+        if states is not None:
+            states.update({i: SINK_PLAIN for i in range(len(actions))})
+        if suffix == ".json":
+            return {i: ("data", "a JSON layout") for i in range(len(actions))}
+        return {i: ("text", "a text layout") for i in range(len(actions))}
+    out, pos = [], 0
+    for i, (start, end, _, _) in enumerate(actions):
+        out.append(text[pos:start])
+        out.append(chr(SINK_MARK + i))
+        pos = end
+    out.append(text[pos:])
+    return marked_sinks("".join(out), len(actions), states)
+
+
+def state_where(state, kind, where):
+    """The place of a parse state for a message: the sink's own words, but a
+    script, a style or a raw-text element by its name (their text is a page
+    text sink, the strictest, which says nothing about the context)."""
+    if kind == "text" and state is not None and state[0] == "data" and state[1]:
+        return f"a {state[1][0]} element"
+    return where
+
+
+def body_text(text, actions, first, last):
+    """The template text of a define or block body: what it writes between
+    its own action (first) and its end (last) besides its actions, with the
+    trim markers applied (`{{- ` and ` -}}` drop the ASCII whitespace next
+    to them, as Go does)."""
+    parts = []
+    for i in range(first, last):
+        segment = text[actions[i][1]:actions[i + 1][0]]
+        if text[actions[i][1] - 3:actions[i][1]] == "-}}" \
+                and text[actions[i][1] - 4:actions[i][1] - 3] in GO_TRIM_SPACE:
+            segment = segment.lstrip("".join(GO_TRIM_SPACE))
+        if text.startswith("{{-", actions[i + 1][0]) \
+                and text[actions[i + 1][0] + 3:actions[i + 1][0] + 4] in GO_TRIM_SPACE:
+            segment = segment.rstrip("".join(GO_TRIM_SPACE))
+        parts.append(segment)
+    return "".join(parts)
+
+
+def printf_sinks(fmt):
+    """The sink of each verb of a literal printf format (`%%` aside), read as
+    an HTML fragment, and whether the format holds a tag."""
+    verbs = [m for m in PRINTF_VERB.finditer(fmt) if m.group(0) != "%%"]
+    out, pos = [], 0
+    for i, match in enumerate(verbs):
+        out.append(fmt[pos:match.start()])
+        out.append(chr(SINK_MARK + i))
+        pos = match.end()
+    out.append(fmt[pos:])
+    sinks = marked_sinks("".join(out), len(verbs))
+    return [(verbs[i].group(0), sinks[i]) for i in range(len(verbs))], "<" in fmt
+
+
+def kinds(*shapes):
+    return frozenset(shapes)
+
+
+UNKNOWN, NIL, EMPTY = kinds("unknown"), kinds("nil"), kinds("empty")
+PAGE_LIST = ("list", kinds("page"))
+# The page members a template may read (LITERALS_MEMBERS) and their value
+# kinds; any other member is unknown. `.Summary` and `.Site` are not on
+# LITERALS_MEMBERS (L4 fails them), so they have no entry (M3 PR 9 fix
+# round 1: every entry has a self-test row that its cut turns red).
+PAGE_MEMBERS = {"Title": "content", "Description": "content", "Content": "content",
+                "Params": "params", "Permalink": "url",
+                "RelPermalink": "url", "Path": "url", "Date": "time", "Kind": "runtime",
+                "Section": "runtime", "File": "file", "RegularPages": PAGE_LIST,
+                "Pages": PAGE_LIST, "Sections": PAGE_LIST, "Home": "page",
+                "GetPage": "page"}
+SITE_MEMBERS = {"Title": "config", "Params": "siteparams", "Home": "page",
+                "RegularPages": PAGE_LIST, "Pages": PAGE_LIST, "Sections": PAGE_LIST,
+                "GetPage": "page"}
+MARKUP_KINDS = {"markup", "markup-raw", "output", "formatted-markup",
+                "formatted-markup-raw"}
+FALSY = {"nil", "empty", ("bool", False)}
+
+
+def join(*values):
+    """The union of value kinds, with every list shape merged into one and
+    dicts of the same keys merged key by key."""
+    shapes, lists, dicts = set(), [], {}
+    for value in values:
+        for s in value:
+            if isinstance(s, tuple) and s[0] == "list":
+                lists.append(s[1])
+            elif isinstance(s, tuple) and s[0] == "dict":
+                dicts.setdefault(frozenset(k for k, _ in s[1]), []).append(dict(s[1]))
+            else:
+                shapes.add(s)
+    if lists:
+        shapes.add(("list", join(*lists)))
+    for keys, items in dicts.items():
+        shapes.add(("dict", frozenset((k, join(*(d[k] for d in items))) for k in keys)))
+    return frozenset(shapes)
+
+
+def truth(value):
+    """True, False or None (either) for a value used as a condition. A
+    branch is pruned only on a literal bool, nil or the empty string (M3 PR 9
+    fix round 1, review 2): a partial's output, a label, a page or a
+    non-empty literal decide nothing here, because a partial that prints
+    nothing returns "" at build time, which is false, and pruning on a guess
+    drops the path Hugo then runs."""
+    if not value:
+        return None
+    if all(s in FALSY for s in value):
+        return False
+    if all(s == ("bool", True) for s in value):
+        return True
+    return None
+
+
+def truthy(value):
+    return frozenset(s for s in value if s not in FALSY) or value
+
+
+def field_of(shape, name):
+    """The value of one field or niladic method of one value shape."""
+    if isinstance(shape, tuple):
+        if shape[0] == "dict":
+            # A computed key ("*") can be any name at build time, the one
+            # looked up included.
+            items = dict(shape[1])
+            if "*" in items:
+                return join(items["*"], items.get(name, frozenset()))
+            return items.get(name, NIL)
+        if shape[0] == "list" and name in ("ByDate", "Reverse"):
+            return kinds(shape)
+        return UNKNOWN
+    table = {"page": PAGE_MEMBERS, "site": SITE_MEMBERS}.get(shape)
+    if table is not None:
+        got = table.get(name, "unknown")
+        return kinds(got)
+    if shape in ("params", "content", "file"):
+        return kinds("content")
+    if shape == "siteparams":
+        return kinds({"operator": "config", "contact": "config", "csp": "csp"}.get(
+            name, "unknown"))
+    if shape == "hugo":
+        return kinds("hugodata" if name == "Data" else "unknown")
+    if shape == "hugodata":
+        return kinds({"tokens": "tokens"}.get(name, "unknown"))
+    if shape == "tokens":
+        return kinds("tokens")
+    if shape == "label-entry":
+        return kinds("label")
+    if shape == "resource":
+        return kinds({"RelPermalink": "url", "Permalink": "url",
+                      "Data": "resource-data"}.get(name, "runtime"))
+    if shape == "resource-data":
+        return kinds("integrity" if name == "Integrity" else "runtime")
+    if shape == "time":
+        return kinds("runtime")
+    if shape == "nil":
+        return NIL
+    if shape == "flagged":
+        return kinds("flagged")
+    return UNKNOWN
+
+
+def field(value, name):
+    return join(*(field_of(s, name) for s in value)) if value else value
+
+
+def element(value):
+    """The value of one element a range over value or index into it gives."""
+    out = []
+    for s in value:
+        if isinstance(s, tuple) and s[0] == "list":
+            out.append(s[1])
+        elif isinstance(s, tuple) and s[0] == "dict":
+            out.extend(v for _, v in s[1])
+        elif s in ("params", "content"):
+            out.append(kinds("content"))
+        elif s in ("tokens", "flagged"):
+            out.append(kinds(s))
+        elif s in ("nil", "empty"):
+            continue
+        else:
+            out.append(UNKNOWN)
+    return join(*out)
+
+
+def range_keys(value):
+    out = []
+    for s in value:
+        if isinstance(s, tuple) and s[0] == "list":
+            out.append(kinds("number"))
+        elif isinstance(s, tuple) and s[0] == "dict":
+            out.append(frozenset(("lit", k) if k != "*" else "unknown" for k, _ in s[1]))
+        elif s in ("params", "content"):
+            out.append(kinds("content"))
+        elif s == "flagged":
+            out.append(kinds("flagged"))
+        elif s in ("nil", "empty"):
+            continue
+        else:
+            out.append(UNKNOWN)
+    return join(*out)
+
+
+def literal_kind(text):
+    """A string literal as a value: empty, markup without text, or itself."""
+    if text == "":
+        return EMPTY
+    if LITERALS_TAG.search(text) and not literal_remainder(text).strip():
+        return kinds("markup-raw")
+    return kinds(("lit", text))
+
+
+def map_kinds(value, table):
+    return frozenset(table.get(s, s) if isinstance(s, str) else s for s in value)
+
+
+ESCAPE = {k: "escaped-markup" for k in MARKUP_KINDS}
+SAFE_HTML = {"markup-raw": "markup", "formatted-markup-raw": "formatted-markup"}
+
+
+def describe(shape):
+    """A value kind in a finding."""
+    if isinstance(shape, tuple):
+        if shape[0] == "lit":
+            return f"the literal {show(shape[1])}"
+        if shape[0] == "bool":
+            return "a bool (true or false)"
+        return f"a {shape[0]}"
+    return {"markup-raw": "markup that Hugo escapes into visible tags",
+            "formatted-markup-raw": "printf markup that Hugo escapes into visible tags",
+            "escaped-markup": "markup escaped into visible tags",
+            "runtime": "a word Hugo writes for a value (.Kind, .Section, %T, a time, a "
+                       "resource)",
+            "unknown": "a value this check cannot follow",
+            "nil": "a missing value", "params": "the page's params (a map)",
+            "url": "a URL", "integrity": "a resource's integrity hash",
+            "json": "JSON", "csp": "the CSP", "tokens": "a design token",
+            "label-entry": "a table of data/labels.toml",
+            "output": "the output of a partial (markup)", "markup": "markup",
+            "formatted-markup": "printf markup"}.get(shape, f"a {shape}")
+
+
+class Piped:
+    """The value a pipe hands to the next command as its last argument."""
+
+    def __init__(self, value):
+        self.value = value
+
+
+class SinkState:
+    def __init__(self, dot, env, top):
+        self.dot, self.env, self.top = dot, env, top
+
+    def copy(self, dot=None):
+        return SinkState(self.dot if dot is None else dot, dict(self.env), self.top)
+
+
+def join_env(*envs):
+    keys = set().union(*envs)
+    return {k: join(*(e[k] for e in envs if k in e)) for k in keys}
+
+
+class SinkStep:
+    def __init__(self, kind, index, tokens, pipeline=None, names=(), body=(),
+                 branches=(), orelse=None, name=None, end=None):
+        self.kind, self.index, self.tokens = kind, index, tokens
+        self.pipeline, self.names = pipeline, names
+        self.body, self.branches, self.orelse, self.name = body, branches, orelse, name
+        self.end = end  # a define or block: the index of its end action
+
+
+def bound_names(tokens):
+    """The variables a with or range declares before its := (or =)."""
+    names = []
+    for t in tokens:
+        if t.kind == "assign":
+            return names
+        if t.kind == "word" and t.text.startswith("$"):
+            names.append(t.text)
+    return []
+
+
+def after_assign(tokens):
+    for i, t in enumerate(tokens):
+        if t.kind == "assign":
+            return tokens[i + 1:]
+    return tokens
+
+
+def sink_tree(actions):
+    """The actions of one template as a tree of if, with, range, define and
+    block steps. Raises TemplateError on an unbalanced end or else."""
+    items = [(i, tokens) for i, (_, _, tokens, comment) in enumerate(actions)
+             if not comment and tokens]
+    pos = 0
+
+    def block(stop):
+        nonlocal pos
+        steps = []
+        while pos < len(items):
+            i, tokens = items[pos]
+            head = tokens[0].text if tokens[0].kind == "word" else ""
+            if head in stop:
+                return steps
+            pos += 1
+            if head in ("if", "with", "range"):
+                steps.append(conditional(head, i, tokens[1:]))
+            elif head in ("define", "block"):
+                name = tokens[1].text if len(tokens) > 1 and tokens[1].kind == "str" else None
+                rest = parse_pipeline(tokens[2:])[0] if head == "block" else None
+                body = block(("end",))
+                end = items[pos][0] if pos < len(items) else None
+                close()
+                steps.append(SinkStep(head, i, tokens, rest, body=body, name=name,
+                                      end=end))
+            elif head == "template":
+                name = tokens[1].text if len(tokens) > 1 and tokens[1].kind == "str" else None
+                steps.append(SinkStep("template", i, tokens, parse_pipeline(tokens[2:])[0],
+                                      name=name))
+            elif head in ("end", "else"):
+                raise TemplateError(head, 0)
+            elif head in ("break", "continue"):
+                continue
+            elif head == "return":
+                steps.append(SinkStep("return", i, tokens, parse_pipeline(tokens[1:])[0]))
+            else:
+                pipeline = parse_pipeline(tokens)[0]
+                if pipeline.declared:
+                    names = [t.text for t in tokens if t.kind == "word"
+                             and t.text.startswith("$")][:1]
+                    steps.append(SinkStep("assign", i, tokens,
+                                          parse_pipeline(after_assign(tokens))[0], names))
+                else:
+                    steps.append(SinkStep("print", i, tokens, pipeline))
+        if stop:
+            raise TemplateError("end", 0)
+        return steps
+
+    def close():
+        nonlocal pos
+        if pos >= len(items) or items[pos][1][0].text != "end":
+            raise TemplateError("end", 0)
+        pos += 1
+
+    def conditional(head, i, rest):
+        nonlocal pos
+        branches, at = [], i
+        while True:
+            names = bound_names(rest) if head in ("with", "range") else []
+            pipeline = parse_pipeline(after_assign(rest) if names else rest)[0]
+            body = block(("else", "end"))
+            branches.append((head, pipeline, names, body, at))
+            at, tokens = items[pos]
+            pos += 1
+            if tokens[0].text == "end":
+                return SinkStep(branches[0][0], i, None, branches=branches, orelse=None)
+            if len(tokens) > 1 and tokens[1].kind == "word" and tokens[1].text in ("if", "with") \
+                    and branches[0][0] != "range":
+                head, rest = tokens[1].text, tokens[2:]
+                continue
+            orelse = block(("end",))
+            close()
+            return SinkStep(branches[0][0], i, None, branches=branches, orelse=orelse)
+
+    return block(())
+
+
+class SinkAnalysis:
+    """The abstract run of the templates (see the section comment)."""
+
+    # The runs of a range body before it must settle (ADR-0004 Numbers): every
+    # range of today's templates settles in at most 2.
+    MAX_ROUNDS = 8
+
+    def __init__(self, files):
+        self.files = files  # rel -> {"text", "actions", "flagged", "tree", "sinks", "defines"}
+        self.memo, self.running = {}, set()
+        self.printed = {}  # (rel, index) -> value
+        self.problems = []  # (rel, index, message) for analysis failures
+
+    # -- values ---------------------------------------------------------
+    def operand(self, op, st):
+        if isinstance(op, Piped):
+            return op.value
+        if isinstance(op, Group):
+            value = self.pipeline(op.pipeline, st)
+            return self.chain(value, op.chain) if op.chain else value
+        if op.kind == "str":
+            return literal_kind(op.text)
+        if op.kind != "word":
+            return UNKNOWN
+        word = op.text
+        if word in ("true", "false"):
+            return kinds(("bool", word == "true"))
+        if word == "nil":
+            return NIL
+        if LITERALS_NUMBER.fullmatch(word):
+            return kinds("number")
+        if word.startswith((".", "$")) or word in ("site", "hugo") \
+                or word.startswith(("site.", "hugo.")):
+            return self.word(word, st)
+        return self.call(word, [], st)
+
+    def word(self, word, st):
+        """A field chain: `.`, `.a.B`, `$`, `$x.y`, `site.Title`, `hugo.Data`."""
+        if word == ".":
+            return st.dot
+        if word.startswith("."):
+            return self.chain(st.dot, word)
+        head, _, rest = word.partition(".")
+        if head == "$":
+            base = st.top
+        elif head.startswith("$"):
+            base = st.env.get(head, UNKNOWN)
+        else:
+            base = kinds(head)
+        return self.chain(base, "." + rest) if rest else base
+
+    def chain(self, value, text):
+        for name in text.split(".")[1:]:
+            value = field(value, name) if name else UNKNOWN
+        return value
+
+    def lit(self, op):
+        return op.text if isinstance(op, Token) and op.kind == "str" else None
+
+    def pipeline(self, pipeline, st):
+        value = None
+        for command in pipeline.commands:
+            value = self.command(command, st, None if value is None else Piped(value))
+        return UNKNOWN if value is None else value
+
+    def command(self, command, st, piped):
+        if not command:
+            return UNKNOWN
+        head, ops = command[0], list(command[1:]) + ([piped] if piped else [])
+        if isinstance(head, Token) and head.kind == "word" and not (
+                head.text.startswith((".", "$")) or head.text in ("site", "hugo", "true",
+                                                                 "false", "nil")
+                or head.text.startswith(("site.", "hugo."))
+                or LITERALS_NUMBER.fullmatch(head.text)):
+            return self.call(head.text, ops, st)
+        if not ops:
+            return self.operand(head, st)
+        # A method with arguments on a chain (`.Date.Format "2006-01-02"`,
+        # `site.GetPage "x"`): only Format and GetPage are read.
+        if isinstance(head, Token) and head.kind == "word":
+            base, _, method = head.text.rpartition(".")
+            if method == "Format":
+                layout = self.lit(ops[0])
+                return kinds("date" if layout in LITERALS_DATE_LAYOUTS else "runtime")
+            if method == "GetPage":
+                return kinds("page")
+        return UNKNOWN
+
+    def call(self, fn, ops, st):
+        ev = lambda op: self.operand(op, st)  # noqa: E731
+        if fn in LITERALS_PARTIAL_FUNCS:
+            name = self.lit(ops[0]) if ops else None
+            if name == "label.html":
+                return kinds("label")
+            if name == "label-list.html":
+                return kinds(("list", kinds("label-entry")))
+            if name is None:
+                return UNKNOWN
+            return self.partial(name, ev(ops[1]) if len(ops) > 1 else NIL)
+        if fn in ("printf", "fmt.Printf"):
+            return self.printf(ops, st) if ops else UNKNOWN
+        if fn == "htmlEscape":
+            return map_kinds(ev(ops[-1]), ESCAPE) if ops else UNKNOWN
+        if fn == "safeHTML":
+            return map_kinds(ev(ops[-1]), SAFE_HTML) if ops else UNKNOWN
+        if fn in ("safeJS", "safeCSS", "lower"):
+            return ev(ops[-1]) if ops else UNKNOWN
+        if fn == "jsonify":
+            return kinds("json")
+        if fn == "default":
+            if len(ops) < 2:
+                return UNKNOWN
+            given = ev(ops[-1])
+            return join(frozenset(s for s in given if s not in FALSY), ev(ops[0]))
+        if fn == "cond":
+            if len(ops) != 3:
+                return UNKNOWN
+            test = truth(ev(ops[0]))
+            if test is True:
+                return ev(ops[1])
+            if test is False:
+                return ev(ops[2])
+            return join(ev(ops[1]), ev(ops[2]))
+        if fn in ("and", "or"):
+            values = [ev(op) for op in ops]
+            for value in values:
+                t = truth(value)
+                if t is (fn == "or"):
+                    return value
+                if t is None:
+                    return join(*values)
+            return values[-1] if values else UNKNOWN
+        if fn in LITERALS_COMPARE or fn in ("reflect.IsMap", "reflect.IsSlice"):
+            return kinds(("bool", None))
+        if fn == "time.Format":
+            layout = self.lit(ops[0]) if ops else None
+            return kinds("date" if layout in LITERALS_DATE_LAYOUTS else "runtime")
+        if fn in ("index", "collections.Index"):
+            if not ops:
+                return UNKNOWN
+            value = ev(ops[0])
+            for key in ops[1:]:
+                name = self.lit(key)
+                value = field(value, name) if name is not None and all(
+                    isinstance(s, tuple) and s[0] == "dict" for s in value) else element(value)
+            return value
+        if fn in ("where", "sort", "collections.Where", "collections.Sort"):
+            value = ev(ops[0]) if ops else UNKNOWN
+            return join(*(kinds(("list", element(kinds(s)))) if isinstance(s, tuple)
+                          and s[0] == "dict" else kinds(s) for s in value)) if value else value
+        if fn in ("first", "last", "after", "collections.First"):
+            return ev(ops[-1]) if ops else UNKNOWN
+        if fn in ("slice", "collections.Slice"):
+            return kinds(("list", join(*(ev(op) for op in ops))))
+        if fn in ("append", "collections.Append"):
+            if not ops:
+                return UNKNOWN
+            return kinds(("list", join(element(ev(ops[-1])), *(ev(op) for op in ops[:-1]))))
+        if fn in ("dict", "collections.Dictionary"):
+            # One value per key (fix round 2, delta review 2): a repeated key
+            # (L3 fails a literal one) and the computed keys ("*") join their
+            # values, so no lookup depends on the order of a frozenset.
+            items = {}
+            for i in range(0, len(ops) - 1, 2):
+                key = self.lit(ops[i])
+                key = "*" if key is None else key
+                items[key] = join(items.get(key, frozenset()), ev(ops[i + 1]))
+            return kinds(("dict", frozenset(items.items())))
+        if fn in ("merge", "collections.Merge"):
+            values = [ev(op) for op in ops]
+            dicts = [s for v in values for s in v if isinstance(s, tuple) and s[0] == "dict"]
+            rest = [frozenset(s for s in v if not (isinstance(s, tuple) and s[0] == "dict"))
+                    for v in values]
+            merged = {}
+            for d in dicts:
+                for key, value in d[1]:
+                    merged[key] = join(merged.get(key, frozenset()), value)
+            out = join(*rest)
+            return join(out, kinds(("dict", frozenset(merged.items())))) if dicts else out
+        if fn in ("split", "strings.Split"):
+            return kinds(("list", ev(ops[0]))) if ops else UNKNOWN
+        if fn in ("int", "len", "add"):
+            values = [ev(op) for op in ops]
+            return kinds("content") if values and all(
+                v and v <= {"content", "params"} for v in values) else kinds("number")
+        if fn in LITERALS_URL_FUNCS:
+            return kinds("url")
+        if fn in LITERALS_COMPARE_ONLY:
+            return kinds("runtime")
+        if fn.startswith("resources."):
+            return kinds("resource")
+        if fn in LITERALS_MESSAGE_FUNCS:
+            return EMPTY
+        return UNKNOWN
+
+    def data_value(self, pipeline, st):
+        """The value a JSON data block action hands to jsonify (`$x | jsonify`
+        or `jsonify $x`), or unknown."""
+        commands = pipeline.commands
+        for k in range(len(commands) - 1, -1, -1):
+            if command_head(commands[k]) in ("jsonify", "encoding.Jsonify"):
+                if len(commands[k]) > 1:
+                    return self.operand(commands[k][-1], st)
+                return self.pipeline(Pipeline(commands[:k], False), st) if k else UNKNOWN
+        return UNKNOWN
+
+    def printf(self, ops, st):
+        """printf: every verb in the page text or a visible attribute of the
+        format takes a listed source (or markup it builds), an element name a
+        literal tag name; the result is formatted, or the kinds that broke
+        it."""
+        fmt, args = ops[0], ops[1:]
+        text = self.lit(fmt)
+        bad = []
+        if text is not None:
+            verbs, has_tags = printf_sinks(text)
+        else:
+            fmt_value = self.operand(fmt, st)
+            if not fmt_value <= LITERALS_PRINT_SOURCES["visible"]:
+                return frozenset(s for s in fmt_value
+                                 if s not in LITERALS_PRINT_SOURCES["visible"])
+            verbs, has_tags = [("%s", ("text", "the page text"))] * len(args), False
+        markup = has_tags
+        for i, (verb, (sink, _)) in enumerate(verbs):
+            value = kinds("runtime") if verb == "%T" or i >= len(args) \
+                else self.operand(args[i], st)
+            if sink == "text":
+                allowed = LITERALS_PRINT_SOURCES["text"] | SINK_REPORTED | {
+                    "markup-raw", "formatted-markup-raw"}
+            elif sink == "visible":
+                allowed = LITERALS_PRINT_SOURCES["visible"] | SINK_REPORTED
+            elif sink == "tag":
+                bad.extend(s for s in value if s not in SINK_REPORTED and not (
+                    isinstance(s, tuple) and s[0] == "lit" and SINK_TAG_NAME.fullmatch(s[1])))
+                continue
+            else:
+                continue
+            bad.extend(s for s in value if s not in allowed)
+            markup = markup or bool(value & MARKUP_KINDS)
+        if len(args) > len(verbs):
+            bad.append("runtime")  # %!(EXTRA ...)
+        if bad:
+            return frozenset(bad)
+        return kinds("formatted-markup-raw" if markup else "formatted")
+
+    # -- statements -----------------------------------------------------
+    def partial(self, name, ctx):
+        rel = f"layouts/_partials/{name}"
+        info = self.files.get(rel)
+        if info is None or info.get("tree") is None:
+            return UNKNOWN
+        key = (rel, ctx)
+        if key in self.memo:
+            return self.memo[key]
+        if key in self.running:
+            return UNKNOWN
+        self.running.add(key)
+        returns = []
+        self.run(rel, info["tree"], SinkState(ctx, {}, ctx), returns)
+        self.running.discard(key)
+        result = join(*returns) if info["returns"] else kinds("output")
+        if info["returns"] and not returns:
+            result = EMPTY
+        self.memo[key] = result
+        return result
+
+    def define(self, rel, name, ctx):
+        info = self.files.get(rel)
+        body = info["defines"].get(name) if info else None
+        if body is None:
+            return
+        key = (rel, "define", name, ctx)
+        if key in self.memo or key in self.running:
+            return
+        self.running.add(key)
+        self.run(rel, body, SinkState(ctx, {}, ctx), [])
+        self.running.discard(key)
+        self.memo[key] = True
+
+    def run(self, rel, steps, st, returns):
+        for stmt in steps:
+            st = self.step(rel, stmt, st, returns)
+        return st
+
+    def flagged(self, rel, index):
+        return index in self.files[rel]["flagged"]
+
+    def group_binds(self, rel, index, tokens, st):
+        """An assignment inside parentheses (`ne ($x := …) ""`), which the
+        position rules fail, binds its variable to flagged or unknown."""
+        st = st.copy()
+        for i, t in enumerate(tokens or ()):
+            if t.kind == "assign" and i and tokens[i - 1].text.startswith("$") \
+                    and any(x.kind == "lparen" for x in tokens[:i]):
+                st.env[tokens[i - 1].text] = kinds("flagged") if self.flagged(rel, index) \
+                    else UNKNOWN
+        return st
+
+    def value(self, rel, index, pipeline, st):
+        return kinds("flagged") if self.flagged(rel, index) else self.pipeline(pipeline, st)
+
+    def step(self, rel, stmt, st, returns):
+        if stmt.kind == "print":
+            key = (rel, stmt.index)
+            if self.files[rel]["sinks"][stmt.index][0] == "data":
+                value = self.data_value(stmt.pipeline, st)
+            else:
+                value = self.pipeline(stmt.pipeline, st)
+            self.printed[key] = join(self.printed.get(key, frozenset()), value)
+            return st
+        if stmt.kind == "assign":
+            value = self.value(rel, stmt.index, stmt.pipeline, st)
+            if stmt.names:
+                st = st.copy()
+                st.env[stmt.names[0]] = value
+            return st
+        if stmt.kind == "return":
+            returns.append(self.pipeline(stmt.pipeline, st))
+            return st
+        if stmt.kind == "template":
+            ctx = self.pipeline(stmt.pipeline, st) if stmt.pipeline.commands \
+                and stmt.pipeline.commands[0] else NIL
+            for other in self.files:
+                if stmt.name in self.files[other]["defines"]:
+                    self.define(other, stmt.name, ctx)
+            return st
+        if stmt.kind == "block":
+            ctx = self.pipeline(stmt.pipeline, st)
+            self.run(rel, stmt.body, SinkState(ctx, dict(st.env), ctx), returns)
+            return st
+        if stmt.kind == "define":
+            return st  # run on its own, with the page as its dot
+        if stmt.kind == "range":
+            return self.loop(rel, stmt, st, returns)
+        exits, decided = [], False
+        for head, pipeline, names, body, at in stmt.branches:
+            st = self.group_binds(rel, at, self.files[rel]["actions"][at][2], st)
+            value = self.value(rel, at, pipeline, st)
+            test = truth(value)
+            inner = st.copy(truthy(value) if head == "with" else None)
+            if names:
+                inner.env[names[0]] = truthy(value)
+            if test is not False:
+                exits.append(self.run(rel, body, inner, returns).env)
+            if test is True:
+                decided = True
+                break
+        if not decided:
+            exits.append(self.run(rel, stmt.orelse, st.copy(), returns).env
+                         if stmt.orelse is not None else st.env)
+        out = st.copy()
+        out.env = join_env(*exits) if exits else st.env
+        return out
+
+    def loop(self, rel, stmt, st, returns):
+        _, pipeline, names, body, at = stmt.branches[0]
+        value = self.value(rel, at, pipeline, st)
+        elem = element(value)
+        env = dict(st.env)
+        for _ in range(self.MAX_ROUNDS):
+            inner = SinkState(elem, dict(env), st.top)
+            if len(names) == 1:
+                inner.env[names[0]] = elem
+            elif len(names) >= 2:
+                inner.env[names[0]] = range_keys(value)
+                inner.env[names[1]] = elem
+            after = self.run(rel, body, inner, returns).env
+            grown = join_env(env, {k: v for k, v in after.items() if k in env})
+            if grown == env:
+                break
+            env = grown
+        else:
+            self.problems.append((rel, stmt.index, "the print-sink analysis of this range "
+                                  "did not settle; fails closed (L3 print sinks)"))
+        exits = [env]
+        if stmt.orelse is not None:
+            exits.append(self.run(rel, stmt.orelse, st.copy(), returns).env)
+        out = st.copy()
+        out.env = join_env(*exits)
+        return out
+
+    def run_root(self, rel):
+        info = self.files[rel]
+        page = kinds("page")
+        self.run(rel, info["tree"], SinkState(page, {}, page), [])
+        for name in info["defines"]:
+            self.define(rel, name, page)
+
+
+def mark_define(steps, name, out):
+    """out[action index] = the define name a print, template call or block
+    sits in."""
+    for stmt in steps:
+        if stmt.kind in ("print", "template", "block"):
+            out[stmt.index] = name
+        for _, _, _, body, _ in stmt.branches:
+            mark_define(body, name, out)
+        mark_define(stmt.body, name, out)
+        if stmt.orelse:
+            mark_define(stmt.orelse, name, out)
+
+
+def collect_defines(steps, out):
+    for stmt in steps:
+        if stmt.kind == "define" and stmt.name is not None:
+            out[stmt.name] = stmt.body
+        for _, _, _, body, _ in stmt.branches:
+            collect_defines(body, out)
+        collect_defines(stmt.body, out)
+        if stmt.orelse:
+            collect_defines(stmt.orelse, out)
+    return out
+
+
+def walk_steps(steps):
+    for stmt in steps:
+        yield stmt
+        for _, _, _, body, _ in stmt.branches:
+            yield from walk_steps(body)
+        yield from walk_steps(stmt.body)
+        if stmt.orelse:
+            yield from walk_steps(stmt.orelse)
+
+
+def has_return(steps):
+    return any(stmt.kind == "return" or has_return(stmt.body)
+               or any(has_return(b) for _, _, _, b, _ in stmt.branches)
+               or (stmt.orelse is not None and has_return(stmt.orelse)) for stmt in steps)
+
+
+def data_text_problems(value, depth=0):
+    """The shapes a JSON-LD block would show as text under name or
+    description (LITERALS_DATA_TEXT_KEYS), at any depth."""
+    bad = set()
+    allowed = LITERALS_PRINT_SOURCES["visible"] | {"nil"} | SINK_REPORTED
+    for s in value:
+        if not isinstance(s, tuple) or depth > 20:
+            continue
+        if s[0] == "list":
+            bad |= data_text_problems(s[1], depth + 1)
+        elif s[0] == "dict":
+            for key, sub in s[1]:
+                if key in LITERALS_DATA_TEXT_KEYS or key == "*":
+                    bad |= {(key, x) for x in sub if x not in allowed
+                            and not (isinstance(x, tuple) and x[0] in ("dict", "list"))}
+                bad |= data_text_problems(sub, depth + 1)
+    return bad
+
+
+def jsonify_action(pipeline):
+    """The action prints `… | jsonify` (with safeJS after it, or not)."""
+    heads = [command_head(c) for c in pipeline.commands]
+    while heads and heads[-1] in ("safeJS",):
+        heads.pop()
+    return bool(heads) and heads[-1] in ("jsonify", "encoding.Jsonify")
+
+
+def print_sink_problems(files, findings):
+    """Runs the analysis on every template of files (rel -> record of
+    template_literal_problems plus its text) and adds the findings; returns
+    the counts of printing actions by sink."""
+    for rel, info in files.items():
+        info["states"] = {}
+        info["sinks"] = action_sinks(rel, info["text"], info["actions"], info["states"])
+        try:
+            info["tree"] = sink_tree(info["actions"])
+        except TemplateError as exc:
+            info["tree"] = None
+            findings.add(rel, f"unbalanced {exc.what}: the print sinks cannot read the "
+                         "template's blocks, so it fails closed (L3 print sinks)")
+            continue
+        info["defines"] = collect_defines(info["tree"], {})
+        info["returns"] = has_return(info["tree"])
+        info["define_of"] = {}
+        for name, body in info["defines"].items():
+            mark_define(body, name, info["define_of"])
+    # A define prints where it is called (M3 PR 9 fix round 1, review 3):
+    # html/template escapes its body in the context of each `template` call
+    # and of the `block` of the same name, not where the define sits in its
+    # own file. So the call sites decide: one in a visible attribute (baseof's
+    # description) makes every print of the body a visible-attribute print,
+    # the strictest; with only page-text call sites a print keeps the sink
+    # its body gives it, read from the define, which itself must sit in the
+    # page text (so its body is read from the text context it is called in).
+    # A define written anywhere else (a comment, an attribute, a script), a
+    # define nobody calls, and a call site anywhere but the page text, the
+    # text of a raw-text element or a visible attribute fail closed.
+    # The end context (M3 PR 9 fix round 2, delta review 1): html/template
+    # carries the context at the end of a define back to its call site, and
+    # the caller goes on from there, while this reading takes the text after
+    # the call from the caller's own file. So a define or block body must end
+    # in the parse state it starts in (a define: the page text), and its
+    # template text must not move the caller out of the call site's context:
+    # called from a visible attribute it holds no template text at all (`"`,
+    # `'` or a space would end the attribute and put the caller's next print
+    # in the page text), called from a raw-text element no `<` (an end tag
+    # would close the element). Both carry through a define that calls
+    # another.
+    call_sites = {}  # define name -> [(kind, where, at, inside, place)]
+    for rel, info in files.items():
+        for stmt in walk_steps(info.get("tree") or []):
+            if stmt.kind in ("block", "template") and stmt.name is not None:
+                kind, where = info["sinks"][stmt.index]
+                state = info["states"].get(stmt.index)
+                at = f"{rel}:{line_of(info['text'], info['actions'][stmt.index][0])}"
+                inside = info["define_of"].get(stmt.index)
+                if kind == "visible" and state is not None and state[0] == "attr":
+                    place = "attribute"
+                elif kind == "text" and state == SINK_PLAIN:
+                    place = "text"
+                elif kind == "text" and state is not None and state[0] == "data" \
+                        and state[1][0] in LITERALS_RAWTEXT_ELEMENTS:
+                    place = "raw-text"
+                else:
+                    place = None
+                call_sites.setdefault(stmt.name, []).append(
+                    (kind, state_where(state, kind, where), at, inside, place))
+    failed = set()  # define names that failed closed (their prints are not reported again)
+    bodies = {}  # define name -> [(at, template text)]
+    for rel, info in files.items():
+        for stmt in walk_steps(info.get("tree") or []):
+            if stmt.kind not in ("define", "block") or stmt.name is None:
+                continue
+            at = f"{rel}:{line_of(info['text'], info['actions'][stmt.index][0])}"
+            kind, where = info["sinks"][stmt.index]
+            start = info["states"].get(stmt.index)
+            if stmt.kind == "define" and start != SINK_PLAIN:
+                findings.add(at, f"define {show(stmt.name)} sits in "
+                             f"{state_where(start, kind, where)}; a define "
+                             "prints where it is called, so it must sit in the page text "
+                             "for the print sinks to read its body; fails closed (L3 print "
+                             "sinks)")
+                failed.add(stmt.name)
+                continue
+            end = info["states"].get(stmt.end) if stmt.end is not None else None
+            if start is not None and end != start:
+                end_kind, end_where = info["sinks"].get(stmt.end, ("text", "the page text"))
+                end_where = state_where(end, end_kind, end_where) if end is not None \
+                    else "a tag, a comment or past the end of the file"
+                findings.add(at, f"{stmt.kind} {show(stmt.name)} starts in "
+                             f"{state_where(start, kind, where)} and ends in {end_where}; "
+                             "html/template carries the context at the end of a body back "
+                             "to the caller, which goes on from there, so a body must end "
+                             "in the context it starts in; fails closed (L3 print sinks, "
+                             "#31 delta review 1)")
+                if stmt.kind == "define":
+                    failed.add(stmt.name)
+                continue
+            if stmt.kind != "define":
+                continue
+            if stmt.name not in call_sites:
+                findings.add(at, f"define {show(stmt.name)} has no call site (no `template "
+                             f"{show(stmt.name)}` and no block of that name); the print "
+                             "sinks cannot tell where it prints; fails closed (L3 print "
+                             "sinks)")
+                failed.add(stmt.name)
+            bodies.setdefault(stmt.name, []).append(
+                (at, body_text(info["text"], info["actions"], stmt.index, stmt.end)))
+    defined = {name for info in files.values() for name in info.get("defines", {})}
+    # define name -> its strictest call site, a visible attribute; a call
+    # site inside a define called from a visible attribute is one too.
+    define_sinks = {}
+    for _ in range(len(call_sites) + 1):
+        grown = False
+        for name, sites in sorted(call_sites.items()):
+            for kind, where, at, inside, place in sites:
+                if name in defined and name not in define_sinks and kind == "text" \
+                        and inside in define_sinks:
+                    define_sinks[name] = define_sinks[inside]
+                    grown = True
+                elif name in defined and name not in define_sinks and kind == "visible":
+                    define_sinks[name] = (kind, where, at)
+                    grown = True
+        if not grown:
+            break
+    # A `template` call of a name a block gives runs the block's own body
+    # in the call's context, while this reading takes that body only where
+    # the block sits; no layout calls one, so it fails closed (fix round 2).
+    blocks = {stmt.name for info in files.values()
+              for stmt in walk_steps(info.get("tree") or [])
+              if stmt.kind == "block" and stmt.name is not None}
+    for rel, info in files.items():
+        for stmt in walk_steps(info.get("tree") or []):
+            if stmt.kind == "template" and stmt.name in blocks:
+                findings.add(f"{rel}:{line_of(info['text'], info['actions'][stmt.index][0])}",
+                             f"the template call names {show(stmt.name)}, which a block gives: "
+                             "the call runs the block's own body in the call's context, "
+                             "which the print sinks read only where the block sits; fails "
+                             "closed (L3 print sinks)")
+    for name, sites in sorted(call_sites.items()):
+        for kind, where, at, inside, place in sites:
+            if name in defined and place is None:
+                findings.add(at, f"the call of define {show(name)} sits in {where}; a "
+                             "define is checked only where it is called in the page text, "
+                             "the text of a raw-text element (LITERALS_RAWTEXT_ELEMENTS) "
+                             "or a visible attribute; fails closed (L3 print sinks)")
+                failed.add(name)
+    # define name -> the places it prints into: its own call sites, and
+    # those of every define it is called from.
+    places = {}
+    for _ in range(len(call_sites) + 1):
+        grown = False
+        for name, sites in sorted(call_sites.items()):
+            for kind, where, at, inside, place in sites:
+                got = {(place, at)} if place in ("attribute", "raw-text") else set()
+                got |= places.get(inside, set())
+                if not got <= places.get(name, set()):
+                    places[name] = places.get(name, set()) | got
+                    grown = True
+        if not grown:
+            break
+    for name in sorted(places):
+        if name in failed:
+            continue
+        for at, body in bodies.get(name, ()):
+            for place, site in sorted(places[name]):
+                if place == "attribute" and body:
+                    findings.add(at, f"define {show(name)} is called in a visible attribute "
+                                 f"({site}), and its template text holds {show(body)}; called "
+                                 "from an attribute a define holds only actions, because a "
+                                 "quote or a space ends the attribute and moves the caller's "
+                                 "next print into the page text; fails closed (L3 print "
+                                 "sinks, #31 delta review 1)")
+                elif place == "raw-text" and "<" in body:
+                    findings.add(at, f"define {show(name)} is called in a raw-text element "
+                                 f"({site}), and its template text holds '<'; called from a "
+                                 "raw-text element a define holds no `<`, because an end tag "
+                                 "closes the element and moves the caller's next print into "
+                                 "the page text; fails closed (L3 print sinks, #31 delta "
+                                 "review 1)")
+                else:
+                    continue
+                failed.add(name)
+                break
+    analysis = SinkAnalysis(files)
+    for rel in sorted(files):
+        if files[rel].get("tree") is not None and not rel.startswith("layouts/_partials/"):
+            analysis.run_root(rel)
+    counts = {"text": 0, "visible": 0, "data": 0, "other": 0}
+    for (rel, index), value in sorted(analysis.printed.items(), key=lambda x: x[0]):
+        info = files[rel]
+        start, _, tokens, _ = info["actions"][index]
+        kind, where = info["sinks"][index]
+        name = info.get("define_of", {}).get(index)
+        if name in define_sinks:
+            site_kind, site_where, site_at = define_sinks[name]
+            kind, where = site_kind, (f"{site_where} (where define {show(name)} is "
+                                      f"called, {site_at})")
+        pipeline = parse_pipeline(tokens)[0]
+        head = command_head(pipeline.commands[0]) if pipeline.commands else None
+        counts[kind if kind in counts else "other"] += 1
+        stray = sorted({s[0] if isinstance(s, tuple) else s for s in value}
+                       - SINK_KINDS, key=str)
+        if stray:
+            findings.add(f"{rel}:{line_of(info['text'], start)}", f"the action prints a "
+                         f"value of kind {', '.join(map(str, stray))}, which is not on "
+                         "SINK_KINDS; fails closed until the kind is registered with its "
+                         "self-test row (L3 print sinks)")
+        if index in info["flagged"] or head in LITERALS_MESSAGE_FUNCS or name in failed:
+            continue  # name in failed: the define failed closed above (one defect, one finding)
+        at = f"{rel}:{line_of(info['text'], start)}"
+        if kind in ("text", "visible"):
+            bad = sorted({s for s in value if s not in LITERALS_PRINT_SOURCES[kind]
+                          and s not in SINK_REPORTED}, key=repr)
+            if bad:
+                takes = ("a label partial, the output of a partial, a content field, "
+                         "site.Title, site.Params.operator or .contact, a date in the "
+                         "pinned layout, or markup built from those" if kind == "text" else
+                         "a label partial, a content field, site.Title, "
+                         "site.Params.operator or .contact, a date in the pinned layout, "
+                         "or printf of those without markup")
+                findings.add(at, f"the action prints {', '.join(describe(s) for s in bad)} "
+                             f"into {where}; {SINK_WHERE[kind]} takes only {takes} "
+                             f"(LITERALS_PRINT_SOURCES, L3 print sinks); {LITERALS_FIX}")
+        elif kind == "tag":
+            if any(not (isinstance(s, tuple) and s[0] == "lit"
+                        and SINK_TAG_NAME.fullmatch(s[1])) and s not in SINK_REPORTED
+                   for s in value):
+                findings.add(at, "the action prints into an element name something other "
+                             "than a literal tag name (L3 print sinks)")
+        elif kind == "data":
+            if not jsonify_action(pipeline):
+                findings.add(at, f"the action prints into {where} without `| jsonify`; a "
+                             "JSON data block takes only jsonify output (L3 print sinks)")
+            elif where == "a JSON-LD block":
+                for key, s in sorted(data_text_problems(value), key=repr):
+                    findings.add(at, f"the JSON-LD block shows {describe(s)} as its {key}; "
+                                 "under name and description (LITERALS_DATA_TEXT_KEYS) it "
+                                 "takes only what a visible attribute takes "
+                                 "(LITERALS_PRINT_SOURCES, L3 print sinks)")
+    for rel, index, message in analysis.problems:
+        info = files[rel]
+        findings.add(f"{rel}:{line_of(info['text'], info['actions'][index][0])}", message)
+    return counts
+
+
+# L7 (M3 PR 9, #29 Known limit 4): a script under assets/ is not a
+# template; its string and template literals get the L3 test, as the
+# literals of an action do (markup with its visible attributes, then the
+# remainder: no letter or digit, one lowercase token, or a vocabulary word),
+# plus the symbol and data: URL rules. Comments are skipped (the minifier
+# drops them). What fails closed: a template action ({{), a template
+# literal with a substitution and a regular expression literal, which this
+# reading cannot follow; an unterminated string, template or comment (L6).
+JS_ESCAPE = re.compile(r"\\(?:u\{([0-9A-Fa-f]+)\}|u([0-9A-Fa-f]{4})|x([0-9A-Fa-f]{2})"
+                       r"|\r\n|(.))", re.S)
+JS_SIMPLE = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v", "0": "\0",
+             "\n": "", "\r": "", "\u2028": "", "\u2029": ""}
+JS_WORD = re.compile(r"[A-Za-z0-9_$]+")
+JS_VALUE_WORDS = frozenset("this super null true false undefined".split())
+JS_SUFFIXES = {".js", ".mjs"}
+# The script pin (M3 PR 9 fix round 1, review 4, #31 Known limit 1): L7
+# reads a script's literals, not what its code computes (a join of tokens,
+# String.fromCharCode, an identifier, the DOM), so every script under
+# assets/ is pinned by the SHA-256 of its bytes here. A script that is not
+# on the list, or whose bytes differ, is a finding: a script change is then
+# a change of tools/, which gets the safety-net review (sdlc-reviewer), and
+# CI enforces that, not a convention. Why a hash and not a list of allowed
+# identifiers: computed text passes any identifier list
+# (`String(target.id) + button.type`), a hash catches every change. L7
+# still runs, so a new pin never admits a copy literal.
+SCRIPT_SHA256 = {
+    "assets/js/copy.js": "5cca51768d7caa004240fccdcfe84cd588f2686f3e4481da5561673d8592cc89",
+}
+
+
+def js_unquote(raw):
+    """The value of a JavaScript string literal body."""
+    def one(match):
+        brace, u4, xx, simple = match.groups()
+        if brace or u4 or xx:
+            try:
+                return chr(int(brace or u4 or xx, 16))
+            except (ValueError, OverflowError):
+                return "\ufffd"
+        if simple is None:
+            return ""
+        return JS_SIMPLE.get(simple, simple)
+    return JS_ESCAPE.sub(one, raw)
+
+
+def script_literal_problems(rel, text, findings, counts):
+    """L7 on one script file under assets/."""
+    def add(offset, message):
+        findings.add(f"{rel}:{line_of(text, offset)}", message)
+
+    if "{{" in text:
+        add(text.index("{{"), "a template action in a script: assets/**/*.js is no "
+            "template, and one run through ExecuteAsTemplate would print what L7 does "
+            "not read; fails closed (L7)")
+    i, n, value_before = 0, len(text), False
+    while i < n:
+        c = text[i]
+        if text.startswith("//", i):
+            end = text.find("\n", i)
+            i = n if end < 0 else end
+            continue
+        if text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            if end < 0:
+                add(i, "unterminated comment (L6); the script cannot be read")
+                return
+            i = end + 2
+            continue
+        if c in "'\"`":
+            k = i + 1
+            while k < n and text[k] != c and (c == "`" or text[k] != "\n"):
+                k += 2 if text[k] == "\\" else 1
+            if k >= n or text[k] != c:
+                add(i, "unterminated string (L6); the script cannot be read")
+                return
+            raw = text[i + 1:k]
+            counts["literals"] += 1
+            if c == "`" and "${" in raw:
+                add(i, "a template literal with a substitution: L7 cannot read what it "
+                    "prints; fails closed (L7)")
+                i, value_before = k + 1, True
+                continue
+            value = js_unquote(raw)
+            for problem in literal_problems(value, False):
+                add(i, problem.replace("(L3)", "(L7, the L3 test on a script literal)")
+                    + f"; {LITERALS_FIX}")
+            if DATA_URL.search(value):
+                add(i, f"the script literal {show(value)} holds a data: URL, which can "
+                    "embed an image or document that draws text no check reads; fails "
+                    "closed (L7)")
+            bad = symbol_problems(value)
+            if bad:
+                add(i, f"the script literal {show(value)} holds non-ASCII symbols that "
+                    f"are not on LITERALS_SYMBOLS ({bad}) (L7)")
+            i, value_before = k + 1, True
+            continue
+        if c == "/":
+            if not value_before:
+                add(i, "a regular expression literal: L7 cannot read it as text; fails "
+                    "closed (L7)")
+                end = text.find("\n", i)
+                i = n if end < 0 else end
+                continue
+            i, value_before = i + 1, False
+            continue
+        if c.isspace():
+            i += 1
+            continue
+        match = JS_WORD.match(text, i)
+        if match:
+            word = match.group(0)
+            value_before = word in JS_VALUE_WORDS or not word.isalpha() or not word.islower() \
+                or word not in ("return", "typeof", "case", "do", "else", "in", "of", "new",
+                                "delete", "void", "throw", "instanceof", "yield", "await")
+            i = match.end()
+            continue
+        value_before = c in ")]"
+        i += 1
+
+
 def cmd_literals(args):
     root = Path(args.root).resolve()
     if not root.is_dir():
         raise UsageError(f"--root {root} is not a directory")
     findings = Findings()
     counts = {"layouts": 0, "other": 0, "actions": 0, "literals": 0}
+    templates = {}  # rel -> the template's actions, for the print sinks
     # The names `define` and `block` give: the only names `template` may call.
     defines = set()
     for path in sorted((root / "layouts").rglob("*")) if (root / "layouts").is_dir() else []:
@@ -6172,6 +7772,22 @@ def cmd_literals(args):
                              "closed (L6)")
                 continue
             counts["layouts" if top == "layouts" else "other"] += 1
+            if top == "assets" and suffix in JS_SUFFIXES:
+                try:
+                    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                except OSError:
+                    digest = None  # the read below reports it
+                pinned = SCRIPT_SHA256.get(rel)
+                if digest is not None and pinned is None:
+                    findings.add(rel, "a script that is not pinned: every script under "
+                                 "assets/ is pinned by its SHA-256 in tools/sitecheck.py "
+                                 "(SCRIPT_SHA256), so adding one is a tools/ change with "
+                                 "the safety-net review (L7 script pin)")
+                elif digest is not None and digest != pinned:
+                    findings.add(rel, f"the script's SHA-256 is {digest}, not the one pinned "
+                                 "in tools/sitecheck.py (SCRIPT_SHA256); a script change "
+                                 "updates the pin there, so it is a tools/ change with the "
+                                 "safety-net review (L7 script pin)")
             try:
                 text = path.read_bytes().decode("utf-8")
             except UnicodeDecodeError:
@@ -6181,15 +7797,22 @@ def cmd_literals(args):
             except OSError as exc:
                 findings.add(rel, f"cannot read: {exc}")
                 continue
+            if top == "assets" and suffix in JS_SUFFIXES:
+                # L7: a script, not a template (M3 PR 9).
+                script_literal_problems(rel, text, findings, counts)
+                continue
             if top == "static":
                 # Copied as is, never run as a template.
                 bare, holes = text, []
                 if suffix != ".css":
                     markup_page_problems(rel, text, findings)
             else:
+                record = {}
                 bare, holes = template_literal_problems(
                     rel, text, findings, counts, suffix != ".css", root, defines,
-                    css=suffix == ".css")
+                    css=suffix == ".css", record=record)
+                if suffix != ".css":
+                    templates[rel] = dict(record, text=text)
             if suffix == ".css":
                 for offset, problem in css_text_problems(bare, holes):
                     findings.add(f"{rel}:{line_of(bare, offset)}",
@@ -6210,10 +7833,12 @@ def cmd_literals(args):
                              "`{{< param contact >}}`; any other shortcode prints template "
                              "or config output (params.csp through `param`) that no copy "
                              "check reads (L4, review3 6)")
+    sinks = print_sink_problems(templates, findings)
     return findings.report(
         f"literals checked: {counts['layouts']} layout files, {counts['actions']} "
         f"actions, {counts['literals']} literals; {counts['other']} asset and static "
-        "files")
+        f"files; print sinks: {sinks['text']} text, {sinks['visible']} visible "
+        f"attribute, {sinks['data']} data block, {sinks['other']} other")
 
 
 # ---------------------------------------------------------------------------

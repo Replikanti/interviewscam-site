@@ -10,7 +10,12 @@
   A hash links only to the lookup pages its listed_on names (ADR-0004
   part 9), never to a file. The two URL forms come from lookups.html,
   which the feed reads too. The groups, their order and headings come
-  from artifact_group in data/labels.toml, through label-list.html. */ -}}
+  from artifact_group in data/labels.toml, through label-list.html.
+
+  Every box has an id, its group key and its index in the group (plus the
+  index again for a hash's file name), and a Copy button after it and after
+  its D10 label (copy-button.html, ADR-0004 part 11), so the label stays the
+  first element after the box. */ -}}
 {{- $lookups := partial "lookups.html" . -}}
 {{- $groups := partial "label-list.html" (dict "key" "artifact_group" "fields" (slice "key" "heading")) -}}
 {{- $artifacts := .Params.artifacts -}}
@@ -22,21 +27,22 @@
 {{- with index $artifacts $key }}
 <h3>{{ $heading }}</h3>
 <ul class="artifact-list">
-{{- range . }}
+{{- range $i, $e := . }}
+{{- $id := printf "%s-%d" $key $i }}
 <li>
 {{- if eq $key "handles" -}}
-<span class="artifact-meta">{{ partial "label.html" (printf "platform.%s" .platform) }}</span><code class="artifact">{{ .value }}</code>{{ partial "box-label.html" (dict "page" $ "value" .value) }}
+<span class="artifact-meta">{{ partial "label.html" (printf "platform.%s" .platform) }}</span><code class="artifact" id="{{ $id }}">{{ .value }}</code>{{ partial "box-label.html" (dict "page" $ "value" .value) }}{{ partial "copy-button.html" (dict "id" $id) }}
 {{- else if eq $key "packages" -}}
-<span class="artifact-meta">{{ partial "label.html" (printf "registry.%s" .registry) }}</span><code class="artifact">{{ .name }}</code>{{ partial "box-label.html" (dict "page" $ "value" .name) }}
+<span class="artifact-meta">{{ partial "label.html" (printf "registry.%s" .registry) }}</span><code class="artifact" id="{{ $id }}">{{ .name }}</code>{{ partial "box-label.html" (dict "page" $ "value" .name) }}{{ partial "copy-button.html" (dict "id" $id) }}
 {{- else if eq $key "sha256" -}}
 {{- $hash := .value -}}
-<code class="artifact">{{ $hash }}</code>
-{{- with .file_name }}<span class="artifact-meta">{{ partial "label.html" "report.file_name" }}</span><code class="artifact">{{ . }}</code>{{ partial "box-label.html" (dict "page" $ "value" .) }}{{ end -}}
+<code class="artifact" id="{{ $id }}">{{ $hash }}</code>{{ partial "copy-button.html" (dict "id" $id) }}
+{{- with .file_name }}{{ $fileId := printf "%s-%d-%d" $key $i $i }}<span class="artifact-meta">{{ partial "label.html" "report.file_name" }}</span><code class="artifact" id="{{ $fileId }}">{{ . }}</code>{{ partial "box-label.html" (dict "page" $ "value" .) }}{{ partial "copy-button.html" (dict "id" $fileId) }}{{ end -}}
 <span class="artifact-meta">{{ partial "label.html" "report.look_up" }}</span><ul class="lookup-links">
 {{- range .listed_on }}<li><a href="{{ printf (index $lookups .) $hash }}">{{ partial "label.html" (printf "lookup.%s" .) }}</a></li>{{ end -}}
 </ul>
 {{- else -}}
-<code class="artifact">{{ . }}</code>{{ partial "box-label.html" (dict "page" $ "value" .) }}
+<code class="artifact" id="{{ $id }}">{{ . }}</code>{{ partial "box-label.html" (dict "page" $ "value" .) }}{{ partial "copy-button.html" (dict "id" $id) }}
 {{- end -}}
 </li>
 {{- end }}

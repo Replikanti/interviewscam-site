@@ -1,0 +1,4 @@
+{{- /* #31 delta review 1, the reviewer's repro: the define is called in a
+  visible attribute and its text "></i><b> closes it, so at build time
+  .Kind, which the caller prints into class, lands in the page text. */ -}}
+<footer>{{ define "zz" }}"></i><b>{{ end }}<i title="{{ template "zz" . }}" class="{{ .Kind }}"></i></footer>

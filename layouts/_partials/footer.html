@@ -1,10 +1,11 @@
 {{- /* Site footer on every page: the operator and the contact address (D1),
   the address as plain text with no mailto: link (SPEC section 7), the
   link to Corrections and removal that every page must carry (D7) and the
-  link to the Data feed page (SPEC section 6). */ -}}
+  link to the Data feed page (SPEC section 6). The address has its own
+  element with the id "contact" for its Copy button (copy-button.html). */ -}}
 <footer class="site-footer">
 <div class="container">
-<p>{{ partial "label.html" "footer.run_by" }} {{ site.Params.operator }} · <span class="address">{{ site.Params.contact }}</span></p>
+<p>{{ partial "label.html" "footer.run_by" }} {{ site.Params.operator }} · <span class="address" id="contact">{{ site.Params.contact }}</span>{{ partial "copy-button.html" (dict "id" "contact") }}</p>
 <nav aria-label="{{ partial "label.html" "footer.nav_label" }}">
 <ul class="footer-links">
 <li><a href="{{ "/methodology/" | relURL }}">{{ partial "label.html" "footer.methodology" }}</a></li>

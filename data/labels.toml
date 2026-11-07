@@ -44,6 +44,17 @@ privacy = "Privacy"
 data_feed = "Data feed"
 promise = "No trackers, no cookies, no third-party scripts."
 
+# The Copy button after every artifact box and the contact address
+# (layouts/_partials/copy-button.html, ADR-0004 part 11): button is its text;
+# done and failed are the statuses assets/js/copy.js writes into the polite
+# live region after the button once the copy succeeded or failed. The
+# script reads them from the button's data-copy-done and data-copy-failed
+# attributes, so it holds no copy itself.
+[copy]
+button = "Copy"
+done = "Copied"
+failed = "Copy failed, select the text instead"
+
 # The 404 page. title is the h1 and, with " · interviewscam.com", the
 # <title>.
 [not_found]

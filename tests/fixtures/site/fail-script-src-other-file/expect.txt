@@ -1,0 +1,1 @@
+(j) <script src='/js/other[.]js'> does not name the one script file

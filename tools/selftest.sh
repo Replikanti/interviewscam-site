@@ -85,13 +85,19 @@ spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
 sitecheck = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sitecheck)
 
-rows = []
+# A row whose set is `+` adds one more file (its file and content columns)
+# to the row above it, for a case that needs a partial (M3 PR 9 fix round 1).
+rows, extra = [], {}
 for line in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines():
     if line and not line.startswith("#"):
-        rows.append(line.split("\t"))
+        row = line.split("\t")
+        if row[0] == "+" and len(row) == 6 and rows:
+            extra.setdefault(id(rows[-1]), []).append((row[2], row[3]))
+        else:
+            rows.append(row)
 covered = {}
 for row in rows:
-    if len(row) != 6:
+    if len(row) != 6 or row[0] == "+":
         print(f"FAIL literals-members/table: malformed row {row!r}")
         continue
     set_name, member, rel, content, expect, count = row
@@ -100,9 +106,10 @@ for row in rows:
         continue
     name = f"literals-members/{set_name}/{member}"
     with tempfile.TemporaryDirectory() as root:
-        path = Path(root) / rel
-        path.parent.mkdir(parents=True)
-        path.write_text(content + "\n", encoding="utf-8")
+        for file_rel, file_content in [(rel, content)] + extra.get(id(row), []):
+            path = Path(root) / file_rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(file_content + "\n", encoding="utf-8")
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             rc = sitecheck.cmd_literals(argparse.Namespace(root=root))
@@ -116,9 +123,11 @@ for row in rows:
         for out_line in output.splitlines():
             print(f"     | {out_line}")
 # The flagging sets, taken from the code, and their pinned numbers.
-EXPECTED_FLAGGING_SETS = 16
-EXPECTED_PASSING_SETS = 31
-EXPECTED_END_TAG_MEMBERS = 10
+EXPECTED_FLAGGING_SETS = 19
+EXPECTED_PASSING_SETS = 34
+EXPECTED_DERIVED_MEMBERS = {"RAWTEXT_END_TAG": 10, "LITERALS_META_PLAIN_NAMES": 3,
+                            "LITERALS_META_PLAIN_HTTP_EQUIV": 1, "PAGE_MEMBERS": 16,
+                            "SINK_KINDS": 27, "JS_SUFFIXES": 2}
 names = {n for n, v in vars(sitecheck).items()
          if n.startswith(("LITERALS_", "CSS_")) and isinstance(v, (set, frozenset, dict, tuple))}
 passing = set(sitecheck.LITERALS_PASSING_SETS)
@@ -140,9 +149,28 @@ if len(passing) != EXPECTED_PASSING_SETS:
 derived = {}
 end_names = re.search(r"\(([a-z|]+)\)", sitecheck.RAWTEXT_END_TAG.pattern)
 derived["RAWTEXT_END_TAG"] = set(end_names.group(1).split("|")) if end_names else set()
-if len(derived["RAWTEXT_END_TAG"]) != EXPECTED_END_TAG_MEMBERS:
-    missing.append(f"RAWTEXT_END_TAG has {len(derived['RAWTEXT_END_TAG'])} members, not the "
-                   f"pinned {EXPECTED_END_TAG_MEMBERS}; update the pin with rows")
+# M3 PR 9 fix round 1 (review 1, QA): the two passing sets of the meta
+# content (a row per name shows by its count that the content is no visible
+# attribute), the page members of the print sinks (a row per member pins
+# its value kind, so cutting or remapping one changes the row's finding),
+# and every value kind the page text rejects (a row per kind, so a kind
+# added to LITERALS_PRINT_SOURCES["text"] turns its row red).
+derived["LITERALS_META_PLAIN_NAMES"] = set(sitecheck.LITERALS_META_PLAIN_NAMES)
+derived["LITERALS_META_PLAIN_HTTP_EQUIV"] = set(sitecheck.LITERALS_META_PLAIN_HTTP_EQUIV)
+derived["PAGE_MEMBERS"] = set(sitecheck.PAGE_MEMBERS)
+derived["SINK_KINDS"] = set(sitecheck.SINK_KINDS) - set(
+    sitecheck.LITERALS_PRINT_SOURCES["text"]) - set(sitecheck.SINK_REPORTED)
+# M3 PR 9 fix round 2 (delta review 4): the script suffixes, which the pin
+# and the LITERALS_RESOURCE_TARGETS rule share, a row per suffix.
+derived["JS_SUFFIXES"] = set(sitecheck.JS_SUFFIXES)
+for source, kinds in sitecheck.LITERALS_PRINT_SOURCES.items():
+    for kind in sorted(set(kinds) - set(sitecheck.SINK_KINDS)):
+        missing.append(f"LITERALS_PRINT_SOURCES[{source!r}] holds {kind!r}, which is not "
+                       "on SINK_KINDS")
+for set_name, pinned in EXPECTED_DERIVED_MEMBERS.items():
+    if len(derived[set_name]) != pinned:
+        missing.append(f"{set_name} has {len(derived[set_name])} members, not the pinned "
+                       f"{pinned}; update the pin with rows")
 for set_name in flagging + sorted(derived):
     real = derived[set_name] if set_name in derived else set(getattr(sitecheck, set_name))
     members = covered.get(set_name, set())
@@ -885,6 +913,38 @@ PINNED
     fi
   done
   rm -f "$allow_table"
+
+  # literals-deterministic (M3 PR 9 fix round 2, #31 delta review 2): the
+  # print sinks once read a dict with a repeated or computed key in hash
+  # order, so a run pruned a branch another run kept. The two dict cases
+  # run under 8 fixed hash seeds (no -I here: it would ignore
+  # PYTHONHASHSEED; env -i, -s and -P keep the rest of the environment, the
+  # user site and the script directory out) and must give the same exit
+  # code 1 and the same output every time. On 8cb0d33 3 of the 8 seeds gave
+  # 1 finding and the other 5 gave 0, on both cases.
+  local det_case det_seed det_first det_got det_ok
+  for det_case in fail-dict-repeated-key fail-dict-computed-keys; do
+    det_first="" det_ok=1
+    for det_seed in 0 1 2 3 4 5 6 7; do
+      det_got="$(env -i PATH="$PATH" PYTHONHASHSEED="$det_seed" python3 -B -s -P \
+        "$SELFTEST_ROOT/tools/sitecheck.py" literals --root "$FIXTURES/literals/$det_case" 2>&1;
+        echo "exit $?")"
+      [[ $det_got == *$'\nexit 1' ]] || det_ok=0
+      if [[ $det_seed == 0 ]]; then
+        det_first="$det_got"
+      elif [[ $det_got != "$det_first" ]]; then
+        det_ok=0
+      fi
+    done
+    if [[ $det_ok == 1 ]]; then
+      echo "ok   literals-deterministic/$det_case (exit 1 and the same output under 8 hash seeds)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL literals-deterministic/$det_case: the output or exit code changed with the hash seed; last run:"
+      printf '%s\n' "$det_got" | sed 's/^/     | /'
+      n_failed=$((n_failed + 1))
+    fi
+  done
 
   # feed-fields (M3 PR 8 review 4, #30 Known limit 3): render rule 12 field
   # by field from tests/fixtures/render/feed-fields.tsv on the feed of

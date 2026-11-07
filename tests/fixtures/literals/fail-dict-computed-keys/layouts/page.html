@@ -1,0 +1,6 @@
+{{- /* #31 fix round 2 (delta review 2): two computed keys in one dict, so
+  each could be "id" at build time. Read in hash order the analysis took
+  one of the two values and in some runs pruned the with on "". Both
+  values now join, so the print of .Kind fails in every run; selftest.sh
+  runs this case under several hash seeds. */ -}}
+{{ $k := .Params.k }}{{ $j := .Params.j }}{{ with index (dict $j "" $k $.Kind) "id" }}<p>{{ . }}</p>{{ end }}

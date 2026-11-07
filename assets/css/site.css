@@ -37,10 +37,10 @@ body {
 }
 
 /* The one sanctioned utility class (ADR-0003 part 6): hidden but read by
-   screen readers, and the only place !important is allowed. sitecheck site
-   pins these declarations; reflow exempts the element only while its box is
-   at most 1 x 1 px. Used by the skip link, which the reveal below shows on
-   keyboard focus. */
+   screen readers, and with .copy[hidden] (ADR-0004 part 11) the only place
+   !important is allowed. sitecheck site pins these declarations; reflow
+   exempts the element only while its box is at most 1 x 1 px. Used by the
+   skip link, which the reveal below shows on keyboard focus. */
 .visually-hidden {
   display: block !important;
   position: absolute !important;
@@ -721,6 +721,44 @@ h1,
 
 .artifact-list li > .artifact-meta:first-child {
   margin-top: 0;
+}
+
+/* The Copy button after an artifact box or the contact address (ADR-0004
+   part 11). It is hidden in the markup until assets/js/copy.js reveals it
+   (the script removes the hidden attribute). An author display value
+   overrides the browser's [hidden] rule and would show a button that does
+   nothing without the script, so .copy[hidden] below hides it with the one
+   other !important of this file: sitecheck site pins that rule, and no
+   other rule can override it, whatever its selector. Primary text on card
+   and on the ground, both listed pairs (the footer address sits on the
+   ground, so no border), and the 44 px target. */
+.copy[hidden] {
+  display: none !important;
+}
+
+.copy {
+  min-height: var(--target-min);
+  padding: 0 var(--space-x2);
+  border: 0;
+  background: transparent;
+  color: var(--color-primary);
+  font: inherit;
+  font-size: var(--type-label);
+  font-weight: var(--weight-label);
+  text-decoration: underline;
+  text-underline-offset: var(--underline-offset);
+  text-decoration-thickness: var(--underline-thickness);
+  cursor: pointer;
+}
+
+.copy:hover {
+  text-decoration-thickness: var(--underline-hover-thickness);
+}
+
+/* The live region of the status ("Copied"), muted on card and ground. */
+.copy-status {
+  color: var(--color-muted);
+  font-size: var(--type-label);
 }
 
 .lookup-links {

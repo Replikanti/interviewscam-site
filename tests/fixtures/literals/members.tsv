@@ -223,7 +223,7 @@ branch	baseof-context-not-dot	layouts/baseof.html	{{ block "main" .Params }}{{ e
 branch	baseof-context-in-with	layouts/baseof.html	{{ with .Params }}{{ block "main" . }}{{ end }}{{ end }}	in baseof.html every block, template and partial takes the bare `.`	1
 branch	baseof-partial-in-group	layouts/baseof.html	{{ printf "%s" (partial "x.html" .Params) | safeHTML }}	in baseof.html every block, template and partial takes the bare `.`	2
 branch	label-assign	layouts/_partials/label.html	{{ $v = $key }}	assigns `$v = $key`, which is not one of its forms on LITERALS_LABEL_ASSIGNS	1
-branch	rawtext-action	layouts/page.html	<textarea>{{ .Kind }}</textarea>	<textarea> holds a template action	1
+branch	rawtext-action	layouts/page.html	<textarea>{{ .Title }}</textarea>	<textarea> holds a template action	1
 branch	rawtext-end-tag-boundary	layouts/page.html	<textarea></textareax><</textarea>	<textarea> holds '<'	1
 branch	rawtext-literal	layouts/page.html	{{ if eq .Kind "<textarea>" }}{{ end }}	opens a raw-text element (LITERALS_RAWTEXT_ELEMENTS)	1
 branch	csp-outside-meta	layouts/baseof.html	<p>{{ site.Params.csp }}</p>	site.Params.csp: params.csp only as the whole action	1
@@ -233,3 +233,148 @@ branch	content-shortcode-percent	content/about.md	Run by {{% param operator %}}.
 branch	tokens-color-whole	layouts/page.html	<p>{{ range $k, $_ := hugo.Data.tokens.color }}{{ $k }}{{ end }}</p>	hugo.Data.tokens.color: outside a CSS template, a colour only by its key	1
 branch	context-literal-unlisted-name	layouts/page.html	<p>{{ partial "icon.html" "send-your-seed-phrase" }}</p>	the partial 'icon[.]html' takes the bare literal 'send-your-seed-phrase', which is not one of its names on LITERALS_CONTEXT_PARTIALS	2
 branch	site-baseurl	layouts/page.html	<p>{{ site.BaseURL }}</p>	site.BaseURL: site.BaseURL is not a member a template may read	1
+LITERALS_SCRIPT_TEXT_ATTRS	data-copy-done	layouts/page.html	<button data-copy-done="copied"></button>	visible attribute data-copy-done='copied' (L2)	1
+LITERALS_SCRIPT_TEXT_ATTRS	data-copy-failed	layouts/page.html	<button data-copy-failed="failed"></button>	visible attribute data-copy-failed='failed' (L2)	1
+LITERALS_DATA_TEXT_KEYS	name	layouts/page.html	<script type="application/ld+json">{{ dict "name" .Kind | jsonify | safeJS }}</script>	the JSON-LD block shows a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) as its name	1
+LITERALS_DATA_TEXT_KEYS	description	layouts/page.html	<script type="application/ld+json">{{ dict "description" .Section | jsonify | safeJS }}</script>	the JSON-LD block shows a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) as its description	1
+branch	sink-text-runtime-word	layouts/page.html	<p>{{ .Kind }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+branch	sink-text-type-name	layouts/page.html	<p>{{ printf "%T" .Title }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+branch	sink-text-missing-argument	layouts/page.html	<p>{{ printf "%s %s" .Title }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+branch	sink-text-time	layouts/page.html	<p>{{ .Date }}</p>	the action prints a time into the page text	1
+branch	sink-text-map	layouts/page.html	<p>{{ printf "%v" .Params }}</p>	the action prints the page's params (a map) into the page text	1
+branch	sink-text-bool	layouts/page.html	<p>{{ eq .Kind "home" }}</p>	the action prints a bool (true or false) into the page text	1
+branch	sink-text-never-copy-shape	layouts/page.html	{{ $x := cond (eq .Kind "home") "WebPage" "ListItem" }}<p>{{ $x }}</p>	the action prints the literal 'ListItem', the literal 'WebPage' into the page text	1
+branch	sink-text-collection-value	layouts/reports/page.html	{{ range slice (dict "key" "summary") }}<p>{{ .key }}</p>{{ end }}	the action prints the literal 'summary' into the page text	1
+branch	sink-text-dict-key	layouts/page.html	{{ range $k, $v := dict "title" .Title }}<p>{{ $k }}</p>{{ end }}	the action prints the literal 'title' into the page text	1
+branch	sink-text-markup-escaped	layouts/page.html	{{ with index (dict "html" "<br>") "html" }}<p>{{ . }}</p>{{ end }}	the action prints markup that Hugo escapes into visible tags into the page text	1
+branch	sink-text-url	layouts/page.html	<p>{{ .RelPermalink }}</p>	the action prints a URL into the page text	1
+branch	sink-text-page	layouts/page.html	<p>{{ . }}</p>	the action prints a page into the page text	1
+branch	sink-text-unknown	layouts/page.html	<p>{{ .Title | lower | printf "%s" | len }}</p>	the action prints a number into the page text	1
+branch	sink-visible-attribute	layouts/page.html	<p title="{{ .Section }}"></p>	into the attribute title; a visible attribute takes only	1
+branch	sink-visible-description	layouts/page.html	<meta name="description" content="{{ .Kind }}">	into the attribute content; a visible attribute takes only	1
+branch	sink-visible-unlisted-attribute	layouts/page.html	<p foo="{{ .Kind }}"></p>	into the attribute foo; a visible attribute takes only	1
+branch	sink-visible-output	layouts/baseof.html	{{ with resources.Get "css/site.css" }}<p title="{{ .RelPermalink }}"></p>{{ end }}	the action prints a URL into the attribute title	1
+branch	sink-visible-integrity	layouts/baseof.html	{{ with resources.Get "js/copy.js" | resources.Fingerprint "sha384" }}<p>{{ .Data.Integrity }}</p>{{ end }}	the action prints a resource's integrity hash into the page text	1
+branch	sink-element-name	layouts/page.html	<{{ .Kind }}></{{ .Kind }}>	the action prints into an element name something other than a literal tag name	2
+branch	sink-data-without-jsonify	layouts/page.html	<script type="application/ld+json">{{ .Kind }}</script>	the action prints into a JSON-LD block without `| jsonify`	1
+branch	sink-data-json-layout	layouts/index.json	{{ .Kind }}	the action prints into a JSON layout without `| jsonify`	1
+branch	sink-data-nested-name	layouts/page.html	<script type="application/ld+json">{{ dict "itemListElement" (slice (dict "name" .Kind)) | jsonify | safeJS }}</script>	as its name	1
+branch	sink-text-layout	layouts/robots.txt	{{ .Kind }}	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into a text layout	1
+branch	sink-one-defect-one-finding	layouts/page.html	{{ $x := slice "free" }}{{ range $x }}<p>{{ . }}</p>{{ end }}	the slice value 'free' is not on LITERALS_COLLECTION_VALUES	1
+branch	resource-copy-js-content-baseof	layouts/baseof.html	{{ with resources.Get "js/copy.js" }}{{ .Content }}{{ end }}	.Content: none in baseof.html, where the dot of a `with` can be a resource	1
+branch	resource-copy-js-content-partial	layouts/_partials/copy.html	{{ with resources.Get "js/copy.js" }}{{ .Content }}{{ end }}	resources.Get: only layouts/baseof.html may call it	1
+branch	resource-fingerprint-other-algorithm	layouts/baseof.html	{{ with resources.Get "js/copy.js" | resources.Fingerprint "md5" }}<script src="{{ .RelPermalink }}"></script>{{ end }}	resources.Fingerprint takes 'md5', which is not a literal on LITERALS_RESOURCE_KEYS	1
+branch	resource-fingerprint-in-partial	layouts/_partials/copy.html	{{ with resources.Get "js/copy.js" | resources.Fingerprint "sha384" }}<script src="{{ .RelPermalink }}"></script>{{ end }}	only layouts/baseof.html may call it	2
+branch	collection-contact-other-file	layouts/page.html	{{ $c := dict "id" "contact" }}	the dict value 'contact' is not on LITERALS_COLLECTION_VALUES for this file	1
+branch	collection-contact-send-other-file	layouts/_partials/footer.html	{{ $c := dict "id" "contact-send" }}	the dict value 'contact-send' is not on LITERALS_COLLECTION_VALUES for this file	1
+branch	script-literal-copy	assets/js/copy.js	status.textContent = "Copied";	string literal 'Copied' is copy (L7, the L3 test on a script literal)	2
+branch	script-template-action	assets/js/copy.js	var a = {{ .Title }};	a template action in a script	2
+branch	script-template-substitution	assets/js/copy.js	var a = `${b}`;	a template literal with a substitution	2
+branch	script-regular-expression	assets/js/copy.js	var a = b.replace(/x/, "");	a regular expression literal	2
+branch	script-unterminated-string	assets/js/copy.js	var a = "x;	unterminated string (L6)	2
+branch	script-unterminated-comment	assets/js/copy.js	var a; /* x	unterminated comment (L6)	2
+branch	script-literal-symbol	assets/js/copy.js	var a = "→";	holds non-ASCII symbols that are not on LITERALS_SYMBOLS	2
+branch	script-literal-data-url	assets/js/copy.js	var a = "data:";	holds a data: URL	2
+branch	sink-range-does-not-settle	layouts/page.html	{{ $x := slice }}{{ range .Pages }}{{ $x = slice $x }}{{ end }}<p>{{ .Title }}</p>	the print-sink analysis of this range did not settle	1
+branch	sink-unbalanced-block	layouts/page.html	{{ if .Title }}<p>{{ .Title }}</p>	unbalanced end: the print sinks cannot read the template's blocks	1
+LITERALS_META_PLAIN_NAMES	viewport	layouts/page.html	<meta name="viewport" content="{{ .Kind }}"><p>{{ .Kind }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+LITERALS_META_PLAIN_NAMES	color-scheme	layouts/page.html	<meta name="color-scheme" content="{{ .Kind }}"><p>{{ .Kind }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+LITERALS_META_PLAIN_NAMES	theme-color	layouts/page.html	<meta name="theme-color" content="{{ .Kind }}"><p>{{ .Kind }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+LITERALS_META_PLAIN_HTTP_EQUIV	content-security-policy	layouts/page.html	<meta http-equiv="Content-Security-Policy" content="{{ .Kind }}"><p>{{ .Kind }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+branch	meta-content-twitter-title	layouts/page.html	<meta name="twitter:title" content="{{ .Kind }}">	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the attribute content; a visible attribute takes only	1
+branch	meta-content-og-title-as-name	layouts/page.html	<meta name="og:title" content="{{ .Kind }}">	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the attribute content; a visible attribute takes only	1
+branch	meta-content-application-name	layouts/page.html	<meta name="application-name" content="{{ .Kind }}">	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the attribute content; a visible attribute takes only	1
+branch	meta-content-other-http-equiv	layouts/page.html	<meta http-equiv="refresh" content="{{ .Kind }}">	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the attribute content; a visible attribute takes only	1
+branch	meta-content-name-and-http-equiv	layouts/page.html	<meta name="viewport" http-equiv="content-security-policy" content="{{ .Kind }}">	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the attribute content; a visible attribute takes only	1
+branch	meta-content-plain-name-with-property	layouts/page.html	<meta name="viewport" property="og:title" content="{{ .Kind }}">	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the attribute content; a visible attribute takes only	1
+branch	meta-content-no-name	layouts/page.html	<meta content="{{ .Kind }}">	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the attribute content; a visible attribute takes only	1
+branch	content-attribute-not-meta	layouts/page.html	<p content="{{ .Kind }}"></p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the attribute content; a visible attribute takes only	1
+branch	meta-content-literal-unlisted-name	layouts/page.html	<meta name="twitter:title" content="copied">	visible attribute content='copied' (L2)	1
+branch	meta-content-literal-plain-name	layouts/page.html	<meta name="color-scheme" content="Free money">	attribute content='Free money' holds words, not a token (L2)	1
+branch	content-attribute-literal-not-meta	layouts/page.html	<p content="copied"></p>	attribute content='copied' is not on LITERALS_PLAIN_ATTRS	1
+branch	sink-if-partial-output	layouts/page.html	{{ $v := .Kind }}{{ if partial "nothing.html" . }}{{ $v = .Title }}{{ end }}<h1>{{ $v }}</h1>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
++		layouts/_partials/nothing.html	{{- /* prints nothing */ -}}		
+branch	sink-with-partial-output	layouts/page.html	{{ with partial "nothing.html" . }}{{ else }}<h1>{{ $.Kind }}</h1>{{ end }}	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
++		layouts/_partials/nothing.html	{{- /* prints nothing */ -}}		
+branch	sink-if-label	layouts/page.html	{{ $v := .Kind }}{{ if partial "label.html" "x" }}{{ $v = .Title }}{{ end }}<h1>{{ $v }}</h1>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
++		layouts/_partials/label.html	{{- $v := hugo.Data.labels -}}{{- return $v -}}		
+branch	sink-if-nonempty-literal	layouts/page.html	{{ $v := .Kind }}{{ if "-" }}{{ $v = .Title }}{{ end }}<h1>{{ $v }}</h1>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+branch	define-in-comment	layouts/page.html	<!-- {{ define "zz" }}{{ .Kind }}{{ end }} --><p>{{ template "zz" . }}</p>	define 'zz' sits in a comment; a define prints where it is called, so it must sit in the page text	1
+branch	define-in-attribute	layouts/page.html	<i class="{{ define "zz" }}{{ .Kind }}{{ end }}"></i><p>{{ template "zz" . }}</p>	define 'zz' sits in the attribute class; a define prints where it is called, so it must sit in the page text	1
+branch	define-in-jsonld	layouts/page.html	<script type="application/ld+json">{{ define "zz" }}{{ .Kind | jsonify }}{{ end }}</script><p>{{ template "zz" . }}</p>	define 'zz' sits in a JSON-LD block; a define prints where it is called, so it must sit in the page text	1
+branch	define-without-call-site	layouts/page.html	{{ define "zz" }}{{ .Kind }}{{ end }}	define 'zz' has no call site	1
+branch	define-called-in-comment	layouts/page.html	{{ define "zz" }}{{ .Title }}{{ end }}<!-- {{ template "zz" . }} -->	the call of define 'zz' sits in a comment; a define is checked only where it is called	1
+branch	define-called-in-visible-attribute	layouts/page.html	{{ define "zz" }}{{ printf "<b>%s</b>" .Title | safeHTML }}{{ end }}<p title="{{ template "zz" . }}"></p>	printf markup into the attribute title (where define	1
+branch	define-called-through-define-in-visible-attribute	layouts/page.html	{{ define "b" }}{{ printf "<b>%s</b>" .Title | safeHTML }}{{ end }}{{ define "a" }}{{ template "b" . }}{{ end }}<p title="{{ template "a" . }}"></p>	printf markup into the attribute title (where define	1
+PAGE_MEMBERS	Title	layouts/page.html	<p>{{ .Kind }}</p><p>{{ .Title }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+PAGE_MEMBERS	Description	layouts/page.html	<p>{{ .Kind }}</p><p>{{ .Description }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+PAGE_MEMBERS	Content	layouts/page.html	<p>{{ .Kind }}</p><p>{{ .Content }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+PAGE_MEMBERS	Params	layouts/page.html	<p>{{ .Params }}</p>	the action prints the page's params (a map) into the page text	1
+PAGE_MEMBERS	Permalink	layouts/page.html	<p>{{ .Permalink }}</p>	the action prints a URL into the page text	1
+PAGE_MEMBERS	RelPermalink	layouts/page.html	<p>{{ .RelPermalink }}</p>	the action prints a URL into the page text	1
+PAGE_MEMBERS	Path	layouts/page.html	<p>{{ .Path }}</p>	the action prints a URL into the page text	1
+PAGE_MEMBERS	Date	layouts/page.html	<p>{{ .Date }}</p>	the action prints a time into the page text	1
+PAGE_MEMBERS	Kind	layouts/page.html	<p>{{ .Kind }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+PAGE_MEMBERS	Section	layouts/page.html	<p>{{ .Section }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+PAGE_MEMBERS	File	layouts/page.html	<p>{{ .File }}</p>	the action prints a file into the page text	1
+PAGE_MEMBERS	RegularPages	layouts/page.html	<p>{{ .RegularPages }}</p>	the action prints a list into the page text	1
+PAGE_MEMBERS	Pages	layouts/page.html	<p>{{ .Pages }}</p>	the action prints a list into the page text	1
+PAGE_MEMBERS	Sections	layouts/page.html	<p>{{ .Sections }}</p>	the action prints a list into the page text	1
+PAGE_MEMBERS	Home	layouts/page.html	<p>{{ .Home }}</p>	the action prints a page into the page text	1
+PAGE_MEMBERS	GetPage	layouts/page.html	<p>{{ .GetPage }}</p>	the action prints a page into the page text	1
+SINK_KINDS	lit	layouts/page.html	{{ range $k, $v := dict "title" .Title }}<p>{{ $k }}</p>{{ end }}	the action prints the literal 'title' into the page text	1
+SINK_KINDS	markup-raw	layouts/page.html	<p>{{ (dict "html" "<b></b>").html }}</p>	the action prints markup that Hugo escapes into visible tags into the page text	1
+SINK_KINDS	formatted-markup-raw	layouts/page.html	<p>{{ printf "<b>%s</b>" .Title }}</p>	the action prints printf markup that Hugo escapes into visible tags into the page text	1
+SINK_KINDS	escaped-markup	layouts/page.html	<p>{{ htmlEscape (printf "<b>%s</b>" .Title | safeHTML) }}</p>	the action prints markup escaped into visible tags into the page text	1
+SINK_KINDS	bool	layouts/page.html	<p>{{ eq .Title .Title }}</p>	the action prints a bool (true or false) into the page text	1
+SINK_KINDS	number	layouts/page.html	<p>{{ len .Pages }}</p>	the action prints a number into the page text	1
+SINK_KINDS	nil	layouts/page.html	<p>{{ (dict "title" .Title).value }}</p>	the action prints a missing value into the page text	1
+SINK_KINDS	runtime	layouts/page.html	<p>{{ .Kind }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+SINK_KINDS	url	layouts/page.html	<p>{{ .RelPermalink }}</p>	the action prints a URL into the page text	1
+SINK_KINDS	json	layouts/page.html	<p>{{ jsonify .Title }}</p>	the action prints JSON into the page text	1
+SINK_KINDS	csp	layouts/page.html	{{ with site.Params.csp }}<p>{{ . }}</p>{{ end }}	site.Params.csp: params.csp only as the whole action	1
+SINK_KINDS	tokens	layouts/page.html	<p>{{ hugo.Data.tokens.color.card }}</p>	the action prints a design token into the page text	1
+SINK_KINDS	integrity	layouts/baseof.html	{{ with resources.Get "js/copy.js" | resources.Fingerprint "sha384" }}<p>{{ .Data.Integrity }}</p>{{ end }}	the action prints a resource's integrity hash into the page text	1
+SINK_KINDS	page	layouts/page.html	<p>{{ .Home }}</p>	the action prints a page into the page text	1
+SINK_KINDS	params	layouts/page.html	<p>{{ .Params }}</p>	the action prints the page's params (a map) into the page text	1
+SINK_KINDS	site	layouts/page.html	<p>{{ $.Site.Title }}</p>	.Site is not on LITERALS_MEMBERS	1
+SINK_KINDS	hugo	layouts/page.html	{{ with hugo }}<p>{{ . }}</p>{{ end }}	hugo without a member (L4)	1
+SINK_KINDS	file	layouts/page.html	<p>{{ .File }}</p>	the action prints a file into the page text	1
+SINK_KINDS	time	layouts/page.html	<p>{{ .Date }}</p>	the action prints a time into the page text	1
+SINK_KINDS	resource	layouts/baseof.html	{{ with resources.Get "js/copy.js" }}<p>{{ . }}</p>{{ end }}	the action prints a resource into the page text	1
+SINK_KINDS	resource-data	layouts/baseof.html	{{ with resources.Get "js/copy.js" | resources.Fingerprint "sha384" }}<p>{{ .Data }}</p>{{ end }}	the action prints a resource-data into the page text	1
+SINK_KINDS	siteparams	layouts/page.html	<p>{{ .Site.Params }}</p>	.Site.Params: site.Params only as operator, contact or csp (L4)	1
+SINK_KINDS	hugodata	layouts/page.html	{{ with hugo.Data }}<p>{{ . }}</p>{{ end }}	hugo.Data: hugo.Data only as hugo.Data.labels or hugo.Data.tokens (L4)	1
+SINK_KINDS	label-entry	layouts/page.html	{{ range partial "label-list.html" (dict "key" "copy" "fields" (slice "title")) }}<p>{{ . }}</p>{{ end }}	the action prints a table of data/labels.toml into the page text	1
++		layouts/_partials/label-list.html	{{- $v := hugo.Data.labels -}}{{- return $v -}}		
+SINK_KINDS	dict	layouts/page.html	<p>{{ dict "title" .Title }}</p>	the action prints a dict into the page text	1
+SINK_KINDS	list	layouts/page.html	<p>{{ slice .Title }}</p>	the action prints a list into the page text	1
+SINK_KINDS	unknown	layouts/page.html	<p>{{ .Data }}</p>	the action prints a value this check cannot follow into the page text	1
+branch	define-ends-in-attribute-text-call	layouts/page.html	{{ define "zz" }}<b title="{{ end }}"></b><p>{{ template "zz" . }}</p>	define 'zz' starts in the page text and ends in the attribute title	1
+branch	define-ends-in-script	layouts/page.html	{{ define "zz" }}<script>{{ end }}</script><p>{{ template "zz" . }}</p>	define 'zz' starts in the page text and ends in a script element	1
+branch	define-ends-in-tag	layouts/page.html	{{ define "zz" }}<b {{ end }}></b><p>{{ template "zz" . }}</p>	define 'zz' starts in the page text and ends in a tag, a comment or past the end of the file	1
+branch	define-ends-in-comment	layouts/page.html	{{ define "zz" }}<!-- {{ end }} --><p>{{ template "zz" . }}</p>	define 'zz' starts in the page text and ends in a tag, a comment or past the end of the file	1
+branch	block-ends-in-attribute	layouts/page.html	<p>{{ block "zb" . }}<b title="{{ end }}"></b></p>	block 'zb' starts in the page text and ends in the attribute title	1
+branch	block-ends-in-other-attribute	layouts/page.html	<i title="{{ block "zb" . }}" alt="{{ end }}"></i>	block 'zb' starts in the attribute title and ends in the attribute alt	1
+branch	define-called-in-attribute-holds-apostrophe	layouts/page.html	{{ define "zz" }}'{{ end }}<i title='{{ template "zz" . }}' class="{{ .Kind }}"></i>	define 'zz' is called in a visible attribute (layouts/page.html:1), and its template text holds "'"	1
+branch	define-called-in-attribute-holds-space	layouts/page.html	{{ define "zz" }} {{ end }}<i title={{ template "zz" . }}></i>	define 'zz' is called in a visible attribute (layouts/page.html:1), and its template text holds ' '	1
+branch	define-called-through-define-in-attribute-holds-text	layouts/page.html	{{ define "zb" }}">{{ end }}{{ define "za" }}{{ template "zb" . }}{{ end }}<i title="{{ template "za" . }}" class="{{ .Kind }}"></i>	define 'zb' is called in a visible attribute	1
+branch	define-into-attribute-block-holds-text	layouts/baseof.html	<meta name="description" content="{{ block "description" . }}{{ .Description }}{{ end }}">	define 'description' is called in a visible attribute (layouts/baseof.html:1), and its template text holds	1
++		layouts/page.html	{{ define "description" }}{{ .Description }}"><b>{{ end }}		
+branch	define-called-in-raw-text-holds-lt	layouts/baseof.html	<title>{{ template "zt" . }}</title>{{ define "zt" }}</title><b>{{ end }}	define 'zt' is called in a raw-text element (layouts/baseof.html:1), and its template text holds '<'	1
+branch	define-called-through-define-in-raw-text-holds-lt	layouts/baseof.html	{{ define "zu" }}</title><b>{{ end }}{{ define "zt" }}{{ template "zu" . }}{{ end }}<title>{{ template "zt" . }}</title>	define 'zu' is called in a raw-text element	1
+branch	define-called-in-script	layouts/page.html	{{ define "zz" }}{{ .Title }}{{ end }}<script>{{ template "zz" . }}</script>	the call of define 'zz' sits in a script element	1
+branch	define-called-in-style	layouts/page.html	{{ define "zz" }}{{ .Title }}{{ end }}<style>{{ template "zz" . }}</style>	the call of define 'zz' sits in a style element	1
+branch	define-called-in-attribute-name	layouts/page.html	{{ define "zz" }}{{ .Title }}{{ end }}<i {{ template "zz" . }}></i>	the call of define 'zz' sits in an attribute name	1
+branch	define-in-script	layouts/page.html	<script>{{ define "zz" }}{{ .Title }}{{ end }}</script><p>{{ template "zz" . }}</p>	define 'zz' sits in a script element; a define prints where it is called	1
+branch	template-calls-block	layouts/page.html	<p>{{ block "zb" . }}{{ .Title }}{{ end }}</p><i title="{{ template "zb" . }}"></i>	the template call names 'zb', which a block gives	1
+branch	dict-repeated-key	layouts/page.html	{{ with (dict "id" "" "id" $.Kind).id }}<p>{{ . }}</p>{{ end }}	the dict key 'id' is repeated in one dict	1
+branch	dict-computed-key-any-name	layouts/page.html	{{ $k := .Params.k }}{{ with (dict "id" "" $k $.Kind).id }}<p>{{ . }}</p>{{ end }}	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+branch	dict-computed-key-first	layouts/page.html	{{ $k := .Params.k }}{{ $j := .Params.j }}{{ with index (dict $j $.Kind $k "") "id" }}<p>{{ . }}</p>{{ end }}	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+LITERALS_RESOURCE_TARGETS	resources.Concat	layouts/baseof.html	{{ with slice (resources.Get "js/copy.js") (resources.Get "css/site.css") | resources.Concat "js/copy.js" }}<script src="{{ .RelPermalink }}"></script>{{ end }}	resources.Concat names the resource it builds 'js/copy[.]js', a script	1
+LITERALS_RESOURCE_TARGETS	resources.Copy	layouts/baseof.html	{{ with resources.Get "css/site.css" | resources.Copy "js/copy.js" }}<script src="{{ .RelPermalink }}"></script>{{ end }}	resources.Copy names the resource it builds 'js/copy[.]js', a script	3
+LITERALS_RESOURCE_TARGETS	resources.ExecuteAsTemplate	layouts/baseof.html	{{ with resources.Get "css/tokens.css" | resources.ExecuteAsTemplate "js/copy.js" . }}<script src="{{ .RelPermalink }}"></script>{{ end }}	resources.ExecuteAsTemplate names the resource it builds 'js/copy[.]js', a script	1
+LITERALS_RESOURCE_TARGETS	resources.FromString	layouts/baseof.html	{{ with resources.FromString "js/copy.js" "" }}<script src="{{ .RelPermalink }}"></script>{{ end }}	resources.FromString names the resource it builds 'js/copy[.]js', a script	3
+JS_SUFFIXES	.js	layouts/baseof.html	{{ with resources.Get "css/tokens.css" | resources.ExecuteAsTemplate "js/copy.JS" . }}<script src="{{ .RelPermalink }}"></script>{{ end }}	resources.ExecuteAsTemplate names the resource it builds 'js/copy[.]JS', a script	2
+JS_SUFFIXES	.mjs	layouts/baseof.html	{{ with resources.Get "css/tokens.css" | resources.ExecuteAsTemplate "js/copy.mjs" . }}<script src="{{ .RelPermalink }}"></script>{{ end }}	resources.ExecuteAsTemplate names the resource it builds 'js/copy[.]mjs', a script	1
+branch	dict-number-key	layouts/page.html	{{ $d := dict 1 .Title }}<p>{{ index $d 1 }}</p>	the dict key '1' is not on LITERALS_DICT_KEYS	1

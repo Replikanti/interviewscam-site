@@ -1,0 +1,1 @@
+the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text

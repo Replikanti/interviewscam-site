@@ -1,0 +1,8 @@
+{{- /* #31 fix round 2: a define called from a visible attribute holds only
+  actions once the trim markers drop the whitespace around them, and one
+  called from the <title> may hold text without "<". */ -}}
+{{ define "description" -}}
+  {{ .Description }}
+{{- end }}
+{{ define "title" }}{{ .Title }} · {{ site.Title }}{{ end }}
+{{ define "main" }}<p>{{ .Title }}</p>{{ end }}

@@ -1,0 +1,11 @@
+{{- /* The Copy button of one artifact box or contact address (ADR-0004
+  part 11, the carried pick constraints). Called with (dict "id" <id>):
+  the id of the element on the same page whose text it copies, unchanged.
+  The button is in the markup hidden; assets/js/copy.js reveals it only
+  where the clipboard API and a secure context exist, so a page without
+  the script is unchanged. The button text and both statuses come from
+  data/labels.toml: copy.js reads the statuses from data-copy-done and
+  data-copy-failed and writes one into the polite live region right after
+  the button, so the script holds no copy. render rule 14 checks every
+  button and its target. */ -}}
+<button type="button" class="copy" hidden data-copy-target="{{ .id }}" data-copy-done="{{ partial "label.html" "copy.done" }}" data-copy-failed="{{ partial "label.html" "copy.failed" }}">{{ partial "label.html" "copy.button" }}</button><span class="copy-status" role="status" aria-live="polite"></span>

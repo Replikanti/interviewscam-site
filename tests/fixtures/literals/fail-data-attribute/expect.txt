@@ -1,1 +1,1 @@
-attribute data-copy-done='Copied to clipboard' holds words, not a token (L2)
+attribute data-label='Copied to clipboard' holds words, not a token (L2)

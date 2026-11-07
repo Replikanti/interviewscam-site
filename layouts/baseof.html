@@ -23,6 +23,10 @@
 {{- with slice $tokens (resources.Get "css/site.css") | resources.Concat "css/site.css" | resources.Minify | resources.Fingerprint }}
 <link rel="stylesheet" href="{{ .RelPermalink }}">
 {{- end }}
+{{- /* The one script, the Copy buttons (ADR-0004 part 11): first-party, minified and fingerprinted, with its SHA-384 as integrity, deferred. script-src 'self' allows it; sitecheck site rule (j) allows no other .js file and no other script src. */}}
+{{- with resources.Get "js/copy.js" | resources.Minify | resources.Fingerprint "sha384" }}
+<script src="{{ .RelPermalink }}" integrity="{{ .Data.Integrity }}" defer></script>
+{{- end }}
 {{- /* Record and section pages add their JSON-LD here (ADR-0004 part 8). */}}
 {{- block "head" . }}{{ end }}
 </head>

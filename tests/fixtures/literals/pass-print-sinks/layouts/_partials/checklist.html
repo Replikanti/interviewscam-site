@@ -1,0 +1,36 @@
+{{- /* The "before your call" checklist: the lists and headings of
+  checklist in data/labels.toml, its single source, read through
+  label-list.html and label.html. Called with a dict:
+    details  false on Home (titles only, under the card's h2),
+             true on Before your call (titles with details, plus the
+             "if you already ran it" warning panel).
+  Warning tiles are the only orange on the page besides the CTA and the
+  warning panel (SPEC section 7). */ -}}
+{{- $fields := slice "title" -}}
+{{- $details := .details -}}
+{{- $h := cond $details "h2" "h3" -}}
+<div class="columns">
+{{- range slice
+  (dict "id" "warning-signs" "title" (partial "label.html" "checklist.warning_heading") "items" (partial "label-list.html" (dict "key" "checklist.warning" "fields" $fields)) "tile" "tile-warn" "icon" "warning")
+  (dict "id" "do-this-instead" "title" (partial "label.html" "checklist.instead_heading") "items" (partial "label-list.html" (dict "key" "checklist.instead" "fields" $fields)) "tile" "tile-ok" "icon" "check") }}
+<section class="column" aria-labelledby="{{ .id }}">
+{{ printf `<%s id="%s">%s</%s>` $h .id (htmlEscape .title) $h | safeHTML }}
+<ul class="checklist">
+{{- $item := . }}
+{{- range .items }}
+<li><span class="tile {{ $item.tile }}">{{ partial "icon.html" $item.icon }}</span><div>{{ if $details }}<p class="item-title">{{ .title }}</p>{{ with .detail }}<p class="item-detail">{{ . }}</p>{{ end }}{{ else }}{{ .title }}{{ end }}</div></li>
+{{- end }}
+</ul>
+</section>
+{{- end }}
+</div>
+{{- if $details }}
+<section class="panel-warn" aria-labelledby="already-ran">
+<h2 id="already-ran"><span class="panel-icon">{{ partial "icon.html" "warning" }}</span>{{ partial "label.html" "checklist.already_ran_heading" }}</h2>
+<ol class="steps">
+{{- range partial "label-list.html" (dict "key" "checklist.already_ran" "fields" $fields) }}
+<li><p class="item-title">{{ .title }}</p>{{ with .detail }}<p class="item-detail">{{ . }}</p>{{ end }}</li>
+{{- end }}
+</ol>
+</section>
+{{- end }}

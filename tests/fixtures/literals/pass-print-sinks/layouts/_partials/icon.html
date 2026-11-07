@@ -1,0 +1,14 @@
+{{- /* One inline SVG icon by name: "search", "warning" or "check".
+  Decorative only (aria-hidden): the text next to it carries the meaning. It
+  strokes in currentColor, so its colour comes from a CSS class on the
+  element around it, never from a colour value here (SPEC section 7). */ -}}
+{{- $paths := dict
+  "search" `<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>`
+  "warning" `<path d="M12 3.5 2.5 20h19L12 3.5Z"/><path d="M12 10v4.5"/><path d="M12 17.5h.01"/>`
+  "check" `<path d="m5 12.5 4.5 4.5L19 7.5"/>`
+-}}
+{{- with index $paths . -}}
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{{ . | safeHTML }}</svg>
+{{- else -}}
+{{- errorf "icon.html: unknown icon %q" . -}}
+{{- end -}}

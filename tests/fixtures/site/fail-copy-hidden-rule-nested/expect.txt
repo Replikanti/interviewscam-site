@@ -1,0 +1,1 @@
+!important outside the .visually-hidden definition and its reveal and the .copy[hidden] rule

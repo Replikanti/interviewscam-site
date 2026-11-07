@@ -1,0 +1,1 @@
+print sinks: 4 text, 2 visible attribute, 0 data block, 0 other
