@@ -119,8 +119,9 @@ URLs and titles stay neutral, for example `/reports/saifuro/` titled "Saifuro, a
 
 ## 6. Pages in the MVP
 
-- **Home**: one search box ("company, app, domain or recruiter"), the answer for an exact match on the same page, a short "before your call" checklist, the five latest reports and the campaign families.
+- **Home**: one search box ("company, app, domain or recruiter"), on the same page the answer for an exact match, candidates for a partial match, or the no-report message when nothing matches; a short "before your call" checklist, the five latest reports and the campaign families.
 - **Report and campaign pages** from §5, and their index pages `/reports/` and `/campaigns/`.
+- **All names A to Z** (`/a-z/`): every report and campaign family, sorted by name, with its state, type and campaign family; the fallback of the search without JavaScript.
 - **Data feed** (`/data-feed/`): what `/feed.json` is, its fields, its versioning rule and a dated change list.
 - **Before your call**: warning signs (unknown meeting app, link sent minutes before the call, "run this repo or command", installers only for Windows and macOS) and what to do instead.
 - **Report a scam**: what to send to `report@interviewscam.com`, shown as plain text with no `mailto:` link and with a fixed subject line ("Report: <name>"), which evidence helps, how reporters are protected. The page describes only the intake channel that exists and announces no other.
@@ -136,7 +137,7 @@ URLs and titles stay neutral, for example `/reports/saifuro/` titled "Saifuro, a
   - This text is not legally reviewed. Legal review is a step of milestone 6.
 - **404**.
 
-Search works without a server, from a static index. Without JavaScript, an alphabetical index of all reports and campaigns is the fallback.
+Search works without a server, from a static index: the match keys come from `/feed.json`, and the answers are the entries of `/a-z/` ([ADR-0005](adr/0005-search.md)). Without JavaScript, an alphabetical index of all reports and campaigns, `/a-z/`, is the fallback.
 
 ## 7. Design
 
@@ -152,12 +153,12 @@ Search works without a server, from a static index. Without JavaScript, an alpha
 | Criterion | Threshold | Why this value |
 |---|---|---|
 | Lighthouse (performance, accessibility, best practices, SEO) | at least 95 in each, mobile profile, measured in CI on the built site ([ADR-0003](adr/0003-browser-checks.md)) | A static page without JavaScript scores about 100, so anything lower means something regressed |
-| Accessibility | WCAG 2.2 AA. In CI: Lighthouse accessibility, the contrast of the listed token pairs, and horizontal overflow at 320 CSS px (page level, and boxes that clip or scroll, except the one `visually-hidden` utility class, whose use in CSS is restricted by a static rule; `!important` is allowed only in `.visually-hidden` and `.copy[hidden]`, [ADR-0003](adr/0003-browser-checks.md) part 6, [ADR-0004](adr/0004-record-model.md) part 11), the skip link shown and painted on keyboard focus, and the Copy button hidden while its script does not run (ADR-0003 part 6, ADR-0004 part 11). Review covers the rest | Credibility, and readable for everyone. Orange contrast is the known risk. Long hashes and defanged URLs are the reflow risk |
+| Accessibility | WCAG 2.2 AA. In CI: Lighthouse accessibility, the contrast of the listed token pairs, and horizontal overflow at 320 CSS px (page level, and boxes that clip or scroll, except the one `visually-hidden` utility class, whose use in CSS is restricted by a static rule; `!important` is allowed only in `.visually-hidden`, `.copy[hidden]` and `.search-out[hidden]`, [ADR-0003](adr/0003-browser-checks.md) part 6, [ADR-0004](adr/0004-record-model.md) part 11, [ADR-0005](adr/0005-search.md) part 6), the skip link shown and painted on keyboard focus, and the Copy button and the search results hidden while their script does not run (ADR-0003 part 6, ADR-0004 part 11, ADR-0005 part 6). Review covers the rest | Credibility, and readable for everyone. Orange contrast is the known risk. Long hashes and defanged URLs are the reflow risk |
 | HTML | valid in the Nu Html Checker | Clean markup for search engines and agents |
 | Links | no broken internal links, checked on every PR. External links are checked weekly and before content merges (lychee) | Broken sources undermine trust. A third-party outage must not block a removal PR, so external links are not a PR gate ([ADR-0002](adr/0002-check-toolchain.md)) |
 | Data | every record passes the schema and the record rules, every attacker artifact is defanged; record pages render the D6, D7 and D10 wording, checked on fixture records | D6, D8 |
 | Third-party requests | none in the built site, checked in CI | D9 |
-| Mobile | from the home page to the answer in one search on a phone | The 15-minute window from §1 |
+| Mobile | from the home page to the answer in one search on a phone, measured in CI at Lighthouse's mobile viewport (reflow case (8), [ADR-0005](adr/0005-search.md)) | The 15-minute window from §1 |
 
 The Content Security Policy is set with a meta tag, because GitHub Pages cannot set response headers.
 
