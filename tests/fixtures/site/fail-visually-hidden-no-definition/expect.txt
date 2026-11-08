@@ -1,1 +1,1 @@
-uses class visually-hidden, but no built CSS defines it
+CSS: the page uses class visually-hidden, but no built CSS holds its definition

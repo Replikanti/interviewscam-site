@@ -15,15 +15,15 @@ jobs:
   # `check`. A rename must update the protection in the same session.
   check:
     runs-on: ubuntu-24.04
-    # ADR-0004 Numbers, "check.sh workflow timeouts": re-derived in M3 PR 7
-    # (#29) from its own green runs of check.sh; the slowest, 245 s
-    # (deploy.yml pages-artifact, run 42319886937, fix round 2, tree-1
-    # first answer 1.25 s, so stall-free), sets both terms. Cap >= max(2 x
-    # 245 s = 490 s, 245 s + 2 x 75 s (REFLOW_LAUNCH_TIMEOUT) + 70 s =
-    # 465 s), rounded up to 9 min. Re-derive in the next PR that changes
-    # check.sh.
+    # ADR-0004 Numbers, "check.sh workflow timeouts": re-derived in M3 PR 10
+    # fix round 1 (#4) from its own green runs of check.sh (case (7) also
+    # captures the skip link three times, 63 reflow fixtures); the slowest,
+    # 370 s (ci.yml check, run 42448235548, stall-free), sets both terms.
+    # Cap >= max(2 x 370 s = 740 s, 370 s + 2 x 75 s (REFLOW_LAUNCH_TIMEOUT)
+    # + 70 s = 590 s), rounded up to 13 min. Re-derive in the next PR that
+    # changes check.sh.
     # The 360-minute default would let a hung run block merges for hours.
-    timeout-minutes: 9
+    timeout-minutes: 13
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

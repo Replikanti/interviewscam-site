@@ -1,0 +1,1 @@
+not allowed: integrity; a stylesheet link has exactly rel and href

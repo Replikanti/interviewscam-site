@@ -87,6 +87,7 @@ if sys.version_info < (3, 11):
     sys.exit(2)
 
 import argparse
+import base64
 import copy
 import datetime
 import decimal
@@ -105,6 +106,7 @@ import os
 import re
 import select
 import shutil
+import struct
 import subprocess
 import tempfile
 import threading
@@ -112,6 +114,7 @@ import time
 import tomllib
 import unicodedata
 import urllib.parse
+import zlib
 from pathlib import Path
 
 SITE_ORIGIN = "https://interviewscam.com"
@@ -1744,31 +1747,61 @@ def css_declaration(text):
 # ADR-0003 part 6: the one sanctioned utility class. The reflow check exempts
 # elements that carry it while their box is at most 1 x 1 px and their
 # display is not contents. What this rule enforces: across ALL the site's
-# CSS the class has exactly one top-level definition with the pinned
-# hiding declarations and at most one :focus/:focus-visible reveal, both
-# entirely !important; !important appears nowhere else; no attribute
-# selector on `class` (it could match the class without naming it); inline
-# style is banned by rule (c).
+# CSS the class has exactly one top-level definition and at most one
+# :focus/:focus-visible reveal, each with exactly the pinned declarations
+# below, each declaration once !important; !important appears nowhere else;
+# no attribute selector on `class` (it could match the class without naming
+# it); inline style is banned by rule (c).
 VISUALLY_HIDDEN = "visually-hidden"
 VISUALLY_HIDDEN_WORD = re.compile(r"(?i)visually-hidden")
 VH_DEFINITION = ".visually-hidden"
 VH_REVEAL = {".visually-hidden:focus", ".visually-hidden:focus-visible"}
-# The hiding pattern: a 1 x 1 px absolutely positioned box that clips its
-# content and keeps it on one line. Each is required with exactly this value.
-VH_REQUIRED = {
-    # Pinned so `display: contents` (no box, text still painted) cannot
-    # apply; an absolutely positioned box is blockified anyway.
+# M3 PR 10 fix round 1 (PR #33 review, finding 1): the definition and the
+# reveal are pinned to today's declarations as the pinned Hugo's minifier
+# writes them (property, value; the value compared unescaped, without
+# !important, whitespace collapsed and trimmed inside parentheses, case kept),
+# with no optional extras. A box measure cannot see clip, clip-path or
+# opacity, so a one-line edit (`clip: rect(0 0 0 0)` in the definition,
+# `clip-path: none` dropped from the reveal, `opacity: 0` added to it) hid
+# the revealed skip link while every check passed. Pinned, any change to
+# these two rules is a tools/ change and gets the safety-net review; reflow
+# case (7) proves the outcome (the focused link paints). Both are pinned by
+# content in tests/fixtures/literals/allowlists.tsv.
+# The hiding pattern: a 1 x 1 px absolutely positioned box without margin,
+# padding or border that clips its content and keeps it on one line.
+# `display: block` so `display: contents` (no box, text still painted)
+# cannot apply; an absolutely positioned box is blockified anyway.
+VH_DEFINITION_DECLARATIONS = {
     "display": "block",
     "position": "absolute",
     "width": "1px",
     "height": "1px",
+    "margin": "0",
+    "padding": "0",
+    "border": "0",
     "overflow": "hidden",
     "clip-path": "inset(50%)",
     "white-space": "nowrap",
 }
-# Allowed in the definition with any value: they only shrink or reset the box,
-# and the runtime 1 x 1 px check in reflow catches a value that grows it.
-VH_OPTIONAL = {"margin", "padding", "border", "clip"}
+# The reveal: the box grows to its content, unclipped and wrapping, placed
+# at the top left on a card with the focus colours (tokens from
+# data/tokens.toml). No opacity, visibility, transform, filter or clip.
+VH_REVEAL_DECLARATIONS = {
+    "top": "var(--space-x2)",
+    "left": "var(--space-x2)",
+    "z-index": "1",
+    "width": "auto",
+    "height": "auto",
+    "padding": "var(--space-x3)var(--space-x4)",
+    "overflow": "visible",
+    "clip-path": "none",
+    "white-space": "normal",
+    "background": "var(--color-card)",
+    "border": "var(--border-width)solid var(--color-card-border)",
+    "border-radius": "var(--radius-control)",
+    "color": "var(--color-primary)",
+    "font-weight": "var(--weight-label)",
+}
 # review5 A3: re.ASCII and CSS whitespace, because a browser matches the
 # keyword in ASCII case only (`!` U+0131 `mportant` is no `!important`; the
 # browser drops that declaration).
@@ -1793,11 +1826,13 @@ def css_selector_text(prelude):
     return re.sub(r"\s+", " ", css_unescape(prelude)).strip()
 
 
-def css_value_text(value):
+def css_value_text(value, lower=True):
     """A declaration value as compared: unescaped, !important removed,
-    lowercased, whitespace collapsed and trimmed inside parentheses."""
-    value = IMPORTANT.sub("", css_unescape(value)).strip().lower()
-    value = re.sub(r"\s+", " ", value)
+    lowercased (unless lower is False: the pinned .visually-hidden
+    declarations keep case, because a custom property name is
+    case-sensitive), whitespace collapsed and trimmed inside parentheses."""
+    value = IMPORTANT.sub("", css_unescape(value)).strip()
+    value = re.sub(r"\s+", " ", value.lower() if lower else value)
     return re.sub(r"\(\s*", "(", re.sub(r"\s*\)", ")", value))
 
 
@@ -1848,21 +1883,33 @@ def css_rule_problems(css):
                                     "is not !important; every declaration of the "
                                     ".visually-hidden definition and its reveal is, so "
                                     "only they win the cascade")
+                elif found > 1:
+                    problems.append(f"{show(selector)}: declaration {show(declaration)} "
+                                    "has !important more than once; a browser drops it")
                 prop, value = css_declaration(declaration)
                 if prop in seen:
                     problems.append(f"{show(selector)}: {prop} is declared twice")
-                seen[prop] = css_value_text(value)
-            if is_definition:
-                for prop, value in seen.items():
-                    if prop not in VH_REQUIRED and prop not in VH_OPTIONAL:
-                        problems.append(f"{show(selector)}: {prop} is not part of the "
-                                        "hiding pattern")
-                for prop, want in VH_REQUIRED.items():
-                    if seen.get(prop) != want:
-                        problems.append(f"{show(selector)}: the definition needs "
-                                        f"{prop}: {want} !important (found "
-                                        f"{show(seen.get(prop, 'nothing'))}); it must "
-                                        "provably hide")
+                seen[prop] = css_value_text(value, lower=False)
+            if is_reveal and sorted(p.strip() for p in selector.split(",")) \
+                    != sorted(VH_REVEAL):
+                problems.append(f"{show(selector)}: the reveal's selector must be exactly "
+                                f"{', '.join(sorted(VH_REVEAL))} (pinned, M3 PR 10)")
+            pinned = VH_DEFINITION_DECLARATIONS if is_definition else VH_REVEAL_DECLARATIONS
+            what = "the definition" if is_definition else "the reveal"
+            for prop in seen:
+                if prop not in pinned:
+                    problems.append(f"{show(selector)}: {prop} is not part of "
+                                    f"{'the hiding pattern' if is_definition else 'the reveal'}"
+                                    f"; {what} holds exactly its pinned declarations "
+                                    "(M3 PR 10)")
+            for prop, want in pinned.items():
+                if seen.get(prop) != want:
+                    problems.append(f"{show(selector)}: {what} needs "
+                                    f"{prop}: {want} !important (found "
+                                    f"{show(seen.get(prop, 'nothing'))}); "
+                                    + ("it must provably hide" if is_definition else
+                                       "it must provably show the skip link on keyboard "
+                                       "focus"))
             continue
         if VISUALLY_HIDDEN_WORD.search(selector) or any(
                 VISUALLY_HIDDEN_WORD.search(css_unescape(p)) for p in rule.parents):
@@ -1909,22 +1956,104 @@ def url_scheme(url):
     return match.group(0)[:-1].lower() if match else ""
 
 
-def applied_stylesheets(page, page_path):
-    """The site paths of the stylesheets an HTML page applies on screen: every
-    <link rel=stylesheet> (ASCII case, rel split on ASCII whitespace) without
-    `alternate`, `media` or `disabled`, whose href resolves against the page on
-    this site's origin (query and fragment dropped, as the server does)."""
-    out = set()
+# Rule (k), stylesheet links in one closed form (M3 PR 10, ADR-0003 part 6
+# and ADR-0004 part 11; #31 fix round 2 delta re-review, comment
+# 6713575984, finding 2, and fix round 3, comment 6714476035, finding 2).
+# A computed style is the result of every route at once (a `type`, an
+# `integrity`, a `<template>`, a `title` set, `<noscript>`, an `<svg>`
+# around the link, CSS error recovery), so instead of modelling which
+# links a browser applies, a stylesheet link counts only in the one form
+# the base layout writes: exactly these attributes, `rel` exactly
+# `stylesheet`, an href naming a built .css file in the closed path form
+# below, and only start tags of HEAD_PREFIX_TAGS before it. Every other
+# stylesheet link is a finding.
+STYLESHEET_LINK_ATTRS = frozenset({"rel", "href"})
+HEAD_PREFIX_TAGS = frozenset({"html", "head", "meta", "title", "link"})
+ASCII_WHITESPACE = "\t\n\f\r "
+# M3 PR 10 fix round 1 (PR #33 review, findings 2 and 3): an href of rule
+# (k) and a src of rule (j) is a root-relative path in a closed alphabet,
+# read as it stands, with no URL resolution. The pinned Hugo writes exactly
+# `/css/site.min.<64 hex>.css` and `/js/copy.min.<96 hex>.js` on every page
+# of both trees (.RelPermalink with the root baseURL), so lowercase ASCII
+# letters, digits and `.` between single slashes are all it writes. Why
+# closed instead of resolved: a relative href resolves against the
+# requested URL, and Pages serves 404.html at every missing path, so on
+# 404.html it names another file per request (finding 2); and urljoin
+# itself differs between Pythons (3.12.3, CI's, drops an empty trailing
+# `;` parameter, 3.14 keeps it; finding 3). In the closed form there is no
+# `//`, `.` or `..` segment, `%`, `;`, `?`, `#`, a backslash, whitespace, scheme
+# or host, so the path a browser requests is the text itself, on every
+# page URL and every Python.
+RESOURCE_PATH_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789./")
+
+
+def resource_path(value):
+    """Rule (k)'s href and rule (j)'s src in the closed form (M3 PR 10 fix
+    round 1): (the path, None) when value is a root-relative path of
+    RESOURCE_PATH_CHARS whose every segment is non-empty and starts with a
+    letter or digit, else (None, the reason)."""
+    if not value.startswith("/"):
+        return None, ("is not root-relative (it must start with a single /; a "
+                      "relative one resolves against the requested URL, and Pages "
+                      "serves 404.html at every missing path)")
+    bad = next((c for c in value if c not in RESOURCE_PATH_CHARS), None)
+    if bad is not None:
+        return None, (f"holds {show(bad)} (U+{ord(bad):04X}), outside the closed "
+                      "alphabet of lowercase ASCII letters, digits, . and / that the "
+                      "pinned Hugo writes")
+    for segment in value[1:].split("/"):
+        if not segment:
+            return None, "holds an empty path segment (//, or a trailing /)"
+        if segment.startswith("."):
+            return None, (f"holds the segment {show(segment)}; a segment starts with a "
+                          "letter or digit (no . or .. segment)")
+    return value, None
+
+
+def stylesheet_links(page, css_files):
+    """Rule (k) on one HTML page: (the site paths of the stylesheets it
+    applies, the problems). A <link> whose rel (ASCII-lowercased, split on
+    ASCII whitespace) holds `stylesheet` counts only in the closed form;
+    any other is a finding and does not count. The href is read as it
+    stands (resource_path), the same on every page URL."""
+    applied, problems = set(), []
+    prefix = True  # only start tags of HEAD_PREFIX_TAGS so far
     for tag, attrs in page.elements:
-        rel = re.split(r"[\t\n\f\r ]+", ascii_lower(attrs.get("rel", "")))
-        if tag != "link" or "stylesheet" not in rel or "alternate" in rel \
-                or "media" in attrs or "disabled" in attrs or "href" not in attrs:
-            continue
-        target = urllib.parse.urlsplit(urllib.parse.urljoin(SITE_ORIGIN + page_path,
-                                                            attrs["href"].strip()))
-        if (target.scheme, target.netloc) == ("https", OWN_HOST):
-            out.add(urllib.parse.unquote(target.path))
-    return out
+        if tag == "link" and "stylesheet" in \
+                re.split(r"[\t\n\f\r ]+", ascii_lower(attrs.get("rel", ""))):
+            href = attrs.get("href")
+            where = f"(k) <link rel={show(attrs.get('rel', ''))} href={show(href or '')}>"
+            ok = True
+            if set(attrs) != STYLESHEET_LINK_ATTRS:
+                extra = sorted(set(attrs) - STYLESHEET_LINK_ATTRS)
+                missing = sorted(STYLESHEET_LINK_ATTRS - set(attrs))
+                problems.append(f"{where} has the attributes {', '.join(sorted(attrs))}"
+                                f"{'; not allowed: ' + ', '.join(extra) if extra else ''}"
+                                f"{'; missing: ' + ', '.join(missing) if missing else ''}; "
+                                "a stylesheet link has exactly rel and href")
+                ok = False
+            if ascii_lower(attrs.get("rel", "")).strip(ASCII_WHITESPACE) != "stylesheet":
+                problems.append(f"{where}: rel is not exactly `stylesheet`")
+                ok = False
+            if not prefix:
+                problems.append(f"{where} comes after an element other than "
+                                f"{', '.join(sorted(HEAD_PREFIX_TAGS))} (inside or after "
+                                "a template, noscript, svg, math, script, style or the body)")
+                ok = False
+            if href is not None:
+                path, problem = resource_path(href)
+                if problem:
+                    problems.append(f"{where}: the href {problem}")
+                    ok = False
+                elif path not in css_files:
+                    problems.append(f"{where}: the href ({show(path)}) names no built "
+                                    ".css file")
+                    ok = False
+            if ok:
+                applied.add(path)
+        if tag not in HEAD_PREFIX_TAGS:
+            prefix = False
+    return applied, problems
 
 
 def own_path(rel):
@@ -2023,6 +2152,12 @@ def json_strings(value):
             yield from json_strings(sub)
 
 
+# The suffixes whose content cmd_site parses and checks beyond the byte scan
+# for live artifacts; a file of one of them that is not UTF-8 is a finding.
+SITE_TEXT_SUFFIXES = frozenset(HTML_SUFFIXES | XML_SUFFIXES
+                               | {".css", ".js", ".mjs", ".json"})
+
+
 def cmd_site(args):
     root = Path(args.records).resolve()
     public = Path(args.public).resolve()
@@ -2054,9 +2189,12 @@ def cmd_site(args):
     vh_definitions = vh_reveals = copy_hidden = 0
     vh_used, copy_used = [], []
     copy_hidden_files = set()  # site paths of the built CSS files holding the rule
+    vh_files, reveal_files = set(), set()  # the same for the definition and the reveal
     stylesheets = {}  # page rel -> the site paths of the stylesheets it applies
     n_html = 0
     files = sorted(p for p in public.rglob("*") if p.is_file())
+    css_files = {"/" + p.relative_to(public).as_posix() for p in files
+                 if p.suffix.lower() == ".css"}
     for path in files:
         rel = "public/" + path.relative_to(public).as_posix()
         data = path.read_bytes()
@@ -2070,6 +2208,14 @@ def cmd_site(args):
             findings.add(rel, "(b) a web manifest fails closed until its icons are "
                          "request-scanned")
         if text is None:
+            # M3 PR 10 fix round 1 (PR #33 review, finding 4): fail closed on a
+            # file whose rules this check reads (markup, CSS, script, JSON)
+            # but cannot decode, so no rule counts a file it never read (a
+            # linked .css file still counted in rule (k)'s css_files).
+            if suffix in SITE_TEXT_SUFFIXES:
+                findings.add(rel, f"not UTF-8, so its {suffix} rules were never read; "
+                             "every built markup, CSS, script and JSON file is UTF-8 "
+                             "(fail closed)")
             lowered = data.lower()
             for live, origin, apath, value in forms:
                 if live.encode("utf-8") in lowered:
@@ -2102,17 +2248,25 @@ def cmd_site(args):
                     findings.add(rel, problem)
                 for problem in rawtext_built_problems(text):
                     findings.add(rel, problem)
-                scripts += [(rel, own_path(path.relative_to(public).as_posix()),
-                             attrs["src"]) for tag, attrs in page.elements
+                scripts += [(rel, attrs["src"]) for tag, attrs in page.elements
                             if tag == "script" and "src" in attrs]
+                # (k) per page (M3 PR 10): the stylesheets every page applies.
+                stylesheets[rel], problems = stylesheet_links(page, css_files)
+                for problem in problems:
+                    findings.add(rel, f"{problem} (ADR-0003 part 6)")
+                # (k) No <template> element: its content is inert and it can
+                # hold a declarative shadow root (none today).
+                if any(tag == "template" for tag, _ in page.elements):
+                    findings.add(rel, "(k) <template> element: its content is inert and "
+                                 "can hold a shadow root, so the page's links and "
+                                 "elements are not those a browser applies (ADR-0003 "
+                                 "part 6)")
                 if any(VISUALLY_HIDDEN in attrs.get("class", "").split()
                        for _, attrs in page.elements):
                     vh_used.append(rel)
                 if any(COPY_CLASS in attrs.get("class", "").split()
                        for _, attrs in page.elements):
                     copy_used.append(rel)
-                    stylesheets[rel] = applied_stylesheets(
-                        page, own_path(path.relative_to(public).as_posix()))
             else:
                 for problem in svg_request_problems(page):
                     findings.add(rel, f"third-party request: {problem} (D9)")
@@ -2133,6 +2287,10 @@ def cmd_site(args):
             copy_hidden += result.copy_hidden
             if result.copy_hidden:
                 copy_hidden_files.add("/" + path.relative_to(public).as_posix())
+            if result.definitions:
+                vh_files.add("/" + path.relative_to(public).as_posix())
+            if result.reveals:
+                reveal_files.add("/" + path.relative_to(public).as_posix())
             for problem in result.problems:
                 findings.add(rel, f"CSS: {problem} (ADR-0003 part 6)")
             for problem in css_color_problems(text, allowed):
@@ -2165,14 +2323,16 @@ def cmd_site(args):
     if len(js_files) > 1:
         findings.add("public", f"(j) {len(js_files)} script files ({', '.join(js_files)}); "
                      "at most one .js file is allowed, the Copy button's (ADR-0004 part 11)")
-    for rel, page_path, src in scripts:
-        target = urllib.parse.urlsplit(urllib.parse.urljoin(SITE_ORIGIN + page_path,
-                                                            src.strip()))
-        if (target.scheme, target.netloc) != ("https", OWN_HOST) or target.query \
-                or target.fragment or urllib.parse.unquote(target.path) not in js_files[:1]:
+    for rel, src in scripts:
+        # M3 PR 10 fix round 1: read as rule (k) reads an href, in the
+        # closed path form (resource_path), so no query, fragment or
+        # relative path.
+        path, problem = resource_path(src)
+        if path is None or path not in js_files[:1]:
             findings.add(rel, f"(j) <script src={show(src)}> does not name the one script "
                          f"file of the site ({js_files[0] if js_files else 'none'}); "
-                         "every <script src> names it (ADR-0004 part 11)")
+                         "every <script src> names it (ADR-0004 part 11)"
+                         + (f"; the src {problem}" if problem else ""))
     # Counted across ALL built CSS: a second file could otherwise redefine
     # the class with its own, equally !important, rule.
     if vh_definitions > 1:
@@ -2193,12 +2353,25 @@ def cmd_site(args):
             findings.add(rel, f"CSS: the page has a Copy button (class copy), but no "
                          f"built CSS holds the rule `{COPY_HIDDEN} {{ display: none "
                          "!important }` in a stylesheet the page applies (a <link "
-                         "rel=stylesheet> of this site with no media, disabled or alternate), "
-                         "so an author display value could show it without the script "
-                         "(ADR-0004 part 11)")
-    if vh_used and vh_definitions == 0:
-        findings.add(vh_used[0], "CSS: the page uses class visually-hidden, but no "
-                     "built CSS defines it (ADR-0003 part 6)")
+                         "rel=stylesheet> in the closed form of rule (k)), so an author "
+                         "display value could show it without the script (ADR-0004 "
+                         "part 11)")
+    # Per page (M3 PR 10, #31 Known limit 5): the definition and its reveal
+    # count only in a stylesheet the page applies, so a file no page links
+    # (`static/css/print.css`) does not satisfy them, and the reveal, capped
+    # at one above, is required wherever the class is used.
+    for rel in vh_used:
+        if not stylesheets[rel] & vh_files:
+            findings.add(rel, "CSS: the page uses class visually-hidden, but no built "
+                         "CSS holds its definition in a stylesheet the page applies (a "
+                         "<link rel=stylesheet> in the closed form of rule (k)), so the "
+                         "hidden text shows (ADR-0003 part 6)")
+        if not stylesheets[rel] & reveal_files:
+            findings.add(rel, "CSS: the page uses class visually-hidden, but no built "
+                         "CSS holds its :focus/:focus-visible reveal in a stylesheet the "
+                         "page applies (a <link rel=stylesheet> in the closed form of "
+                         "rule (k)), so the skip link stays a 1 x 1 px box on keyboard "
+                         "focus (WCAG 2.2 SC 2.4.7; ADR-0003 part 6)")
     if n_html == 0:
         findings.add("public", "no HTML pages found; nothing was checked")
     return findings.report(
@@ -4789,7 +4962,16 @@ LITERALS_PASSING_SETS = (
 # this section plus the CSP and guard lists, defined further down.
 PINNED_ALLOWLISTS = LITERALS_PASSING_SETS + (
     "CSP_DIRECTIVES", "CSP_SOURCES", "HUGO_ENV_ALLOWED", "HUGO_CONFIG_STRINGS",
-    "HUGO_CONFIG_PINNED")
+    "HUGO_CONFIG_PINNED",
+    # site rule (k) (M3 PR 10): its two passing sets, and the URL trim set
+    # of url_scheme and leaves_origin.
+    "STYLESHEET_LINK_ATTRS", "HEAD_PREFIX_TAGS", "C0_AND_SPACE",
+    # M3 PR 10 fix round 1: the closed path alphabet of rules (k) and (j),
+    # and the pinned declarations of the .visually-hidden definition and
+    # its reveal.
+    "RESOURCE_PATH_CHARS", "VH_DEFINITION_DECLARATIONS", "VH_REVEAL_DECLARATIONS",
+    # and the T2 name regex (QA on PR #33: no net saw its text).
+    "LITERALS_TEMPLATE_NAME")
 # L5: the CSS properties and @counter-style descriptors whose strings the
 # browser draws as text.
 CSS_TEXT_PROPERTIES = {"content", "list-style", "list-style-type", "quotes",
@@ -6437,6 +6619,11 @@ SINK_KINDS = frozenset({
 # every field of /feed.json against the records, so the `.json` layout
 # needs no key rule.
 LITERALS_DATA_TEXT_KEYS = frozenset({"name", "description"})
+# T2 (M3 PR 10, ADR-0004 part 13): the only form of a define and block
+# name. No `/` or `.`, so Hugo cannot resolve the name by path (an inline
+# partial `define "_partials/x.html"` runs at `partial "x.html"`); ASCII
+# only, so no case fold or look-alike can map it to another name.
+LITERALS_TEMPLATE_NAME = re.compile(r"[a-z][a-z0-9_-]*", re.A)
 SINK_MARK = 0xF0000  # supplementary private use area A: one character per action
 SINK_MARKS = re.compile("[\U000F0000-\U000FFFFD]")
 SINK_TAG_OPEN = re.compile("<(/?)(?=[\U000F0000-\U000FFFFD])")
@@ -7507,6 +7694,43 @@ def print_sink_problems(files, findings):
                              "the call runs the block's own body in the call's context, "
                              "which the print sinks read only where the block sits; fails "
                              "closed (L3 print sinks)")
+    # T1 and T2 (M3 PR 10, ADR-0004 part 13; #31 fix round 2 delta
+    # re-review, comment 6713575984, finding 1). text/template runs a named
+    # body only through `template` and `block`, and a block is a define plus
+    # a template call of it, so a second `block` of a name is a call of the
+    # first one's body: Go keeps a non-empty body (an empty one never
+    # replaces it) and runs it in the second block's context, where the
+    # print sinks never read it. T1: a name is given by at most one `block`
+    # statement in all of layouts/, whatever its body; each later one is a
+    # finding. T2: every define and block name is plain
+    # (LITERALS_TEMPLATE_NAME), because Hugo also resolves a name with `/`
+    # or `.` by path (an inline partial `define "_partials/x.html"` runs at
+    # `partial "x.html"`), a call site this reading never maps to the define.
+    first_block = {}  # block name -> where its first block statement sits
+    for rel, info in files.items():
+        for stmt in walk_steps(info.get("tree") or []):
+            if stmt.kind not in ("define", "block"):
+                continue
+            at = f"{rel}:{line_of(info['text'], info['actions'][stmt.index][0])}"
+            if stmt.name is None or not LITERALS_TEMPLATE_NAME.fullmatch(stmt.name):
+                name = show(stmt.name) if stmt.name is not None else "that is no string literal"
+                findings.add(at, f"the {stmt.kind} name {name} is not a plain name "
+                             "(lower-case ASCII letters, digits, `_` and `-`, starting with "
+                             "a letter); Hugo also resolves a name with `/` or `.` by path, "
+                             "at a call site the print sinks do not map to it, so it fails "
+                             "closed (L3 print sinks T2; #31 comment 6713575984, finding 1; "
+                             "ADR-0004 part 13)")
+            if stmt.kind != "block" or stmt.name is None:
+                continue
+            if stmt.name in first_block:
+                findings.add(at, f"block {show(stmt.name)} is given a second time (first at "
+                             f"{first_block[stmt.name]}); a second block of a name runs the "
+                             "first block's non-empty body in its own context, which the "
+                             "print sinks read only where that body sits; one block "
+                             "statement per name, whatever its body (L3 print sinks T1; #31 "
+                             "comment 6713575984, finding 1; ADR-0004 part 13)")
+            else:
+                first_block[stmt.name] = at
     for name, sites in sorted(call_sites.items()):
         for kind, where, at, inside, place in sites:
             if name in defined and place is None:
@@ -7857,12 +8081,12 @@ REFLOW_HEIGHT = 640
 # attempt alone outlasts the longest stall seen, at most 70.3 s (PR 5 job
 # 20, image 20261101), so it is absorbed whether a killed Chrome keeps its
 # progress, the stall lies outside the VM, or only a fresh Chrome helps.
-# Upper bound: the 9-minute workflow cap (re-derived in M3 PR 7 fix round
-# 2, ADR-0004 Numbers) holds the slowest stall-free green run of that PR
-# (245 s), a fully used window (2 x L) and one more 70 s stall, so L is at
-# most 112.5 s; 75 s leaves 75 s of the cap. Below 71 s job 20's shape
-# depends on a restart helping again; above 112.5 s an absorbed window plus
-# a second stall is cancelled at 9 minutes.
+# Upper bound: the 13-minute workflow cap (re-derived in M3 PR 10 fix
+# round 1, ADR-0004 Numbers) holds the slowest green run of that round
+# (370 s), a fully used window (2 x L) and one more 70 s stall, so L is at
+# most 170 s; 75 s leaves 190 s of the cap. Below 71 s job 20's shape
+# depends on a restart helping again; above 170 s an absorbed window plus
+# a second stall is cancelled at 13 minutes.
 REFLOW_LAUNCH_TIMEOUT = 75
 # The budget of every later answer (ADR-0003 Numbers). A 23-page call makes
 # about 70 page-level calls in 1.9 to 2.8 s on the runner, and no later call
@@ -7912,6 +8136,94 @@ REFLOW_NAMED = 10
 # Sub-pixel tolerance: layout positions are fractional, and a box that ends
 # at 320.3 px because of rounding hides nothing.
 REFLOW_EPSILON = 0.5
+# Case (7) (M3 PR 10, ADR-0003 Numbers): the box of the focused skip link
+# must be wider and taller than this. The definition pins 1 x 1 px with
+# !important, and only the reveal's !important declarations can grow it
+# (!important is allowed nowhere else), so a larger box shows that the
+# reveal applied; 1.5 adds the 0.5 px tolerance. A revealed skip link is a
+# line of text with padding, tens of px each way. At 1 or below a reveal
+# that does not apply could pass on rounding; far above (40 px) a short
+# label in a small size could fail although revealed.
+REFLOW_REVEAL_MIN = 1.5
+# Case (7), the paint (M3 PR 10 fix round 1, ADR-0003 Numbers): two
+# screenshots of the focused element's box match when no channel of any
+# pixel differs by more than this (of 255). Measured on Chrome for Testing
+# 143: two captures of the same revealed skip link, one before and one after
+# the opacity round trip, differ by 1 at 6 anti-aliased pixels of the
+# rounded corners (the raster path changes), while the link against its
+# box without it differs by far more (its text, primary on card at 6.87:1).
+# At 0 that raster noise fails every page; far above (64) a faint but
+# readable link could count as painting nothing, the safe direction but
+# red on a working page. 8 is eight times the measured noise.
+REFLOW_PAINT_TOLERANCE = 8
+# Case (6), state S1 (ADR-0003 part 6): the script URLs blocked, so the page
+# loads with scripting on and its script not run, as after a failed load.
+REFLOW_BLOCKED_SCRIPTS = ("*.js", "*.mjs")
+# Case (7): what the page needs focus moved by, one Tab key press.
+REFLOW_TAB_KEY = {"key": "Tab", "code": "Tab", "windowsVirtualKeyCode": 9,
+                  "nativeVirtualKeyCode": 9}
+# Case (7): read after the Tab press. The focused element, its label as the
+# measuring script writes it, whether it has the class, its box, the scroll
+# position and, for the paint finding's message, its computed opacity,
+# visibility, clip and clip-path and the element at the box centre.
+REFLOW_FOCUS_SCRIPT = r"""
+(() => {
+  const exempt = %(exempt)s;
+  const label = (el) => {
+    let s = el.tagName.toLowerCase();
+    if (el.id) s += "#" + el.id;
+    for (const c of el.classList) s += "." + c;
+    return s;
+  };
+  const focusable = [...document.querySelectorAll("." + exempt)].some((e) => e.tabIndex >= 0);
+  const a = document.activeElement;
+  if (!a || a === document.body || a === document.documentElement)
+    return {focusable, label: null};
+  const r = a.getBoundingClientRect();
+  const cs = getComputedStyle(a);
+  const hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+  return {focusable, label: label(a), hidden: a.classList.contains(exempt),
+          left: r.left, top: r.top, right: r.right, bottom: r.bottom,
+          width: r.width, height: r.height, x: scrollX, y: scrollY,
+          opacity: cs.opacity, visibility: cs.visibility, clip: cs.clip,
+          clipPath: cs.clipPath, centre: hit ? label(hit) : null};
+})()
+"""
+# Case (7), the paint (M3 PR 10 fix round 1, PR #33 review, finding 1): a
+# box with a size can still draw nothing (clip, clip-path, opacity, an
+# ancestor's opacity or filter, a covering element, and causes on no list),
+# so the focused element's box is captured (Page.captureScreenshot, clipped
+# to the box, scale 1), then again with the element's inline opacity at 0
+# !important, then again restored. Equal first and second images mean the
+# element contributes no visible pixel there, whatever the cause. Opacity,
+# not visibility, because an element with visibility hidden loses focus;
+# `transition: none` with it, so the change is instant both ways (opacity
+# is restored and the style flushed before the transition, so no
+# transition starts). The third image must equal the first (the box holds
+# still), and the scroll position must be the same for all three. mode
+# "hide" returns the inline values it replaced, which "restore" puts back.
+REFLOW_PAINT_SCRIPT = r"""
+(() => {
+  const a = document.activeElement;
+  const mode = %(mode)s, saved = %(saved)s;
+  const props = ["opacity", "transition"];
+  let old = null;
+  if (a && a.style) {
+    if (mode === "hide") {
+      old = props.map((p) => [a.style.getPropertyValue(p), a.style.getPropertyPriority(p)]);
+      a.style.setProperty("transition", "none", "important");
+      a.style.setProperty("opacity", "0", "important");
+    } else if (mode === "restore" && saved) {
+      props.forEach((p, i) => {
+        if (saved[i][0]) a.style.setProperty(p, saved[i][0], saved[i][1]);
+        else a.style.removeProperty(p);
+        getComputedStyle(a).opacity;
+      });
+    }
+  }
+  return {x: scrollX, y: scrollY, saved: old};
+})()
+"""
 CHROME_FLAGS = (
     "--headless=new", "--remote-debugging-pipe", "--no-first-run",
     "--no-default-browser-check", "--disable-extensions", "--disable-sync",
@@ -8365,6 +8677,119 @@ def reflow_pages(public):
     return pages
 
 
+# Case (6) (M3 PR 10): S0 the script running (today's measurement), S1
+# scripting on with the script blocked, S2 scripting off. They differ in
+# what the parser and the CSS see: <noscript> content is markup and
+# (scripting: none) matches only in S2. S1 stands for every way the script
+# does not run with scripting on (a failed load, no clipboard API, an
+# insecure context), because copy.js changes no style before it reveals.
+REFLOW_STATES = ("with the script running", "with the script blocked",
+                 "with scripting off")
+
+
+def reflow_value(tools, session, expression, where):
+    """The value of a page expression (Runtime.evaluate, returnByValue)."""
+    reply = tools.send("Runtime.evaluate", {"expression": expression,
+                                            "returnByValue": True}, session=session)
+    if "exceptionDetails" in reply:
+        raise UsageError(f"reflow: the focus script failed on {where}: "
+                         f"{reply['exceptionDetails'].get('text')}")
+    return reply.get("result", {}).get("value") or {}
+
+
+def png_rows(data):
+    """(width, height, channels, the decoded rows) of a screenshot: an 8-bit,
+    non-interlaced RGB or RGBA PNG, as Chrome writes it (no other is read)."""
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise UsageError("reflow: a screenshot is not a PNG")
+    pos, idat, head = 8, [], None
+    while pos + 8 <= len(data):
+        size, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + size]
+        pos += 12 + size
+        if kind == b"IHDR":
+            head = struct.unpack(">IIBBBBB", body)
+        elif kind == b"IDAT":
+            idat.append(body)
+        elif kind == b"IEND":
+            break
+    if head is None or head[2] != 8 or head[3] not in (2, 6) or head[6]:
+        raise UsageError(f"reflow: a screenshot PNG is not 8-bit RGB or RGBA, "
+                         f"non-interlaced ({head})")
+    width, height, channels = head[0], head[1], 4 if head[3] == 6 else 3
+    raw, stride, rows = zlib.decompress(b"".join(idat)), width * channels, []
+    prev = bytearray(stride)
+    for y in range(height):
+        start = y * (stride + 1)
+        kind, line = raw[start], bytearray(raw[start + 1:start + 1 + stride])
+        for i in range(stride):
+            left = line[i - channels] if i >= channels else 0
+            up = prev[i]
+            if kind == 1:
+                line[i] = (line[i] + left) & 255
+            elif kind == 2:
+                line[i] = (line[i] + up) & 255
+            elif kind == 3:
+                line[i] = (line[i] + (left + up) // 2) & 255
+            elif kind == 4:
+                corner = prev[i - channels] if i >= channels else 0
+                guess = left + up - corner
+                pa, pb, pc = abs(guess - left), abs(guess - up), abs(guess - corner)
+                line[i] = (line[i] + (left if pa <= pb and pa <= pc
+                                      else up if pb <= pc else corner)) & 255
+            elif kind:
+                raise UsageError(f"reflow: a screenshot PNG has filter {kind}")
+        rows.append(line)
+        prev = line
+    return width, height, channels, rows
+
+
+def png_difference(first, second):
+    """The largest difference of one channel of one pixel between two
+    screenshots (base64 PNG), 255 when their sizes differ."""
+    a = png_rows(base64.b64decode(first))
+    b = png_rows(base64.b64decode(second))
+    if a[:3] != b[:3]:
+        return 255
+    return max((max(abs(x - y) for x, y in zip(ra, rb)) for ra, rb in zip(a[3], b[3])
+                if ra), default=0)
+
+
+def reflow_copy_buttons(tools, session):
+    """Case (6): ([(label, computed display)] of every <button> whose class
+    holds `copy`, [(label, type)] of every shadow root that is not the
+    browser's own), read from the whole tree with the DOM and CSS domains,
+    which run no page script. Shadow roots are pierced; template content
+    is inert and skipped."""
+    root = tools.send("DOM.getDocument", {"depth": -1, "pierce": True},
+                      session=session)["root"]
+    buttons, shadows, stack = [], [], [root]
+    while stack:
+        item = stack.pop()
+        raw = item.get("attributes") or []
+        attrs = dict(zip(raw[::2], raw[1::2]))
+        label = item.get("localName") or item.get("nodeName", "?").lower()
+        if attrs.get("id"):
+            label += "#" + attrs["id"]
+        classes = [c for c in re.split(r"[\t\n\f\r ]+", attrs.get("class", "")) if c]
+        label += "".join("." + c for c in classes)
+        if item.get("nodeType") == 1 and item.get("localName") == "button" \
+                and COPY_CLASS in classes:
+            style = tools.send("CSS.getComputedStyleForNode", {"nodeId": item["nodeId"]},
+                               session=session).get("computedStyle", [])
+            display = next((p.get("value") for p in style if p.get("name") == "display"), "?")
+            buttons.append((label, display))
+        for shadow in item.get("shadowRoots") or []:
+            if shadow.get("shadowRootType") != "user-agent":
+                shadows.append((label, shadow.get("shadowRootType", "?")))
+        children = list(item.get("children") or [])
+        children += item.get("shadowRoots") or []
+        if item.get("contentDocument"):
+            children.append(item["contentDocument"])
+        stack.extend(reversed(children))
+    return buttons, shadows
+
+
 def cmd_reflow(args):
     public = Path(args.public).resolve()
     chrome = args.chrome
@@ -8385,6 +8810,7 @@ def cmd_reflow(args):
     log_path = None
     launched = False
     n_items = 0
+    n_copy = n_reveals = 0
     try:
         # The launch: start Chrome and wait for its first answer, within
         # args.launch_timeout (REFLOW_LAUNCH_TIMEOUT). Only the two launch
@@ -8439,6 +8865,14 @@ def cmd_reflow(args):
         session = tools.send("Target.attachToTarget",
                              {"targetId": target, "flatten": True})["sessionId"]
         tools.send("Page.enable", session=session)
+        # Cases (6) and (7) (M3 PR 10): the DOM and CSS domains read the
+        # tree and computed styles without running page script, so they
+        # work with scripting off too; focus emulation lets a headless page
+        # take keyboard focus.
+        tools.send("DOM.enable", session=session)
+        tools.send("CSS.enable", session=session)
+        tools.send("Emulation.setFocusEmulationEnabled", {"enabled": True},
+                   session=session)
         tools.send("Emulation.setDeviceMetricsOverride",
                    {"width": REFLOW_WIDTH, "height": REFLOW_HEIGHT,
                     "screenWidth": REFLOW_WIDTH, "screenHeight": REFLOW_HEIGHT,
@@ -8446,14 +8880,92 @@ def cmd_reflow(args):
         script = REFLOW_SCRIPT % {"width": REFLOW_WIDTH, "limit": REFLOW_NAMED,
                                   "exempt": json.dumps(VISUALLY_HIDDEN),
                                   "eps": json.dumps(REFLOW_EPSILON)}
+        def load(url):
+            tools.events.clear()
+            nav = tools.send("Page.navigate", {"url": url}, session=session)
+            if nav.get("errorText"):
+                return nav["errorText"]
+            tools.wait_event("Page.loadEventFired", session)
+            return None
+
+        def copy_state(where, state, want):
+            """Case (6) in one state: every Copy button's computed display,
+            the count against the page's file, and in S1 the shadow roots.
+            want: "shown" (S0, the script revealed them) or "hidden"."""
+            buttons, shadows = reflow_copy_buttons(tools, session)
+            if len(buttons) != len(static_copies):
+                findings.add(where, f"(6) {state}: the browser sees {len(buttons)} Copy "
+                             f"button(s), the page's file holds {len(static_copies)}; the "
+                             "browser built another tree than the static checks read "
+                             "(inert template content, a shadow root, foreign content)")
+            for label, display in buttons:
+                if want == "hidden" and display != "none":
+                    findings.add(where, f"(6) {state}: Copy button {show(label, 80)} is "
+                                 f"shown (display {show(display)}); it must stay hidden "
+                                 "while its script does not run (ADR-0004 part 11)")
+                elif want == "shown" and display == "none":
+                    findings.add(where, f"(6) {state}: Copy button {show(label, 80)} is "
+                                 "still hidden (display none) after the script ran; a rule "
+                                 "hides it for good, so its hiding is not shown to depend on "
+                                 "the script (ADR-0004 part 11)")
+            if state == REFLOW_STATES[1]:
+                for label, kind in shadows:
+                    findings.add(where, f"(6) {state}: {show(label, 80)} holds a{'n' if kind == 'open' else ''} "
+                                 f"{kind} shadow root; the page script and the static "
+                                 "checks see no element inside it (ADR-0003 part 6)")
+
+        def reveal_paint(where, focus, box):
+            """Case (7), the paint: the focused element's box captured as is,
+            with the element at opacity 0, and restored (REFLOW_PAINT_SCRIPT).
+            The scroll position holds for all three, the first and third
+            images are equal, and the first and second differ."""
+            clip = {"x": focus["left"] + focus["x"], "y": focus["top"] + focus["y"],
+                    "width": focus["width"], "height": focus["height"], "scale": 1}
+            shots, scrolls, saved = [], [], None
+            for mode in ("hide", "restore", "read"):
+                shots.append(tools.send("Page.captureScreenshot",
+                                        {"format": "png", "clip": clip},
+                                        session=session).get("data"))
+                state = reflow_value(tools, session, REFLOW_PAINT_SCRIPT % {
+                    "mode": json.dumps(mode), "saved": json.dumps(saved)}, where)
+                scrolls.append((state.get("x"), state.get("y")))
+                saved = state.get("saved") if mode == "hide" else saved
+            label = show(focus["label"], 80)
+            if any(xy != (focus["x"], focus["y"]) for xy in scrolls):
+                findings.add(where, f"(7) the page scrolled while the paint of the focused "
+                             f"{label} was compared (from x {focus['x']}, y {focus['y']} to "
+                             f"{', '.join(f'x {x}, y {y}' for x, y in scrolls)}); the "
+                             "revealed skip link must hold still on keyboard focus")
+            elif (noise := png_difference(shots[0], shots[2])) > REFLOW_PAINT_TOLERANCE:
+                findings.add(where, f"(7) the box of the focused {label} ({box}) changes by "
+                             f"itself: two screenshots of it with the same style differ by "
+                             f"up to {noise} of 255 in a channel (tolerance "
+                             f"{REFLOW_PAINT_TOLERANCE}), so its paint cannot be compared; "
+                             "the revealed skip link must hold still on keyboard focus")
+            elif (paint := png_difference(shots[0], shots[1])) <= REFLOW_PAINT_TOLERANCE:
+                findings.add(where, f"(7) the focused {label} ({box}) paints no visible "
+                             "pixel in its box: the box looks the same with the element at "
+                             f"opacity 0 (largest difference {paint} of 255, tolerance "
+                             f"{REFLOW_PAINT_TOLERANCE}; computed opacity {show(focus.get('opacity'))}, "
+                             f"visibility {show(focus.get('visibility'))}, clip "
+                             f"{show(focus.get('clip'))}, clip-path "
+                             f"{show(focus.get('clipPath'))}; at its centre the page shows "
+                             f"{show(focus.get('centre') or 'nothing', 80)}), so it is "
+                             "clipped, transparent, filtered or covered, and the skip link "
+                             "stays invisible on keyboard focus (WCAG 2.2 SC 2.4.7)")
+
+        focus_script = REFLOW_FOCUS_SCRIPT % {"exempt": json.dumps(VISUALLY_HIDDEN)}
         for rel, path in pages:
             where = f"public/{rel}"
-            tools.events.clear()
-            nav = tools.send("Page.navigate", {"url": origin + path}, session=session)
-            if nav.get("errorText"):
-                findings.add(where, f"did not load: {nav['errorText']}")
+            static_copies = [attrs for tag, attrs in
+                             parse_page((public / rel).read_text(encoding="utf-8",
+                                                                 errors="replace")).elements
+                             if tag == "button" and COPY_CLASS in
+                             re.split(r"[\t\n\f\r ]+", attrs.get("class") or "")]
+            error = load(origin + path)
+            if error:
+                findings.add(where, f"did not load: {error}")
                 continue
-            tools.wait_event("Page.loadEventFired", session)
             reply = tools.send("Runtime.evaluate",
                                {"expression": script, "awaitPromise": True,
                                 "returnByValue": True}, session=session)
@@ -8492,6 +9004,62 @@ def cmd_reflow(args):
                 findings.add(where, f"(4) .visually-hidden element {show(item, 120)}; "
                              "the class is exempt only while its box is at most 1 x 1 "
                              "CSS px and its display is not contents")
+            # (6) S0: the script ran, so every Copy button is revealed.
+            copy_state(where, REFLOW_STATES[0], "shown")
+            # (7) The skip link's reveal applies on keyboard focus: one Tab
+            # press from the loaded page focuses the first focusable
+            # element, which must carry the class and grow past 1 x 1 px
+            # inside the viewport.
+            focus = reflow_value(tools, session, focus_script, where)
+            if focus.get("focusable"):
+                for kind in ("keyDown", "keyUp"):
+                    tools.send("Input.dispatchKeyEvent", dict(REFLOW_TAB_KEY, type=kind),
+                               session=session)
+                focus = reflow_value(tools, session, focus_script, where)
+                n_reveals += 1
+                box = (f"{focus.get('width', 0):.1f} x {focus.get('height', 0):.1f} CSS px at "
+                       f"x {focus.get('left', 0):.1f} to {focus.get('right', 0):.1f}, y "
+                       f"{focus.get('top', 0):.1f} to {focus.get('bottom', 0):.1f}")
+                if not focus.get("hidden"):
+                    findings.add(where, f"(7) one Tab press focuses "
+                                 f"{show(focus.get('label') or 'nothing', 80)}, not the "
+                                 "element of class visually-hidden; the skip link must be "
+                                 "the first focusable element (WCAG 2.2 SC 2.4.1, 2.4.7)")
+                elif not (focus["width"] > REFLOW_REVEAL_MIN
+                          and focus["height"] > REFLOW_REVEAL_MIN):
+                    findings.add(where, f"(7) the focused {show(focus['label'], 80)} is "
+                                 f"{box}; its :focus reveal does not apply, so the skip link "
+                                 "stays hidden on keyboard focus (WCAG 2.2 SC 2.4.7)")
+                elif focus["left"] < -REFLOW_EPSILON or focus["top"] < -REFLOW_EPSILON \
+                        or focus["right"] > REFLOW_WIDTH + REFLOW_EPSILON \
+                        or focus["bottom"] > REFLOW_HEIGHT + REFLOW_EPSILON:
+                    findings.add(where, f"(7) the focused {show(focus['label'], 80)} is "
+                                 f"{box}, outside the {REFLOW_WIDTH} x {REFLOW_HEIGHT} "
+                                 "viewport; the revealed skip link must be on screen")
+                else:
+                    reveal_paint(where, focus, box)
+            # (6) S1: scripting on, the script URLs blocked.
+            tools.send("Network.enable", session=session)
+            tools.send("Network.setBlockedURLs", {"urls": list(REFLOW_BLOCKED_SCRIPTS)},
+                       session=session)
+            error = load(origin + path)
+            if error:
+                findings.add(where, f"did not load with the script blocked: {error}")
+            else:
+                copy_state(where, REFLOW_STATES[1], "hidden")
+            tools.send("Network.setBlockedURLs", {"urls": []}, session=session)
+            tools.send("Network.disable", session=session)
+            # (6) S2: scripting off.
+            tools.send("Emulation.setScriptExecutionDisabled", {"value": True},
+                       session=session)
+            error = load(origin + path)
+            if error:
+                findings.add(where, f"did not load with scripting off: {error}")
+            else:
+                copy_state(where, REFLOW_STATES[2], "hidden")
+            tools.send("Emulation.setScriptExecutionDisabled", {"value": False},
+                       session=session)
+            n_copy += len(static_copies)
         for error in sorted(set(SiteHandler.errors)):
             findings.add("public", f"the local server answered {error}; a page was "
                          "measured without one of its files")
@@ -8519,7 +9087,9 @@ def cmd_reflow(args):
             shutil.rmtree(logs, ignore_errors=True)
         shutil.rmtree(work, ignore_errors=True)
     return findings.report(f"reflow checked: {len(pages)} pages at {REFLOW_WIDTH} "
-                           f"CSS px, {n_items} words and replaced elements")
+                           f"CSS px, {n_items} words and replaced elements; Copy buttons "
+                           f"hidden without the script: {n_copy} in 2 states; skip-link "
+                           f"reveals: {n_reveals}")
 
 
 # ---------------------------------------------------------------------------

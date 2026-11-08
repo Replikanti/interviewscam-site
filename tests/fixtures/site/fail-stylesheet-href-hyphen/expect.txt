@@ -1,0 +1,1 @@
+holds '-' (U+002D), outside the closed alphabet

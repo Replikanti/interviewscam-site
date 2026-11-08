@@ -1,0 +1,1 @@
+not allowed: media; a stylesheet link has exactly rel and href

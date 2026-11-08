@@ -1,0 +1,1 @@
+the href holds '%' (U+0025), outside the closed alphabet

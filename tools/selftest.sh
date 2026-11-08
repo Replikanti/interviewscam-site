@@ -341,8 +341,11 @@ PY
 }
 
 # allowlists_runner <sitecheck.py> <allowlists table>: the contents of every
-# passing set of sitecheck literals (LITERALS_PASSING_SETS) and of the CSP
-# and guard allowlists, one line per entry, must equal the table (review3
+# passing set of sitecheck literals (LITERALS_PASSING_SETS), of the CSP and
+# guard allowlists, of site rule (k)'s two passing sets and URL trim set
+# (M3 PR 10), and of the fix round 1 pins (the closed path alphabet, the
+# .visually-hidden declarations, the template name regex with its flags),
+# one line per entry, must equal the table (review3
 # A3): a widening (one more member, function or attribute) changes no
 # finding on today's tree, so only this pin shows it in review. -B: no
 # tools/__pycache__.
@@ -350,6 +353,7 @@ allowlists_runner() {
   python3 -I -B - "$1" "$2" <<'PY'
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -370,8 +374,16 @@ def text(value):
 got = set()
 for name in NAMES:
     value = getattr(sitecheck, name)
-    if isinstance(value, dict):
+    if isinstance(value, re.Pattern):
+        # A regex (LITERALS_TEMPLATE_NAME, M3 PR 10 fix round 1): its
+        # pattern text and its flags.
+        got.add(f"{name}\t{value.pattern}\t{int(value.flags)}")
+    elif isinstance(value, dict):
         got.update(f"{name}\t{key}\t{text(item)}" for key, item in value.items())
+    elif isinstance(value, str):
+        # A character set (C0_AND_SPACE, M3 PR 10): one code point per line,
+        # because its members are control characters.
+        got.update(f"{name}\tU+{ord(c):04X}" for c in value)
     else:
         got.update(f"{name}\t{text(item)}" for item in value)
 want = {line for line in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()

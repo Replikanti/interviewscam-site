@@ -1,0 +1,1 @@
+holds '#' (U+0023), outside the closed alphabet

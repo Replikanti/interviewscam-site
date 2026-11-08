@@ -1,0 +1,1 @@
+opacity is not part of the reveal

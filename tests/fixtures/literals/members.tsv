@@ -368,6 +368,37 @@ branch	define-called-in-style	layouts/page.html	{{ define "zz" }}{{ .Title }}{{ 
 branch	define-called-in-attribute-name	layouts/page.html	{{ define "zz" }}{{ .Title }}{{ end }}<i {{ template "zz" . }}></i>	the call of define 'zz' sits in an attribute name	1
 branch	define-in-script	layouts/page.html	<script>{{ define "zz" }}{{ .Title }}{{ end }}</script><p>{{ template "zz" . }}</p>	define 'zz' sits in a script element; a define prints where it is called	1
 branch	template-calls-block	layouts/page.html	<p>{{ block "zb" . }}{{ .Title }}{{ end }}</p><i title="{{ template "zb" . }}"></i>	the template call names 'zb', which a block gives	1
+branch	block-repeated-name-empty-second	layouts/page.html	<p>{{ block "zq" . }}"></i>{{ end }}</p><i title="{{ block "zq" . }}{{ end }}" class="{{ .Kind }}"></i>	block 'zq' is given a second time (first at layouts/page.html:1)	1
+branch	block-repeated-name-empty-first	layouts/page.html	<i title="{{ block "zq" . }}{{ end }}" class="{{ .Kind }}"></i><p>{{ block "zq" . }}"></i>{{ end }}</p>	block 'zq' is given a second time (first at layouts/page.html:1)	1
+branch	block-repeated-name-two-bodies	layouts/page.html	<p>{{ block "zq" . }}<b>{{ .Title }}</b>{{ end }}</p><p>{{ block "zq" . }}<i>{{ .Title }}</i>{{ end }}</p>	block 'zq' is given a second time (first at layouts/page.html:1)	1
+branch	block-repeated-name-in-page-text	layouts/page.html	<p>{{ block "zq" . }}{{ end }}</p><p>{{ block "zq" . }}{{ end }}</p>	block 'zq' is given a second time (first at layouts/page.html:1)	1
+branch	block-repeated-name-across-files	layouts/page.html	<p>{{ block "zq" . }}<b>{{ .Title }}</b>{{ end }}</p>	block 'zq' is given a second time (first at layouts/page.html:1)	1
++		layouts/single.html	<p>{{ block "zq" . }}{{ end }}</p>		
+branch	define-name-not-plain	layouts/page.html	{{ define "zz/y" }}<b>{{ .Title }}</b>{{ end }}<p>{{ template "zz/y" . }}</p>	the define name 'zz/y' is not a plain name	1
+branch	block-name-not-plain	layouts/page.html	<p>{{ block "zz/y" . }}<b>{{ .Title }}</b>{{ end }}</p>	the block name 'zz/y' is not a plain name	1
+branch	template-name-slash	layouts/page.html	{{ define "_partials/x.html" }}<b>{{ .Title }}</b>{{ end }}<p>{{ template "_partials/x.html" . }}</p>	the define name '_partials/x[.]html' is not a plain name	1
+branch	template-name-dot	layouts/page.html	{{ define "zz.x" }}<b>{{ .Title }}</b>{{ end }}<p>{{ template "zz.x" . }}</p>	the define name 'zz[.]x' is not a plain name	1
+branch	template-name-upper-case	layouts/page.html	{{ define "zZ" }}<b>{{ .Title }}</b>{{ end }}<p>{{ template "zZ" . }}</p>	the define name 'zZ' is not a plain name	3
+branch	template-name-non-ascii	layouts/page.html	{{ define "zé" }}<b>{{ .Title }}</b>{{ end }}<p>{{ template "zé" . }}</p>	the define name 'zé' is not a plain name	3
+branch	template-name-leading-digit	layouts/page.html	{{ define "9z" }}<b>{{ .Title }}</b>{{ end }}<p>{{ template "9z" . }}</p>	the define name '9z' is not a plain name	1
+branch	block-repeated-name-in-define	layouts/page.html	<p>{{ block "zq" . }}{{ end }}</p>{{ define "zz" }}<p>{{ block "zq" . }}{{ end }}</p>{{ end }}<p>{{ template "zz" . }}</p>	block 'zq' is given a second time (first at layouts/page.html:1)	1
+branch	block-repeated-name-in-block-body	layouts/page.html	<p>{{ block "zq" . }}{{ end }}</p><p>{{ block "zr" . }}<b>{{ block "zq" . }}{{ end }}</b>{{ end }}</p>	block 'zq' is given a second time (first at layouts/page.html:1)	1
+branch	block-repeated-name-in-if	layouts/page.html	<p>{{ block "zq" . }}{{ end }}</p>{{ if .Title }}<p>{{ block "zq" . }}{{ end }}</p>{{ end }}	block 'zq' is given a second time (first at layouts/page.html:1)	1
+branch	block-repeated-name-in-else	layouts/page.html	<p>{{ block "zq" . }}{{ end }}</p>{{ if .Title }}<p></p>{{ else }}<p>{{ block "zq" . }}{{ end }}</p>{{ end }}	block 'zq' is given a second time (first at layouts/page.html:1)	1
+branch	block-repeated-name-in-range	layouts/page.html	<p>{{ block "zq" . }}{{ end }}</p>{{ range .Pages }}<p>{{ block "zq" . }}{{ end }}</p>{{ end }}	block 'zq' is given a second time (first at layouts/page.html:1)	1
+branch	block-repeated-name-in-with	layouts/page.html	<p>{{ block "zq" . }}{{ end }}</p>{{ with .Title }}<p>{{ block "zq" . }}{{ end }}</p>{{ end }}	block 'zq' is given a second time (first at layouts/page.html:1)	1
+branch	block-repeated-name-third-cites-first	layouts/page.html	<p>{{ block "zq" . }}{{ end }}</p>	layouts/z2.html:1: block 'zq' is given a second time (first at layouts/page.html:1)	2
++		layouts/z1.html	<p>{{ block "zq" . }}{{ end }}</p>		
++		layouts/z2.html	<p>{{ block "zq" . }}{{ end }}</p>		
+branch	block-name-not-literal	layouts/page.html	<p>{{ block .Title . }}<b>{{ .Title }}</b>{{ end }}</p>	the block name that is no string literal is not a plain name	1
+branch	template-name-leading-upper-case	layouts/page.html	{{ define "Zz" }}<b>{{ .Title }}</b>{{ end }}<p>{{ template "Zz" . }}</p>	the define name 'Zz' is not a plain name	3
+branch	template-name-leading-underscore	layouts/page.html	{{ define "_z" }}<b>{{ .Title }}</b>{{ end }}<p>{{ template "_z" . }}</p>	the define name '_z' is not a plain name	1
+branch	template-name-leading-dash	layouts/page.html	{{ define "-z" }}<b>{{ .Title }}</b>{{ end }}<p>{{ template "-z" . }}</p>	the define name '-z' is not a plain name	1
+branch	template-name-space	layouts/page.html	{{ define "z z" }}<b>{{ .Title }}</b>{{ end }}<p>{{ template "z z" . }}</p>	the define name 'z z' is not a plain name	3
+branch	template-name-colon	layouts/page.html	{{ define "z:z" }}<b>{{ .Title }}</b>{{ end }}<p>{{ template "z:z" . }}</p>	the define name 'z:z' is not a plain name	1
+branch	template-name-dollar	layouts/page.html	{{ define "z$" }}<b>{{ .Title }}</b>{{ end }}<p>{{ template "z$" . }}</p>	the define name 'z$' is not a plain name	3
+branch	template-name-empty	layouts/page.html	{{ define "" }}<b>{{ .Title }}</b>{{ end }}<p>{{ template "" . }}</p>	the define name '' is not a plain name	2
+branch	template-name-trailing-newline	layouts/page.html	{{ define "zq\n" }}<b>{{ .Title }}</b>{{ end }}<p>{{ template "zq\n" . }}</p>	the define name 'zq\\n' is not a plain name	2
 branch	dict-repeated-key	layouts/page.html	{{ with (dict "id" "" "id" $.Kind).id }}<p>{{ . }}</p>{{ end }}	the dict key 'id' is repeated in one dict	1
 branch	dict-computed-key-any-name	layouts/page.html	{{ $k := .Params.k }}{{ with (dict "id" "" $k $.Kind).id }}<p>{{ . }}</p>{{ end }}	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
 branch	dict-computed-key-first	layouts/page.html	{{ $k := .Params.k }}{{ $j := .Params.j }}{{ with index (dict $j $.Kind $k "") "id" }}<p>{{ . }}</p>{{ end }}	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
