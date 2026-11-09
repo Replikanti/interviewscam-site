@@ -425,6 +425,77 @@ else:
 PY
 }
 
+# site_cases_runner <sitecheck.py> <cases table> <base case> <schema dir>:
+# site rule (m) (the head by position, M4 PR 3 fix rounds 7 and 8) one fixed
+# head value and one branch per row, on a copy of site/pass-built-pins with
+# the built pins on. A row is name, file, find, replace and expect,
+# tab-separated, with \n and \t in find and replace; the find string must
+# occur exactly once, so a row never turns into a no-op.
+site_cases_runner() {
+  python3 -I -B - "$1" "$2" "$3" "$4" <<'PY'
+import argparse
+import contextlib
+import importlib.util
+import io
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+table, base, schema_dir = Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
+
+
+def unescape(text):
+    return text.replace("\\n", "\n").replace("\\t", "\t")
+
+
+rows = [line.split("\t") for line in table.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")]
+names, bad = set(), 0
+for row in rows:
+    if len(row) != 5 or not row[0] or row[0] in names:
+        print(f"FAIL site-head/table: malformed or duplicate row {row!r}")
+        bad += 1
+        continue
+    name, rel, find, replace, expect = row
+    names.add(name)
+    find, replace = unescape(find), unescape(replace)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "case"
+        shutil.copytree(base, root)
+        path = root / rel
+        text = path.read_text(encoding="utf-8") if path.is_file() else ""
+        if text.count(find) != 1:
+            print(f"FAIL site-head/{name}: the find string occurs {text.count(find)} times "
+                  f"in {rel}, the row needs exactly one")
+            continue
+        path.write_text(text.replace(find, replace, 1), encoding="utf-8")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            rc = sitecheck.cmd_site(argparse.Namespace(
+                records=str(root), schemas=str(schema_dir), no_built_pins=False,
+                public=str(root / "public")))
+        output = buffer.getvalue()
+    if expect == "PASS" and rc == 0:
+        print(f"ok   site-head/{name} (passed as expected)")
+    elif expect != "PASS" and rc == 1 and expect in output:
+        print(f"ok   site-head/{name} (failed as expected: {expect})")
+    else:
+        print(f"FAIL site-head/{name}: expected "
+              f"{'exit 0' if expect == 'PASS' else 'exit 1 and ' + repr(expect)}; got exit "
+              f"{rc}; output:")
+        for line in output.splitlines():
+            print(f"     | {line}")
+if not rows or bad:
+    print(f"FAIL site-head/table: {len(rows)} rows, {bad} malformed")
+else:
+    print(f"ok   site-head/table ({len(rows)} rows)")
+PY
+}
+
 # allowlists_runner <sitecheck.py> <allowlists table>: the contents of every
 # passing set of sitecheck literals (LITERALS_PASSING_SETS), of the CSP and
 # guard allowlists, of site rule (k)'s two passing sets and URL trim set
@@ -1122,6 +1193,20 @@ PINNED
     n_failed=$((n_failed + 1))
   fi
   rm -f "$fields_table"
+
+  # site-head (M4 PR 3 fix rounds 7 and 8): site rule (m) row by row from
+  # tests/fixtures/site/head-cases.tsv (site_cases_runner above).
+  site_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+    "$FIXTURES/site/head-cases.tsv" "$FIXTURES/site/pass-built-pins" \
+    "$SELFTEST_ROOT/schema" >"$out" 2>&1
+  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+  if ! grep -qE '^(ok   |FAIL )site-head/table' "$out"; then
+    echo "FAIL site-head: the runner did not finish; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
 
   # render-search (M4 PR 2 and PR 3, ADR-0005 part 6): render rules 15 and 16 branch by
   # branch and member by member from tests/fixtures/render/search-cases.tsv

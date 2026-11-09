@@ -1,0 +1,43 @@
+# site rule (m), the head by position (M4 PR 3 fix rounds 7 and 8), one
+# row per fixed head value and per branch, on a copy of
+# site/pass-built-pins with the built pins on (site_cases_runner in
+# tools/selftest.sh). Columns: name, file (relative to the case), find
+# (exactly one occurrence), replace, expect (PASS, or a text the findings
+# must hold). \n in find and replace is a newline, \t a tab.
+value-charset	public/index.html	<meta charset="utf-8">	<meta charset="utf-16">	(m) the head holds
+value-csp-http-equiv	public/index.html	http-equiv="Content-Security-Policy"	http-equiv="content-security-policy"	(m) the head holds
+value-viewport-name	public/index.html	name="viewport"	name="Viewport"	(m) the head holds
+value-viewport-content	public/index.html	content="width=device-width,initial-scale=1"	content="width=device-width,initial-scale=2"	(m) the head holds
+value-color-scheme-name	public/index.html	name="color-scheme"	name="color-schemes"	(m) the head holds
+value-color-scheme-content	public/index.html	content="light"	content="dark"	(m) the head holds
+value-description-name	public/index.html	name="description"	name="Description"	(m) the head holds
+value-canonical-rel	public/index.html	rel="canonical"	rel="Canonical"	(m) the head holds
+value-theme-color-name	public/index.html	name="theme-color"	name="theme-colour"	(m) the head holds
+value-icon-rel	public/index.html	rel="icon"	rel="shortcut icon"	(m) the head holds
+value-icon-type	public/index.html	type="image/svg+xml"	type="image/png"	(m) the head holds
+value-stylesheet-rel	public/index.html	rel="stylesheet"	rel="stylesheet alternate"	(m) the head holds
+value-script-defer	public/index.html	<script src="/js/copy.min.64df53ed5d62c8c5c8be3aee6bd39c1171a2bb88742b3424790354056657c3faf100ea7cc044affe06e76164b883b924.js" integrity="sha384-ZN9T7V1iyMXIvjrua9OcEXGiu4h0KzQkeQNUBWZXw/rxAOp8wESv/gbnYWS4g7kk" defer>	<script src="/js/copy.min.64df53ed5d62c8c5c8be3aee6bd39c1171a2bb88742b3424790354056657c3faf100ea7cc044affe06e76164b883b924.js" integrity="sha384-ZN9T7V1iyMXIvjrua9OcEXGiu4h0KzQkeQNUBWZXw/rxAOp8wESv/gbnYWS4g7kk" defer="defer">	(m) the head holds
+value-jsonld-type	public/reports/index.html	<script type="application/ld+json">	<script type="application/json">	(m) the head holds
+attribute-missing	public/index.html	 type="image/svg+xml"		(m) the head holds
+value-superstring	public/index.html	content="light"	content="light dark"	(m) the head holds
+value-superstring-charset	public/index.html	<meta charset="utf-8">	<meta charset="utf-8x">	(m) the head holds
+second-html	public/index.html	</html>	</html><html></html>	(m) the page has no single <head>
+jsonld-on-home	public/index.html	</head>	<script type="application/ld+json">{}</script></head>	(m) the head holds
+jsonld-missing-on-section	public/reports/index.html	<script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": []}</script>		(m) the head holds
+text-before-html	public/index.html	<html lang="en">	.<html lang="en">	(m) the text '[.]' before <html>
+text-in-html-before-head	public/index.html	<head>	.<head>	(m) the text '[.]' in <html> before <body>
+text-after-head	public/index.html	</head>	</head>|	(m) the text '|' in <html> before <body>
+text-in-head-dot	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">.	(m) the text '[.]' in <head>
+text-in-head-entity	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">&#46;	(m) the text '[.]' in <head>
+text-in-head-pipe	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">|	(m) the text '|' in <head>
+text-in-head-nbsp	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">&nbsp;	in <head>: the browser ends the head
+text-in-head-ideographic-space	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">　	in <head>: the browser ends the head
+element-in-html-before-body	public/index.html	</head>	</head><div></div>	(m) <div> in <html> before <body>
+head-content-model-span	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><span></span>	(m) <span> in <head> is outside the head content model
+head-content-model-math	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><math></math>	(m) <math> in <head> is outside the head content model
+pass-ascii-whitespace-in-head	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">\t\n 	PASS
+pass-text-after-body	public/index.html	</body>	</body>.	PASS
+nested-head-in-body	public/index.html	<p>text</p>	<p>text</p><head><meta name="x" content="y"></head>	(m) <meta
+second-html-elements	public/index.html	</html>	</html><html></html>	(m) <meta
+tag-swapped-same-attributes	public/index.html	<title>fixture</title>	<noscript></noscript>	(m) the head holds
+attribute-missing-any-value	public/index.html	<meta name="description" content="A fixture page.">	<meta name="description">	(m) the head holds
