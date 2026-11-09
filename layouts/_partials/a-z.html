@@ -1,0 +1,27 @@
+{{- /* The A to Z list of /a-z/ (ADR-0005 part 2): every report and campaign
+  family in one list, then the no-report block in its own card. It is the
+  fallback of the Home search without JavaScript (the form submits get to
+  this page) and the display source of the search. Sorted by the name as it
+  renders, then the section, then the slug: the key of record-list.html
+  plus the section, because a report and a campaign may share a slug, so a
+  hidden persona sorts by its placeholder and its position leaves no trace
+  of the name. Called with the page; it reads only the record sections. */ -}}
+{{- $items := slice -}}
+{{- range where site.RegularPages "Section" "reports" -}}
+  {{- $name := partial "record-name.html" (dict "page" . "html" false) -}}
+  {{- $items = $items | append (dict "key" (printf "%s %s %s" (lower $name) .Section .File.ContentBaseName) "page" .) -}}
+{{- end -}}
+{{- range where site.RegularPages "Section" "campaigns" -}}
+  {{- $name := partial "record-name.html" (dict "page" . "html" false) -}}
+  {{- $items = $items | append (dict "key" (printf "%s %s %s" (lower $name) .Section .File.ContentBaseName) "page" .) -}}
+{{- end -}}
+<div class="card">
+<ul class="index-list">
+{{- range sort $items "key" }}
+{{ partial "index-item.html" .page }}
+{{- end }}
+</ul>
+</div>
+<div class="card">
+{{ partial "no-report.html" . }}
+</div>

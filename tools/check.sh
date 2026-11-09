@@ -128,21 +128,25 @@ records_check() { sitecheck records --root "$1" --schemas "$2"; }
 # CSP meta from <root>/hugo.toml, and no live artifact in the build (R3).
 site_check() { sitecheck site --records "$1" --schemas "$2" "$3"; }
 
-# render_check <root> <schema dir> <built dir> [<fixtures dir>] [no-feed]:
-# the markup contract of the record pages (ADR-0004): one page per record
-# and none without one, the fixed titles, the D6, D7 and D10 wording, the
-# campaign line and attribution, artifacts and external links, structured
-# data, no hidden persona name anywhere, the index lists, and the data feed
-# /feed.json against its schema, the records and /data-feed/ (rules 11 to
-# 13). With a fixtures dir, no record may share its slug or name with a
-# fixture record under <fixtures dir>/**/content/ (the fixture-leak check;
-# production only). no-feed (the self-test's render fixtures only) leaves
-# out rules 11 to 13; both builds always run them.
+# render_check <root> <schema dir> <built dir> [<fixtures dir>] [no-feed]
+# [no-search]: the markup contract of the record pages (ADR-0004): one page
+# per record and none without one, the fixed titles, the D6, D7 and D10
+# wording, the campaign line and attribution, artifacts and external links,
+# structured data, no hidden persona name anywhere, the index lists, the
+# data feed /feed.json against its schema, the records and /data-feed/
+# (rules 11 to 13), and the A to Z page /a-z/ with the Home search form
+# (rule 15, ADR-0005). With a fixtures dir, no record may share its slug or
+# name with a fixture record under <fixtures dir>/**/content/ (the
+# fixture-leak check; production only). no-feed and no-search (the
+# self-test's render fixtures only) leave out rules 11 to 13 and rule 15;
+# both builds always run them.
 render_check() {
-  local fixtures=() feed=()
+  local fixtures=() feed=() search=()
   [[ -n "${4:-}" ]] && fixtures=(--fixtures "$4")
   [[ "${5:-}" == no-feed ]] && feed=(--no-feed)
-  sitecheck render --records "$1" --schemas "$2" "${fixtures[@]}" "${feed[@]}" "$3"
+  [[ "${6:-}" == no-search ]] && search=(--no-search)
+  sitecheck render --records "$1" --schemas "$2" "${fixtures[@]}" "${feed[@]}" \
+    "${search[@]}" "$3"
 }
 
 # literals_check <root>: fixed public copy only from data/labels.toml

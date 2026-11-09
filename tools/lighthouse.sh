@@ -21,7 +21,8 @@
 #      one page per template is enough (ADR-0003), and the job must not
 #      grow with every record. Serve public-fixtures/, the fixture build of
 #      tools/check.sh, on a second loopback port and audit the fixed list
-#      LH_FIXTURE_PAGES: one page per record template (ADR-0004 part 10).
+#      LH_FIXTURE_PAGES: one page per record template (ADR-0004 part 10)
+#      and the A to Z page (ADR-0005).
 #   5. sitecheck lighthouse: the score gate (ADR-0003 part 3).
 #
 # Node.js, npm and Google Chrome come from the runner image (ADR-0003 part 7).
@@ -40,7 +41,10 @@ LH_REGISTRY=https://registry.npmjs.org/
 LH_PORT=8137
 LH_FIXTURE_PORT=8138
 # The fixture pages: Home with both lists, the two section pages, the
-# report with every artifact type and the campaign with attribution. Each
+# report with every artifact type, the campaign with attribution and, from
+# M4 PR 2, the A to Z page /a-z/ with every fixture record (ADR-0005
+# Numbers, "Lighthouse page count 16 to 18"; the production /a-z/ is
+# audited as every directory with an index.html is). Each
 # is audited by its index.html path, so the score gate, which groups the
 # reports by URL path, keeps them apart from the production pages of the
 # same directory (/ now, /reports/ and /campaigns/ from milestone 5).
@@ -50,6 +54,7 @@ LH_FIXTURE_PAGES=(
   /campaigns/index.html
   /reports/example-front-company/index.html
   /campaigns/example-campaign-family/index.html
+  /a-z/index.html
 )
 LH_CATEGORIES=performance,accessibility,best-practices,seo
 LH_RUNS=3

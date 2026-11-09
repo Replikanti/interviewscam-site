@@ -1,0 +1,13 @@
+{{- /* The no-report block after the A to Z list of /a-z/ (ADR-0005 parts 2
+  and 4): the conditional no_report.browse_text, because the list holds
+  every reported name but no artifact and no hidden name, and the next
+  steps, the checklist and the report channel (render rule 15 pins the
+  sentence, both links and the markup). No mailto: link (site rule (e)).
+  Called with any context; it reads none. */ -}}
+<div class="no-report">
+<p>{{ partial "label.html" "no_report.browse_text" }}</p>
+<ul class="link-list">
+<li><a href="{{ "/before-your-call/" | relURL }}">{{ partial "label.html" "no_report.before_link" }}</a></li>
+<li><a href="{{ "/report-a-scam/" | relURL }}">{{ partial "label.html" "no_report.report_link" }}</a></li>
+</ul>
+</div>

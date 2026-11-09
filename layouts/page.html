@@ -1,6 +1,8 @@
 {{- /* The static pages (SPEC section 6). Front matter:
      channel    "report" or "correction": adds the how-to-send block
-     checklist  true: adds the full checklist (checklist in data/labels.toml) */ -}}
+     checklist  true: adds the full checklist (checklist in data/labels.toml)
+     a_z        true: adds the A to Z list of every report and campaign
+                family and the no-report block (a-z.html, ADR-0005 part 2) */ -}}
 {{ define "main" }}
 <h1>{{ .Title }}</h1>
 <div class="card prose">
@@ -13,5 +15,8 @@
 <div class="card">
 {{ partial "checklist.html" (dict "details" true) }}
 </div>
+{{- end }}
+{{- if .Params.a_z }}
+{{ partial "a-z.html" . }}
 {{- end }}
 {{ end }}

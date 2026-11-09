@@ -1,0 +1,15 @@
+{{- /* One entry of the A to Z list (ADR-0005 part 2). The first line keeps
+  the list-item contract of record-item.html (the name as the record link,
+  the state chip for a report, the date; render rule 3); the second line
+  holds the type, the visible aliases (each through record-name.html, so a
+  persona alias carries the D10 label; none for a hidden name) and, for a
+  report, its campaign family, named without its source. The record link
+  is the entry's first <a> and its only one outside index-campaign (render
+  rule 15). Called with the record page. */ -}}
+{{- $p := .Params -}}
+{{- $report := eq .Section "reports" -}}
+<li><a href="{{ .RelPermalink }}">{{ partial "record-name.html" (dict "page" . "html" true) }}</a>
+{{- if $report }} {{ partial "state.html" (dict "page" . "part" "chip") }}{{ end }} <time class="record-date" datetime="{{ .Date.Format "2006-01-02" }}">{{ .Date.Format "2006-01-02" }}</time>
+<span class="index-meta"><span class="index-type">{{ if $report }}{{ partial "label.html" (printf "name_type.%s" $p.name_type) }}{{ else }}{{ partial "label.html" "a_z.campaign_type" }}{{ end }}</span>
+{{- if not $p.hide_name }}{{ with $p.aliases }} · <span class="index-aliases">{{ partial "label.html" "record.also_seen_as" }} {{ range $i, $alias := . }}{{ if $i }}, {{ end }}{{ partial "record-name.html" (dict "page" $ "html" true "value" $alias) }}{{ end }}</span>{{ end }}{{ end }}
+{{- if $report }} · <span class="index-campaign">{{ with $p.campaign }}{{ $campaign := site.GetPage (printf "/campaigns/%s" .slug) }}{{ if not $campaign }}{{ errorf "index-item.html: no campaign record %q" .slug }}{{ end }}{{ partial "label.html" "campaign_line.named" }}<a href="{{ $campaign.RelPermalink }}">{{ partial "record-name.html" (dict "page" $campaign "html" true) }}</a>{{ else }}{{ partial "label.html" "campaign_line.unattributed" }}{{ end }}</span>{{ end }}</span></li>

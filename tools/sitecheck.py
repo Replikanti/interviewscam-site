@@ -2394,6 +2394,9 @@ STATE_SENTENCE = {
     "front": "No real company, person or product was found behind this name.",
 }
 PERSONA_LABEL = "(name used by the campaign, possibly a stolen identity)"
+# The display name of a persona with params.hide_name (ADR-0004 part 5): the
+# text of its record link in every list (rule 3) and of its /a-z/ entry.
+HIDDEN_NAME = "Name hidden on request"
 TITLE_SUFFIX = " · interviewscam.com"
 REPORT_TITLE = "{name}, a name used in fake job interviews"
 # The <title> of a visible persona's own report page puts the D10 label
@@ -2772,6 +2775,25 @@ def display_name(record):
     return f"{name} {PERSONA_LABEL}" if is_persona(record) else name
 
 
+def rendered_name(record):
+    """The name as a record link shows it (record-name.html in html form):
+    the placeholder for a hidden persona, the name plus the D10 label for a
+    visible one, else the name; whitespace collapsed."""
+    if is_hidden(record):
+        return HIDDEN_NAME
+    return squash(display_name(record))
+
+
+def rendered_aliases(record):
+    """The aliases as a list shows them: none for a hidden persona, each
+    with the D10 label for a visible one; whitespace collapsed."""
+    aliases = record.params.get("aliases")
+    if is_hidden(record) or not isinstance(aliases, list):
+        return []
+    return [squash(f"{a} {PERSONA_LABEL}" if is_persona(record) else a)
+            for a in aliases if isinstance(a, str)]
+
+
 def record_title(record):
     """The fixed title of a record page, without the site suffix (rule 2)."""
     if record.section == "campaigns":
@@ -2954,6 +2976,109 @@ def report_links(page, page_path):
     return links
 
 
+# The markup of the regions whose whole text is pinned (M4 PR 2 fix rounds 3
+# and 5): a list item of record-item.html (rule 3), an /a-z/ entry of
+# index-item.html and the no-report block of no-report.html (rule 15). Each
+# holds exactly the element tree its template emits for the record, in
+# count, order and nesting, every attribute value byte for byte as the
+# builds write it (an href exactly /reports/<slug>/, /campaigns/<slug>/,
+# /before-your-call/ or /report-a-scam/, read raw, not through site_path),
+# and nothing else. Why: the text readers skip hidden content that a page
+# can still show (hidden on an element site.css lays out, aria-hidden,
+# <select>, <noscript>), text can live in an attribute (aria-label, title,
+# value, a query string in an href, which the status bar and the address
+# bar show), and an empty extra link is announced by its URL. The exact
+# tree closes the class; a list of forbidden constructs would close only
+# the probes.
+
+
+def tree(tag, attrs=None, *children):
+    """One element of an expected region tree: (tag, attributes, children)."""
+    return (tag, dict(attrs or {}), list(children))
+
+
+def name_labels(record):
+    """The persona-label span of a visible persona's name or alias."""
+    return [tree("span", {"class": "persona-label"})] if is_persona(record) \
+        and not is_hidden(record) else []
+
+
+def record_href(record):
+    return f"/{record.section}/{record.slug}/"
+
+
+def item_tree(record):
+    """The tree record-item.html emits for a report, or None when the
+    record has no date string (the records check's finding)."""
+    date = record.data.get("date")
+    if not isinstance(date, str):
+        return None
+    return tree("li", None, tree("a", {"href": record_href(record)}, *name_labels(record)),
+                tree("span", {"class": "state-chip"}),
+                tree("time", {"class": RECORD_DATE, "datetime": date}))
+
+
+def entry_tree(record):
+    """The tree index-item.html emits for a record, or None without a date."""
+    date = record.data.get("date")
+    if not isinstance(date, str):
+        return None
+    first = [tree("a", {"href": record_href(record)}, *name_labels(record))]
+    if record.section == "reports":
+        first.append(tree("span", {"class": "state-chip"}))
+    first.append(tree("time", {"class": RECORD_DATE, "datetime": date}))
+    meta = [tree("span", {"class": INDEX_TYPE})]
+    aliases = rendered_aliases(record)
+    if aliases:
+        meta.append(tree("span", {"class": INDEX_ALIASES},
+                         *(name_labels(record) * len(aliases))))
+    if record.section == "reports":
+        campaign = record.params.get("campaign")
+        link = [tree("a", {"href": f"/campaigns/{campaign.get('slug')}/"})] \
+            if isinstance(campaign, dict) else []
+        meta.append(tree("span", {"class": INDEX_CAMPAIGN}, *link))
+    return tree("li", None, *first, tree("span", {"class": "index-meta"}, *meta))
+
+
+def block_tree():
+    """The tree no-report.html emits."""
+    return tree("div", {"class": NO_REPORT}, tree("p"),
+                tree("ul", {"class": "link-list"},
+                     *(tree("li", None, tree("a", {"href": path}))
+                       for path, _ in NO_REPORT_LINKS)))
+
+
+def shape_problems(root, what, template, want):
+    """root against the tree want, element by element in order: the same
+    tag and exactly the same attributes and values at every position, and
+    no element more or less. The first difference is the finding."""
+    def shown(tag, attrs):
+        return "<" + tag + "".join(f" {k}={show(v, 40)}" for k, v in attrs.items()) + ">"
+
+    def compare(el, expected):
+        tag, attrs, children = expected
+        if el.tag != tag or el.attrs != attrs:
+            return [f"{what} holds {shown(el.tag, el.attrs)}, which {template} does not "
+                    f"emit there (it emits {shown(tag, attrs)}); it holds exactly its "
+                    "template's elements and attributes, so no text can hide from this "
+                    "check and still show"]
+        actual = [c for c in el.children if isinstance(c, Element)]
+        for i in range(max(len(actual), len(children))):
+            if i >= len(children):
+                return [f"{what} holds {shown(actual[i].tag, actual[i].attrs)}, which "
+                        f"{template} does not emit there (it emits nothing more inside "
+                        f"{shown(tag, attrs)}); it holds exactly its template's elements "
+                        "and attributes, so no text can hide from this check and still show"]
+            if i >= len(actual):
+                return [f"{what} lacks {shown(children[i][0], children[i][1])}, which "
+                        f"{template} emits there"]
+            found = compare(actual[i], children[i])
+            if found:
+                return found
+        return []
+    return compare(root, want) if want is not None else []
+
+
 def report_items(page, page_path, reports):
     """Rule 3 (D6) on every page: each link to a report page is a list
     item with the name, exactly one state chip reading the report's state
@@ -2971,15 +3096,22 @@ def report_items(page, page_path, reports):
                             "link to a report is a list item with the name, one state "
                             "chip and the date (D6)")
         else:
-            items.setdefault(id(li), (li, []))[1].append((slug, record))
+            items.setdefault(id(li), (li, []))[1].append((slug, record, a))
     for li, entries in items.values():
-        slug, record = entries[0]
+        slug, record, a = entries[0]
         where = f"/reports/{slug}/"
         if len(entries) > 1:
             problems.append(f"rule 3: one list item holds {len(entries)} report links "
-                            f"({', '.join(f'/reports/{s}/' for s, _ in entries)}); each "
+                            f"({', '.join(f'/reports/{s}/' for s, _, _ in entries)}); each "
                             "report is its own item with its own chip (D6)")
             continue
+        # The link shows its own record's name, so the chip and the date
+        # beside it are that name's (M4 PR 2 fix round 1: the text of a
+        # link was tied to nothing, so two items could swap their names).
+        name = rendered_name(record)
+        if a.text() != name:
+            problems.append(f"rule 3: the link to {where} reads {show(a.text())}; it "
+                            f"shows its record's name as it renders, {show(name)} (D6)")
         state = record.params.get("state")
         chips = [n for n in li.walk() if "state-chip" in n.classes]
         chip, found = shown_one(chips, "state-chip",
@@ -2999,6 +3131,18 @@ def report_items(page, page_path, reports):
                 and date_el.text() != want:
             problems.append(f"rule 3: the list item linking {where} shows the date "
                             f"{show(date_el.text())}, the record's date is {want}")
+        # The whole item (fix round 3): its markup is record-item.html's and
+        # its text is name, chip, date. An /a-z/ entry is rule 15's.
+        if page_path == A_Z_PATH and li.parent is not None \
+                and INDEX_LIST in li.parent.classes:
+            continue
+        what = f"rule 3: the list item linking {where}"
+        problems += shape_problems(li, what, "record-item.html", item_tree(record))
+        if state in STATE_CHIP and isinstance(want, str):
+            text = squash(f"{name} {STATE_CHIP[state]} {want}")
+            if li.text() != text:
+                problems.append(f"{what} reads {show(li.text(), 300)}; it reads exactly "
+                                f"{show(text, 300)} (name, chip, date; D6)")
     return [li for li, _ in items.values()], problems
 
 
@@ -4119,6 +4263,323 @@ def index_link_problems(pages, records):
     return problems
 
 
+# Rule 15: the A to Z page /a-z/ and the no-JavaScript path of the Home
+# search (ADR-0005 parts 2 and 6, M4 PR 2). The wording lives here on
+# purpose, independently of data/labels.toml, as the D6 and D7 strings do:
+# the index campaign line is the D7 wording of an attribution, an entry's
+# whole text is pinned (its name, chip, type and aliases stand together),
+# and the no-report block says that no report is no sign of safety.
+A_Z_REL = "public/a-z/index.html"
+A_Z_PATH = "/a-z/"
+HOME_REL = "public/index.html"
+INDEX_LIST = "index-list"
+INDEX_TYPE = "index-type"
+INDEX_ALIASES = "index-aliases"
+INDEX_CAMPAIGN = "index-campaign"
+INDEX_CAMPAIGN_LINE = "Campaign family that used this name: {campaign}"
+INDEX_ALIASES_LINE = "Also seen as: {aliases}"
+INDEX_ALIAS_SEPARATOR = ", "
+INDEX_SEPARATOR = " · "
+INDEX_CAMPAIGN_TYPE = "Campaign family"
+# The type of a report entry (params.name_type), as on a report page.
+NAME_TYPES = {"company": "Company", "persona": "Recruiter persona",
+              "meeting_app": "Meeting app", "domain": "Domain",
+              "repository": "Repository", "package": "Package"}
+NO_REPORT = "no-report"
+# The no-report block on /a-z/, the browse page: conditional, because the
+# page lists every reported name (M4 PR 2 fix round 1), and it states only
+# what the list holds, because artifacts (ADR-0005 decision 3) and hidden
+# names are not on it (fix round 3). It says that no entry is no sign
+# of safety. Wording approved by the operator at STOP 2 of #36 (D7).
+NO_REPORT_BROWSE_TEXT = ("Not finding a name here does not mean it is safe. This list shows "
+                         "each report by its name and its other names. Apart from those "
+                         "names, it does not show the addresses, handles and files listed "
+                         "inside a report, or names hidden on request. New fake interviews "
+                         "also use names nobody has reported yet.")
+# Every navigation of the block, in order, with its text: no other link.
+NO_REPORT_LINKS = [("/before-your-call/", "Before your call"),
+                   ("/report-a-scam/", "Report a scam")]
+
+
+def is_within(el, ancestor):
+    """el is ancestor or sits inside it."""
+    while el is not None:
+        if el is ancestor:
+            return True
+        el = el.parent
+    return False
+
+
+def index_campaign_text(record, campaigns):
+    """The campaign family of a report entry, or None when its campaign
+    record has no name (R7 is the records check's finding)."""
+    campaign = record.params.get("campaign")
+    if not isinstance(campaign, dict):
+        return UNATTRIBUTED
+    target = campaigns.get(campaign.get("slug"))
+    name = text_param(target, "name") if target else None
+    return INDEX_CAMPAIGN_LINE.format(campaign=squash(name)) if name is not None else None
+
+
+def index_entry_text(record, campaigns):
+    """The visible text of an /a-z/ entry as index-item.html composes it:
+    name, chip (a report), date, then type, aliases and campaign family (a
+    report) joined by INDEX_SEPARATOR. None when a record field it needs is
+    not readable (the records check's finding)."""
+    date = record.data.get("date")
+    if not isinstance(date, str):
+        return None
+    first = [rendered_name(record)]
+    if record.section == "reports":
+        chip = STATE_CHIP.get(record.params.get("state"))
+        kind = NAME_TYPES.get(record.params.get("name_type"))
+        line = index_campaign_text(record, campaigns)
+        if chip is None or kind is None or line is None:
+            return None
+        first.append(chip)
+    else:
+        kind, line = INDEX_CAMPAIGN_TYPE, None
+    first.append(date)
+    second = [kind]
+    aliases = rendered_aliases(record)
+    if aliases:
+        second.append(INDEX_ALIASES_LINE.format(aliases=INDEX_ALIAS_SEPARATOR.join(aliases)))
+    if line is not None:
+        second.append(line)
+    return squash(" ".join(first) + " " + INDEX_SEPARATOR.join(second))
+
+
+def index_text_problems(li, link, record, campaigns):
+    """Rule 15 (b) on the text of one visible entry (M4 PR 2 fix round 1):
+    its record link shows the record's name as it renders, one visible
+    index-type holds its type, one visible index-aliases its visible
+    aliases (none without), and the whole visible text of the entry is
+    exactly what index-item.html composes, so no name, alias, type or
+    attribution can stand in it but the record's own."""
+    where = f"/{record.section}/{record.slug}/"
+    problems = []
+    name = rendered_name(record)
+    if link.text() != name:
+        problems.append(f"rule 15 (b): the record link of the entry of {where} reads "
+                        f"{show(link.text())}; it shows the record's name as it renders, "
+                        f"{show(name)}")
+    kind = INDEX_CAMPAIGN_TYPE if record.section == "campaigns" else \
+        NAME_TYPES.get(record.params.get("name_type"))
+    el, found = shown_one([n for n in li.walk() if INDEX_TYPE in n.classes], INDEX_TYPE,
+                          f"rule 15 (b): the entry of {where}")
+    problems += found
+    if el is not None and not found and kind is not None and el.text() != kind:
+        problems.append(f"rule 15 (b): the type of the entry of {where} reads "
+                        f"{show(el.text())}, the record's type is {show(kind)}")
+    aliases = rendered_aliases(record)
+    lines = [n for n in li.walk() if INDEX_ALIASES in n.classes]
+    if not aliases:
+        if lines:
+            problems.append(f"rule 15 (b): the entry of {where} holds {len(lines)} "
+                            f"element(s) of class {INDEX_ALIASES}; the record shows no "
+                            "aliases")
+    else:
+        el, found = shown_one(lines, INDEX_ALIASES, f"rule 15 (b): the entry of {where}")
+        problems += found
+        want = INDEX_ALIASES_LINE.format(aliases=INDEX_ALIAS_SEPARATOR.join(aliases))
+        if el is not None and not found and el.text() != want:
+            problems.append(f"rule 15 (b): the aliases of the entry of {where} read "
+                            f"{show(el.text())}; the record's visible aliases read "
+                            f"{show(want)}")
+    want = index_entry_text(record, campaigns)
+    if want is not None and li.text() != want:
+        problems.append(f"rule 15 (b): the entry of {where} reads {show(li.text(), 300)}; "
+                        f"its fixed composition is {show(want, 300)} (name, chip, date, "
+                        "type, aliases, campaign family, and no other text)")
+    return problems
+
+
+def index_entry_problems(page, li, record, campaigns):
+    """Rule 15 (c) on one visible entry of the A to Z list: a report entry
+    holds one visible index-campaign naming its campaign family in the
+    fixed wording with the campaign linked, or the unattributed wording
+    without a link; a campaign entry holds none."""
+    where = f"/{record.section}/{record.slug}/"
+    lines = [n for n in li.walk() if INDEX_CAMPAIGN in n.classes]
+    if record.section == "campaigns":
+        if lines:
+            return [f"rule 15 (c): the entry of {where} holds {len(lines)} element(s) of "
+                    f"class {INDEX_CAMPAIGN}; only a report entry names a campaign family"]
+        return []
+    el, problems = shown_one(lines, INDEX_CAMPAIGN, f"rule 15 (c): the entry of {where}")
+    if el is None or problems:
+        return problems
+    links = [(site_path(href, A_Z_PATH), text) for href, text in links_in(el, shown=True)]
+    campaign = record.params.get("campaign")
+    if not isinstance(campaign, dict):
+        if el.text() != UNATTRIBUTED:
+            problems.append(f"rule 15 (c): the campaign family of {where} reads "
+                            f"{show(el.text())}, an unattributed report reads "
+                            f"{show(UNATTRIBUTED)} (ADR-0004 part 6)")
+        if links:
+            problems.append(f"rule 15 (c): the campaign family of the unattributed "
+                            f"{where} holds {len(links)} link(s); it links nothing")
+        return problems
+    slug = campaign.get("slug")
+    target = campaigns.get(slug)
+    name = text_param(target, "name") if target else None
+    if name is None:
+        return problems  # R7 is the records check's finding
+    want = INDEX_CAMPAIGN_LINE.format(campaign=squash(name))
+    if el.text() != want:
+        problems.append(f"rule 15 (c): the campaign family of {where} reads "
+                        f"{show(el.text())}, the fixed wording is {show(want)} "
+                        "(ADR-0005 part 2)")
+    path = f"/campaigns/{slug}/"
+    if links != [(path, squash(name))]:
+        problems.append(f"rule 15 (c): the campaign family of {where} does not link "
+                        f"exactly {show(name)} to {path} (it holds {len(links)} visible "
+                        "link(s))")
+    return problems
+
+
+def a_z_problems(page, records, campaigns):
+    """Rule 15 (b) to (d) on /a-z/. Returns (problems, entries)."""
+    problems = []
+    lists = by_class(page, INDEX_LIST)
+    el, found = shown_one(lists, INDEX_LIST, "rule 15 (b): /a-z/")
+    problems += found
+    if el is not None and el.tag != "ul":
+        problems.append(f"rule 15 (b): the element of class {INDEX_LIST} on /a-z/ is a "
+                        f"<{el.tag}>; the A to Z list is one <ul>")
+    entries = 0
+    if el is not None:
+        want = {f"/{r.section}/{r.slug}/": r for r in records}
+        seen = {path: [] for path in want}
+        targets = nav_targets(page)
+        for li in el.walk():
+            if li.tag != "li":
+                continue
+            if li.parent is not el:
+                problems.append("rule 15 (b): an <li> inside the A to Z list is not one of "
+                                "its entries (a direct <li> child of the list); the list "
+                                "holds one <li> per record and no other")
+                continue
+            entries += 1
+            if li.concealed():
+                problems.append(f"rule 15 (b): an entry of the A to Z list is in hidden "
+                                f"content ({HIDDEN_CONTENT}); an entry is never hidden")
+                continue
+            links = [(a, url) for a, url in targets if is_within(a, li)
+                     and not a.concealed() and not a.inside(INDEX_CAMPAIGN)
+                     and INDEX_CAMPAIGN not in a.classes]
+            if len(links) != 1:
+                problems.append(f"rule 15 (b): an entry of the A to Z list holds "
+                                f"{len(links)} visible links outside {INDEX_CAMPAIGN}; "
+                                "each holds exactly one, its record link")
+                continue
+            path = site_path(links[0][1], A_Z_PATH)
+            if path not in want:
+                problems.append(f"rule 15 (b): an entry of the A to Z list links "
+                                f"{show(path or links[0][1])}, which is no record page; the "
+                                "list holds one entry per record and no other")
+                continue
+            seen[path].append((li, links[0][0]))
+        for path, record in want.items():
+            if not seen[path]:
+                problems.append(f"rule 15 (b): the A to Z list has no entry for {record.rel} "
+                                f"({path})")
+            elif len(seen[path]) > 1:
+                problems.append(f"rule 15 (b): the A to Z list has {len(seen[path])} entries "
+                                f"for {record.rel} ({path}); one per record")
+            for li, link in seen[path]:
+                problems += shape_problems(li, f"rule 15 (b): the entry of {path}",
+                                           "index-item.html", entry_tree(record))
+                problems += index_text_problems(li, link, record, campaigns)
+                problems += index_entry_problems(page, li, record, campaigns)
+    block, found = one_of_class(page, NO_REPORT, "rule 15 (d): /a-z/")
+    problems += found
+    if block is not None:
+        problems += shape_problems(block, "rule 15 (d): the no-report block on /a-z/",
+                                   "no-report.html", block_tree())
+        # The whole text, the sentence and then the two link texts, joined
+        # with spaces: the template puts each in its own block element.
+        want = squash(" ".join([NO_REPORT_BROWSE_TEXT] + [t for _, t in NO_REPORT_LINKS]))
+        if block.text(" ") != want:
+            problems.append(f"rule 15 (d): the no-report block on /a-z/ reads "
+                            f"{show(block.text(' '), 300)}; its fixed text is "
+                            f"{show(want, 300)} (the sentence, then the two link texts, "
+                            "and no other text; ADR-0005 part 4)")
+        # Every visible navigation of the block with its text, in order
+        # (fix round 1: the link texts were free text).
+        links = [(site_path(url, A_Z_PATH), el.text()) for el, url in nav_targets(page)
+                 if is_within(el, block) and not el.concealed()]
+        if links != NO_REPORT_LINKS:
+            got = ", ".join(f"{show(path)} {show(text)}" for path, text in links) or "nothing"
+            problems.append(f"rule 15 (d): the no-report block on /a-z/ links {got}; it "
+                            "links exactly /before-your-call/ 'Before your call' and "
+                            "/report-a-scam/ 'Report a scam', in that order, and nothing "
+                            "else")
+    return problems, entries
+
+
+def home_search_problems(home):
+    """Rule 15 (e): Home has a visible link to /a-z/, and its one search form
+    (role search), visible, submits get to /a-z/, every submitter of it
+    included (formaction and formmethod override the form's own)."""
+    problems = []
+    if A_Z_PATH not in linked_paths(home, "/"):
+        problems.append("rule 15 (e): Home has no visible link to /a-z/, the A to Z list "
+                        "that serves the search without JavaScript (ADR-0005 part 2)")
+    forms = [n for n in home.root.walk() if n.tag == "form"
+             and "search" in ascii_lower(n.attrs.get("role", "")).split()]
+    if len(forms) != 1:
+        problems.append(f"rule 15 (e): Home has {len(forms)} search forms (form with role "
+                        "search); it has exactly one")
+        return problems
+    form = forms[0]
+    if form.concealed():
+        problems.append(f"rule 15 (e): the search form on Home is in hidden content "
+                        f"({HIDDEN_CONTENT})")
+    form_id = form.attrs.get("id")
+    submits = [("the form", form.attrs.get("action"), form.attrs.get("method"))]
+    for el in home.root.walk():
+        if el.tag not in ("button", "input"):
+            continue
+        owner = el.attrs.get("form")
+        if (owner is None and is_within(el, form)) or \
+                (owner is not None and form_id is not None and owner == form_id):
+            if "formaction" in el.attrs or "formmethod" in el.attrs:
+                submits.append((f"a <{el.tag}> of the form",
+                                el.attrs.get("formaction", form.attrs.get("action")),
+                                el.attrs.get("formmethod", form.attrs.get("method"))))
+    for what, action, method in submits:
+        if method is None or ascii_lower(method) != "get":
+            problems.append(f"rule 15 (e): {what} on Home submits with method "
+                            f"{show(method) if method is not None else 'missing'}; the "
+                            "search submits get")
+        if action is None or site_path(action, "/") != A_Z_PATH:
+            problems.append(f"rule 15 (e): {what} on Home submits to "
+                            f"{show(action) if action is not None else 'the page itself'}; "
+                            "the search submits to /a-z/")
+    return problems
+
+
+def search_problems(pages, records, campaigns):
+    """Rule 15 on a site build: (a) /a-z/ exists; (b) to (d) its list and its
+    no-report block; (e) the Home search. A page with a markup: finding is
+    not read (that finding fails the check). Returns (problems, summary)."""
+    problems, entries = [], 0
+    page = pages.get(A_Z_REL)
+    if page is None:
+        problems.append((A_Z_REL, "rule 15 (a): /a-z/ was not built; it is the A to Z list "
+                                  "of every report and campaign family (ADR-0005 part 2)"))
+    elif not page.unclosed:
+        found, entries = a_z_problems(page, records, campaigns)
+        problems += [(A_Z_REL, p) for p in found]
+    home = pages.get(HOME_REL)
+    if home is None:
+        problems.append((HOME_REL, "rule 15 (e): no Home page was built"))
+    elif not home.unclosed:
+        problems += [(HOME_REL, p) for p in home_search_problems(home)]
+    return problems, f"; search: {entries} entries on /a-z/"
+
+
 def cmd_render(args):
     root = Path(args.records).resolve()
     public = Path(args.public).resolve()
@@ -4247,6 +4708,14 @@ def cmd_render(args):
         problems, feed_summary = feed_problems(public, schema_dir, records, personas, pages)
         for rel, problem in problems:
             findings.add(rel, problem)
+    # Rule 15 runs on every site build; --no-search is for the self-test's
+    # render fixtures, which have a Home page but no /a-z/ (selftest.sh
+    # passes it unless the case has a search.txt).
+    search_summary = ""
+    if not args.no_search:
+        problems, search_summary = search_problems(pages, records, campaigns)
+        for rel, problem in problems:
+            findings.add(rel, problem)
     if not pages:
         findings.add("public", "no HTML pages found; nothing was checked")
     n_reports = sum(r.section == "reports" for r in records)
@@ -4254,7 +4723,7 @@ def cmd_render(args):
     return findings.report(
         f"render checked: {len(records)} records (reports {n_reports}, campaigns "
         f"{len(records) - n_reports}), {n_record_pages} record pages, {len(pages)} "
-        f"HTML pages, {len(files)} files{feed_summary}")
+        f"HTML pages, {len(files)} files{feed_summary}{search_summary}")
 
 
 # ---------------------------------------------------------------------------
@@ -4928,6 +5397,8 @@ LITERALS_COLLECTION_VALUES = frozenset({
     ("layouts/_partials/how-to-send.html", "contact-send"),  # the address's id (Copy)
     ("layouts/_partials/jsonld.html", "https://schema.org"),
     ("layouts/_partials/record-item.html", "chip"),
+    # The state chip of an A to Z entry, as in record-item.html (M4 PR 2).
+    ("layouts/_partials/index-item.html", "chip"),
     ("layouts/home.feed.json", "1"),  # the feed's version (ADR-0004 part 7)
     ("layouts/reports/page.html", "summary"),
     ("layouts/reports/page.html", "basis"),
@@ -10025,6 +10496,7 @@ def build_parser():
     p.add_argument("--schemas")
     p.add_argument("--fixtures")
     p.add_argument("--no-feed", action="store_true")
+    p.add_argument("--no-search", action="store_true")
     p.add_argument("public")
     p.set_defaults(func=cmd_render)
     p = sub.add_parser("tokens", allow_abbrev=False)

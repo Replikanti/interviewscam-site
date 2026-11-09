@@ -235,7 +235,7 @@ def render(root, schemas):
     with contextlib.redirect_stdout(buffer):
         rc = sitecheck.cmd_render(argparse.Namespace(
             records=str(root), schemas=str(schemas), fixtures=None, no_feed=False,
-            public=str(root / "public")))
+            no_search=True, public=str(root / "public")))
     output = buffer.getvalue()
     return rc, output, sum(line.startswith("FAIL: ") for line in output.splitlines())
 
@@ -337,6 +337,90 @@ with tempfile.TemporaryDirectory() as tmp:
 judge("feed-fields/field-set-test-schema", rc, output, found,
       ["rule 12: reports['example-front-company'] has no field evidence",
        "rule 12: reports['example-front-company'] has the field 'x_test'"], 2)
+PY
+}
+
+# search_cases_runner <sitecheck.py> <cases table> <base case> <schema dir>:
+# render rule 15 (the A to Z page and the Home search form, ADR-0005 part
+# 6) one branch and one flagging-set member per row (M4 PR 2). A row is
+# name, file, find, replace and expect, tab-separated, with \n and \t in
+# find and replace read as a newline and a tab. It copies the base case to
+# a temporary directory, replaces the one occurrence of find in <file>
+# (relative to the case; find `*` deletes the file instead) and runs the
+# real cmd_render with the feed rules off (the base has no feed) and the
+# search rules on: expect PASS needs exit 0, any other expect exit 1 with
+# that text in the output. A find string that is absent, or present more
+# than once, fails the row, so a row cannot turn into a no-op when the
+# base case changes. The last line, render-search/table, counts the rows.
+# -B: no tools/__pycache__.
+search_cases_runner() {
+  python3 -I -B - "$1" "$2" "$3" "$4" <<'PY'
+import argparse
+import contextlib
+import importlib.util
+import io
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+table, base, schema_dir = Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
+
+
+def unescape(text):
+    return text.replace("\\n", "\n").replace("\\t", "\t")
+
+
+rows = [line.split("\t") for line in table.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")]
+names, bad = set(), 0
+for row in rows:
+    if len(row) != 5 or not row[0] or row[0] in names:
+        print(f"FAIL render-search/table: malformed or duplicate row {row!r}")
+        bad += 1
+        continue
+    name, rel, find, replace, expect = row
+    names.add(name)
+    find, replace = unescape(find), unescape(replace)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "case"
+        shutil.copytree(base, root)
+        path = root / rel
+        if not path.is_file():
+            print(f"FAIL render-search/{name}: {rel} is not a file of {base.name}")
+            continue
+        if find == "*":
+            path.unlink()
+        else:
+            text = path.read_text(encoding="utf-8")
+            if text.count(find) != 1:
+                print(f"FAIL render-search/{name}: the find string occurs "
+                      f"{text.count(find)} times in {rel}, the row needs exactly one")
+                continue
+            path.write_text(text.replace(find, replace, 1), encoding="utf-8")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            rc = sitecheck.cmd_render(argparse.Namespace(
+                records=str(root), schemas=str(schema_dir), fixtures=None, no_feed=True,
+                no_search=False, public=str(root / "public")))
+        output = buffer.getvalue()
+    if expect == "PASS" and rc == 0:
+        print(f"ok   render-search/{name} (passed as expected)")
+    elif expect != "PASS" and rc == 1 and expect in output:
+        print(f"ok   render-search/{name} (failed as expected: {expect})")
+    else:
+        print(f"FAIL render-search/{name}: expected "
+              f"{'exit 0' if expect == 'PASS' else 'exit 1 and ' + repr(expect)}; got exit "
+              f"{rc}; output:")
+        for line in output.splitlines():
+            print(f"     | {line}")
+if not rows or bad:
+    print(f"FAIL render-search/table: {len(rows)} rows, {bad} malformed")
+else:
+    print(f"ok   render-search/table ({len(rows)} rows)")
 PY
 }
 
@@ -502,15 +586,19 @@ selftest_main() {
         # <dir>/fixtures stands in for tests/fixtures in the fixture-leak
         # check of the production run. The feed rules (11 to 13) run only
         # in a case with a feed.txt, which holds a public/feed.json and a
-        # public/data-feed/ page (or proves one missing): the other cases
-        # pin the page contract alone, as both builds of check.sh always
-        # run the feed rules.
+        # public/data-feed/ page (or proves one missing), and the search
+        # rules (15) only in a case with a search.txt, which holds a
+        # public/a-z/ page and the Home search form: the other cases pin
+        # the page contract alone, as both builds of check.sh always run
+        # the feed and search rules.
         leak_fixtures=""
         [[ -d "$dir/fixtures" ]] && leak_fixtures="$dir/fixtures"
         feed_mode=no-feed
         [[ -f "$dir/feed.txt" ]] && feed_mode=""
+        search_mode=no-search
+        [[ -f "$dir/search.txt" ]] && search_mode=""
         render_check "$dir" "$SELFTEST_ROOT/schema" "$dir/public" "$leak_fixtures" \
-          "$feed_mode" >"$out" 2>&1
+          "$feed_mode" "$search_mode" >"$out" 2>&1
         rc=$?
         ;;
       lighthouse)
@@ -628,6 +716,30 @@ selftest_main() {
     n_failed=$((n_failed + 1))
   else
     echo "ok   wiring/render-feed-rules (both render steps run rules 11 to 13; no --no-feed)"
+    n_passed=$((n_passed + 1))
+  fi
+
+  # Wiring: both builds run the search rules (render rule 15, ADR-0005 part
+  # 6), the --no-feed precedent: neither step_render nor
+  # step_render_fixtures, run against a stub sitecheck, passes --no-search,
+  # and check_main runs both render steps (the two lines above prove the
+  # step lines; this one repeats the check so it stands alone).
+  local search_args
+  search_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render; step_render_fixtures)"
+  if ! declare -f check_main \
+      | grep -qE '^ *run_step "render \(D6, D7, D10, structured data\)" step_render;?$' \
+      || ! declare -f check_main \
+      | grep -qE '^ *run_step "render \(fixture build\)" step_render_fixtures;?$'; then
+    echo "FAIL wiring/render-search-rules: check_main in tools/check.sh does not run" \
+      "both render steps (step_render and step_render_fixtures)"
+    n_failed=$((n_failed + 1))
+  elif [[ "$(grep -c '^render$' <<<"$search_args")" != 2 ]] \
+      || grep -qx -- '--no-search' <<<"$search_args"; then
+    echo "FAIL wiring/render-search-rules: step_render or step_render_fixtures in" \
+      "tools/check.sh does not run sitecheck render with the search rules (it passes --no-search)"
+    n_failed=$((n_failed + 1))
+  else
+    echo "ok   wiring/render-search-rules (both render steps run rule 15; no --no-search)"
     n_passed=$((n_passed + 1))
   fi
 
@@ -990,6 +1102,21 @@ PINNED
     n_failed=$((n_failed + 1))
   fi
   rm -f "$fields_table"
+
+  # render-search (M4 PR 2, ADR-0005 part 6): render rule 15 branch by
+  # branch and member by member from tests/fixtures/render/search-cases.tsv
+  # on a copy of render/pass-search (search_cases_runner above).
+  search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+    "$FIXTURES/render/search-cases.tsv" "$FIXTURES/render/pass-search" \
+    "$SELFTEST_ROOT/schema" >"$out" 2>&1
+  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+  if ! grep -qE '^(ok   |FAIL )render-search/table' "$out"; then
+    echo "FAIL render-search: the runner did not finish; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
 
   # Wiring: the fixture build classifies its inputs before it copies them
   # (ADR-0004 part 10, amended), and copies exactly the FIXTURE_COPY

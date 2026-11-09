@@ -77,6 +77,26 @@ latest_link = "All names"
 families_heading = "Campaign families"
 families_link = "All campaign families"
 
+# The A to Z page /a-z/ (layouts/_partials/a-z.html and index-item.html,
+# ADR-0005 part 2): campaign_type is the type of a campaign family's entry
+# (a report's entry shows its name_type); browse_link is the link to /a-z/
+# in the Home search card, visible with and without JavaScript.
+[a_z]
+campaign_type = "Campaign family"
+browse_link = "Browse every report A to Z"
+
+# The no-report block (layouts/_partials/no-report.html, ADR-0005 part 4):
+# no entry is never a sign of safety. browse_text follows the A to Z list
+# of /a-z/, which shows every report by its name and its other names but
+# no artifact and no hidden name, so it states only what the list holds
+# (wording approved by the operator at STOP 2 of #36, D7). It is pinned a second time in tools/sitecheck.py
+# (NO_REPORT_BROWSE_TEXT, render rule 15), and so are the two link texts,
+# so a change turns render red until the same change lands there too.
+[no_report]
+browse_text = "Not finding a name here does not mean it is safe. This list shows each report by its name and its other names. Apart from those names, it does not show the addresses, handles and files listed inside a report, or names hidden on request. New fake interviews also use names nobody has reported yet."
+before_link = "Before your call"
+report_link = "Report a scam"
+
 # How to send a report or a correction request today
 # (layouts/_partials/how-to-send.html): the address as plain text and the
 # fixed subject line of each channel.

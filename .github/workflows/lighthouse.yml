@@ -81,18 +81,20 @@ jobs:
     # No token permissions: injected registry code can read every token of
     # its own job from process memory (ADR-0003 part 2).
     permissions: {}
-    # ceil(2 x (T_setup + 16 pages x 3 runs x T_run)), ADR-0004 Numbers
-    # ("lighthouse timeout"), re-derived in M3 PR 8 (#30, 2026-11-07) from
-    # its three green runs on 14 pages (9 production pages with /data-feed/
-    # plus the 5 fixture pages). Jobs took 458 to 499 s, a spread of 1.09,
-    # so the factor is 2. T_setup = job time minus its 42 audits, at most
-    # 21.4 s (job set up, artifact download, resolve, digest, install,
-    # server start); T_run = the mean audit per job, at most 11.4 s (single
-    # audits up to 13.1 s). 2 x (21.4 + 48 x 11.4) s = 1137 s -> 19 min.
-    # 16 pages: Home, 404, the seven static pages (with /data-feed/ from
-    # M3 PR 8), the two production section pages from M5 and the five
-    # fixture pages, so the value holds through M5.
-    timeout-minutes: 19
+    # ceil(2 x (T_setup + 18 pages x 3 runs x T_run)), ADR-0004 Numbers
+    # ("lighthouse timeout"), re-derived in M4 PR 2 (#36, 2026-11-08) from
+    # its three green runs on 16 pages (10 production pages with /a-z/
+    # plus the 6 fixture pages with /a-z/index.html): runs 42498039107,
+    # 42499352930 and 42500716363. Jobs took 549, 596 and 544 s, a spread
+    # of 1.10, so the factor is 2. T_setup = job time minus its 48 audits
+    # (48 x the mean audit), at most 30.4 s (job set up, artifact download,
+    # resolve, digest, install, server start); T_run = the mean audit per
+    # job, at most 11.8 s (single audits up to 35.0 s).
+    # 2 x (30.4 + 54 x 11.8) s = 1335.2 s -> 23 min. 18 pages: Home, 404,
+    # the eight static pages (with /a-z/ from M4 PR 2), the two production
+    # section pages from M5 and the six fixture pages (ADR-0005 Numbers),
+    # so the value holds through M5.
+    timeout-minutes: 23
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

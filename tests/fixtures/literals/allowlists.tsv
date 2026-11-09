@@ -403,6 +403,7 @@ LITERALS_COLLECTION_VALUES	layouts/_partials/header.html	/about/
 LITERALS_COLLECTION_VALUES	layouts/_partials/header.html	/before-your-call/
 LITERALS_COLLECTION_VALUES	layouts/_partials/header.html	/methodology/
 LITERALS_COLLECTION_VALUES	layouts/_partials/how-to-send.html	contact-send
+LITERALS_COLLECTION_VALUES	layouts/_partials/index-item.html	chip
 LITERALS_COLLECTION_VALUES	layouts/_partials/jsonld.html	https://schema.org
 LITERALS_COLLECTION_VALUES	layouts/_partials/lookups.html	https://bazaar.abuse.ch/sample/%s/
 LITERALS_COLLECTION_VALUES	layouts/_partials/lookups.html	https://www.virustotal.com/gui/file/%s

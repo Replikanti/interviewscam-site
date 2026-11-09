@@ -2,13 +2,20 @@
 {{ define "main" }}
 <h1 class="home-title">{{ partial "label.html" "home.title" }}</h1>
 <p class="lead">{{ partial "label.html" "home.lead" }}</p>
-{{- /* Search markup only; the search behaviour is milestone 4. The input sits on a card, because input_border is below 3:1 on the page ground (data/tokens.toml). */}}
-<form class="card search" role="search" method="get" action="{{ "/" | relURL }}">
+{{- /* The search form (ADR-0005 part 2). Without JavaScript it submits get
+  to /a-z/, the A to Z list of every report and campaign family, and the
+  visible link to /a-z/ serves both states (render rule 15). The input
+  sits on a card, because input_border is below 3:1 on the page ground
+  (data/tokens.toml). */}}
+<form class="card search" role="search" method="get" action="{{ "/a-z/" | relURL }}">
 <label for="q">{{ partial "label.html" "home.search_label" }}</label>
 <div class="search-row">
 <div class="search-field"><span class="search-icon">{{ partial "icon.html" "search" }}</span><input id="q" type="search" name="q" autocomplete="off" spellcheck="false"></div>
 <button class="button-primary" type="submit">{{ partial "label.html" "home.search_button" }}</button>
 </div>
+<ul class="link-list">
+<li><a href="{{ "/a-z/" | relURL }}">{{ partial "label.html" "a_z.browse_link" }}</a></li>
+</ul>
 </form>
 <section class="card" aria-labelledby="before-your-call">
 <h2 id="before-your-call">{{ partial "label.html" "home.checklist_heading" }}</h2>

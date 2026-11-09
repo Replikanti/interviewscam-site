@@ -608,7 +608,12 @@ h1,
 .facts,
 .campaign-line,
 .attribution-list,
-.sources {
+.sources,
+.index-list,
+.index-type,
+.index-aliases,
+.index-campaign,
+.no-report {
   overflow-wrap: anywhere;
 }
 
@@ -849,6 +854,39 @@ h1,
   min-width: 0;
   padding: var(--space-x2) 0;
   font-weight: var(--weight-label);
+}
+
+/* The A to Z list (/a-z/, ADR-0005 part 2): the record-list layout, the
+   name, chip and date on the first line, and a second line that wraps with
+   the type, the aliases and, for a report, its campaign family. */
+.index-list {
+  margin-bottom: var(--space-x3);
+  list-style: none;
+}
+
+.index-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--space-x2);
+  padding-bottom: var(--space-x2);
+}
+
+.index-list li + li {
+  border-top: var(--border-width) solid var(--color-card-border);
+}
+
+.index-list li > a {
+  display: inline-block;
+  min-width: 0;
+  padding: var(--space-x2) 0;
+  font-weight: var(--weight-label);
+}
+
+.index-meta {
+  flex-basis: 100%;
+  min-width: 0;
+  color: var(--color-muted);
 }
 
 .record-date {
