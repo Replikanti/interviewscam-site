@@ -2299,6 +2299,9 @@ def cmd_site(args):
                             if tag == "script" and "src" in attrs]
                 page_scripts[rel] = [attrs for tag, attrs in page.elements
                                      if tag == "script"]
+                # (m) the head by position (M4 PR 3 fix round 7).
+                for problem in head_problems(text, rel, not args.no_built_pins):
+                    findings.add(rel, problem)
                 # (k) per page (M3 PR 10): the stylesheets every page applies.
                 stylesheets[rel], problems = stylesheet_links(page, css_files)
                 for problem in problems:
@@ -8791,6 +8794,98 @@ BUILT_STYLE_SUFFIX = ".css"
 # page kind loads, by stem, in order.
 SCRIPT_SRC_ATTRS = ("src", "integrity", "defer")
 SCRIPTS_BY_PAGE_KIND = {"home": ("copy", "search"), "other": ("copy",)}
+# Rule (m), the head by position (M4 PR 3 fix round 7, delta review 6
+# finding 1). An element whose effect depends on its place and namespace
+# (script, link, meta, base) works only as a direct child of the one <head>:
+# inside <math> or <svg> a script is no HTMLScriptElement and never runs, a
+# CSP meta outside the head or in foreign content is ignored, a link in a
+# wrapper may apply to nothing. So these elements are direct children of
+# the head and appear nowhere else (every page, hand-made fixtures too),
+# and with the built pins on the head holds exactly the children
+# baseof.html emits for the page kind, in order, with exactly their
+# attribute names and fixed values (the HOME_CHAIN mechanism applied to the
+# head); None stands for a value another rule pins (the CSP content against
+# params.csp, rule (c); the canonical href, rule (d); the theme colour, rule
+# (f); the description, render; the stylesheet href, rules (k) and (l); the
+# script src and integrity, rule (j)). A JSON-LD block is the last child of
+# the head on a record page and a section page (one each, as jsonld.html
+# emits it) and absent elsewhere. Exact positions, not a list of wrappers.
+HEAD_ONLY_TAGS = ("script", "link", "meta", "base")
+HEAD_PREFIX = [
+    ("meta", {"charset": "utf-8"}),
+    ("meta", {"http-equiv": "Content-Security-Policy", "content": None}),
+    ("meta", {"name": "viewport", "content": "width=device-width,initial-scale=1"}),
+    ("meta", {"name": "color-scheme", "content": "light"}),
+    ("meta", {"name": "description", "content": None}),
+    ("title", {}),
+]
+HEAD_CANONICAL = ("link", {"rel": "canonical", "href": None})
+HEAD_SUFFIX = [
+    ("meta", {"name": "theme-color", "content": None}),
+    ("link", {"rel": "icon", "href": None, "type": "image/svg+xml"}),
+    ("link", {"rel": "stylesheet", "href": None}),
+]
+HEAD_SCRIPT = ("script", {"src": None, "integrity": None, "defer": ""})
+HEAD_JSONLD = ("script", {"type": JSON_LD})
+NOT_FOUND_REL = "public/404.html"
+RECORD_SECTIONS_REL = ("public/reports/", "public/campaigns/")
+
+
+def head_spec(rel):
+    """The direct children of <head> that baseof.html emits for the page
+    rel (`public/...`), in order: (tag, {attribute: value or None})."""
+    spec = list(HEAD_PREFIX)
+    if rel != NOT_FOUND_REL:
+        spec.append(HEAD_CANONICAL)
+    spec += HEAD_SUFFIX
+    kind = SCRIPTS_BY_PAGE_KIND["home" if rel == "public/index.html" else "other"]
+    spec += [HEAD_SCRIPT] * len(kind)
+    if rel.startswith(RECORD_SECTIONS_REL) and rel.endswith("/index.html"):
+        spec.append(HEAD_JSONLD)  # a section page or a record page
+    return spec
+
+
+def head_problems(text, rel, built):
+    """Rule (m) on one HTML page (see HEAD_ONLY_TAGS). built: also the exact
+    head of baseof.html (the built pins are on)."""
+    tree = parse_render_page(text)
+    htmls = [el for el in tree.root.children if isinstance(el, Element) and el.tag == "html"]
+    heads = [el for el in htmls[0].children if isinstance(el, Element) and el.tag == "head"] \
+        if len(htmls) == 1 else []
+    head = heads[0] if len(heads) == 1 else None
+    problems = []
+    if head is None:
+        problems.append("(m) the page has no single <head> right inside its single <html>; "
+                        "script, link, meta and base work only as children of that head")
+    for el in tree.root.walk():
+        if el.tag in HEAD_ONLY_TAGS and (head is None or el.parent is not head):
+            chain, parent = [], el.parent
+            while parent is not None and parent.tag != "#document":
+                chain.append("<" + parent.tag + ">")
+                parent = parent.parent
+            where = " in ".join(chain)
+            problems.append(f"(m) <{el.tag} {show(el.attrs, 160)}> sits in {where or 'nothing'}"
+                            "; it is a direct child of <head>, where its place and namespace "
+                            "give it its effect (inside <math> or <svg> a script never runs, "
+                            "a CSP meta outside the head is ignored)")
+    if head is None or not built:
+        return problems
+    got = [(el.tag, el.attrs) for el in head.children if isinstance(el, Element)]
+    want = head_spec(rel)
+
+    def matches(item, spec):
+        tag, attrs = item
+        stag, sattrs = spec
+        return tag == stag and set(attrs) == set(sattrs) and all(
+            v is None or attrs.get(k) == v for k, v in sattrs.items())
+    if len(got) != len(want) or not all(matches(g, w) for g, w in zip(got, want)):
+        def shown(items):
+            return ", ".join("<" + t + "".join(f" {k}" + ("" if v is None else f"={show(v, 40)}")
+                                             for k, v in a.items()) + ">" for t, a in items)
+        problems.append(f"(m) the head holds {shown([(t, {k: None for k in a}) for t, a in got])}"
+                        f"; baseof.html emits exactly {shown(want)} for this page, in this "
+                        "order (values shown are pinned here, the others by their own rule)")
+    return problems
 BUILT_STYLESHEET_SHA256 = {
     "site": "470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38",
 }
