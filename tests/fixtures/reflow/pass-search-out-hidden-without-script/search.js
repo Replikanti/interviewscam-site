@@ -15,6 +15,13 @@
 // still submits to /a-z/ without them. No innerHTML, no timers, and no URL
 // but /feed.json and the form's action. Every string below is a key, a
 // class, an id or a URL part: L7 of sitecheck literals reads them.
+// Two rules keep one record or one markup edit from breaking the search
+// for every query (M4 PR 3 fix round 1): every value read from the feed
+// goes through a type-checked accessor (a schema-valid record may leave out
+// an optional field, such as a hash's file_name), and every method of the
+// document and the form is called through its prototype, because a form
+// control or a named element can shadow it (a button named submit or
+// action, an image named getElementById).
 (function () {
   // ADR-0005 Numbers: SEARCH_PARTIAL_MIN (code points), SEARCH_PARTIAL_CAP
   // (entries) and the one feed version the matching rules were written for.
@@ -58,18 +65,29 @@
   // The normalization form, built at run time: L3 reads an upper-case
   // literal as copy.
   var NFKC = "nfkc".toUpperCase();
+  // The built-in methods, read from their prototypes, never through the
+  // document or the form (clobbering, see above).
+  var getById = Document.prototype.getElementById;
+  var getByClass = Document.prototype.getElementsByClassName;
+  var importNode = Document.prototype.importNode;
+  var getAttribute = Element.prototype.getAttribute;
+  var listen = EventTarget.prototype.addEventListener;
+  var submitForm = HTMLFormElement.prototype.submit;
 
-  var input = document.getElementById("q");
-  var form = input && input.form;
-  var results = document.getElementById("search-results");
-  var sections = [document.getElementById("search-answer"),
-                  document.getElementById("search-partial"),
-                  document.getElementById("search-none")];
-  if (!form || !form.getAttribute("action") || !results || !sections[0] || !sections[1]
-      || !sections[2] || !window.fetch || !window.DOMParser || !window.URL
-      || !String.prototype.normalize) {
+  function byId(id) {
+    return getById.call(document, id);
+  }
+
+  var input = byId("q");
+  var form = input instanceof HTMLInputElement ? input.form : null;
+  var results = byId("search-results");
+  var sections = [byId("search-answer"), byId("search-partial"), byId("search-none")];
+  if (!(form instanceof HTMLFormElement) || !getAttribute.call(form, "action") || !results
+      || !sections[0] || !sections[1] || !sections[2] || !window.fetch || !window.DOMParser
+      || !window.URL || !String.prototype.normalize) {
     return;
   }
+  var action = new URL(getAttribute.call(form, "action"), location.href).href;
 
   function inRanges(code, ranges) {
     for (var i = 0; i < ranges.length; i++) {
@@ -153,73 +171,115 @@
     return endsWith(text, end) ? text.slice(0, text.length - end.length) : text;
   }
 
+  // The type-checked accessors: every value of the feed is read through
+  // them. A field that is missing, null or of another type gives nothing,
+  // so it is skipped and never folded.
+  function isObject(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function text(object, key) {
+    return isObject(object) && typeof object[key] === "string" ? object[key] : null;
+  }
+
+  function items(object, key) {
+    return isObject(object) && Array.isArray(object[key]) ? object[key] : [];
+  }
+
   // The keys of one feed entry: name keys, value keys and domain keys.
   function entryKeys(item) {
     var keys = {names: [], values: [], domains: []};
-    if (typeof item.name === "string") {
-      keys.names.push(fold(item.name));
+    var name = text(item, "name");
+    if (name !== null) {
+      keys.names.push(fold(name));
     }
-    (item.aliases || []).forEach(function (alias) {
-      keys.names.push(fold(alias));
+    items(item, "aliases").forEach(function (alias) {
+      if (typeof alias === "string") {
+        keys.names.push(fold(alias));
+      }
     });
-    var artifacts = item.artifacts || {};
-    function value(text, list) {
-      var key = bare(refang(fold(text)));
+    var artifacts = isObject(item) && isObject(item.artifacts) ? item.artifacts : {};
+    function value(raw, list) {
+      var key = bare(refang(fold(raw)));
       keys.values.push(key);
       if (list === "domains") {
         keys.domains.push(withoutEnd(key, "."));
       }
-      return key;
+      if (list === "handles" && startsWith(key, "@")) {
+        keys.values.push(key.slice(1));
+      }
     }
     VALUE_LISTS.forEach(function (list) {
-      (artifacts[list] || []).forEach(function (text) {
-        value(text, list);
+      items(artifacts, list).forEach(function (raw) {
+        if (typeof raw === "string") {
+          value(raw, list);
+        }
       });
     });
     OBJECT_FIELDS.forEach(function (pair) {
-      (artifacts[pair[0]] || []).forEach(function (object) {
-        var key = value(object[pair[1]], pair[0]);
-        if (pair[0] === "handles" && startsWith(key, "@")) {
-          keys.values.push(key.slice(1));
+      items(artifacts, pair[0]).forEach(function (object) {
+        var raw = text(object, pair[1]);
+        if (raw !== null) {
+          value(raw, pair[0]);
         }
       });
     });
     return keys;
   }
 
-  // The /a-z/ entries in their order, each with the keys of its feed
-  // entry, or an error when the two files do not describe the same records.
+  // The path of a feed entry's url, or null when it has none.
+  function entryPath(item) {
+    var url = text(item, "url");
+    try {
+      return url === null ? null : new URL(url, location.href).pathname;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  // The index: the /a-z/ entries in their order, each with the keys of its
+  // feed entry (none when the feed lacks it), and the keys of the feed
+  // entries /a-z/ does not show (orphans). Only a feed of another version,
+  // without its two lists, or an /a-z/ page without its list is an error,
+  // which hands every query over to /a-z/; one record never is.
   function buildIndex(feed, page) {
-    if (!feed || feed.version !== FEED_VERSION || !Array.isArray(feed.reports)
+    if (!isObject(feed) || feed.version !== FEED_VERSION || !Array.isArray(feed.reports)
         || !Array.isArray(feed.campaigns)) {
       throw new Error("feed");
     }
-    var byPath = {};
-    var count = 0;
-    feed.reports.concat(feed.campaigns).forEach(function (item) {
-      byPath[new URL(item.url, document.baseURI).pathname] = entryKeys(item);
-      count++;
-    });
-    var list = page.getElementsByClassName("index-list")[0];
-    var entries = [];
-    Array.prototype.forEach.call(list ? list.children : [], function (li) {
-      var link = li.getElementsByTagName("a")[0];
-      var keys = link && byPath[link.getAttribute("href")];
-      if (li.localName !== "li" || !keys) {
-        throw new Error("a-z");
-      }
-      entries.push({li: li, keys: keys});
-    });
-    if (!list || entries.length !== count) {
+    var list = getByClass.call(page, "index-list")[0];
+    if (!list) {
       throw new Error("a-z");
     }
-    return entries;
+    var byPath = {};
+    feed.reports.concat(feed.campaigns).forEach(function (item) {
+      var path = entryPath(item);
+      if (path !== null) {
+        byPath[path] = entryKeys(item);
+      }
+    });
+    var shown = {};
+    var entries = [];
+    Array.prototype.forEach.call(list.children, function (li) {
+      var link = li.localName === "li" ? li.getElementsByTagName("a")[0] : null;
+      var path = link ? getAttribute.call(link, "href") : null;
+      if (path !== null) {
+        shown[path] = true;
+        entries.push({li: li, keys: byPath[path] || {names: [], values: [], domains: []}});
+      }
+    });
+    var orphans = Object.keys(byPath).filter(function (path) {
+      return !shown[path];
+    }).map(function (path) {
+      return {li: null, keys: byPath[path]};
+    });
+    return {entries: entries, orphans: orphans};
   }
 
   var loading = null;
   function load() {
     if (!loading) {
-      loading = Promise.all([fetch(FEED_URL), fetch(form.action)]).then(function (replies) {
+      loading = Promise.all([fetch(FEED_URL), fetch(action)]).then(function (replies) {
         if (!replies[0].ok || !replies[1].ok) {
           throw new Error("fetch");
         }
@@ -231,14 +291,15 @@
     return loading;
   }
 
-  function contains(keys, part) {
-    return part !== "" && keys.some(function (key) {
-      return key.indexOf(part) >= 0;
-    });
+  function codePointCount(value) {
+    return Array.from(value).length;
   }
 
-  // The matches of one query (ADR-0005 part 3): [section index, entries].
-  function match(entries, query) {
+  // The matches of one query (ADR-0005 part 3): [section index, entries],
+  // or null when a feed entry that /a-z/ does not show matches exactly, so
+  // the answer has no display and the query goes to /a-z/.
+  function match(index, query) {
+    var entries = index.entries;
     var f = fold(query);
     var r = bare(refang(f));
     var r0 = cutBefore(r, "?#");
@@ -248,25 +309,36 @@
       h = cutBefore(r0, "/");
       h = withoutEnd(cutBefore(h.slice(h.lastIndexOf("@") + 1), ":"), ".");
     }
-    var exact = entries.filter(function (entry) {
+    function isExact(entry) {
       var keys = entry.keys;
       return keys.names.indexOf(f) >= 0 || keys.values.indexOf(r) >= 0
         || keys.values.indexOf(r0) >= 0 || keys.values.indexOf(rAt) >= 0
         || (h !== "" && keys.domains.some(function (domain) {
           return h === domain || endsWith(h, "." + domain);
         }));
-    });
+    }
+    if (index.orphans.some(isExact)) {
+      return null;
+    }
+    var exact = entries.filter(isExact);
     if (exact.length) {
       return [0, exact];
     }
-    if (Array.from(f).length >= PARTIAL_MIN) {
-      var close = entries.filter(function (entry) {
-        var keys = entry.keys.names.concat(entry.keys.values);
-        return contains(keys, f) || contains(keys, r);
+    // The partial match tests the forms f and r, and SEARCH_PARTIAL_MIN
+    // holds for each form it tests: a form shorter than that (bare() and
+    // refang() can cut r to one or two code points) tests nothing.
+    var parts = [f, r].filter(function (part) {
+      return codePointCount(part) >= PARTIAL_MIN;
+    });
+    var close = entries.filter(function (entry) {
+      return entry.keys.names.concat(entry.keys.values).some(function (key) {
+        return parts.some(function (part) {
+          return key.indexOf(part) >= 0;
+        });
       });
-      if (close.length) {
-        return [1, close.slice(0, PARTIAL_CAP)];
-      }
+    });
+    if (close.length) {
+      return [1, close.slice(0, PARTIAL_CAP)];
     }
     return [2, []];
   }
@@ -289,15 +361,20 @@
     var section = sections[found[0]];
     var list = section.getElementsByClassName("index-list")[0];
     found[1].forEach(function (entry) {
-      list.appendChild(document.importNode(entry.li, true));
+      list.appendChild(importNode.call(document, entry.li, true));
     });
     results.hidden = false;
     section.hidden = false;
     section.getElementsByTagName("h2")[0].focus();
   }
 
+  function handOver() {
+    results.removeAttribute("aria-busy");
+    submitForm.call(form);
+  }
+
   var asked = 0;
-  form.addEventListener("submit", function (event) {
+  listen.call(form, "submit", function (event) {
     event.preventDefault();
     var query = input.value;
     var mine = ++asked;
@@ -306,17 +383,19 @@
       return;
     }
     results.setAttribute("aria-busy", "true");
-    load().then(function (entries) {
+    load().then(function (index) {
       if (mine === asked) {
+        var found = match(index, query);
+        if (found === null) {
+          handOver();
+          return;
+        }
         results.removeAttribute("aria-busy");
-        reveal(match(entries, query));
+        reveal(found);
       }
-    }, function () {
-      results.removeAttribute("aria-busy");
-      form.submit();
-    });
+    }, handOver);
   });
-  input.addEventListener("focus", function () {
+  listen.call(input, "focus", function () {
     load().then(null, function () {});
   });
 })();

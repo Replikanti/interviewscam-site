@@ -4503,6 +4503,8 @@ def a_z_problems(page, records, campaigns):
     if el is not None and el.tag != "ul":
         problems.append(f"rule 15 (b): the element of class {INDEX_LIST} on /a-z/ is a "
                         f"<{el.tag}>; the A to Z list is one <ul>")
+    if el is not None:
+        problems += chain_problems(el, A_Z_CHAIN, "rule 15 (b): the A to Z list on /a-z/")
     entries = 0
     if el is not None:
         want = {f"/{r.section}/{r.slug}/": r for r in records}
@@ -4551,6 +4553,7 @@ def a_z_problems(page, records, campaigns):
     block, found = one_of_class(page, NO_REPORT, "rule 15 (d): /a-z/")
     problems += found
     if block is not None:
+        problems += chain_problems(block, A_Z_CHAIN, "rule 15 (d): the no-report block on /a-z/")
         problems += shape_problems(block, "rule 15 (d): the no-report block on /a-z/",
                                    "no-report.html", block_tree())
         # The whole text, the sentence and then the two link texts, joined
@@ -4574,6 +4577,39 @@ def a_z_problems(page, records, campaigns):
     return problems, entries
 
 
+# The search form as layouts/home.html emits it (M4 PR 3 fix round 1,
+# review finding 4): every control, attribute and text, so no control can
+# shadow a property of the form (a button named submit or action) and no
+# submitter can change where or how it submits. The texts are
+# home.search_label, home.search_button and a_z.browse_link.
+SEARCH_LABEL = "Company, app, domain or recruiter"
+SEARCH_BUTTON = "Check"
+# The search icon of layouts/_partials/icon.html as the minifier writes it.
+SEARCH_ICON_ATTRS = {"class": "icon", "viewbox": "0 0 24 24", "fill": "none",
+                     "stroke": "currentColor", "stroke-width": "2",
+                     "stroke-linecap": "round", "stroke-linejoin": "round",
+                     "aria-hidden": "true"}
+
+
+def search_form_tree():
+    """The tree of the search form of layouts/home.html."""
+    icon = pinned("span", {"class": "search-icon"}, "",
+                  pinned("svg", SEARCH_ICON_ATTRS, "",
+                         pinned("circle", {"cx": "11", "cy": "11", "r": "6.5"}, ""),
+                         pinned("path", {"d": "m16 16 4.5 4.5"}, "")))
+    query = pinned("input", {"id": "q", "type": "search", "name": "q", "autocomplete": "off",
+                             "spellcheck": "false"}, "")
+    return pinned(
+        "form", {"class": "card search", "role": "search", "method": "get",
+                 "action": A_Z_PATH}, None,
+        pinned("label", {"for": "q"}, SEARCH_LABEL),
+        pinned("div", {"class": "search-row"}, None,
+               pinned("div", {"class": "search-field"}, "", icon, query),
+               pinned("button", {"class": "button-primary", "type": "submit"},
+                      SEARCH_BUTTON)),
+        link_list_spec([(A_Z_PATH, A_Z_LINK_TEXT)]))
+
+
 def home_search_problems(home):
     """Rule 15 (e): Home has a visible link to /a-z/, and its one search form
     (role search), visible, submits get to /a-z/, every submitter of it
@@ -4592,6 +4628,10 @@ def home_search_problems(home):
     if form.concealed():
         problems.append(f"rule 15 (e): the search form on Home is in hidden content "
                         f"({HIDDEN_CONTENT})")
+    what = "rule 15 (e): the search form on Home"
+    problems += chain_problems(form, HOME_CHAIN, what)
+    found = region_problems(form, search_form_tree(), what, "layouts/home.html")
+    problems += found[1] if found else []
     form_id = form.attrs.get("id")
     submits = [("the form", form.attrs.get("action"), form.attrs.get("method"))]
     for el in home.root.walk():
@@ -4742,26 +4782,29 @@ def search_results_problems(home):
     region = (ids.get(SEARCH_RESULTS) or [None])[0]
     if region is None:
         return problems
-    parent = region.parent
-    # Hidden by an ancestor, or a child of a closed <details> other than
-    # its summary (Element.hides reads that on the child, which here also
-    # carries its own hidden attribute, so it is read on the parent).
-    if parent is not None and (parent.concealed() or (
-            parent.tag == "details" and "open" not in parent.attrs)):
-        problems.append(f"rule 16: #{SEARCH_RESULTS} on Home sits inside hidden content "
-                        f"({HIDDEN_CONTENT}); revealing it would show nothing (ADR-0005 "
-                        "part 4)")
-    want = search_region_tree()
+    problems += chain_problems(region, HOME_CHAIN, f"rule 16: #{SEARCH_RESULTS} on Home")
     what = f"rule 16: #{SEARCH_RESULTS} on Home"
-    shape = shape_problems(region, what, "layouts/home.html", bare_tree(want))
-    if shape:
-        return problems + shape
+    found = region_problems(region, search_region_tree(), what, "layouts/home.html")
+    if found and found[0] == "shape":
+        return problems + found[1]
     for cls_el in home.root.walk():
         if SEARCH_OUT in cls_el.classes and not is_within(cls_el, region):
             problems.append(f"rule 16: an element of class {SEARCH_OUT} on Home sits outside "
                             f"#{SEARCH_RESULTS}; the class marks only the result box and its "
                             "three sections (ADR-0005 part 4)")
             break
+    return problems + (found[1] if found else [])
+
+
+def region_problems(root, want, what, template):
+    """A pinned region against its tree (`pinned` specs): ("shape",
+    problems) when an element or attribute differs (shape_problems), else
+    ("text", problems) for every pinned element whose text, hidden content
+    included, differs, and then for the region's whole text, so no loose
+    text sits between its elements; None when it matches."""
+    shape = shape_problems(root, what, template, bare_tree(want))
+    if shape:
+        return ("shape", shape)
 
     def texts(el, spec):
         tag, attrs, children, text = spec
@@ -4771,18 +4814,48 @@ def search_results_problems(home):
                 f"{' class=' + attrs['class'] if 'class' in attrs else ''}>"
             found.append(f"{what}: {label} reads {show(el.text(' ', shown=False), 300)}; it "
                          f"reads exactly {show(text, 300)} (labels.toml through "
-                         "layouts/home.html, pinned here)")
+                         f"{template}, pinned here)")
         elements = [c for c in el.children if isinstance(c, Element)]
         for child, child_spec in zip(elements, children):
             found += texts(child, child_spec)
         return found
-    problems += texts(region, want)
+    problems = texts(root, want)
     whole = squash(" ".join(tree_texts(want)))
-    if not problems and region.text(" ", shown=False) != whole:
-        problems.append(f"{what} reads {show(region.text(' ', shown=False), 300)}; its whole "
+    if not problems and root.text(" ", shown=False) != whole:
+        problems.append(f"{what} reads {show(root.text(' ', shown=False), 300)}; its whole "
                         f"text is exactly {show(whole, 300)}, so no loose text sits between "
                         "its elements")
-    return problems
+    return ("text", problems) if problems else None
+
+
+# The ancestors of the pinned regions (M4 PR 3 fix round 1, review finding
+# 3): each region sits exactly where its templates put it, every ancestor's
+# tag and whole attribute map as baseof.html, page.html and a-z.html emit
+# them, so no wrapper (popover, inert, dialog, details, hidden, a style
+# hook) and no added attribute can conceal or disable it. An exact chain,
+# not a list of concealing constructs: a list closes only the probes.
+HTML_CHAIN = [("main", {"id": "main", "class": "container", "tabindex": "-1"}),
+              ("body", {}), ("html", {"lang": "en"})]
+HOME_CHAIN = HTML_CHAIN  # #search-results and the search form, in layouts/home.html
+A_Z_CHAIN = [("div", {"class": "card"})] + HTML_CHAIN  # the list and the block, a-z.html
+
+
+def chain_problems(el, want, what):
+    """el's ancestors (the #document root aside), innermost first, against
+    want: the same tags and exactly the same attributes, none more."""
+    got, parent = [], el.parent
+    while parent is not None and parent.tag != "#document":
+        got.append((parent.tag, parent.attrs))
+        parent = parent.parent
+    if got == want:
+        return []
+
+    def shown(chain):
+        return " in ".join("<" + tag + "".join(f" {k}={show(v, 40)}" for k, v in attrs.items())
+                           + ">" for tag, attrs in chain)
+    return [f"{what} sits in {shown(got) or 'no element'}; its ancestors are exactly "
+            f"{shown(want)}, as the templates emit them, so no wrapper or attribute can hide, "
+            "cover or disable it"]
 
 
 def search_problems(pages, records, campaigns):
@@ -8563,7 +8636,7 @@ JS_SUFFIXES = {".js", ".mjs"}
 # still runs, so a new pin never admits a copy literal.
 SCRIPT_SHA256 = {
     "assets/js/copy.js": "5cca51768d7caa004240fccdcfe84cd588f2686f3e4481da5561673d8592cc89",
-    "assets/js/search.js": "3a4ee629e50c13b545336c78c71b4192fac13c4c58edc8085eab4ef3951ba8c5",
+    "assets/js/search.js": "bcf6fe22abb4e876342f29f0ffe42152454bc9a0a68cf87188eb563e4a929ffe",
 }
 
 
@@ -8865,6 +8938,68 @@ REFLOW_TAB_KEY = {"key": "Tab", "code": "Tab", "windowsVirtualKeyCode": 9,
 # measuring script writes it, whether it has the class, its box, the scroll
 # position and, for the paint finding's message, its computed opacity,
 # visibility, clip and clip-path and the element at the box centre.
+# Case (6), the revealed search results (M4 PR 3 fix round 1, review
+# finding 3): in S0, on a page with #search-results, each result section is
+# revealed in turn as search.js reveals it (the box and that one section
+# lose their hidden attribute), and then it must be perceivable and
+# operable: the box and every element of the section that holds text pass
+# checkVisibility with its opacity and visibility checks, focus moves to
+# the section heading, and elementFromPoint at the heading's centre (after
+# scrolling it into view) is the heading or inside it. That reads the
+# outcome of any mechanism, a popover or inert wrapper, pointer-events, an
+# overlay or CSS that hides part of a section, not a list of them.
+REFLOW_REVEAL_SCRIPT = r"""
+(function () {
+  var results = document.getElementById("search-results");
+  if (!results) { return {present: false}; }
+  var ids = %(ids)s;
+  var opts = {opacityProperty: true, visibilityProperty: true};
+  function label(el) {
+    if (!el) { return "nothing"; }
+    var text = el.localName || el.nodeName;
+    if (el.id) { text += "#" + el.id; }
+    if (el.classList && el.classList.length) { text += "." + Array.from(el.classList).join("."); }
+    return text;
+  }
+  function hideAll() {
+    ids.forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) { el.hidden = true; }
+    });
+  }
+  var out = [];
+  ids.forEach(function (id) {
+    hideAll();
+    results.hidden = false;
+    var section = document.getElementById(id);
+    if (!section) { out.push({id: id, missing: true}); return; }
+    section.hidden = false;
+    var found = {id: id, region: results.checkVisibility(opts), hiddenText: []};
+    [section].concat(Array.from(section.querySelectorAll("*"))).forEach(function (el) {
+      var own = Array.from(el.childNodes).some(function (n) {
+        return n.nodeType === 3 && n.textContent.trim() !== "";
+      });
+      if (own && !el.checkVisibility(opts)) { found.hiddenText.push(label(el)); }
+    });
+    var heading = section.querySelector("h2");
+    if (heading) {
+      heading.scrollIntoView({block: "center"});
+      heading.focus();
+      found.focus = document.activeElement === heading;
+      found.focused = label(document.activeElement);
+      var box = heading.getBoundingClientRect();
+      var hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      found.hit = !!hit && heading.contains(hit);
+      found.hitLabel = label(hit);
+    }
+    out.push(found);
+  });
+  hideAll();
+  results.hidden = true;
+  window.scrollTo(0, 0);
+  return {present: true, sections: out};
+})()
+"""
 REFLOW_FOCUS_SCRIPT = r"""
 (() => {
   const exempt = %(exempt)s;
@@ -9529,7 +9664,7 @@ def cmd_reflow(args):
     log_path = None
     launched = False
     n_items = 0
-    n_copy = n_search = n_reveals = 0
+    n_copy = n_search = n_reveals = n_revealed = 0
     try:
         # The launch: start Chrome and wait for its first answer, within
         # args.launch_timeout (REFLOW_LAUNCH_TIMEOUT). Only the two launch
@@ -9765,6 +9900,40 @@ def cmd_reflow(args):
                                  "viewport; the revealed skip link must be on screen")
                 else:
                     reveal_paint(where, focus, box)
+            # (6) In S0, each search result section revealed must be
+            # perceivable and operable (REFLOW_REVEAL_SCRIPT).
+            if static_hidden["search-out"]:
+                revealed = reflow_value(tools, session, REFLOW_REVEAL_SCRIPT % {
+                    "ids": json.dumps([sid for sid, _ in SEARCH_SECTIONS])}, where)
+                if not revealed.get("present"):
+                    findings.add(where, f"(6) {REFLOW_STATES[0]}: the page has search result "
+                                 f"elements but no #{SEARCH_RESULTS} the browser can reveal")
+                for item in revealed.get("sections", []):
+                    sid = item.get("id")
+                    if item.get("missing"):
+                        findings.add(where, f"(6) revealed: no #{sid} to reveal")
+                        continue
+                    n_revealed += 1
+                    if not item.get("region"):
+                        findings.add(where, f"(6) revealed #{sid}: #{SEARCH_RESULTS} is not "
+                                     "visible once revealed (checkVisibility with opacity and "
+                                     "visibility); a wrapper, popover or style hides it, so "
+                                     "the answer never shows (ADR-0005 part 4)")
+                    for label in item.get("hiddenText", []):
+                        findings.add(where, f"(6) revealed #{sid}: {show(label, 80)} holds "
+                                     "text but is not visible (checkVisibility with opacity "
+                                     "and visibility); the revealed answer must show all of "
+                                     "its text (ADR-0005 part 4)")
+                    if not item.get("focus"):
+                        findings.add(where, f"(6) revealed #{sid}: focus does not move to its "
+                                     f"heading (it is on {show(item.get('focused'), 80)}); "
+                                     "an inert or hidden ancestor or a missing heading "
+                                     "keeps the answer from screen readers and keyboards")
+                    if not item.get("hit"):
+                        findings.add(where, f"(6) revealed #{sid}: the centre of its heading "
+                                     f"hits {show(item.get('hitLabel'), 80)}, not the "
+                                     "heading; an overlay, pointer-events or a hidden "
+                                     "heading keeps the answer from the visitor")
             # (6) S1: scripting on, the script URLs blocked.
             tools.send("Network.enable", session=session)
             tools.send("Network.setBlockedURLs", {"urls": list(REFLOW_BLOCKED_SCRIPTS)},
@@ -9817,7 +9986,8 @@ def cmd_reflow(args):
     return findings.report(f"reflow checked: {len(pages)} pages at {REFLOW_WIDTH} "
                            f"CSS px, {n_items} words and replaced elements; Copy buttons "
                            f"hidden without the script: {n_copy} in 2 states; search "
-                           f"results hidden until a query: {n_search} in 3 states; "
+                           f"results hidden until a query: {n_search} in 3 states, "
+                           f"{n_revealed} sections revealed and reachable; "
                            f"skip-link reveals: {n_reveals}")
 
 
