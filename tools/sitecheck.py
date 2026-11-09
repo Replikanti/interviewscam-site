@@ -2401,6 +2401,29 @@ def cmd_site(args):
                          f"{', '.join(sorted(allowed_scripts)) or 'none'}); every <script "
                          "src> names one (ADR-0005 part 5)"
                          + (f"; the src {problem}" if problem else ""))
+    # (l) The pinned stylesheet (M4 PR 3 fix round 4): every built .css
+    # file is exactly /css/<stem>.min.<SHA-256 hex of its bytes>.css for a
+    # stem of BUILT_STYLESHEETS, compared as a whole string, at most one
+    # file per stem; with the source pin of `guard`, no stylesheet reaches
+    # a page that the safety-net review has not read.
+    built_styles = {}
+    for path in sorted(css_files):
+        data = (public / path[1:]).read_bytes()
+        stem = next((s for s in sorted(BUILT_STYLESHEETS)
+                     if path == built_style_path(s, data)), None)
+        if stem is None:
+            findings.add("public", f"(l) {show(path, 240)} is not the build of the pinned "
+                         "stylesheet: every .css file is exactly /css/<stem>.min.<SHA-256 hex "
+                         f"of its bytes>.css for a stem of BUILT_STYLESHEETS ("
+                         f"{', '.join(sorted(BUILT_STYLESHEETS))}), as resources.Minify and "
+                         "resources.Fingerprint name it, and its sources are pinned in "
+                         "STYLESHEET_SHA256 (CSS is a reviewed surface)")
+        else:
+            built_styles.setdefault(stem, []).append(path)
+    for stem, paths in sorted(built_styles.items()):
+        if len(paths) > 1:
+            findings.add("public", f"(l) {len(paths)} built files for the stylesheet {stem} "
+                         f"({', '.join(paths)}); at most one file per pinned stylesheet")
     # Counted across ALL built CSS: a second file could otherwise redefine
     # the class with its own, equally !important, rule.
     if vh_definitions > 1:
@@ -5741,6 +5764,7 @@ LITERALS_PASSING_SETS = (
     "LITERALS_DATE_LAYOUTS", "LITERALS_CONTEXT_PARTIALS", "LITERALS_PRINTF_VERBS", "LITERALS_KEY_OPERANDS",
     "LITERALS_RESOURCE_KEYS", "LITERALS_LABEL_ASSIGNS", "LITERALS_PASSING_SETS",
     "LITERALS_PRINT_SOURCES", "LITERALS_META_PLAIN_NAMES", "LITERALS_META_PLAIN_HTTP_EQUIV",
+    "LITERALS_SCRIPT_PATTERNS",
 )
 # The allowlists whose contents the self-test pins entry by entry in
 # tests/fixtures/literals/allowlists.tsv (review3 A3): every passing set of
@@ -8638,6 +8662,13 @@ JS_SIMPLE = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v", "
 JS_WORD = re.compile(r"[A-Za-z0-9_$]+")
 JS_VALUE_WORDS = frozenset("this super null true false undefined".split())
 JS_SUFFIXES = {".js", ".mjs"}
+# L7's one exception (M4 PR 3 fix round 4): a script string literal that is
+# the source of a regular expression, accepted exactly, by file and value.
+# search.js keeps a key or query form only when it holds a letter or digit
+# (Unicode \p{L} or \p{N}); JavaScript has no other way to test a Unicode
+# category, and a regular expression literal fails L7. The value is a
+# character class, which a script passes to RegExp and never prints.
+LITERALS_SCRIPT_PATTERNS = frozenset({("assets/js/search.js", "[\\p{L}\\p{N}]")})
 # The script pin (M3 PR 9 fix round 1, review 4, #31 Known limit 1): L7
 # reads a script's literals, not what its code computes (a join of tokens,
 # String.fromCharCode, an identifier, the DOM), so every script under
@@ -8648,9 +8679,45 @@ JS_SUFFIXES = {".js", ".mjs"}
 # identifiers: computed text passes any identifier list
 # (`String(target.id) + button.type`), a hash catches every change. L7
 # still runs, so a new pin never admits a copy literal.
+# The stylesheet pin (M4 PR 3 fix round 4, delta review 3 finding 2),
+# mirroring the script pin: CSS can degrade text in more ways than an
+# outcome check short of reading the pixels can close (opacity, blur, a
+# tiny font, line clipping, transforms, letter-spacing, near-background
+# colours), so CSS is a reviewed surface, as images (#29) and scripts (#31)
+# are. Every stylesheet source is pinned by the SHA-256 of its bytes: the
+# two CSS files under assets/ and data/tokens.toml, whose values
+# assets/css/tokens.css turns into the custom properties site.css uses.
+# `guard` fails a stylesheet source that is not pinned (any .css file under
+# assets/ or static/, any case) or whose bytes differ, and `site` rule (l)
+# allows only the exact built path of the one built stylesheet. So no
+# stylesheet can change or be added without a tools/ change, which gets the
+# safety-net review. Inline CSS is refused elsewhere: `site` rule (c) fails
+# every style attribute and <style> element of a built page, and the CSP's
+# style-src 'self' would block them.
+STYLESHEET_SHA256 = {
+    "assets/css/site.css": "692d492f09fa807f81d2b9fc4a83c13eb00c9e16c952d9e85fd70cf3a378c866",
+    "assets/css/tokens.css": "725a7b2808e32866e206468f43b1097c8b34e879e13baeee309391f1fe53ad27",
+    "data/tokens.toml": "b867bb5bae4cc1a95bf730e132b3e2d4f0744a984308835837b73279dce39182",
+}
+STYLESHEET_SOURCE_DIRS = ("assets", "static")
+# The built stylesheets by stem: baseof.html concatenates tokens.css and
+# site.css into the resource css/site.css, minified and fingerprinted.
+BUILT_STYLESHEETS = frozenset({"site"})
+BUILT_STYLE_DIR = "/css/"
+BUILT_STYLE_INFIX = ".min."
+BUILT_STYLE_SUFFIX = ".css"
+
+
+def built_style_path(stem, data):
+    """The path Hugo writes for the stylesheet stem whose built bytes are
+    data: resources.Fingerprint without an algorithm uses SHA-256."""
+    return (BUILT_STYLE_DIR + stem + BUILT_STYLE_INFIX + hashlib.sha256(data).hexdigest()
+            + BUILT_STYLE_SUFFIX)
+
+
 SCRIPT_SHA256 = {
     "assets/js/copy.js": "5cca51768d7caa004240fccdcfe84cd588f2686f3e4481da5561673d8592cc89",
-    "assets/js/search.js": "7974543390eb56c3e665d6f4f342c53c08adf4f618b099e3f331a6f17021dcd4",
+    "assets/js/search.js": "48915ad64fddd4044a734fa3ef938523e61f5476083b67d8a061e3e4e932332e",
 }
 
 
@@ -8707,6 +8774,9 @@ def script_literal_problems(rel, text, findings, counts):
                 i, value_before = k + 1, True
                 continue
             value = js_unquote(raw)
+            if (rel, value) in LITERALS_SCRIPT_PATTERNS:
+                i, value_before = k + 1, True
+                continue
             for problem in literal_problems(value, False):
                 add(i, problem.replace("(L3)", "(L7, the L3 test on a script literal)")
                     + f"; {LITERALS_FIX}")
@@ -10887,6 +10957,42 @@ def guard_lighthouse_workflow(root, files, findings):
                              "no checkout and uploads nothing (ADR-0003 part 2)")
 
 
+def guard_stylesheet_pins(root, findings):
+    """The stylesheet source pin (M4 PR 3 fix round 4): every .css file
+    under assets/ and static/ (any case, read from the disk, as Hugo reads
+    it) and data/tokens.toml must be a key of STYLESHEET_SHA256 with the
+    SHA-256 of its bytes. A pinned source that is missing is the build's
+    failure, not this one's."""
+    sources = []
+    for top in STYLESHEET_SOURCE_DIRS:
+        base = root / top
+        if base.is_dir():
+            sources += [p for p in sorted(base.rglob("*"))
+                        if p.is_file() and p.suffix.lower() == ".css"]
+    tokens = root / "data" / "tokens.toml"
+    if tokens.is_file():
+        sources.append(tokens)
+    for path in sources:
+        rel = path.relative_to(root).as_posix()
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            findings.add(rel, f"cannot read a stylesheet source: {exc}")
+            continue
+        pinned = STYLESHEET_SHA256.get(rel)
+        if pinned is None:
+            findings.add(rel, "a stylesheet source that is not pinned: every .css file "
+                         "under assets/ and static/ and data/tokens.toml is pinned by its "
+                         "SHA-256 in tools/sitecheck.py (STYLESHEET_SHA256), so adding one "
+                         "is a tools/ change with the safety-net review (CSS is a reviewed "
+                         "surface, M4 PR 3)")
+        elif digest != pinned:
+            findings.add(rel, f"the stylesheet source's SHA-256 is {digest}, not the one "
+                         "pinned in tools/sitecheck.py (STYLESHEET_SHA256); a stylesheet "
+                         "change updates the pin there, so it is a tools/ change with the "
+                         "safety-net review (CSS is a reviewed surface, M4 PR 3)")
+
+
 def cmd_guard(args):
     root = Path(args.root).resolve()
     if not root.is_dir():
@@ -10900,6 +11006,7 @@ def cmd_guard(args):
     guard_hugo_env_names(root, files, findings)
     guard_workflows(root, files, findings)
     guard_lighthouse_workflow(root, files, findings)
+    guard_stylesheet_pins(root, findings)
     n_workflows = sum(f.startswith(".github/workflows/") for f in files)
     return findings.report(f"guard checked: {len(files)} files, "
                            f"{n_workflows} workflows")

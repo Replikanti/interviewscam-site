@@ -124,7 +124,7 @@ for row in rows:
             print(f"     | {out_line}")
 # The flagging sets, taken from the code, and their pinned numbers.
 EXPECTED_FLAGGING_SETS = 19
-EXPECTED_PASSING_SETS = 34
+EXPECTED_PASSING_SETS = 35
 EXPECTED_DERIVED_MEMBERS = {"RAWTEXT_END_TAG": 10, "LITERALS_META_PLAIN_NAMES": 3,
                             "LITERALS_META_PLAIN_HTTP_EQUIV": 1, "PAGE_MEMBERS": 16,
                             "SINK_KINDS": 27, "JS_SUFFIXES": 2}
@@ -1115,17 +1115,18 @@ PINNED
   fi
 
   # fixture-script-copies (M4 PR 3 fix round 2, QA): every fixture copy of
-  # assets/js/search.js, found by name anywhere under tests/fixtures (the
-  # reflow cases of case (6) load one), equals the real script byte for
-  # byte, so no case proves the on-load and reveal behaviour of a script
-  # the site no longer ships. No copy at all fails too, so the line cannot
-  # pass by finding nothing.
+  # assets/js/search.js, found by name under tests/fixtures/reflow (the
+  # cases of case (6) load one), equals the real script byte for byte, so
+  # no case proves the on-load and reveal behaviour of a script the site
+  # no longer ships. No copy at all fails too, so the line cannot pass by
+  # finding nothing. The literals cases are no copies: each stands in for
+  # a repo root with a script crafted to fail one rule (fix round 4).
   local script_copy n_copies=0 stale_copies=""
   while IFS= read -r -d '' script_copy; do
     n_copies=$((n_copies + 1))
     cmp -s "$script_copy" "$SELFTEST_ROOT/assets/js/search.js" \
       || stale_copies+=" ${script_copy#"$FIXTURES"/}"
-  done < <(find "$FIXTURES" -type f -name search.js -print0)
+  done < <(find "$FIXTURES/reflow" -type f -name search.js -print0)
   if (( n_copies == 0 )) || [[ -n "$stale_copies" ]]; then
     echo "FAIL fixture-script-copies: $n_copies fixture copies of search.js; these differ" \
       "from assets/js/search.js:${stale_copies:- (none found)}"

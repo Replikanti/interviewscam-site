@@ -186,14 +186,21 @@
     return isObject(object) && Array.isArray(object[key]) ? object[key] : [];
   }
 
-  // The one builder of keys and query forms (M4 PR 3 fix round 3): it
-  // drops every empty form, so no comparison of either branch can involve
-  // an empty key or an empty query form. A value made only of what fold,
+  // The one builder of keys and query forms (M4 PR 3 fix rounds 3 and
+  // 4): it keeps a form only when it holds a letter or a digit (Unicode
+  // L or N), so no comparison of either branch involves a form without
+  // searchable content on either side. A value made only of what fold,
   // refang and bare remove ("/", "www.", "hxxps://", "@") gives an empty
-  // form, and an empty key would equal an empty query form, or be a
-  // substring of every key.
+  // form, and one made of punctuation, symbols or blank signs ("-", "?",
+  // a braille blank) a form no visitor means to search for; either would
+  // equal a query of the same kind or be a substring of every key. The
+  // class is the one regular expression of the script, built from a
+  // string pinned in sitecheck (LITERALS_SCRIPT_PATTERNS), because L7
+  // refuses a regular expression literal.
+  var LETTER_OR_DIGIT = new RegExp("[\\p{L}\\p{N}]", "u");
+
   function addForm(list, form) {
-    if (form !== "") {
+    if (LETTER_OR_DIGIT.test(form)) {
       list.push(form);
     }
   }
