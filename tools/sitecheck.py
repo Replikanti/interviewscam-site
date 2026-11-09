@@ -2227,6 +2227,7 @@ def cmd_site(args):
 
     allowed = token_colors(root)
     scripts = []  # (rel, page path, src) of every <script src>, for rule (j)
+    page_scripts = {}  # page rel -> the attributes of each of its <script> elements
     vh_definitions = vh_reveals = 0
     vh_used = []
     # Per class of HIDDEN_UNTIL_SCRIPT: the number of its rules across the
@@ -2296,6 +2297,8 @@ def cmd_site(args):
                     findings.add(rel, problem)
                 scripts += [(rel, attrs["src"]) for tag, attrs in page.elements
                             if tag == "script" and "src" in attrs]
+                page_scripts[rel] = [attrs for tag, attrs in page.elements
+                                     if tag == "script"]
                 # (k) per page (M3 PR 10): the stylesheets every page applies.
                 stylesheets[rel], problems = stylesheet_links(page, css_files)
                 for problem in problems:
@@ -2408,6 +2411,57 @@ def cmd_site(args):
                          f"{', '.join(sorted(allowed_scripts)) or 'none'}); every <script "
                          "src> names one (ADR-0005 part 5)"
                          + (f"; the src {problem}" if problem else ""))
+    # (j) The script tags (M4 PR 3 fix round 6, delta review 5 finding 1),
+    # in one closed form, as rule (k) holds <link>: a <script src> has
+    # exactly the attributes src, integrity and defer, defer empty (no
+    # async, nomodule, type, crossorigin or any later attribute, so no tag
+    # can turn a script off, defer it otherwise or run it as a module), and
+    # every other <script> exactly type="application/ld+json" (rule (c)'s
+    # data block); no page names a script twice. With the built pins on
+    # (every build, never a hand-made fixture), the integrity is the
+    # SHA-384 of the file the src names, and each page kind loads exactly
+    # the scripts baseof.html emits, in order: copy.js on every page,
+    # search.js after it on Home and on no other page.
+    by_stem = {stem: paths[0] for stem, paths in built.items() if len(paths) == 1}
+    for rel, tags in sorted(page_scripts.items()):
+        srcs = []
+        for attrs in tags:
+            if "src" in attrs:
+                srcs.append(attrs["src"])
+                if sorted(attrs) != sorted(SCRIPT_SRC_ATTRS) or attrs.get("defer") != "":
+                    findings.add(rel, f"(j) <script> has the attributes {show(attrs, 240)}; a "
+                                 "script tag has exactly src, integrity and defer (empty), as "
+                                 "baseof.html emits it, so no attribute can turn the script "
+                                 "off, run it as a module or change when it runs (ADR-0005 "
+                                 "part 5)")
+            elif attrs != {"type": JSON_LD}:
+                findings.add(rel, f"(j) <script> has the attributes {show(attrs, 240)}; a "
+                             "script without src is exactly <script "
+                             f"type=\"{JSON_LD}\">, a JSON-LD data block (rule (c))")
+        twice = sorted({src for src in srcs if srcs.count(src) > 1})
+        if twice:
+            findings.add(rel, f"(j) the page names {', '.join(show(t) for t in twice)} more "
+                         "than once; each script is loaded once (ADR-0005 part 5)")
+        if args.no_built_pins:
+            continue
+        for attrs in tags:
+            path = resource_path(attrs.get("src", ""))[0] if "src" in attrs else None
+            if path in allowed_scripts:
+                data = (public / path[1:]).read_bytes()
+                want = "sha384-" + base64.b64encode(hashlib.sha384(data).digest()).decode()
+                if attrs.get("integrity") != want:
+                    findings.add(rel, f"(j) <script src={show(attrs['src'])}> has the integrity "
+                                 f"{show(attrs.get('integrity', 'none'))}; it is {want}, the "
+                                 "SHA-384 of the file it names (ADR-0005 part 5)")
+        kind = SCRIPTS_BY_PAGE_KIND["home" if rel == "public/index.html" else "other"]
+        want = [by_stem.get(stem) for stem in kind]
+        got = [resource_path(src)[0] for src in srcs]
+        if got != want:
+            findings.add(rel, f"(j) the page loads {got}; "
+                         f"{'Home' if rel == 'public/index.html' else 'every page but Home'} "
+                         f"loads exactly {want} ({', '.join(kind)}), as baseof.html emits "
+                         "them: search.js on Home only, copy.js on every page (ADR-0005 "
+                         "part 5)")
     # (l) The pinned stylesheet (M4 PR 3 fix round 4): every built .css
     # file is exactly /css/<stem>.min.<SHA-256 hex of its bytes>.css for a
     # stem of BUILT_STYLESHEETS, compared as a whole string, at most one
@@ -8733,6 +8787,10 @@ BUILT_STYLE_SUFFIX = ".css"
 # `site --no-built-pins` turns them off for the hand-made site fixtures,
 # whose files are no build (the --no-feed precedent); check.sh never
 # passes it (wiring/site-built-pins).
+# The script tag of baseof.html (rule (j), fix round 6) and the scripts each
+# page kind loads, by stem, in order.
+SCRIPT_SRC_ATTRS = ("src", "integrity", "defer")
+SCRIPTS_BY_PAGE_KIND = {"home": ("copy", "search"), "other": ("copy",)}
 BUILT_STYLESHEET_SHA256 = {
     "site": "470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38",
 }

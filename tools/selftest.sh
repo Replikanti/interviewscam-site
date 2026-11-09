@@ -1160,6 +1160,46 @@ PINNED
     n_passed=$((n_passed + 1))
   fi
 
+  # site-built-pins-missing-stem (M4 PR 3 fix round 6, QA): a pinned stem
+  # without a built pin is a finding, never a pass on its own bytes. The
+  # line drops one built pin at a time through importlib and runs the real
+  # cmd_site on site/pass-built-pins, which must then fail on that stem.
+  if python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/site/pass-built-pins" \
+      "$SELFTEST_ROOT/schema" >"$out" 2>&1 <<'PY'
+import argparse
+import contextlib
+import importlib.util
+import io
+import sys
+
+case, schemas = sys.argv[2], sys.argv[3]
+bad = []
+for table, stem, want in (("BUILT_SCRIPT_SHA384", "copy", "the script copy"),
+                          ("BUILT_SCRIPT_SHA384", "search", "the script search"),
+                          ("BUILT_STYLESHEET_SHA256", "site", "the stylesheet site")):
+    spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+    sitecheck = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sitecheck)
+    del getattr(sitecheck, table)[stem]
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        rc = sitecheck.cmd_site(argparse.Namespace(records=case, schemas=schemas,
+                                                   no_built_pins=False,
+                                                   public=case + "/public"))
+    if rc != 1 or f"are not the pinned build of {want}" not in buffer.getvalue():
+        bad.append(f"{table} without {stem}: exit {rc}")
+if bad:
+    print("; ".join(bad))
+    sys.exit(1)
+PY
+  then
+    echo "ok   site-built-pins-missing-stem (a pinned stem without a built pin fails)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL site-built-pins-missing-stem: $(cat "$out")"
+    n_failed=$((n_failed + 1))
+  fi
+
   # guard-stylesheet-unreadable (M4 PR 3 fix round 5, QA): a stylesheet
   # source that cannot be read is a finding, never skipped. Git cannot hold
   # an unreadable file, so the line builds a root with one stylesheet in a
@@ -1218,6 +1258,14 @@ spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
 sitecheck = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sitecheck)
 real = sitecheck.script_stems()
+# Fix round 6 (QA): every pinned script and stylesheet has a built pin and
+# no built pin names anything else, so no stem falls back to its own bytes.
+if set(sitecheck.BUILT_SCRIPT_SHA384) != real \
+        or set(sitecheck.BUILT_STYLESHEET_SHA256) != set(sitecheck.BUILT_STYLESHEETS):
+    print(f"built pins {sorted(sitecheck.BUILT_SCRIPT_SHA384)} and "
+          f"{sorted(sitecheck.BUILT_STYLESHEET_SHA256)} differ from the stems {sorted(real)} "
+          f"and {sorted(sitecheck.BUILT_STYLESHEETS)}")
+    sys.exit(1)
 sitecheck.SCRIPT_SHA256 = {"assets/js/a.js": "0", "assets/x/b.js": "0",
                            "assets/js/sub/c.js": "0", "assets/js/d.mjs": "0",
                            "assets/js/e-f.js": "0", "assets/js/Up.js": "0"}
@@ -1227,7 +1275,7 @@ if real != {"copy", "search"} or got != {"a"}:
     sys.exit(1)
 PY
   then
-    echo "ok   site-script-stems (only assets/js/<stem>.js keys of SCRIPT_SHA256 give a stem)"
+    echo "ok   site-script-stems (only assets/js/<stem>.js keys of SCRIPT_SHA256 give a stem; the built pins name exactly the pinned stems)"
     n_passed=$((n_passed + 1))
   else
     echo "FAIL site-script-stems: script_stems reads other keys than assets/js/<stem>.js:" \
