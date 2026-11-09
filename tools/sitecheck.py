@@ -1961,9 +1961,21 @@ URL_ATTRS = ("href", "src", "action", "formaction", "xlink:href", "data")
 JSON_LD = "application/ld+json"
 
 
-# Rule (j) (ADR-0005 part 5): the path of a built script, the stem and the
-# SHA-384 hex that resources.Fingerprint "sha384" writes into the name.
-BUILT_SCRIPT = re.compile(r"/js/([a-z0-9]+)\.min\.[0-9a-f]{96}\.js")
+# Rule (j) (ADR-0005 part 5; exact from M4 PR 3 fix round 2): the path of a
+# built script is exactly the name resources.Minify and
+# resources.Fingerprint "sha384" give it, /js/<stem>.min.<the SHA-384 hex of
+# the file's own bytes>.js, compared as a whole string, not read with a
+# pattern, so no other length, alphabet or separator can pass.
+BUILT_SCRIPT_DIR = "/js/"
+BUILT_SCRIPT_INFIX = ".min."
+BUILT_SCRIPT_SUFFIX = ".js"
+
+
+def built_script_path(stem, data):
+    """The path Hugo writes for the pinned script stem whose built bytes
+    are data."""
+    return (BUILT_SCRIPT_DIR + stem + BUILT_SCRIPT_INFIX + hashlib.sha384(data).hexdigest()
+            + BUILT_SCRIPT_SUFFIX)
 
 
 def script_stems():
@@ -2361,15 +2373,17 @@ def cmd_site(args):
                 if p.suffix.lower() in JS_SUFFIXES]
     built = {}  # stem -> the built files named for it
     for path in js_files:
-        match = BUILT_SCRIPT.fullmatch(path)
-        if match is None or match.group(1) not in script_stems():
+        data = (public / path[1:]).read_bytes()
+        stem = next((s for s in sorted(script_stems())
+                     if path == built_script_path(s, data)), None)
+        if stem is None:
             findings.add("public", f"(j) {show(path, 240)} is not the build of a pinned script: "
-                         "every .js or .mjs file is /js/<stem>.min.<96 hex>.js for a script "
-                         f"assets/js/<stem>.js of SCRIPT_SHA256 ({', '.join(sorted(script_stems()))}"
-                         "), as resources.Minify and resources.Fingerprint \"sha384\" name it "
-                         "(ADR-0005 part 5)")
+                         "every .js or .mjs file is exactly /js/<stem>.min.<SHA-384 hex of its "
+                         "bytes>.js for a script assets/js/<stem>.js of SCRIPT_SHA256 ("
+                         f"{', '.join(sorted(script_stems()))}), as resources.Minify and "
+                         "resources.Fingerprint \"sha384\" name it (ADR-0005 part 5)")
         else:
-            built.setdefault(match.group(1), []).append(path)
+            built.setdefault(stem, []).append(path)
     for stem, paths in sorted(built.items()):
         if len(paths) > 1:
             findings.add("public", f"(j) {len(paths)} built files for the script {stem} "
@@ -8636,7 +8650,7 @@ JS_SUFFIXES = {".js", ".mjs"}
 # still runs, so a new pin never admits a copy literal.
 SCRIPT_SHA256 = {
     "assets/js/copy.js": "5cca51768d7caa004240fccdcfe84cd588f2686f3e4481da5561673d8592cc89",
-    "assets/js/search.js": "bcf6fe22abb4e876342f29f0ffe42152454bc9a0a68cf87188eb563e4a929ffe",
+    "assets/js/search.js": "c35f65109727efdb249e51dd93066cbee692579de65c6d6a4c7e777ce3cb415a",
 }
 
 

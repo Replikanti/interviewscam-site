@@ -365,35 +365,52 @@
     });
     results.hidden = false;
     section.hidden = false;
-    section.getElementsByTagName("h2")[0].focus();
+    // Focus without its own scroll, then the section's top to the top of
+    // the viewport, at once (no smooth scroll): focus alone scrolls only
+    // until the heading is in view, which on a phone leaves it at the
+    // bottom edge and the first entry below the fold (M4 PR 3 fix round 2).
+    section.getElementsByTagName("h2")[0].focus({preventScroll: true});
+    section.scrollIntoView({block: "start", inline: "nearest", behavior: "instant"});
   }
 
-  function handOver() {
-    results.removeAttribute("aria-busy");
-    submitForm.call(form);
-  }
-
+  // asked counts the submits; only the latest one may change the page.
+  // aria-busy is the one piece of state a submit sets before its answer,
+  // and every exit of the latest submit clears it: the empty query, the
+  // answer, the hand-over after an error. A stale reply changes nothing,
+  // because the latest submit has cleared it or will.
   var asked = 0;
+  function settle(mine) {
+    if (mine !== asked) {
+      return false;
+    }
+    results.removeAttribute("aria-busy");
+    return true;
+  }
+
   listen.call(form, "submit", function (event) {
     event.preventDefault();
     var query = input.value;
     var mine = ++asked;
     if (fold(query) === "") {
+      settle(mine);
       reveal(null);
       return;
     }
     results.setAttribute("aria-busy", "true");
     load().then(function (index) {
-      if (mine === asked) {
+      if (settle(mine)) {
         var found = match(index, query);
         if (found === null) {
-          handOver();
-          return;
+          submitForm.call(form);
+        } else {
+          reveal(found);
         }
-        results.removeAttribute("aria-busy");
-        reveal(found);
       }
-    }, handOver);
+    }, function () {
+      if (settle(mine)) {
+        submitForm.call(form);
+      }
+    });
   });
   listen.call(input, "focus", function () {
     load().then(null, function () {});

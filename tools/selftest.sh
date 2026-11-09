@@ -686,8 +686,7 @@ selftest_main() {
   # turns the self-test red too.
   local render_args
   render_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render)"
-  if ! declare -f check_main \
-      | grep -qE '^ *run_step "render \(D6, D7, D10, structured data\)" step_render;?$'; then
+  if ! grep -qE '^ *run_step "render \(D6, D7, D10, structured data\)" step_render;?$' <<<"$(declare -f check_main)"; then
     echo "FAIL wiring/render-step: check_main in tools/check.sh does not run" \
       "the production render step (run_step \"render (...)\" step_render)"
     n_failed=$((n_failed + 1))
@@ -707,8 +706,7 @@ selftest_main() {
   # passes --no-feed, and check_main runs the fixture-build render step.
   local feed_args
   feed_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render; step_render_fixtures)"
-  if ! declare -f check_main \
-      | grep -qE '^ *run_step "render \(fixture build\)" step_render_fixtures;?$'; then
+  if ! grep -qE '^ *run_step "render \(fixture build\)" step_render_fixtures;?$' <<<"$(declare -f check_main)"; then
     echo "FAIL wiring/render-feed-rules: check_main in tools/check.sh does not run" \
       "the fixture-build render step (run_step \"render (fixture build)\" step_render_fixtures)"
     n_failed=$((n_failed + 1))
@@ -728,10 +726,8 @@ selftest_main() {
   # step lines; this one repeats the check so it stands alone).
   local search_args
   search_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render; step_render_fixtures)"
-  if ! declare -f check_main \
-      | grep -qE '^ *run_step "render \(D6, D7, D10, structured data\)" step_render;?$' \
-      || ! declare -f check_main \
-      | grep -qE '^ *run_step "render \(fixture build\)" step_render_fixtures;?$'; then
+  if ! grep -qE '^ *run_step "render \(D6, D7, D10, structured data\)" step_render;?$' <<<"$(declare -f check_main)" \
+      || ! grep -qE '^ *run_step "render \(fixture build\)" step_render_fixtures;?$' <<<"$(declare -f check_main)"; then
     echo "FAIL wiring/render-search-rules: check_main in tools/check.sh does not run" \
       "both render steps (step_render and step_render_fixtures)"
     n_failed=$((n_failed + 1))
@@ -851,9 +847,8 @@ PY
   # Wiring: check_main must run the literals step (ADR-0004 part 13), which
   # the fixtures above prove only through literals_check.
   # shellcheck disable=SC2016 # the patterns match a literal $CHECK_ROOT
-  if declare -f check_main \
-      | grep -qE '^ *run_step "literals \(fixed copy only from data/labels\.toml\)" step_literals;?$' \
-      && declare -f step_literals | grep -qE '^ *literals_check "\$CHECK_ROOT";?$'; then
+  if grep -qE '^ *run_step "literals \(fixed copy only from data/labels\.toml\)" step_literals;?$' <<<"$(declare -f check_main)" \
+      && grep -qE '^ *literals_check "\$CHECK_ROOT";?$' <<<"$(declare -f step_literals)"; then
     echo "ok   wiring/literals-step (check_main runs step_literals on the repo root)"
     n_passed=$((n_passed + 1))
   else
@@ -865,7 +860,7 @@ PY
   # Wiring: hugo_build passes --panicOnWarning, so a warnf message fails
   # the build instead of rendering; literals exempts warnf arguments only
   # because of it (and bans try, the one function that catches a warning).
-  if declare -f hugo_build | grep -qE '(^| )--panicOnWarning( |$)'; then
+  if grep -qE '(^| )--panicOnWarning( |$)' <<<"$(declare -f hugo_build)"; then
     echo "ok   wiring/hugo-build-panic-on-warning (hugo_build passes --panicOnWarning)"
     n_passed=$((n_passed + 1))
   else
@@ -921,9 +916,8 @@ PINNED
   if [[ "$(declare -f hugo_build step_build)" != "$hugo_build_pinned" ]]; then
     echo "FAIL wiring/hugo-build-pinned: hugo_build or step_build in tools/check.sh differs from the copy pinned in tools/selftest.sh"
     n_failed=$((n_failed + 1))
-  elif ! declare -f check_main | grep -qE '^ *run_step build step_build;?$' \
-      || ! declare -f step_fixture_build \
-        | grep -qE '^ *hugo_build "\$FIXTURE_SITE" "\$FIXTURE_PUBLIC"( \|\| return 1)?;?$'; then
+  elif ! grep -qE '^ *run_step build step_build;?$' <<<"$(declare -f check_main)" \
+      || ! grep -qE '^ *hugo_build "\$FIXTURE_SITE" "\$FIXTURE_PUBLIC"( \|\| return 1)?;?$' <<<"$(declare -f step_fixture_build)"; then
     echo "FAIL wiring/hugo-build-pinned: check_main does not build through step_build, or step_fixture_build not through hugo_build"
     n_failed=$((n_failed + 1))
   else
@@ -948,8 +942,8 @@ PINNED
     echo "FAIL wiring/work-tree-required: require_work_tree passed outside a git work tree"
     n_failed=$((n_failed + 1))
   elif [[ "$tree_out" == "FAIL: check.sh needs a git work tree (guard reads git)"* ]] \
-      && declare -f check_main | grep -qE '^ *require_work_tree \|\| return 1;?$' \
-      && declare -f selftest_main | grep -qE '^ *require_work_tree \|\| return 1;?$'; then
+      && grep -qE '^ *require_work_tree \|\| return 1;?$' <<<"$(declare -f check_main)" \
+      && grep -qE '^ *require_work_tree \|\| return 1;?$' <<<"$(declare -f selftest_main)"; then
     echo "ok   wiring/work-tree-required (check_main and selftest_main stop outside a git work tree with one message)"
     n_passed=$((n_passed + 1))
   else
@@ -1120,6 +1114,27 @@ PINNED
     n_failed=$((n_failed + 1))
   fi
 
+  # fixture-script-copies (M4 PR 3 fix round 2, QA): every fixture copy of
+  # assets/js/search.js, found by name anywhere under tests/fixtures (the
+  # reflow cases of case (6) load one), equals the real script byte for
+  # byte, so no case proves the on-load and reveal behaviour of a script
+  # the site no longer ships. No copy at all fails too, so the line cannot
+  # pass by finding nothing.
+  local script_copy n_copies=0 stale_copies=""
+  while IFS= read -r -d '' script_copy; do
+    n_copies=$((n_copies + 1))
+    cmp -s "$script_copy" "$SELFTEST_ROOT/assets/js/search.js" \
+      || stale_copies+=" ${script_copy#"$FIXTURES"/}"
+  done < <(find "$FIXTURES" -type f -name search.js -print0)
+  if (( n_copies == 0 )) || [[ -n "$stale_copies" ]]; then
+    echo "FAIL fixture-script-copies: $n_copies fixture copies of search.js; these differ" \
+      "from assets/js/search.js:${stale_copies:- (none found)}"
+    n_failed=$((n_failed + 1))
+  else
+    echo "ok   fixture-script-copies ($n_copies fixture copies equal assets/js/search.js)"
+    n_passed=$((n_passed + 1))
+  fi
+
   # site-script-stems (M4 PR 3, ADR-0005 part 5): site rule (j) reads the
   # stems of the pinned scripts from SCRIPT_SHA256, and only a key
   # assets/js/<stem>.js gives one. The real pin holds only such keys, so
@@ -1156,8 +1171,8 @@ PY
   # (ADR-0004 part 10, amended), and copies exactly the FIXTURE_COPY
   # entries; declare -f prints the function without comments.
   # shellcheck disable=SC2016 # the patterns match literal $ names
-  if declare -f step_fixture_build | grep -qE '^ *fixture_inputs "\$CHECK_ROOT" \|\| return 1;?$' \
-      && declare -f step_fixture_build | grep -qF 'for item in "${FIXTURE_COPY[@]}"'; then
+  if grep -qE '^ *fixture_inputs "\$CHECK_ROOT" \|\| return 1;?$' <<<"$(declare -f step_fixture_build)" \
+      && grep -qF 'for item in "${FIXTURE_COPY[@]}"' <<<"$(declare -f step_fixture_build)"; then
     echo "ok   wiring/fixture-inputs-step (step_fixture_build classifies \$CHECK_ROOT, then copies FIXTURE_COPY)"
     n_passed=$((n_passed + 1))
   else
