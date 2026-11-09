@@ -8650,7 +8650,7 @@ JS_SUFFIXES = {".js", ".mjs"}
 # still runs, so a new pin never admits a copy literal.
 SCRIPT_SHA256 = {
     "assets/js/copy.js": "5cca51768d7caa004240fccdcfe84cd588f2686f3e4481da5561673d8592cc89",
-    "assets/js/search.js": "c35f65109727efdb249e51dd93066cbee692579de65c6d6a4c7e777ce3cb415a",
+    "assets/js/search.js": "7974543390eb56c3e665d6f4f342c53c08adf4f618b099e3f331a6f17021dcd4",
 }
 
 

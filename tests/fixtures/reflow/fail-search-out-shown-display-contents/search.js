@@ -186,27 +186,39 @@
     return isObject(object) && Array.isArray(object[key]) ? object[key] : [];
   }
 
+  // The one builder of keys and query forms (M4 PR 3 fix round 3): it
+  // drops every empty form, so no comparison of either branch can involve
+  // an empty key or an empty query form. A value made only of what fold,
+  // refang and bare remove ("/", "www.", "hxxps://", "@") gives an empty
+  // form, and an empty key would equal an empty query form, or be a
+  // substring of every key.
+  function addForm(list, form) {
+    if (form !== "") {
+      list.push(form);
+    }
+  }
+
   // The keys of one feed entry: name keys, value keys and domain keys.
   function entryKeys(item) {
     var keys = {names: [], values: [], domains: []};
     var name = text(item, "name");
     if (name !== null) {
-      keys.names.push(fold(name));
+      addForm(keys.names, fold(name));
     }
     items(item, "aliases").forEach(function (alias) {
       if (typeof alias === "string") {
-        keys.names.push(fold(alias));
+        addForm(keys.names, fold(alias));
       }
     });
     var artifacts = isObject(item) && isObject(item.artifacts) ? item.artifacts : {};
     function value(raw, list) {
       var key = bare(refang(fold(raw)));
-      keys.values.push(key);
+      addForm(keys.values, key);
       if (list === "domains") {
-        keys.domains.push(withoutEnd(key, "."));
+        addForm(keys.domains, withoutEnd(key, "."));
       }
       if (list === "handles" && startsWith(key, "@")) {
-        keys.values.push(key.slice(1));
+        addForm(keys.values, key.slice(1));
       }
     }
     VALUE_LISTS.forEach(function (list) {
@@ -309,13 +321,28 @@
       h = cutBefore(r0, "/");
       h = withoutEnd(cutBefore(h.slice(h.lastIndexOf("@") + 1), ":"), ".");
     }
+    // The query forms of each comparison, built with addForm, so an empty
+    // form (a query that is only "/", "www." or a scheme) compares with
+    // nothing.
+    var names = [];
+    addForm(names, f);
+    var values = [];
+    [r, r0, rAt].forEach(function (form) {
+      addForm(values, form);
+    });
+    var hosts = [];
+    addForm(hosts, h);
     function isExact(entry) {
       var keys = entry.keys;
-      return keys.names.indexOf(f) >= 0 || keys.values.indexOf(r) >= 0
-        || keys.values.indexOf(r0) >= 0 || keys.values.indexOf(rAt) >= 0
-        || (h !== "" && keys.domains.some(function (domain) {
-          return h === domain || endsWith(h, "." + domain);
-        }));
+      return names.some(function (form) {
+        return keys.names.indexOf(form) >= 0;
+      }) || values.some(function (form) {
+        return keys.values.indexOf(form) >= 0;
+      }) || hosts.some(function (host) {
+        return keys.domains.some(function (domain) {
+          return host === domain || endsWith(host, "." + domain);
+        });
+      });
     }
     if (index.orphans.some(isExact)) {
       return null;
@@ -327,8 +354,11 @@
     // The partial match tests the forms f and r, and SEARCH_PARTIAL_MIN
     // holds for each form it tests: a form shorter than that (bare() and
     // refang() can cut r to one or two code points) tests nothing.
-    var parts = [f, r].filter(function (part) {
-      return codePointCount(part) >= PARTIAL_MIN;
+    var parts = [];
+    [f, r].forEach(function (form) {
+      if (codePointCount(form) >= PARTIAL_MIN) {
+        addForm(parts, form);
+      }
     });
     var close = entries.filter(function (entry) {
       return entry.keys.names.concat(entry.keys.values).some(function (key) {

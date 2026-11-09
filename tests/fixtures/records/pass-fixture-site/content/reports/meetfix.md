@@ -14,5 +14,5 @@ independent_reports = 2
 
 [params.artifacts]
 domains = ["meetfix[.]example"]
-file_names = ["MeetFix-Installer[.]msi"]
+file_names = ["MeetFix-Installer[.]msi", "/"]
 +++
