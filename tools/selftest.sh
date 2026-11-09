@@ -1139,9 +1139,10 @@ PINNED
   # stems of the pinned scripts from SCRIPT_SHA256, and only a key
   # assets/js/<stem>.js gives one. The real pin holds only such keys, so
   # the line patches the pin through importlib with a key in another
-  # directory, one in a subdirectory, an .mjs key and one with a hyphen,
-  # none of which may give a stem (a hyphen is outside the closed path
-  # alphabet of resource_path, so such a script could never be served).
+  # directory, one in a subdirectory, an .mjs key, one with a hyphen and
+  # one with an upper-case letter, none of which may give a stem (a
+  # hyphen and an upper-case letter are outside the closed path alphabet
+  # of resource_path, so such a script could never be served).
   if python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
 import importlib.util
 import sys
@@ -1152,7 +1153,7 @@ spec.loader.exec_module(sitecheck)
 real = sitecheck.script_stems()
 sitecheck.SCRIPT_SHA256 = {"assets/js/a.js": "0", "assets/x/b.js": "0",
                            "assets/js/sub/c.js": "0", "assets/js/d.mjs": "0",
-                           "assets/js/e-f.js": "0"}
+                           "assets/js/e-f.js": "0", "assets/js/Up.js": "0"}
 got = sitecheck.script_stems()
 if real != {"copy", "search"} or got != {"a"}:
     print(f"real pin {sorted(real)}, patched pin {sorted(got)}")
