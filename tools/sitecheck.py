@@ -8997,8 +8997,10 @@ REFLOW_REVEAL_SCRIPT = r"""
     });
     var heading = section.querySelector("h2");
     if (heading) {
+      // The scroll is the step's own (focus without its scroll), so the
+      // hit test reads the heading where the scroll puts it.
       heading.scrollIntoView({block: "center"});
-      heading.focus();
+      heading.focus({preventScroll: true});
       found.focus = document.activeElement === heading;
       found.focused = label(document.activeElement);
       var box = heading.getBoundingClientRect();
