@@ -8811,6 +8811,18 @@ SCRIPTS_BY_PAGE_KIND = {"home": ("copy", "search"), "other": ("copy",)}
 # the head on a record page and a section page (one each, as jsonld.html
 # emits it) and absent elsewhere. Exact positions, not a list of wrappers.
 HEAD_ONLY_TAGS = ("script", "link", "meta", "base")
+# Fix round 8 (delta review 7 finding 1): the tree of parse_render_page
+# does not model the end of the head that the HTML parser implies, so
+# rule (m) fails closed on everything that makes a browser end the head
+# early: text that is not ASCII whitespace before <html>, inside <html>
+# before <body> or inside <head> (a stray "." after the charset moves every
+# later head element into the body, the CSP meta included, which is then
+# ignored), an element in <html> before <body> other than <head>, and a
+# head child outside the head content model. Reflow case (9) reads the
+# browser's own head, so a differential this list misses is still caught.
+ASCII_WHITESPACE = "\t\n\f\r "
+HEAD_CONTENT_MODEL = frozenset({"base", "link", "meta", "noscript", "script", "style",
+                                "template", "title"})
 HEAD_PREFIX = [
     ("meta", {"charset": "utf-8"}),
     ("meta", {"http-equiv": "Content-Security-Policy", "content": None}),
@@ -8854,6 +8866,30 @@ def head_problems(text, rel, built):
         if len(htmls) == 1 else []
     head = heads[0] if len(heads) == 1 else None
     problems = []
+    html = htmls[0] if len(htmls) == 1 else None
+    for owner, what in ((tree.root, "before <html>"), (html, "in <html> before <body>"),
+                        (head, "in <head>")):
+        if owner is None:
+            continue
+        for child in owner.children:
+            if isinstance(child, Element):
+                if owner is tree.root and child.tag == "html":
+                    break
+                if owner is html:
+                    if child.tag == "body":
+                        break
+                    if child.tag != "head":
+                        problems.append(f"(m) <{child.tag}> {what}: the browser ends the head "
+                                        "there and puts it and everything after it in the body")
+                if owner is head and child.tag not in HEAD_CONTENT_MODEL:
+                    problems.append(f"(m) <{child.tag}> {what} is outside the head content "
+                                    "model; the browser ends the head there and moves it and "
+                                    "every later head element into the body")
+            elif child.strip(ASCII_WHITESPACE):
+                problems.append(f"(m) the text {show(child, 60)} {what}: the browser ends the "
+                                "head at text that is not ASCII whitespace and moves every later "
+                                "head element into the body, the CSP meta included, which is "
+                                "then ignored")
     if head is None:
         problems.append("(m) the page has no single <head> right inside its single <html>; "
                         "script, link, meta and base work only as children of that head")
@@ -9273,6 +9309,59 @@ REFLOW_REVEAL_SCRIPT = r"""
   return {present: true, sections: out};
 })()
 """
+# Case (9), the head in the browser (M4 PR 3 fix round 8, delta review 7
+# finding 1): the browser's own DOM, not a Python model of it. For every
+# page loaded in S0, document.head's element children (tag, order, every
+# attribute) must equal the head that parse_render_page reads in the file,
+# which rule (m) of `site` pins to the head baseof.html emits for the page
+# kind; script, link, meta and base exist only as HTML children of
+# document.head; and every CSP meta's parent is document.head. So a parser
+# differential nobody modelled (a stray text, an element that ends the
+# head) is caught by its outcome.
+REFLOW_HEAD_SCRIPT = r"""
+(function () {
+  var head = document.head;
+  function attrs(el) {
+    var out = {};
+    Array.prototype.forEach.call(el.attributes, function (a) { out[a.name] = a.value; });
+    return out;
+  }
+  function label(el) {
+    var where = el.parentElement ? el.parentElement.localName : "nothing";
+    return el.localName + " in " + where +
+      (el.namespaceURI === "http://www.w3.org/1999/xhtml" ? "" : " (" + el.namespaceURI + ")");
+  }
+  var stray = Array.prototype.filter.call(
+    document.querySelectorAll("script, link, meta, base"), function (el) {
+      return el.parentElement !== head || el.namespaceURI !== "http://www.w3.org/1999/xhtml";
+    }).map(label);
+  var csp = Array.prototype.filter.call(document.querySelectorAll("meta"), function (el) {
+    return (el.getAttribute("http-equiv") || "").toLowerCase() === "content-security-policy";
+  });
+  return {
+    head: head ? Array.prototype.map.call(head.children, function (el) {
+      return [el.localName, attrs(el)];
+    }) : null,
+    stray: stray,
+    cspOutside: csp.filter(function (el) { return el.parentElement !== head; }).map(label)
+  };
+})()
+"""
+
+
+def static_head(text):
+    """[(tag, attributes)] of the element children of the one <head> right
+    inside the one <html> of the page as parse_render_page reads it, or
+    None without such a head."""
+    tree = parse_render_page(text)
+    htmls = [el for el in tree.root.children if isinstance(el, Element) and el.tag == "html"]
+    heads = [el for el in htmls[0].children if isinstance(el, Element) and el.tag == "head"] \
+        if len(htmls) == 1 else []
+    if len(heads) != 1:
+        return None
+    return [[el.tag, dict(el.attrs)] for el in heads[0].children if isinstance(el, Element)]
+
+
 REFLOW_FOCUS_SCRIPT = r"""
 (() => {
   const exempt = %(exempt)s;
@@ -9937,7 +10026,7 @@ def cmd_reflow(args):
     log_path = None
     launched = False
     n_items = 0
-    n_copy = n_search = n_reveals = n_revealed = 0
+    n_copy = n_search = n_reveals = n_revealed = n_heads = 0
     try:
         # The launch: start Chrome and wait for its first answer, within
         # args.launch_timeout (REFLOW_LAUNCH_TIMEOUT). Only the two launch
@@ -10138,6 +10227,23 @@ def cmd_reflow(args):
                 findings.add(where, f"(4) .visually-hidden element {show(item, 120)}; "
                              "the class is exempt only while its box is at most 1 x 1 "
                              "CSS px and its display is not contents")
+            # (9) the head in the browser, S0 (fix round 8).
+            seen = reflow_value(tools, session, REFLOW_HEAD_SCRIPT, where)
+            parsed = static_head((public / rel).read_text(encoding="utf-8", errors="replace"))
+            if seen.get("head") != parsed:
+                findings.add(where, f"(9) the browser's head holds {show(seen.get('head'), 300)}; "
+                             f"the file's head is {show(parsed, 300)}, which rule (m) pins: the "
+                             "browser read the page another way than the static checks (an "
+                             "implied end of the head, foreign content), so an element the "
+                             "head needs did not reach it")
+            else:
+                n_heads += 1
+            for label in seen.get("stray", []):
+                findings.add(where, f"(9) the browser has a {show(label, 120)}; script, link, "
+                             "meta and base work only as HTML children of document.head")
+            for label in seen.get("cspOutside", []):
+                findings.add(where, f"(9) the browser has the CSP meta as a {show(label, 120)}; "
+                             "outside document.head the policy is ignored")
             # (6) S0: the script ran, so every Copy button is revealed, and
             # the search results stay hidden: no query was made.
             copy_state(where, REFLOW_STATES[0], True)
@@ -10261,7 +10367,7 @@ def cmd_reflow(args):
                            f"hidden without the script: {n_copy} in 2 states; search "
                            f"results hidden until a query: {n_search} in 3 states, "
                            f"{n_revealed} sections revealed and reachable; "
-                           f"skip-link reveals: {n_reveals}")
+                           f"skip-link reveals: {n_reveals}; heads as parsed: {n_heads}")
 
 
 # ---------------------------------------------------------------------------

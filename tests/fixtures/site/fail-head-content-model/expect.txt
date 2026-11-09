@@ -1,0 +1,1 @@
+(m) <span> in <head> is outside the head content model
