@@ -577,7 +577,11 @@ selftest_main() {
       site)
         # <dir>/hugo.toml holds params.csp, <dir>/content the records whose
         # artifacts must not appear live in the built tree <dir>/public.
-        site_check "$dir" "$SELFTEST_ROOT/schema" "$dir/public" >"$out" 2>&1
+        # The built pins (M4 PR 3 fix round 5) run only in a case with a
+        # built-pins.txt: every other case's files are hand-made, no build.
+        pins_mode=no-built-pins
+        [[ -f "$dir/built-pins.txt" ]] && pins_mode=""
+        site_check "$dir" "$SELFTEST_ROOT/schema" "$dir/public" "$pins_mode" >"$out" 2>&1
         rc=$?
         ;;
       render)
@@ -716,6 +720,26 @@ selftest_main() {
     n_failed=$((n_failed + 1))
   else
     echo "ok   wiring/render-feed-rules (both render steps run rules 11 to 13; no --no-feed)"
+    n_passed=$((n_passed + 1))
+  fi
+
+  # Wiring: both site steps check the built pins (M4 PR 3 fix round 5):
+  # check_main runs step_site and step_site_fixtures, and neither, run
+  # against a stub sitecheck, passes --no-built-pins.
+  local pins_args
+  pins_args="$(sitecheck() { printf '%s\n' "$@"; }; step_site; step_site_fixtures)"
+  if ! grep -qE '^ *run_step "site \(third-party, CSP, defang\)" step_site;?$' <<<"$(declare -f check_main)" \
+      || ! grep -qE '^ *run_step "site \(fixture build\)" step_site_fixtures;?$' <<<"$(declare -f check_main)"; then
+    echo "FAIL wiring/site-built-pins: check_main in tools/check.sh does not run" \
+      "both site steps (step_site and step_site_fixtures)"
+    n_failed=$((n_failed + 1))
+  elif [[ "$(grep -c '^site$' <<<"$pins_args")" != 2 ]] \
+      || grep -qx -- '--no-built-pins' <<<"$pins_args"; then
+    echo "FAIL wiring/site-built-pins: step_site or step_site_fixtures in tools/check.sh" \
+      "does not run sitecheck site with the built pins (it passes --no-built-pins)"
+    n_failed=$((n_failed + 1))
+  else
+    echo "ok   wiring/site-built-pins (both site steps check the built pins; no --no-built-pins)"
     n_passed=$((n_passed + 1))
   fi
 
@@ -1134,6 +1158,48 @@ PINNED
   else
     echo "ok   fixture-script-copies ($n_copies fixture copies equal assets/js/search.js)"
     n_passed=$((n_passed + 1))
+  fi
+
+  # guard-stylesheet-unreadable (M4 PR 3 fix round 5, QA): a stylesheet
+  # source that cannot be read is a finding, never skipped. Git cannot hold
+  # an unreadable file, so the line builds a root with one stylesheet in a
+  # temporary directory and makes its read fail through importlib.
+  if python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
+import importlib.util
+import pathlib
+import sys
+import tempfile
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    (root / "assets" / "css").mkdir(parents=True)
+    target = root / "assets" / "css" / "site.css"
+    target.write_text(".x { color: inherit; }\n")
+    real = pathlib.Path.read_bytes
+
+    def read_bytes(path):
+        if path == target:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path)
+    pathlib.Path.read_bytes = read_bytes
+    findings = sitecheck.Findings()
+    sitecheck.guard_stylesheet_pins(root, findings)
+    pathlib.Path.read_bytes = real
+    found = [i for i in findings.items if "cannot read a stylesheet source" in i]
+    if len(found) != 1 or len(findings.items) != 1:
+        print(findings.items)
+        sys.exit(1)
+PY
+  then
+    echo "ok   guard-stylesheet-unreadable (an unreadable stylesheet source is a finding)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL guard-stylesheet-unreadable: an unreadable stylesheet source was skipped:" \
+      "$(cat "$out")"
+    n_failed=$((n_failed + 1))
   fi
 
   # site-script-stems (M4 PR 3, ADR-0005 part 5): site rule (j) reads the

@@ -2384,6 +2384,13 @@ def cmd_site(args):
                          "resources.Fingerprint \"sha384\" name it (ADR-0005 part 5)")
         else:
             built.setdefault(stem, []).append(path)
+            digest = hashlib.sha384(data).hexdigest()
+            if not args.no_built_pins and digest != BUILT_SCRIPT_SHA384.get(stem):
+                findings.add("public", f"(j) the bytes of {show(path, 240)} (SHA-384 {digest}) "
+                             f"are not the pinned build of the script {stem} "
+                             "(BUILT_SCRIPT_SHA384 in tools/sitecheck.py): a built script "
+                             "changes only with its pin, whatever input changed it, so the "
+                             "change gets the safety-net review")
     for stem, paths in sorted(built.items()):
         if len(paths) > 1:
             findings.add("public", f"(j) {len(paths)} built files for the script {stem} "
@@ -2420,6 +2427,14 @@ def cmd_site(args):
                          "STYLESHEET_SHA256 (CSS is a reviewed surface)")
         else:
             built_styles.setdefault(stem, []).append(path)
+            digest = hashlib.sha256(data).hexdigest()
+            if not args.no_built_pins and digest != BUILT_STYLESHEET_SHA256.get(stem):
+                findings.add("public", f"(l) the bytes of {show(path, 240)} (SHA-256 {digest}) "
+                             f"are not the pinned build of the stylesheet {stem} "
+                             "(BUILT_STYLESHEET_SHA256 in tools/sitecheck.py): a built "
+                             "stylesheet changes only with its pin, whatever input changed it "
+                             "(a source, a second data file Hugo merges into the tokens, a "
+                             "config), so the change gets the safety-net review")
     for stem, paths in sorted(built_styles.items()):
         if len(paths) > 1:
             findings.add("public", f"(l) {len(paths)} built files for the stylesheet {stem} "
@@ -8708,6 +8723,25 @@ BUILT_STYLE_INFIX = ".min."
 BUILT_STYLE_SUFFIX = ".css"
 
 
+# The built pins (M4 PR 3 fix round 5, delta review 4 finding 1): the bytes
+# of every built stylesheet and script, pinned by hash, so any input route
+# that changes them fails, whatever it took: a second data file that Hugo
+# merges into hugo.Data.tokens (data/tokens.yaml, data/tokens/color.toml),
+# a config or a module, not only an edit of a pinned source. The source
+# pins stay; they name what a reviewer reads. A stylesheet by the SHA-256
+# that names its file, a script by the SHA-384 of its integrity attribute.
+# `site --no-built-pins` turns them off for the hand-made site fixtures,
+# whose files are no build (the --no-feed precedent); check.sh never
+# passes it (wiring/site-built-pins).
+BUILT_STYLESHEET_SHA256 = {
+    "site": "470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38",
+}
+BUILT_SCRIPT_SHA384 = {
+    "copy": "64df53ed5d62c8c5c8be3aee6bd39c1171a2bb88742b3424790354056657c3faf100ea7cc044affe06e76164b883b924",
+    "search": "2b9f7b42bbac16efb718132e221f2214be1478c3c99660e158b61c5c629d70fca54748d3055c7e96ca415ba59abe1483",
+}
+
+
 def built_style_path(stem, data):
     """The path Hugo writes for the stylesheet stem whose built bytes are
     data: resources.Fingerprint without an algorithm uses SHA-256."""
@@ -11040,6 +11074,7 @@ def build_parser():
     p = sub.add_parser("site", allow_abbrev=False)
     p.add_argument("--records", required=True)
     p.add_argument("--schemas")
+    p.add_argument("--no-built-pins", action="store_true")
     p.add_argument("public")
     p.set_defaults(func=cmd_site)
     p = sub.add_parser("render", allow_abbrev=False)

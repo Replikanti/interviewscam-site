@@ -124,9 +124,16 @@ guard_check() { sitecheck guard --root "$1" --hugo "$HUGO_BIN"; }
 # every record and _index.md under <root>/content.
 records_check() { sitecheck records --root "$1" --schemas "$2"; }
 
-# site_check <root> <schema dir> <built dir>: third-party requests (D9), the
-# CSP meta from <root>/hugo.toml, and no live artifact in the build (R3).
-site_check() { sitecheck site --records "$1" --schemas "$2" "$3"; }
+# site_check <root> <schema dir> <built dir> [no-built-pins]: third-party
+# requests (D9), the CSP meta from <root>/hugo.toml, no live artifact in the
+# build (R3), and the built stylesheet and scripts against their pins; the
+# fourth argument turns those pins off, for the self-test's hand-made site
+# fixtures only (the check steps never pass it, wiring/site-built-pins).
+site_check() {
+  local pins=()
+  [[ "${4:-}" == no-built-pins ]] && pins=(--no-built-pins)
+  sitecheck site --records "$1" --schemas "$2" "${pins[@]}" "$3"
+}
 
 # render_check <root> <schema dir> <built dir> [<fixtures dir>] [no-feed]
 # [no-search]: the markup contract of the record pages (ADR-0004): one page
