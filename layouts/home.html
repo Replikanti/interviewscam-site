@@ -4,7 +4,8 @@
 <p class="lead">{{ partial "label.html" "home.lead" }}</p>
 {{- /* The search form (ADR-0005 part 2). Without JavaScript it submits get
   to /a-z/, the A to Z list of every report and campaign family, and the
-  visible link to /a-z/ serves both states (render rule 15). The input
+  visible link to /a-z/ serves both states (render rule 15); with
+  assets/js/search.js the answer shows in #search-results below. The input
   sits on a card, because input_border is below 3:1 on the page ground
   (data/tokens.toml). */}}
 <form class="card search" role="search" method="get" action="{{ "/a-z/" | relURL }}">
@@ -17,6 +18,33 @@
 <li><a href="{{ "/a-z/" | relURL }}">{{ partial "label.html" "a_z.browse_link" }}</a></li>
 </ul>
 </form>
+{{- /* The result sections of the search (ADR-0005 part 4), hidden until
+  search.js reveals one: the answer to an exact match, close candidates
+  only, or no match. The lists stay empty here; the script fills them with
+  copies of the matching /a-z/ entries, so it carries no copy of its own,
+  and moves focus to the heading of the section it reveals. Every element
+  of class search-out is hidden by the pinned .search-out[hidden] rule
+  (site.css) while the script does not run. Render rule 16 pins this
+  markup exactly. */}}
+<div id="search-results" class="search-out" hidden>
+<section id="search-answer" class="card search-out" aria-labelledby="search-answer-heading" hidden>
+<h2 id="search-answer-heading" tabindex="-1">{{ partial "label.html" "search.answer_heading" }}</h2>
+<ul class="index-list"></ul>
+{{ partial "what-to-do.html" (dict "head" "h3") }}
+</section>
+<section id="search-partial" class="card search-out" aria-labelledby="search-partial-heading" hidden>
+<h2 id="search-partial-heading" tabindex="-1">{{ partial "label.html" "search.partial_heading" }}</h2>
+<ul class="index-list"></ul>
+<ul class="link-list">
+<li><a href="{{ "/a-z/" | relURL }}">{{ partial "label.html" "a_z.browse_link" }}</a></li>
+</ul>
+{{ partial "no-report.html" (dict "search" true) }}
+</section>
+<section id="search-none" class="card search-out" aria-labelledby="search-none-heading" hidden>
+<h2 id="search-none-heading" tabindex="-1">{{ partial "label.html" "search.none_heading" }}</h2>
+{{ partial "no-report.html" (dict "search" true) }}
+</section>
+</div>
 <section class="card" aria-labelledby="before-your-call">
 <h2 id="before-your-call">{{ partial "label.html" "home.checklist_heading" }}</h2>
 {{ partial "checklist.html" (dict "details" false) }}

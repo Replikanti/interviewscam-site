@@ -1,1 +1,1 @@
-(j) 2 script files (/js/copy.min.abc.js, /js/other.js)
+(j) '/js/other[.]js' is not the build of a pinned script

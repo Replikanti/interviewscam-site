@@ -86,6 +86,8 @@ The contract that `search.js` (PR 3) and the independent Python oracle `search_e
 
 **Rejected:** a host key from URL artifacts (the shared-host answer above).
 
+*Amendment, 2026-11-09 (M4 PR 3, #5):* an empty form is a substring of no key. `r` is empty when the query is only a scheme, `www.` or `/` (`https://`), and every string contains the empty string, so without this edge such a query would list the first `SEARCH_PARTIAL_CAP` entries as close candidates. `search.js` implements it, and the oracle of case (8) follows it. The whitespace that `fold` collapses is Python's `str.isspace` set (`str.split()`), which `search.js` holds as code point ranges, so the script and the oracle collapse the same runs.
+
 ### 4. Result display
 
 Home holds `div#search-results.search-out[hidden]` with three hidden sections: `#search-answer` (heading, an empty `ul.index-list`, the What to do now panel of the report pages), `#search-partial` (heading, an empty `ul.index-list`, the `/a-z/` link, the no-report block) and `#search-none` (heading, the no-report block). The script fetches `/feed.json` and the form's `action` page in parallel on the first `focus` of the input or the first submit, never on load, sets `aria-busy` on `#search-results` while it waits, then clones the matching `/a-z/` entries (`document.importNode`), reveals exactly one section and moves focus to its heading (`tabindex="-1"`), which also scrolls the answer into view. The query is never echoed into the page. A failed fetch, or a feed `version` other than 1, hands over to the no-JavaScript path (`form.submit()` to `/a-z/`). No `innerHTML`, no timers, and no URL other than `/feed.json` and the form's `action`.
@@ -95,6 +97,8 @@ Home holds `div#search-results.search-out[hidden]` with three hidden sections: `
 **Weak point:** between PR 3 and PR 4 the revealed sections are proven only by their static rules (render rule 16 and the hiding rule); case (8) is their outcome half. Pages stays off until M6, so nothing is public in between.
 
 **Rejected:** search as you type: it needs a debounce constant with no data behind it, and the criterion is one query and one submit.
+
+*Amendment, 2026-11-09 (M4 PR 3, #5):* the three sections carry the class `search-out` too, not only `#search-results`, so the pinned `.search-out[hidden]` rule hides each section whatever author `display` its `card` class gets once the box is revealed. The no-report block of the two result sections states what the search looks at, not what the registry holds: the search matches names, other names and artifacts but not names hidden on request (a hidden persona's feed entry has `name` `null`), so "the registry has no report" would be false for a hidden name, the absence claim of #36's review finding 7. Its sentence is `no_report.text`, the none heading `search.none_heading` says that no report matches the search, and the partial heading names the shown entries without calling them names, because a partial match can come from an artifact value. The wording is the operator's D7 decision at STOP 2 of M4 PR 3.
 
 ### 5. Scripts
 

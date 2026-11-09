@@ -341,8 +341,9 @@ PY
 }
 
 # search_cases_runner <sitecheck.py> <cases table> <base case> <schema dir>:
-# render rule 15 (the A to Z page and the Home search form, ADR-0005 part
-# 6) one branch and one flagging-set member per row (M4 PR 2). A row is
+# render rules 15 and 16 (the A to Z page, the Home search form and its
+# hidden result sections, ADR-0005 part 6) one branch and one flagging-set
+# member per row (M4 PR 2 and PR 3). A row is
 # name, file, find, replace and expect, tab-separated, with \n and \t in
 # find and replace read as a newline and a tab. It copies the base case to
 # a temporary directory, replaces the one occurrence of find in <file>
@@ -587,8 +588,9 @@ selftest_main() {
         # check of the production run. The feed rules (11 to 13) run only
         # in a case with a feed.txt, which holds a public/feed.json and a
         # public/data-feed/ page (or proves one missing), and the search
-        # rules (15) only in a case with a search.txt, which holds a
-        # public/a-z/ page and the Home search form: the other cases pin
+        # rules (15 and 16) only in a case with a search.txt, which holds a
+        # public/a-z/ page, the Home search form and its hidden result
+        # sections: the other cases pin
         # the page contract alone, as both builds of check.sh always run
         # the feed and search rules.
         leak_fixtures=""
@@ -719,7 +721,7 @@ selftest_main() {
     n_passed=$((n_passed + 1))
   fi
 
-  # Wiring: both builds run the search rules (render rule 15, ADR-0005 part
+  # Wiring: both builds run the search rules (render rules 15 and 16, ADR-0005 part
   # 6), the --no-feed precedent: neither step_render nor
   # step_render_fixtures, run against a stub sitecheck, passes --no-search,
   # and check_main runs both render steps (the two lines above prove the
@@ -739,7 +741,7 @@ selftest_main() {
       "tools/check.sh does not run sitecheck render with the search rules (it passes --no-search)"
     n_failed=$((n_failed + 1))
   else
-    echo "ok   wiring/render-search-rules (both render steps run rule 15; no --no-search)"
+    echo "ok   wiring/render-search-rules (both render steps run rules 15 and 16; no --no-search)"
     n_passed=$((n_passed + 1))
   fi
 
@@ -1103,7 +1105,7 @@ PINNED
   fi
   rm -f "$fields_table"
 
-  # render-search (M4 PR 2, ADR-0005 part 6): render rule 15 branch by
+  # render-search (M4 PR 2 and PR 3, ADR-0005 part 6): render rules 15 and 16 branch by
   # branch and member by member from tests/fixtures/render/search-cases.tsv
   # on a copy of render/pass-search (search_cases_runner above).
   search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
@@ -1115,6 +1117,38 @@ PINNED
   if ! grep -qE '^(ok   |FAIL )render-search/table' "$out"; then
     echo "FAIL render-search: the runner did not finish; output:"
     sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+
+  # site-script-stems (M4 PR 3, ADR-0005 part 5): site rule (j) reads the
+  # stems of the pinned scripts from SCRIPT_SHA256, and only a key
+  # assets/js/<stem>.js gives one. The real pin holds only such keys, so
+  # the line patches the pin through importlib with a key in another
+  # directory, one in a subdirectory, an .mjs key and one with a hyphen,
+  # none of which may give a stem (a hyphen is outside the closed path
+  # alphabet of resource_path, so such a script could never be served).
+  if python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+real = sitecheck.script_stems()
+sitecheck.SCRIPT_SHA256 = {"assets/js/a.js": "0", "assets/x/b.js": "0",
+                           "assets/js/sub/c.js": "0", "assets/js/d.mjs": "0",
+                           "assets/js/e-f.js": "0"}
+got = sitecheck.script_stems()
+if real != {"copy", "search"} or got != {"a"}:
+    print(f"real pin {sorted(real)}, patched pin {sorted(got)}")
+    sys.exit(1)
+PY
+  then
+    echo "ok   site-script-stems (only assets/js/<stem>.js keys of SCRIPT_SHA256 give a stem)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL site-script-stems: script_stems reads other keys than assets/js/<stem>.js:" \
+      "$(cat "$out")"
     n_failed=$((n_failed + 1))
   fi
 

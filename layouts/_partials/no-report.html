@@ -1,11 +1,19 @@
-{{- /* The no-report block after the A to Z list of /a-z/ (ADR-0005 parts 2
-  and 4): the conditional no_report.browse_text, because the list holds
-  every reported name but no artifact and no hidden name, and the next
-  steps, the checklist and the report channel (render rule 15 pins the
-  sentence, both links and the markup). No mailto: link (site rule (e)).
-  Called with any context; it reads none. */ -}}
+{{- /* The no-report block (ADR-0005 parts 2 and 4): a missing entry is
+  never a sign of safety, and the next steps are the checklist and the
+  report channel. Called with a dict:
+    search  false after the A to Z list of /a-z/: no_report.browse_text,
+            because the list holds every reported name but no artifact
+            and no hidden name;
+            true in the result sections of the Home search (no match, or
+            only close candidates): no_report.text, which states what the
+            search looks at, because it matches names, other names and
+            artifacts but not names hidden on request
+  A call without the key gives the browse sentence; render rule 16 pins
+  the search sentence in both result sections, so that cannot pass. Render
+  rules 15 and 16 pin the sentence, both links and the markup. No mailto:
+  link (site rule (e)). */ -}}
 <div class="no-report">
-<p>{{ partial "label.html" "no_report.browse_text" }}</p>
+<p>{{ if .search }}{{ partial "label.html" "no_report.text" }}{{ else }}{{ partial "label.html" "no_report.browse_text" }}{{ end }}</p>
 <ul class="link-list">
 <li><a href="{{ "/before-your-call/" | relURL }}">{{ partial "label.html" "no_report.before_link" }}</a></li>
 <li><a href="{{ "/report-a-scam/" | relURL }}">{{ partial "label.html" "no_report.report_link" }}</a></li>

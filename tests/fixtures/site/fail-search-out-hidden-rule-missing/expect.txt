@@ -1,0 +1,1 @@
+CSS: the page has search results (class search-out), but no built CSS holds the rule `.search-out[hidden] { display: none !important }`

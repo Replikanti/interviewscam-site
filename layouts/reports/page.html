@@ -23,14 +23,7 @@
 {{- end }}
 {{- end }}
 <p class="lead">{{ $p.summary }}</p>
-<section class="panel-warn" aria-labelledby="what-to-do">
-<h2 id="what-to-do"><span class="panel-icon">{{ partial "icon.html" "warning" }}</span>{{ partial "label.html" "report.warning_heading" }}</h2>
-<p>{{ partial "label.html" "report.warning_text" }}</p>
-<ul class="link-list">
-<li><a href="{{ "/before-your-call/" | relURL }}">{{ partial "label.html" "report.warning_before_link" }}</a></li>
-<li><a href="{{ "/before-your-call/#already-ran" | relURL }}">{{ partial "label.html" "report.warning_already_ran_link" }}</a></li>
-</ul>
-</section>
+{{ partial "what-to-do.html" (dict "head" "h2") }}
 {{ partial "artifacts.html" . }}
 <div class="card">
 {{ partial "campaign-line.html" . }}

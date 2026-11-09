@@ -23,9 +23,14 @@
 {{- with slice $tokens (resources.Get "css/site.css") | resources.Concat "css/site.css" | resources.Minify | resources.Fingerprint }}
 <link rel="stylesheet" href="{{ .RelPermalink }}">
 {{- end }}
-{{- /* The one script, the Copy buttons (ADR-0004 part 11): first-party, minified and fingerprinted, with its SHA-384 as integrity, deferred. script-src 'self' allows it; sitecheck site rule (j) allows no other .js file and no other script src. */}}
+{{- /* Two pinned scripts (ADR-0005 part 5, amending ADR-0004 part 11), each first-party, minified and fingerprinted, with its SHA-384 as integrity, deferred: the Copy buttons on every page, and the search on Home only. script-src 'self' allows them; sitecheck site rule (j) allows no .js file but one per script pinned in SCRIPT_SHA256 and no other script src. */}}
 {{- with resources.Get "js/copy.js" | resources.Minify | resources.Fingerprint "sha384" }}
 <script src="{{ .RelPermalink }}" integrity="{{ .Data.Integrity }}" defer></script>
+{{- end }}
+{{- if eq .Kind "home" }}
+{{- with resources.Get "js/search.js" | resources.Minify | resources.Fingerprint "sha384" }}
+<script src="{{ .RelPermalink }}" integrity="{{ .Data.Integrity }}" defer></script>
+{{- end }}
 {{- end }}
 {{- /* Record and section pages add their JSON-LD here (ADR-0004 part 8). */}}
 {{- block "head" . }}{{ end }}
