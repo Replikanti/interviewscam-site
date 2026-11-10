@@ -25,7 +25,7 @@ b-record-link-hidden	public/a-z/index.html	<li><a href="/reports/meetfix/">MeetF
 b-record-link-in-index-campaign	public/a-z/index.html	<li><a href="/reports/meetfix/">MeetFix</a> <span class="state-chip">Front</span> <time class="record-date" datetime="2026-10-30">2026-10-30</time>\n<span class="index-meta"><span class="index-type">Meeting app</span> · <span class="index-campaign">Campaign family: unattributed	<li>MeetFix <span class="state-chip">Front</span> <time class="record-date" datetime="2026-10-30">2026-10-30</time>\n<span class="index-meta"><span class="index-type">Meeting app</span> · <span class="index-campaign"><a href="/reports/meetfix/">MeetFix</a> Campaign family: unattributed	rule 15 (b): an entry of the A to Z list holds 0 visible links outside index-campaign
 b-record-link-is-index-campaign	public/a-z/index.html	<li><a href="/reports/meetfix/">MeetFix</a>	<li><a class="index-campaign" href="/reports/meetfix/">MeetFix</a>	rule 15 (b): an entry of the A to Z list holds 0 visible links outside index-campaign
 b-second-link-area	public/a-z/index.html	<li><a href="/reports/meetfix/">MeetFix</a>	<li><a href="/reports/meetfix/">MeetFix</a> <area href="/campaigns/example-campaign-family/">	rule 15 (b): an entry of the A to Z list holds 2 visible links outside index-campaign
-b-second-link-xlink	public/a-z/index.html	<li><a href="/reports/meetfix/">MeetFix</a>	<li><a href="/reports/meetfix/">MeetFix</a> <svg><a xlink:href="/campaigns/example-campaign-family/">x</a></svg>	rule 15 (b): an entry of the A to Z list holds 2 visible links outside index-campaign
+b-second-link-xlink	public/a-z/index.html	<li><a href="/reports/meetfix/">MeetFix</a>	<li><a href="/reports/meetfix/">MeetFix</a> <a xlink:href="/campaigns/example-campaign-family/">x</a>	rule 15 (b): an entry of the A to Z list holds 2 visible links outside index-campaign
 b-second-link-form	public/a-z/index.html	<li><a href="/reports/meetfix/">MeetFix</a>	<li><a href="/reports/meetfix/">MeetFix</a> <form action="/campaigns/example-campaign-family/"></form>	rule 15 (b): an entry of the A to Z list holds 2 visible links outside index-campaign
 b-second-link-button	public/a-z/index.html	<li><a href="/reports/meetfix/">MeetFix</a>	<li><a href="/reports/meetfix/">MeetFix</a> <button formaction="/campaigns/example-campaign-family/">x</button>	rule 15 (b): an entry of the A to Z list holds 2 visible links outside index-campaign
 b-second-link-input	public/a-z/index.html	<li><a href="/reports/meetfix/">MeetFix</a>	<li><a href="/reports/meetfix/">MeetFix</a> <input formaction="/campaigns/example-campaign-family/">	rule 15 (b): an entry of the A to Z list holds 2 visible links outside index-campaign
@@ -374,9 +374,9 @@ r16-partial-list-missing	public/index.html	come close</h2><ul class=index-list><
 r16-none-extra-list	public/index.html	your search</h2><div class=no-report>	your search</h2><ul class=index-list></ul><div class=no-report>	#search-results on Home holds <ul class='index-list'>
 r16-panel-missing	public/index.html	<section class=panel-warn aria-labelledby=what-to-do>	<section class=card aria-labelledby=what-to-do>	#search-results on Home holds <section class='card'
 r16-panel-h2	public/index.html	<h3 id=what-to-do>	<h2 id=what-to-do>	#search-results on Home holds <h2 id='what-to-do'>	What to do now</h3>	What to do now</h2>
-r16-panel-icon-path	public/index.html	<path d="M12 10v4.5"/>	<path d="M12 10v9"/>	#search-results on Home holds <path d='M12 10v9'>
-r16-panel-icon-missing	public/index.html	<span class=panel-icon><svg	<span class=panel-icon><svg hidden	#search-results on Home holds <svg
-r16-panel-icon-attr	public/index.html	stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5	stroke-linejoin="round"><path d="M12 3.5	#search-results on Home holds <svg
+r16-panel-icon-path	public/index.html	<path d="M12 10v4.5"/>	<path d="M12 10v9"/>	is none of the three trees layouts/_partials/icon.html emits
+r16-panel-icon-missing	public/index.html	<span class=panel-icon><svg	<span class=panel-icon><svg hidden	is none of the three trees layouts/_partials/icon.html emits
+r16-panel-icon-attr	public/index.html	stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5	stroke-linejoin="round"><path d="M12 3.5	is none of the three trees layouts/_partials/icon.html emits
 r16-href-before-your-call	public/index.html	href=/before-your-call/>What to do before	href=/before-your-call/?x>What to do before	#search-results on Home holds <a href=
 r16-href-before-your-call--already-ran	public/index.html	href=/before-your-call/#already-ran>	href=/before-your-call/#other>	#search-results on Home holds <a href=
 r16-href-a-z	public/index.html	href=/a-z/>Browse every report A to Z</a></li></ul><div	href=https://interviewscam.com/a-z/>Browse every report A to Z</a></li></ul><div	#search-results on Home holds <a href=
@@ -404,7 +404,7 @@ r16-text-loose-in-region	public/index.html	<div id=search-results class=search-o
 r16-text-loose-in-svg-span	public/index.html	<span class=panel-icon><svg	<span class=panel-icon>!<svg	#search-results on Home: <span class=panel-icon> reads '!'
 r16-search-out-outside	public/index.html	<h1 class="home-title">	<h1 class="home-title search-out">	rule 16: an element of class search-out on Home sits outside #search-results
 r16-region-in-details-open	public/index.html	<div id=search-results class=search-out hidden>	<details open><summary>x</summary><div id=search-results class=search-out hidden>	rule 16: #search-results on Home sits in <	</section></div>	</section></div></details>
-r16-text-loose-in-svg	public/index.html	<path d="M12 10v4.5"/>	Safe<path d="M12 10v4.5"/>	#search-results on Home: <span class=panel-icon> reads 'Safe'
+r16-text-loose-in-svg	public/index.html	<path d="M12 10v4.5"/>	Safe<path d="M12 10v4.5"/>	is none of the three trees layouts/_partials/icon.html emits
 # M4 PR 3 fix round 1 (review findings 3 and 4): the exact tree of the
 # search form (every control, attribute and text, so no control can shadow
 # a property of the form) and the exact ancestor chains of the pinned
@@ -422,7 +422,7 @@ fr1-label-for	public/index.html	<label for="q">	<label for="x">	rule 15 (e): the
 fr1-input-type	public/index.html	<input id="q" type="search" name="q" autocomplete="off" spellcheck="false">	<input id="q" type="text" name="q" autocomplete="off" spellcheck="false">	rule 15 (e): the search form on Home holds <input id='q' type='text'
 fr1-input-autocomplete-missing	public/index.html	<input id="q" type="search" name="q" autocomplete="off" spellcheck="false">	<input id="q" type="search" name="q" spellcheck="false">	rule 15 (e): the search form on Home holds <input id='q' type='search' name='q' spellcheck='false'>
 fr1-button-type	public/index.html	<button class="button-primary" type="submit">Check</button>	<button class="button-primary" type="button">Check</button>	rule 15 (e): the search form on Home holds <button class='button-primary' type='button'>
-fr1-icon-circle	public/index.html	<circle cx="11" cy="11" r="6.5"/>	<circle cx="11" cy="11" r="9"/>	rule 15 (e): the search form on Home holds <circle cx='11' cy='11' r='9'>
+fr1-icon-circle	public/index.html	<circle cx="11" cy="11" r="6.5"/>	<circle cx="11" cy="11" r="9"/>	is none of the three trees layouts/_partials/icon.html emits
 fr1-extra-after-links	public/index.html	</li></ul>\n</form>	</li></ul><p>x</p>\n</form>	rule 15 (e): the search form on Home holds <p>, which layouts/home.html does not emit there
 fr1-text-label	public/index.html	>Company, app, domain or recruiter</label>	>Safe names</label>	rule 15 (e): the search form on Home: <label> reads 'Safe names'
 fr1-text-button	public/index.html	type="submit">Check</button>	type="submit">Check safety</button>	rule 15 (e): the search form on Home: <button class=button-primary> reads 'Check safety'
@@ -511,3 +511,106 @@ markup-fmt-u-closed-by-p	public/index.html	before you install or run anything.</
 markup-fmt-b-closed-in-a-z-no-report	public/a-z/index.html	it is safe. This list	it is <b>safe. This list	markup: 1 <b> element(s) closed without their own </b>
 markup-fmt-b-open-at-end	public/index.html	</footer>\n</body>\n</html>	</footer><b>	markup: 1 <b> element(s) closed without their own </b>
 markup-div-closed-by-section	public/index.html	before you install or run anything.</p>	before you install or run anything.</p><div>	markup: 1 <div> element(s) closed without their own </div>
+# Fix round 10 (delta review 9 finding 1): foreign content. Every <svg> is
+# exactly one icon tree of icon.html; one row per start tag of the HTML
+# parser's foreign-content breakout list inside the search icon (and font
+# with color, face or size), the two breakout end tags, other SVG content
+# and attributes, each icon's tree, <math>, self-closing syntax, and the
+# reviewer's g-svgs, g-mathb and g-azsvg.
+svg-breakout-b	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><b></b></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-big	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><big></big></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-blockquote	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><blockquote></blockquote></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-body	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><body></body></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-br	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><br></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-center	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><center></center></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-code	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><code></code></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-dd	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><dd></dd></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-div	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><div></div></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-dl	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><dl></dl></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-dt	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><dt></dt></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-em	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><em></em></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-embed	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><embed></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-h1	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><h1></h1></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-h2	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><h2></h2></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-h3	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><h3></h3></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-h4	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><h4></h4></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-h5	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><h5></h5></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-h6	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><h6></h6></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-head	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><head></head></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-hr	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><hr></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-i	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><i></i></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-img	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><img></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-li	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><li></li></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-listing	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><listing></listing></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-menu	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><menu></menu></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-meta	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><meta></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-nobr	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><nobr></nobr></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-ol	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><ol></ol></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-p	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><p></p></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-pre	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><pre></pre></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-ruby	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><ruby></ruby></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-s	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><s></s></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-small	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><small></small></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-span	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><span></span></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-strong	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><strong></strong></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-strike	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><strike></strike></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-sub	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><sub></sub></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-sup	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><sup></sup></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-table	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><table></table></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-tt	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><tt></tt></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-u	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><u></u></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-ul	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><ul></ul></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-var	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><var></var></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-font-color	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><font color="1"></font></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-font-face	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><font face="1"></font></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-font-size	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><font size="1"></font></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-font-plain	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><font></font></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-breakout-end-p	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/></p></svg>	markup: 1 </p> end tag(s) that close no open element
+svg-breakout-end-br	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/></br></svg>	markup: 1 </br> end tag(s) that close no open element
+svg-end-tag-of-ancestor	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/></span></svg>	markup: 1 </svg> end tag(s) that close no open element
+svg-content-g	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><g></g></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-content-a	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><a href="/"></a></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-content-text	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><text>x</text></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-content-foreignobject	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><foreignObject><span>x</span></foreignObject></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-content-desc	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><desc>d</desc></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-content-title	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><title>t</title></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-content-script	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><script></script></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-content-nested-svg	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><svg></svg></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-content-text-node	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/>x</svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-content-whitespace-node	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/> </svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-content-second-path	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><path d="m16 16 4.5 4.5"/></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-attr-extra	public/index.html	aria-hidden="true"><circle	aria-hidden="true" data-x="1"><circle	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-attr-focusable	public/index.html	aria-hidden="true"><circle	aria-hidden="true" focusable="false"><circle	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-attr-stroke-width	public/index.html	stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle	stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-attr-class	public/index.html	<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle	<svg class="icon x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-attr-missing	public/index.html	stroke-linejoin="round" aria-hidden="true"><circle	stroke-linejoin="round"><circle	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-circle-attr-changed	public/index.html	<circle cx="11" cy="11" r="6.5"/>	<circle cx="11" cy="11" r="7"/>	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-circle-attr-extra	public/index.html	<circle cx="11" cy="11" r="6.5"/>	<circle cx="11" cy="11" r="6.5" fill="red"/>	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-path-changed	public/index.html	<path d="m16 16 4.5 4.5"/>	<path d="m16 16 5 5"/>	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-children-swapped	public/index.html	<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>	<path d="m16 16 4.5 4.5"/><circle cx="11" cy="11" r="6.5"/>	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-warning-path-changed	public/index.html	<path d="M12 17.5h.01"/></svg>	<path d="M12 17.5h.02"/></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-warning-path-dropped	public/index.html	<path d="M12 10v4.5"/><path d="M12 17.5h.01"/></svg>	<path d="M12 10v4.5"/></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-check-tree	public/index.html	<path d="M12 3.5 2.5 20h19L12 3.5z"/><path d="M12 10v4.5"/><path d="M12 17.5h.01"/></svg>	<path d="m5 12.5L9.5 17 19 7.5"/></svg>	rule 16: #search-results on Home holds <path d='m5 12[.]5L9[.]5 17 19 7[.]5'>
+svg-icon-check-path-changed	public/index.html	<path d="M12 3.5 2.5 20h19L12 3.5z"/><path d="M12 10v4.5"/><path d="M12 17.5h.01"/></svg>	<path d="m5 12.5L9.5 17 19 7"/></svg>	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-upper-case-tags	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<PATH d="m16 16 4.5 4.5"/></SVG>	PASS
+math-in-lead	public/index.html	before you install or run anything.</p>	before you install or run anything.<math></math></p>	markup: the <math>
+math-with-mi	public/index.html	before you install or run anything.</p>	before you install or run anything.<math><mi>x</mi></math></p>	markup: the <math>
+self-closing-div	public/index.html	before you install or run anything.</p>	before you install or run anything.<div/></p>	markup: 1 <div/> written self-closing
+self-closing-span	public/index.html	before you install or run anything.</p>	before you install or run anything.<span/></p>	markup: 1 <span/> written self-closing
+self-closing-p	public/index.html	before you install or run anything.</p>	before you install or run anything.</p><p/>	markup: 1 <p/> written self-closing
+self-closing-a	public/index.html	before you install or run anything.</p>	before you install or run anything.<a/></p>	markup: 1 <a/> written self-closing
+self-closing-s	public/index.html	before you install or run anything.</p>	before you install or run anything.<s/></p>	markup: 1 <s/> written self-closing
+self-closing-b	public/index.html	before you install or run anything.</p>	before you install or run anything.<b/></p>	markup: 1 <b/> written self-closing
+self-closing-li	public/index.html	before you install or run anything.</p>	before you install or run anything.<li/></p>	markup: 1 <li/> written self-closing
+self-closing-section	public/index.html	before you install or run anything.</p>	before you install or run anything.<section/></p>	markup: 1 <section/> written self-closing
+self-closing-void-br	public/index.html	before you install or run anything.</p>	before you install or run anything.<br/></p>	PASS
+self-closing-svg-empty	public/index.html	before you install or run anything.</p>	before you install or run anything.<svg/></p>	is none of the three trees layouts/_partials/icon.html emits
+g-svgs	public/index.html	before you install or run anything.</p>	before you install or run anything.<svg><s/></svg></p>	is none of the three trees layouts/_partials/icon.html emits
+g-mathb	public/index.html	before you install or run anything.</p>	before you install or run anything.<math><b/></math></p>	markup: the <math>
+g-azsvg	public/a-z/index.html	<div class="card"><ul class="index-list">	<p><svg><s/></svg></p>\n<div class="card"><ul class="index-list">	is none of the three trees layouts/_partials/icon.html emits
+# Fix round 10 (QA recheck of ceb2356, mutant u-close-first-only): an end
+# tag or the end of the page that closes several elements counts each, the
+# formatting element second and third in the chain.
+markup-chain-formatting-second	public/index.html	before you install or run anything.</p>	before you install or run anything.<span><s></p>	markup: 1 <s> element(s) closed without their own </s>
+markup-chain-formatting-third	public/index.html	before you install or run anything.</p>	before you install or run anything.<span><span><b></p>	markup: 1 <b> element(s) closed without their own </b>
+markup-chain-at-end-formatting-second	public/index.html	</footer>\n</body>\n</html>	</footer><span><i>	markup: 1 <i> element(s) closed without their own </i>

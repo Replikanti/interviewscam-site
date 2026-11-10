@@ -1,0 +1,1 @@
+(9) a pinned region differs between the browser and the file: .no-report 1: its ancestor <foreignobject> 1 is in the svg namespace in the browser, html in the file

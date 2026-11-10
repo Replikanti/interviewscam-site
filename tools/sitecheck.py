@@ -2790,6 +2790,21 @@ class RenderPage(Page):
         # not model the reopening of formatting elements, so such a page is
         # reported, not read.
         self.unclosed = []
+        # M4 PR 3 fix round 10 (delta review 9): the raw facts of
+        # foreign_markup_problems, which reads them on HTML pages only (an
+        # XML file may self-close anything): elements written self-closing
+        # outside <svg> and <math>, and end tags that close no open element.
+        self.self_closed = []
+        self.stray = []
+        # The markup: findings of foreign_markup_problems; cmd_render sets
+        # them on every HTML page.
+        self.markup = []
+
+    @property
+    def unread(self):
+        """The page has a markup: finding, so the class-scoped rules, which
+        would read a nesting no browser builds, do not read it."""
+        return bool(self.unclosed or self.markup)
 
     def _tree_element(self, tag, attrs):
         first = {}
@@ -2810,6 +2825,9 @@ class RenderPage(Page):
 
     def handle_startendtag(self, tag, attrs):
         super().handle_startendtag(tag, attrs)
+        if tag not in VOID_ELEMENTS and tag not in FOREIGN_ROOTS \
+                and not any(el.tag in FOREIGN_ROOTS for el in self._open):
+            self.self_closed.append(tag)
         self._tree_element(tag, attrs)
 
     def handle_endtag(self, tag):
@@ -2829,6 +2847,8 @@ class RenderPage(Page):
                 self.unclosed += [el.tag for el in self._open[i + 1:]]
                 del self._open[i:]
                 break
+        else:
+            self.stray.append(tag)
 
     def close(self):
         super().close()
@@ -2850,6 +2870,83 @@ def fold_words(text):
     """NFKC, invisibles dropped, case-folded, whitespace collapsed (R5)."""
     return " ".join(unicodedata.normalize("NFKC", text).translate(INVISIBLE)
                     .casefold().split())
+
+
+# M4 PR 3 fix round 10 (delta review 9 finding 1): foreign content. Python's
+# parser reads <svg> and <math> content as plain elements, while the HTML
+# parser applies the foreign-content rules: a breakout element (<s/>, <b>,
+# <p>, <font color>, ...) inside <svg> ends the SVG, opens in HTML and, as a
+# formatting element, is reopened around all later text; an integration
+# point (foreignObject, desc, title) switches back to HTML. No list of those
+# rules is complete, so every <svg> of a built page must be exactly one of
+# the three trees layouts/_partials/icon.html emits, as the minifier writes
+# them (icon_trees: element names, every attribute and value, the children in order, no
+# text), and no page holds <math>, which no template emits. Self-closing
+# syntax on an HTML element that is not void, ignored by the HTML parser,
+# leaves it open; an end tag that closes no open element is ignored by
+# Python but not always by the browser (</p> inserts a <p>, </br> a <br>,
+# and inside foreign content either breaks out).
+FOREIGN_ROOTS = ("svg", "math")
+def icon_trees():
+    """The three trees of icon.html, as bare_tree specs (the constants they
+    use are defined with rule 16 below; the attributes are the same on all
+    three)."""
+    return {
+        "search": pinned("svg", SEARCH_ICON_ATTRS, "",
+                         pinned("circle", {"cx": "11", "cy": "11", "r": "6.5"}, ""),
+                         pinned("path", {"d": "m16 16 4.5 4.5"}, "")),
+        "warning": pinned("svg", WARNING_ICON_ATTRS, "",
+                          *(pinned("path", {"d": d}, "") for d in WARNING_ICON_PATHS)),
+        "check": pinned("svg", SEARCH_ICON_ATTRS, "",
+                        pinned("path", {"d": CHECK_ICON_PATH}, "")),
+    }
+
+
+def exact_tree(el):
+    """(tag, attributes, children) of an element, its texts included as
+    ("#text", text), for an exact comparison with a bare_tree."""
+    return (el.tag, el.attrs, [exact_tree(c) if isinstance(c, Element) else ("#text", c)
+                               for c in el.children])
+
+
+def outline(el, limit=240):
+    """The element as markup, attributes in order, for a finding."""
+    def walk(item):
+        if not isinstance(item, Element):
+            return item
+        attrs = "".join(f' {k}="{v}"' for k, v in item.attrs.items())
+        return f"<{item.tag}{attrs}>" + "".join(walk(c) for c in item.children) + \
+            f"</{item.tag}>"
+    return show(walk(el), limit)
+
+
+def foreign_markup_problems(page):
+    """The markup: findings of foreign content on one HTML page (see
+    icon_trees): each <svg> that is none of the icon trees, every
+    <math>, every non-void HTML element written self-closing, every end
+    tag that closes no open element."""
+    problems = []
+    icons = [bare_tree(tree) for tree in icon_trees().values()]
+    for el in page.root.walk():
+        if el.tag == "svg" and exact_tree(el) not in icons:
+            problems.append(f"markup: the <svg> {outline(el)} is none of the three trees "
+                            "layouts/_partials/icon.html emits (search, warning, check); "
+                            "every <svg> is exactly one of them, because the HTML parser "
+                            "reads other SVG content (a breakout element, an integration "
+                            "point, text) another way than this check")
+        elif el.tag == "math":
+            problems.append(f"markup: the <math> {outline(el)}; no template emits MathML, "
+                            "and the HTML parser reads its content by foreign-content rules "
+                            "this check does not model")
+    for tag in dict.fromkeys(page.self_closed):
+        problems.append(f"markup: {page.self_closed.count(tag)} <{tag}/> written self-closing; "
+                        f"<{tag}> is not a void element, so the HTML parser ignores the slash "
+                        "and leaves it open")
+    for tag in dict.fromkeys(page.stray):
+        problems.append(f"markup: {page.stray.count(tag)} </{tag}> end tag(s) that close no "
+                        "open element; the browser does not always ignore one (</p> inserts "
+                        "a <p>, </br> a <br>, and in SVG content it breaks out)")
+    return problems
 
 
 def parse_render_page(text):
@@ -2998,7 +3095,7 @@ def own_record(by_page, rel, page):
     itself, never a page nested under its directory (rule 1 fails that),
     and only when the page has no markup: finding, whose nesting the
     class-scoped reads below cannot trust. None otherwise."""
-    return None if page.unclosed else by_page.get(rel)
+    return None if page.unread else by_page.get(rel)
 
 
 def record_label(record):
@@ -4816,6 +4913,8 @@ WARNING_ICON_ATTRS = {"class": "icon", "viewbox": "0 0 24 24", "fill": "none",
                       "stroke-linecap": "round", "stroke-linejoin": "round",
                       "aria-hidden": "true"}
 WARNING_ICON_PATHS = ["M12 3.5 2.5 20h19L12 3.5z", "M12 10v4.5", "M12 17.5h.01"]
+# The check icon's path as the minifier writes it (fix round 10).
+CHECK_ICON_PATH = "m5 12.5L9.5 17 19 7.5"
 
 
 def pinned(tag, attrs=None, text=None, *children):
@@ -4992,13 +5091,13 @@ def search_problems(pages, records, campaigns):
     if page is None:
         problems.append((A_Z_REL, "rule 15 (a): /a-z/ was not built; it is the A to Z list "
                                   "of every report and campaign family (ADR-0005 part 2)"))
-    elif not page.unclosed:
+    elif not page.unread:
         found, entries = a_z_problems(page, records, campaigns)
         problems += [(A_Z_REL, p) for p in found]
     home = pages.get(HOME_REL)
     if home is None:
         problems.append((HOME_REL, "rule 15 (e): no Home page was built"))
-    elif not home.unclosed:
+    elif not home.unread:
         problems += [(HOME_REL, p) for p in home_search_problems(home)]
         problems += [(HOME_REL, p) for p in search_results_problems(home)]
     return problems, f"; search: {entries} entries on /a-z/, 3 result sections on Home"
@@ -5086,9 +5185,12 @@ def cmd_render(args):
                 problems.append(f"markup: {n} <{tag}> element(s) closed without their own "
                                 f"</{tag}>; close every <{tag}> explicitly, because the "
                                 "render check infers no end tags")
+            if suffix in HTML_SUFFIXES:
+                page.markup = foreign_markup_problems(page)
+                problems += page.markup
         if page is not None and suffix in HTML_SUFFIXES:
             pages[rel] = page
-        if page is not None and suffix in HTML_SUFFIXES and not page.unclosed:
+        if page is not None and suffix in HTML_SUFFIXES and not page.unread:
             parts = rel.split("/")
             # Every HTML page under a record directory is that record's page,
             # so an alternative page meets the record rules too (rule 1
@@ -9563,11 +9665,20 @@ def region_differences(seen, parsed):
         if a == b:
             continue
         kind, nth = a[0], kinds[0][:i + 1].count(a[0])
-        if a[1] != b[1]:
-            detail = f"{kind} {nth}: the browser has it in {chain(a[1])}, the file in {chain(b[1])}"
-            if chain(a[1]) == chain(b[1]):
-                detail += " (an attribute or a namespace of one differs)"
-            out.append(detail)
+        if a[1] != b[1] and chain(a[1]) == chain(b[1]):
+            # The same tags: name the innermost ancestor that differs, and how
+            # (M4 PR 3 fix round 10, QA recheck of ceb2356).
+            j = next(j for j, (x, y) in enumerate(zip(a[1], b[1])) if x != y)
+            up = f"its ancestor <{a[1][j][0]}> {j + 1}"
+            if a[1][j][1] != b[1][j][1]:
+                out.append(f"{kind} {nth}: {up} is in the {a[1][j][1]} namespace in the "
+                           f"browser, {b[1][j][1]} in the file")
+            else:
+                out.append(f"{kind} {nth}: {up} has the attributes {show(a[1][j][2], 120)} in "
+                           f"the browser, {show(b[1][j][2], 120)} in the file")
+        elif a[1] != b[1]:
+            out.append(f"{kind} {nth}: the browser has it in {chain(a[1])}, the file in "
+                       f"{chain(b[1])}")
         else:
             out.append(tree_difference(a[2], b[2], f"{kind} {nth} <{b[2][0]}>"))
     return out

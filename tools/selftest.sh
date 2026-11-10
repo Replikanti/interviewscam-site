@@ -432,6 +432,67 @@ else:
 PY
 }
 
+# page_suffixes_runner <sitecheck.py> <site base case> <schema dir> (M4 PR 3
+# fix round 10, QA recheck of ceb2356): rule (n) of site and L6 of literals
+# for every member of HTML_SUFFIXES, taken from the code, and its upper-case
+# form, so each suffix is proven on its own: `site` on a copy of the base
+# case with the page added as public/extra<suffix> (the base's own page, its
+# canonical changed to that path) must fail with rule (n) for every form but
+# .html; `literals` on a root holding only static/x<suffix> must fail with
+# exactly the one L6 finding for every form but .html, and pass for .html.
+# The last line, page-suffixes/table, counts the forms.
+page_suffixes_runner() {
+  python3 -I -B - "$1" "$2" "$3" <<'PY'
+import argparse
+import contextlib
+import importlib.util
+import io
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+base, schema_dir = Path(sys.argv[2]), Path(sys.argv[3])
+forms = sorted({f for s in sitecheck.HTML_SUFFIXES for f in (s, s.upper())})
+page = (base / "public" / "index.html").read_text(encoding="utf-8")
+L6 = "a static file this check cannot read for copy"
+for form in forms:
+    page_ok = form == sitecheck.PAGE_SUFFIX
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "case"
+        shutil.copytree(base, root)
+        (root / "public" / f"extra{form}").write_text(
+            page.replace('href="https://interviewscam.com/"',
+                         f'href="https://interviewscam.com/extra{form}"'), encoding="utf-8")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            rc = sitecheck.cmd_site(argparse.Namespace(
+                records=str(root), schemas=str(schema_dir), no_built_pins=True,
+                public=str(root / "public")))
+        hit = f"public/extra{form}: (n) a page under the suffix {form!r}" in buffer.getvalue()
+        if page_ok and not hit or not page_ok and rc == 1 and hit:
+            print(f"ok   page-suffixes/site/{form} ({'no' if page_ok else 'a'} rule (n) finding)")
+        else:
+            print(f"FAIL page-suffixes/site/{form}: exit {rc}, rule (n) finding {hit}")
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "static").mkdir()
+        (Path(tmp) / "static" / f"x{form}").write_text("<p></p>\n", encoding="utf-8")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            rc = sitecheck.cmd_literals(argparse.Namespace(root=Path(tmp)))
+        out = buffer.getvalue()
+        n = sum(line.startswith("FAIL: ") for line in out.splitlines())
+        if (page_ok and rc == 0) or (not page_ok and rc == 1 and n == 1 and L6 in out):
+            print(f"ok   page-suffixes/literals/{form} ({'passes' if page_ok else 'one L6 finding'})")
+        else:
+            print(f"FAIL page-suffixes/literals/{form}: exit {rc}, {n} findings")
+print(f"ok   page-suffixes/table ({len(forms)} forms)")
+PY
+}
+
 # site_cases_runner <sitecheck.py> <cases table> <base case> <schema dir>:
 # site rule (m) (the head by position, M4 PR 3 fix rounds 7 and 8) one fixed
 # head value and one branch per row, on a copy of site/pass-built-pins with
@@ -1201,6 +1262,19 @@ PINNED
     n_failed=$((n_failed + 1))
   fi
   rm -f "$fields_table"
+
+  # page-suffixes (M4 PR 3 fix round 10): site rule (n) and literals L6 for
+  # every member of HTML_SUFFIXES (page_suffixes_runner above).
+  page_suffixes_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+    "$FIXTURES/site/pass-two-scripts" "$SELFTEST_ROOT/schema" >"$out" 2>&1
+  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+  if ! grep -q '^ok   page-suffixes/table' "$out"; then
+    echo "FAIL page-suffixes: the runner did not finish; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
 
   # site-head (M4 PR 3 fix rounds 7 and 8): site rule (m) row by row from
   # tests/fixtures/site/head-cases.tsv (site_cases_runner above).
