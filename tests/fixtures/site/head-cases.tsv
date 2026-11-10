@@ -3,7 +3,7 @@
 # site/pass-built-pins with the built pins on (site_cases_runner in
 # tools/selftest.sh). Columns: name, file (relative to the case), find
 # (exactly one occurrence), replace, expect (PASS, or a text the findings
-# must hold). \n in find and replace is a newline, \t a tab.
+# must hold). \n in find and replace is a newline, \t a tab, \v U+000B.
 value-charset	public/index.html	<meta charset="utf-8">	<meta charset="utf-16">	(m) the head holds
 value-csp-http-equiv	public/index.html	http-equiv="Content-Security-Policy"	http-equiv="content-security-policy"	(m) the head holds
 value-viewport-name	public/index.html	name="viewport"	name="Viewport"	(m) the head holds
@@ -41,3 +41,24 @@ nested-head-in-body	public/index.html	<p>text</p>	<p>text</p><head><meta name="x
 second-html-elements	public/index.html	</html>	</html><html></html>	(m) <meta
 tag-swapped-same-attributes	public/index.html	<title>fixture</title>	<noscript></noscript>	(m) the head holds
 attribute-missing-any-value	public/index.html	<meta name="description" content="A fixture page.">	<meta name="description">	(m) the head holds
+# Fix round 9 (QA recheck of e5c348a): U+000B and U+200B, which are not
+# ASCII whitespace, as text at each position, and one row per element
+# outside the head content model.
+text-before-html-vt	public/index.html	<html lang="en">	\v<html lang="en">	(m) the text '\x0b' before <html>: the browser ends the head
+text-in-head-vt	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">\v	(m) the text '\x0b' in <head>: the browser ends the head
+text-after-head-vt	public/index.html	</head>	</head>\v	(m) the text '\x0b' in <html> before <body>: the browser ends the head
+text-before-html-zwsp	public/index.html	<html lang="en">	​<html lang="en">	(m) the text '\u200b' before <html>: the browser ends the head
+text-in-head-zwsp	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">​	(m) the text '\u200b' in <head>: the browser ends the head
+text-after-head-zwsp	public/index.html	</head>	</head>​	(m) the text '\u200b' in <html> before <body>: the browser ends the head
+head-content-model-svg	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><svg></svg>	(m) <svg> in <head> is outside the head content model
+head-content-model-div	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><div></div>	(m) <div> in <head> is outside the head content model
+head-content-model-img	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><img>	(m) <img> in <head> is outside the head content model
+head-content-model-a	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><a></a>	(m) <a> in <head> is outside the head content model
+head-content-model-p	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><p></p>	(m) <p> in <head> is outside the head content model
+head-content-model-iframe	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><iframe></iframe>	(m) <iframe> in <head> is outside the head content model
+head-content-model-input	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><input>	(m) <input> in <head> is outside the head content model
+head-content-model-body	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><body></body>	(m) <body> in <head> is outside the head content model
+head-content-model-head	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><head></head>	(m) <head> in <head> is outside the head content model
+head-content-model-br	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><br>	(m) <br> in <head> is outside the head content model
+head-content-model-object	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><object></object>	(m) <object> in <head> is outside the head content model
+head-content-model-form	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><form></form>	(m) <form> in <head> is outside the head content model

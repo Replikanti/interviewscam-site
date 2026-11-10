@@ -345,7 +345,10 @@ PY
 # hidden result sections, ADR-0005 part 6) one branch and one flagging-set
 # member per row (M4 PR 2 and PR 3). A row is
 # name, file, find, replace and expect, tab-separated, with \n and \t in
-# find and replace read as a newline and a tab. It copies the base case to
+# find and replace read as a newline and a tab, then optional further find
+# and replace pairs, applied in order (fix round 9: a wrapper row closes its
+# wrapper, because an element an ancestor's end tag closes is a markup:
+# finding). It copies the base case to
 # a temporary directory, replaces the one occurrence of find in <file>
 # (relative to the case; find `*` deletes the file instead) and runs the
 # real cmd_render with the feed rules off (the base has no feed) and the
@@ -379,13 +382,13 @@ rows = [line.split("\t") for line in table.read_text(encoding="utf-8").splitline
         if line and not line.startswith("#")]
 names, bad = set(), 0
 for row in rows:
-    if len(row) != 5 or not row[0] or row[0] in names:
+    if len(row) < 5 or (len(row) - 5) % 2 or not row[0] or row[0] in names:
         print(f"FAIL render-search/table: malformed or duplicate row {row!r}")
         bad += 1
         continue
-    name, rel, find, replace, expect = row
+    name, rel, find, replace, expect = row[:5]
     names.add(name)
-    find, replace = unescape(find), unescape(replace)
+    edits = [(unescape(f), unescape(r)) for f, r in [row[2:4]] + list(zip(row[5::2], row[6::2]))]
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "case"
         shutil.copytree(base, root)
@@ -393,15 +396,19 @@ for row in rows:
         if not path.is_file():
             print(f"FAIL render-search/{name}: {rel} is not a file of {base.name}")
             continue
-        if find == "*":
+        if edits[0][0] == "*":
             path.unlink()
         else:
             text = path.read_text(encoding="utf-8")
-            if text.count(find) != 1:
-                print(f"FAIL render-search/{name}: the find string occurs "
-                      f"{text.count(find)} times in {rel}, the row needs exactly one")
+            counts = []
+            for find, replace in edits:
+                counts.append(text.count(find))
+                text = text.replace(find, replace, 1)
+            if counts != [1] * len(edits):
+                print(f"FAIL render-search/{name}: the find strings occur "
+                      f"{counts} times in {rel} (in turn), the row needs exactly one each")
                 continue
-            path.write_text(text.replace(find, replace, 1), encoding="utf-8")
+            path.write_text(text, encoding="utf-8")
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             rc = sitecheck.cmd_render(argparse.Namespace(
@@ -429,7 +436,8 @@ PY
 # site rule (m) (the head by position, M4 PR 3 fix rounds 7 and 8) one fixed
 # head value and one branch per row, on a copy of site/pass-built-pins with
 # the built pins on. A row is name, file, find, replace and expect,
-# tab-separated, with \n and \t in find and replace; the find string must
+# tab-separated, with \n, \t and \v (U+000B, which a table line cannot hold:
+# splitlines ends a line there) in find and replace; the find string must
 # occur exactly once, so a row never turns into a no-op.
 site_cases_runner() {
   python3 -I -B - "$1" "$2" "$3" "$4" <<'PY'
@@ -449,7 +457,7 @@ table, base, schema_dir = Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]
 
 
 def unescape(text):
-    return text.replace("\\n", "\n").replace("\\t", "\t")
+    return text.replace("\\n", "\n").replace("\\t", "\t").replace("\\v", "\v")
 
 
 rows = [line.split("\t") for line in table.read_text(encoding="utf-8").splitlines()

@@ -1,0 +1,1 @@
+public/extra.HTML: (n) a page under the suffix '.HTML'; the only page suffix is '.html'

@@ -1,0 +1,1 @@
+(9) a pinned region differs between the browser and the file: .no-report 1 <div> > child 2 > child 1 > child 1: the browser has <b>, the file <a>

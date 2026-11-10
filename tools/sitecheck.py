@@ -1424,7 +1424,13 @@ SRCSET_ATTRS = {"srcset", "imagesrcset"}
 # that host to its own punycode name, another origin.
 SAME_ORIGIN = re.compile(r"^https://interviewscam\.com(?:[/?#]|$)", re.I | re.A)
 HAS_SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:")
-HTML_SUFFIXES = {".html", ".htm", ".xhtml"}
+HTML_SUFFIXES = {".html", ".htm", ".xhtml", ".xht", ".shtml"}
+# M4 PR 3 fix round 9 (delta review 8 finding 2): the one page suffix. A
+# browser opens a file of any HTML_SUFFIXES member, in any case, as a page;
+# site and render still check such a file as one, but rule (n) refuses every
+# suffix but this one, so the browser cases of reflow, which load exactly
+# this suffix, see every page.
+PAGE_SUFFIX = ".html"
 # XML outputs (sitemap, M3 feeds, XSL) get no CSP on Pages, so every
 # attribute and every <?xml-stylesheet?> counts, as in an SVG file.
 XML_SUFFIXES = {".svg", ".xml", ".xsl", ".xslt", ".rss", ".atom"}
@@ -2281,6 +2287,10 @@ def cmd_site(args):
                     scans += [value, urllib.parse.unquote(value)]
             if suffix in HTML_SUFFIXES:
                 n_html += 1
+                if path.suffix != PAGE_SUFFIX:
+                    findings.add(rel, f"(n) a page under the suffix {path.suffix!r}; "
+                                 f"the only page suffix is {PAGE_SUFFIX!r}, the one the "
+                                 "browser cases of reflow load (fail closed)")
                 for problem in html_request_problems(page):
                     findings.add(rel, f"third-party request: {problem} (D9)")
                 if csp is not None:
@@ -2775,8 +2785,10 @@ class RenderPage(Page):
         self._open = [self.root]
         self.jsonld = []  # raw text of every application/ld+json block
         self._script = None
-        # Elements of OPTIONAL_END closed without their own end tag: the
-        # tree infers no end tags, so such a page is reported, not read.
+        # Elements closed without their own end tag (by an ancestor's end
+        # tag or the end of the page): the tree infers no end tags and does
+        # not model the reopening of formatting elements, so such a page is
+        # reported, not read.
         self.unclosed = []
 
     def _tree_element(self, tag, attrs):
@@ -2806,17 +2818,21 @@ class RenderPage(Page):
             self.jsonld.append("".join(self._script))
             self._script = None
         # An end tag closes the nearest open element of its name; a stray
-        # one is ignored, as a browser ignores it.
+        # one is ignored, as a browser ignores it. Every element it closes
+        # on the way is unclosed (M4 PR 3 fix round 9, delta review 8
+        # finding 1): not only those of OPTIONAL_END, because the HTML
+        # parser keeps a formatting element (a, b, s, ...) on its list of
+        # active formatting elements and reopens it around later text, so
+        # the browser's tree is not this one.
         for i in range(len(self._open) - 1, 0, -1):
             if self._open[i].tag == tag:
-                self.unclosed += [el.tag for el in self._open[i + 1:]
-                                  if el.tag in OPTIONAL_END]
+                self.unclosed += [el.tag for el in self._open[i + 1:]]
                 del self._open[i:]
                 break
 
     def close(self):
         super().close()
-        self.unclosed += [el.tag for el in self._open[1:] if el.tag in OPTIONAL_END]
+        self.unclosed += [el.tag for el in self._open[1:]]
         del self._open[1:]
 
     def handle_data(self, data):
@@ -5201,6 +5217,8 @@ VENDOR_VALUE = re.compile(r"(?i)(?<![\w-])-(?:webkit|moz|ms|o)-[\w-]+")
 CSS_STRING_LITERAL = re.compile(r"""(["'])(?:\\.|(?!\1)[^\\])*\1""", re.S)
 TEMPLATE_ACTION = re.compile(r"\{\{.*?\}\}", re.S)
 MARKUP_SUFFIXES = {".html", ".htm", ".svg", ".xml"}
+# The suffixes a file under static/ may have, exactly (L6).
+STATIC_SUFFIXES = {".html", ".svg", ".xml", ".css"}
 # Raster images cannot carry a CSS colour; any other file that is not UTF-8
 # fails closed.
 RASTER_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico"}
@@ -8820,7 +8838,7 @@ HEAD_ONLY_TAGS = ("script", "link", "meta", "base")
 # ignored), an element in <html> before <body> other than <head>, and a
 # head child outside the head content model. Reflow case (9) reads the
 # browser's own head, so a differential this list misses is still caught.
-ASCII_WHITESPACE = "\t\n\f\r "
+# (ASCII_WHITESPACE is the one of rule (k) above.)
 HEAD_CONTENT_MODEL = frozenset({"base", "link", "meta", "noscript", "script", "style",
                                 "template", "title"})
 HEAD_PREFIX = [
@@ -9067,12 +9085,16 @@ def cmd_literals(args):
                              "cannot read, so it fails closed until an image rule "
                              "exists (L6)")
                 continue
-            if top == "static" and suffix not in MARKUP_SUFFIXES | {".css"}:
-                # robots.txt included (A2): M6 adds it with its own rule.
+            if top == "static" and path.suffix not in STATIC_SUFFIXES:
+                # robots.txt included (A2): M6 adds it with its own rule. A
+                # page under any suffix but .html, or a suffix in another
+                # case, too (M4 PR 3 fix round 9): site rule (n) refuses it in
+                # the build, because reflow loads only .html pages.
                 findings.add(rel, "a static file this check cannot read for copy "
                              "(script, plain text, any type but HTML, SVG, XML and "
-                             "CSS); the browser can still show or run it, so it fails "
-                             "closed (L6)")
+                             "CSS, a page under any suffix but .html, a suffix not "
+                             "in lower case); the browser can still show or run it, "
+                             "so it fails closed (L6)")
                 continue
             counts["layouts" if top == "layouts" else "other"] += 1
             if top == "assets" and suffix in JS_SUFFIXES:
@@ -9347,6 +9369,208 @@ REFLOW_HEAD_SCRIPT = r"""
   };
 })()
 """
+
+
+# Case (9), the pinned regions in the browser (M4 PR 3 fix round 9, delta
+# review 8 finding 1): for every page loaded in S0, before any reveal, each
+# region the render rules pin to a tree (rules 15 and 16: the search form,
+# #search-results with its sections, the what-to-do copy and the no-report
+# blocks inside it, every index-list and every no-report block), found by
+# the same test in the browser's DOM and in the file, must be the same in
+# both: its ancestors (tag, namespace, every attribute) up to <html>, and its
+# whole subtree (tag, namespace, every attribute, every text, adjacent
+# text merged, comments skipped; read_text has normalised CR as the parser
+# does). The
+# file's tree is the one region_problems, shape_problems and chain_problems
+# pin, so any rewrite by the browser (a formatting element reopened around
+# later text, an implied end tag, foreign content) fails by its outcome,
+# whatever parser rule caused it. Names are compared lowercased, as the
+# static parser reads them (SVG's viewBox is viewbox); the namespace of the
+# file's elements is html, svg below <svg> and math below <math>, html again
+# below <foreignObject>.
+REFLOW_REGION_KINDS = ("the search form", "#search-results", ".index-list", ".no-report")
+REFLOW_REGIONS_SCRIPT = r"""
+(function () {
+  var NS = {"http://www.w3.org/1999/xhtml": "html", "http://www.w3.org/2000/svg": "svg",
+            "http://www.w3.org/1998/Math/MathML": "math"};
+  function ns(el) { return NS[el.namespaceURI] || String(el.namespaceURI); }
+  function tokens(v) {
+    return (v || "").toLowerCase().split(/[\t\n\f\r ]+/).filter(function (t) { return t; });
+  }
+  function classes(v) {
+    return (v || "").split(/[\t\n\f\r ]+/).filter(function (t) { return t; });
+  }
+  function attrs(el) {
+    var out = {};
+    Array.prototype.forEach.call(el.attributes, function (a) {
+      // Two names that lowercase alike (a script's setAttributeNS) both
+      // count: the second as "<name> (again)", which no file attribute is.
+      var k = a.name.toLowerCase();
+      while (k in out) k += " (again)";
+      out[k] = a.value;
+    });
+    return out;
+  }
+  function tree(el) {
+    var kids = [];
+    Array.prototype.forEach.call(el.childNodes, function (c) {
+      if (c.nodeType === 3) {
+        if (!c.data) return;
+        var last = kids[kids.length - 1];
+        if (last && last[0] === "#text") last[1] += c.data;
+        else kids.push(["#text", c.data]);
+      } else if (c.nodeType === 1) {
+        kids.push(tree(c));
+      }
+    });
+    return [el.localName.toLowerCase(), ns(el), attrs(el), kids];
+  }
+  function chain(el) {
+    var out = [];
+    for (var p = el.parentElement; p; p = p.parentElement)
+      out.push([p.localName.toLowerCase(), ns(p), attrs(p)]);
+    return out;
+  }
+  function kind(el) {
+    var html = ns(el) === "html";
+    if (html && el.localName === "form" && tokens(el.getAttribute("role")).indexOf("search") >= 0)
+      return "the search form";
+    if (el.getAttribute("id") === "search-results") return "#search-results";
+    var cls = classes(el.getAttribute("class"));
+    if (cls.indexOf("index-list") >= 0) return ".index-list";
+    if (cls.indexOf("no-report") >= 0) return ".no-report";
+    return null;
+  }
+  var out = [];
+  Array.prototype.forEach.call(document.getElementsByTagName("*"), function (el) {
+    var k = kind(el);
+    if (k) out.push([k, chain(el), tree(el)]);
+  });
+  return out;
+})()
+"""
+
+
+def static_regions(text):
+    """The regions of REFLOW_REGIONS_SCRIPT as parse_render_page reads the
+    page, in document order: [[kind, chain, tree]]."""
+    tree = parse_render_page(text)
+    spaces = {}
+
+    def namespace(el):
+        parent = el.parent
+        up = spaces.get(id(parent), "html") if parent is not None else "html"
+        if up == "html" and el.tag in ("svg", "math"):
+            return el.tag
+        if up == "svg" and parent.tag == "foreignobject":
+            return "html"
+        return up
+
+    def split(value):
+        return [t for t in re.split(r"[\t\n\f\r ]+", value) if t]
+
+    def kind(el):
+        if spaces[id(el)] == "html" and el.tag == "form" \
+                and "search" in split(ascii_lower(el.attrs.get("role", ""))):
+            return "the search form"
+        if el.attrs.get("id") == "search-results":
+            return "#search-results"
+        classes = split(el.attrs.get("class", ""))
+        if INDEX_LIST in classes:
+            return ".index-list"
+        if NO_REPORT in classes:
+            return ".no-report"
+        return None
+
+    def subtree(el):
+        kids = []
+        for child in el.children:
+            if isinstance(child, Element):
+                kids.append(subtree(child))
+                continue
+            data = child
+            if not data:
+                continue
+            if kids and kids[-1][0] == "#text":
+                kids[-1][1] += data
+            else:
+                kids.append(["#text", data])
+        return [el.tag, spaces[id(el)], dict(el.attrs), kids]
+
+    elements = [el for el in tree.root.walk() if el is not tree.root]
+    for el in elements:  # document order: a parent before its children
+        spaces[id(el)] = namespace(el)
+    out = []
+    for el in elements:
+        found = kind(el)
+        if found is None:
+            continue
+        chain, parent = [], el.parent
+        while parent is not None and parent is not tree.root:
+            chain.append([parent.tag, spaces[id(parent)], dict(parent.attrs)])
+            parent = parent.parent
+        out.append([found, chain, subtree(el)])
+    return out
+
+
+def tree_difference(seen, parsed, where):
+    """Where two nodes of REFLOW_REGIONS_SCRIPT (["#text", data] or [tag,
+    namespace, attributes, children]) first differ, and how; None if equal.
+    where names the path, from the region down."""
+    def name(item):
+        if item is None:
+            return "nothing"
+        if not isinstance(item, list) or not item:
+            return show(item, 80)
+        return "text " + show(item[1], 80) if item[0] == "#text" else f"<{item[0]}>"
+    if seen == parsed:
+        return None
+    if not (isinstance(seen, list) and isinstance(parsed, list) and seen and parsed) \
+            or seen[0] != parsed[0] or seen[0] == "#text":
+        return f"{where}: the browser has {name(seen)}, the file {name(parsed)}"
+    if seen[1] != parsed[1]:
+        return f"{where}: the browser has it in the {seen[1]} namespace, the file {parsed[1]}"
+    if seen[2] != parsed[2]:
+        key = next(k for k in sorted(set(seen[2]) | set(parsed[2]))
+                   if seen[2].get(k) != parsed[2].get(k))
+        def value(v):
+            return "absent" if v is None else show(v, 80)
+        return (f"{where}: attribute {key} is {value(seen[2].get(key))} in the browser, "
+                f"{value(parsed[2].get(key))} in the file")
+    if len(seen) < 4:
+        return None
+    for i in range(max(len(seen[3]), len(parsed[3]))):
+        a = seen[3][i] if i < len(seen[3]) else None
+        b = parsed[3][i] if i < len(parsed[3]) else None
+        found = tree_difference(a, b, f"{where} > child {i + 1}")
+        if found:
+            return found
+    return None
+
+
+def region_differences(seen, parsed):
+    """One line per region of REFLOW_REGIONS_SCRIPT that differs between the
+    browser (seen) and the file (parsed); the lists of kinds first."""
+    kinds = [r[0] for r in seen], [r[0] for r in parsed]
+    if kinds[0] != kinds[1]:
+        return [f"the browser has the regions {show(kinds[0], 160)}, the file "
+                f"{show(kinds[1], 160)}"]
+
+    def chain(ancestors):
+        return " in ".join(f"<{a[0]}>" for a in ancestors) or "nothing"
+    out = []
+    for i, (a, b) in enumerate(zip(seen, parsed)):
+        if a == b:
+            continue
+        kind, nth = a[0], kinds[0][:i + 1].count(a[0])
+        if a[1] != b[1]:
+            detail = f"{kind} {nth}: the browser has it in {chain(a[1])}, the file in {chain(b[1])}"
+            if chain(a[1]) == chain(b[1]):
+                detail += " (an attribute or a namespace of one differs)"
+            out.append(detail)
+        else:
+            out.append(tree_difference(a[2], b[2], f"{kind} {nth} <{b[2][0]}>"))
+    return out
 
 
 def static_head(text):
@@ -10026,7 +10250,7 @@ def cmd_reflow(args):
     log_path = None
     launched = False
     n_items = 0
-    n_copy = n_search = n_reveals = n_revealed = n_heads = 0
+    n_copy = n_search = n_reveals = n_revealed = n_heads = n_regions = 0
     try:
         # The launch: start Chrome and wait for its first answer, within
         # args.launch_timeout (REFLOW_LAUNCH_TIMEOUT). Only the two launch
@@ -10244,6 +10468,20 @@ def cmd_reflow(args):
             for label in seen.get("cspOutside", []):
                 findings.add(where, f"(9) the browser has the CSP meta as a {show(label, 120)}; "
                              "outside document.head the policy is ignored")
+            # (9) the pinned regions in the browser, S0, before any reveal
+            # (fix round 9).
+            # (reflow_value reads an empty list as {}: a page without regions.)
+            seen = reflow_value(tools, session, REFLOW_REGIONS_SCRIPT, where) or []
+            parsed = static_regions((public / rel).read_text(encoding="utf-8",
+                                                             errors="replace"))
+            if seen == parsed:
+                n_regions += len(parsed)
+            for detail in region_differences(seen, parsed):
+                findings.add(where, f"(9) a pinned region differs between the browser and the "
+                             f"file: {detail}; the browser read the page another way than "
+                             "the static checks (a formatting element reopened, an implied "
+                             "end tag, foreign content) or a script changed it, so the tree "
+                             "rules 15 and 16 pin is not the one it shows")
             # (6) S0: the script ran, so every Copy button is revealed, and
             # the search results stay hidden: no query was made.
             copy_state(where, REFLOW_STATES[0], True)
@@ -10367,7 +10605,8 @@ def cmd_reflow(args):
                            f"hidden without the script: {n_copy} in 2 states; search "
                            f"results hidden until a query: {n_search} in 3 states, "
                            f"{n_revealed} sections revealed and reachable; "
-                           f"skip-link reveals: {n_reveals}; heads as parsed: {n_heads}")
+                           f"skip-link reveals: {n_reveals}; heads as parsed: {n_heads}; "
+                           f"pinned regions as parsed: {n_regions}")
 
 
 # ---------------------------------------------------------------------------

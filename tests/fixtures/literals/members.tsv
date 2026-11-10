@@ -139,6 +139,11 @@ branch	bang-comment-end	layouts/page.html	<!-- x --!>	'--!>' ends a comment	1
 branch	cdata	layouts/page.html	<p><![CDATA[x]]></p>	marked section '<![' (CDATA)	1
 branch	unterminated-comment	layouts/page.html	<p></p><!-- x	unterminated HTML comment	1
 branch	static-other-type	static/x.js	document.title = 1;	a static file this check cannot read for copy	1
+branch	static-page-htm	static/x.htm	<p></p>	a static file this check cannot read for copy	1
+branch	static-page-xhtml	static/x.xhtml	<p></p>	a static file this check cannot read for copy	1
+branch	static-page-shtml	static/x.shtml	<p></p>	a static file this check cannot read for copy	1
+branch	static-page-html-upper-case	static/x.HTML	<p></p>	a static file this check cannot read for copy	1
+branch	static-page-svg-upper-case	static/x.SVG	<p></p>	a static file this check cannot read for copy	1
 branch	raster-image	assets/badge.png	x	a raster image: it can draw text this check cannot read	1
 branch	collection-number	layouts/page.html	{{ range slice 70 }}<p>{{ . }}</p>{{ end }}	the slice value '70' is not on LITERALS_COLLECTION_VALUES for this file	1
 branch	collection-path	layouts/page.html	{{ range slice "/send-your-seed-phrase/" }}<p>{{ . }}</p>{{ end }}	the slice value '/send-your-seed-phrase/' is not on LITERALS_COLLECTION_VALUES	1

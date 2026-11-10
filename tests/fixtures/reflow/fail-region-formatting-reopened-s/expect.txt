@@ -1,0 +1,1 @@
+(9) a pinned region differs between the browser and the file: the search form 1 <form> > child 1: the browser has <s>, the file <label>
