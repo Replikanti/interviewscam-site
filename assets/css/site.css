@@ -37,8 +37,9 @@ body {
 }
 
 /* The one sanctioned utility class (ADR-0003 part 6): hidden but read by
-   screen readers, and with .copy[hidden] (ADR-0004 part 11) the only place
-   !important is allowed. sitecheck site pins these declarations; reflow
+   screen readers, and with .copy[hidden] (ADR-0004 part 11) and
+   .search-out[hidden] (ADR-0005 part 6) the only place !important is
+   allowed. sitecheck site pins these declarations; reflow
    exempts the element only while its box is at most 1 x 1 px. Used by the
    skip link, which the reveal below shows on keyboard focus. */
 .visually-hidden {
@@ -487,7 +488,8 @@ main {
   color: var(--color-warn-text);
 }
 
-.panel-warn h2 {
+.panel-warn h2,
+.panel-warn h3 {
   display: flex;
   align-items: center;
   gap: var(--space-x2);
@@ -698,6 +700,12 @@ h1,
   margin-top: var(--space-x4);
 }
 
+/* The warning panel inside the search answer card starts with its h3 at
+   the panel's own padding, as the h2 of a report page's panel does. */
+.card .panel-warn h3 {
+  margin-top: 0;
+}
+
 /* Artifact code boxes: monospace, one box per value, wrapping anywhere. */
 .artifact-list {
   display: flex;
@@ -738,6 +746,18 @@ h1,
    and on the ground, both listed pairs (the footer address sits on the
    ground, so no border), and the 44 px target. */
 .copy[hidden] {
+  display: none !important;
+}
+
+/* The result sections of the Home search (ADR-0005 part 4): the box
+   #search-results and its three sections carry the class search-out and
+   the hidden attribute until assets/js/search.js reveals one of them. An
+   author display value (the cards' layout, a later rule) overrides the
+   browser's [hidden] rule and would show empty result sections without
+   the script, so .search-out[hidden] hides them with the same pinned
+   !important rule as .copy[hidden]: sitecheck site pins it, and no other
+   rule can override it, whatever its selector. */
+.search-out[hidden] {
   display: none !important;
 }
 

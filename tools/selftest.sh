@@ -124,7 +124,7 @@ for row in rows:
             print(f"     | {out_line}")
 # The flagging sets, taken from the code, and their pinned numbers.
 EXPECTED_FLAGGING_SETS = 19
-EXPECTED_PASSING_SETS = 34
+EXPECTED_PASSING_SETS = 35
 EXPECTED_DERIVED_MEMBERS = {"RAWTEXT_END_TAG": 10, "LITERALS_META_PLAIN_NAMES": 3,
                             "LITERALS_META_PLAIN_HTTP_EQUIV": 1, "PAGE_MEMBERS": 16,
                             "SINK_KINDS": 27, "JS_SUFFIXES": 2}
@@ -341,15 +341,22 @@ PY
 }
 
 # search_cases_runner <sitecheck.py> <cases table> <base case> <schema dir>:
-# render rule 15 (the A to Z page and the Home search form, ADR-0005 part
-# 6) one branch and one flagging-set member per row (M4 PR 2). A row is
-# name, file, find, replace and expect, tab-separated, with \n and \t in
-# find and replace read as a newline and a tab. It copies the base case to
+# render rules 15 and 16 (the A to Z page, the Home search form and its
+# hidden result sections, ADR-0005 part 6) one branch and one flagging-set
+# member per row (M4 PR 2 and PR 3). A row is
+# name, file, find, replace and expect, tab-separated, with \n, \t, \r and
+# \0 in find and replace read as a newline, a tab, U+000D and U+0000 (fix
+# round 12: a table line cannot hold the last two), then optional further find
+# and replace pairs, applied in order (fix round 9: a wrapper row closes its
+# wrapper, because an element an ancestor's end tag closes is a markup:
+# finding). It copies the base case to
 # a temporary directory, replaces the one occurrence of find in <file>
 # (relative to the case; find `*` deletes the file instead) and runs the
 # real cmd_render with the feed rules off (the base has no feed) and the
 # search rules on: expect PASS needs exit 0, any other expect exit 1 with
-# that text in the output. A find string that is absent, or present more
+# that text in the output; an expect COUNT=<n> <text> (fix round 11, QA
+# recheck of 5b1519d) also needs exactly n findings, so a row can prove that
+# the class-scoped rules stay off on a page with a markup: finding. A find string that is absent, or present more
 # than once, fails the row, so a row cannot turn into a no-op when the
 # base case changes. The last line, render-search/table, counts the rows.
 # -B: no tools/__pycache__.
@@ -371,7 +378,159 @@ table, base, schema_dir = Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]
 
 
 def unescape(text):
-    return text.replace("\\n", "\n").replace("\\t", "\t")
+    return (text.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
+            .replace("\\0", "\x00"))
+
+
+rows = [line.split("\t") for line in table.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")]
+names, bad = set(), 0
+for row in rows:
+    if len(row) < 5 or (len(row) - 5) % 2 or not row[0] or row[0] in names:
+        print(f"FAIL render-search/table: malformed or duplicate row {row!r}")
+        bad += 1
+        continue
+    name, rel, find, replace, expect = row[:5]
+    names.add(name)
+    edits = [(unescape(f), unescape(r)) for f, r in [row[2:4]] + list(zip(row[5::2], row[6::2]))]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "case"
+        shutil.copytree(base, root)
+        path = root / rel
+        if not path.is_file():
+            print(f"FAIL render-search/{name}: {rel} is not a file of {base.name}")
+            continue
+        if edits[0][0] == "*":
+            path.unlink()
+        else:
+            text = path.read_text(encoding="utf-8")
+            counts = []
+            for find, replace in edits:
+                counts.append(text.count(find))
+                text = text.replace(find, replace, 1)
+            if counts != [1] * len(edits):
+                print(f"FAIL render-search/{name}: the find strings occur "
+                      f"{counts} times in {rel} (in turn), the row needs exactly one each")
+                continue
+            path.write_text(text, encoding="utf-8")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            rc = sitecheck.cmd_render(argparse.Namespace(
+                records=str(root), schemas=str(schema_dir), fixtures=None, no_feed=True,
+                no_search=False, public=str(root / "public")))
+        output = buffer.getvalue()
+    count = None
+    if expect.startswith("COUNT="):
+        head, _, expect = expect.partition(" ")
+        count = int(head[len("COUNT="):])
+    findings = sum(line.startswith("FAIL: ") for line in output.splitlines())
+    if expect == "PASS" and rc == 0:
+        print(f"ok   render-search/{name} (passed as expected)")
+    elif expect != "PASS" and rc == 1 and expect in output \
+            and (count is None or findings == count):
+        print(f"ok   render-search/{name} (failed as expected: {expect}"
+              + ("" if count is None else f", exactly {count} finding(s)") + ")")
+    else:
+        print(f"FAIL render-search/{name}: expected "
+              f"{'exit 0' if expect == 'PASS' else 'exit 1 and ' + repr(expect)}"
+              + ("" if count is None else f" with exactly {count} finding(s)")
+              + f"; got exit {rc} with {findings} finding(s); output:")
+        for line in output.splitlines():
+            print(f"     | {line}")
+if not rows or bad:
+    print(f"FAIL render-search/table: {len(rows)} rows, {bad} malformed")
+else:
+    print(f"ok   render-search/table ({len(rows)} rows)")
+PY
+}
+
+# page_suffixes_runner <sitecheck.py> <site base case> <schema dir> (M4 PR 3
+# fix round 10, QA recheck of ceb2356): rule (n) of site and L6 of literals
+# for every member of HTML_SUFFIXES, taken from the code, and its upper-case
+# form, so each suffix is proven on its own: `site` on a copy of the base
+# case with the page added as public/extra<suffix> (the base's own page, its
+# canonical changed to that path) must fail with rule (n) for every form but
+# .html; `literals` on a root holding only static/x<suffix> must fail with
+# exactly the one L6 finding for every form but .html, and pass for .html.
+# The last line, page-suffixes/table, counts the forms.
+page_suffixes_runner() {
+  python3 -I -B - "$1" "$2" "$3" <<'PY'
+import argparse
+import contextlib
+import importlib.util
+import io
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+base, schema_dir = Path(sys.argv[2]), Path(sys.argv[3])
+forms = sorted({f for s in sitecheck.HTML_SUFFIXES for f in (s, s.upper())})
+page = (base / "public" / "index.html").read_text(encoding="utf-8")
+L6 = "a static file this check cannot read for copy"
+for form in forms:
+    page_ok = form == sitecheck.PAGE_SUFFIX
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "case"
+        shutil.copytree(base, root)
+        (root / "public" / f"extra{form}").write_text(
+            page.replace('href="https://interviewscam.com/"',
+                         f'href="https://interviewscam.com/extra{form}"'), encoding="utf-8")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            rc = sitecheck.cmd_site(argparse.Namespace(
+                records=str(root), schemas=str(schema_dir), no_built_pins=True,
+                public=str(root / "public")))
+        hit = f"public/extra{form}: (n) a page under the suffix {form!r}" in buffer.getvalue()
+        if page_ok and not hit or not page_ok and rc == 1 and hit:
+            print(f"ok   page-suffixes/site/{form} ({'no' if page_ok else 'a'} rule (n) finding)")
+        else:
+            print(f"FAIL page-suffixes/site/{form}: exit {rc}, rule (n) finding {hit}")
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "static").mkdir()
+        (Path(tmp) / "static" / f"x{form}").write_text("<p></p>\n", encoding="utf-8")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            rc = sitecheck.cmd_literals(argparse.Namespace(root=Path(tmp)))
+        out = buffer.getvalue()
+        n = sum(line.startswith("FAIL: ") for line in out.splitlines())
+        if (page_ok and rc == 0) or (not page_ok and rc == 1 and n == 1 and L6 in out):
+            print(f"ok   page-suffixes/literals/{form} ({'passes' if page_ok else 'one L6 finding'})")
+        else:
+            print(f"FAIL page-suffixes/literals/{form}: exit {rc}, {n} findings")
+print(f"ok   page-suffixes/table ({len(forms)} forms)")
+PY
+}
+
+# site_cases_runner <sitecheck.py> <cases table> <base case> <schema dir>:
+# site rule (m) (the head by position, M4 PR 3 fix rounds 7 and 8) one fixed
+# head value and one branch per row, on a copy of site/pass-built-pins with
+# the built pins on. A row is name, file, find, replace and expect,
+# tab-separated, with \n, \t and \v (U+000B, which a table line cannot hold:
+# splitlines ends a line there) in find and replace; the find string must
+# occur exactly once, so a row never turns into a no-op.
+site_cases_runner() {
+  python3 -I -B - "$1" "$2" "$3" "$4" <<'PY'
+import argparse
+import contextlib
+import importlib.util
+import io
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+table, base, schema_dir = Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
+
+
+def unescape(text):
+    return text.replace("\\n", "\n").replace("\\t", "\t").replace("\\v", "\v")
 
 
 rows = [line.split("\t") for line in table.read_text(encoding="utf-8").splitlines()
@@ -379,7 +538,7 @@ rows = [line.split("\t") for line in table.read_text(encoding="utf-8").splitline
 names, bad = set(), 0
 for row in rows:
     if len(row) != 5 or not row[0] or row[0] in names:
-        print(f"FAIL render-search/table: malformed or duplicate row {row!r}")
+        print(f"FAIL site-head/table: malformed or duplicate row {row!r}")
         bad += 1
         continue
     name, rel, find, replace, expect = row
@@ -389,38 +548,32 @@ for row in rows:
         root = Path(tmp) / "case"
         shutil.copytree(base, root)
         path = root / rel
-        if not path.is_file():
-            print(f"FAIL render-search/{name}: {rel} is not a file of {base.name}")
+        text = path.read_text(encoding="utf-8") if path.is_file() else ""
+        if text.count(find) != 1:
+            print(f"FAIL site-head/{name}: the find string occurs {text.count(find)} times "
+                  f"in {rel}, the row needs exactly one")
             continue
-        if find == "*":
-            path.unlink()
-        else:
-            text = path.read_text(encoding="utf-8")
-            if text.count(find) != 1:
-                print(f"FAIL render-search/{name}: the find string occurs "
-                      f"{text.count(find)} times in {rel}, the row needs exactly one")
-                continue
-            path.write_text(text.replace(find, replace, 1), encoding="utf-8")
+        path.write_text(text.replace(find, replace, 1), encoding="utf-8")
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
-            rc = sitecheck.cmd_render(argparse.Namespace(
-                records=str(root), schemas=str(schema_dir), fixtures=None, no_feed=True,
-                no_search=False, public=str(root / "public")))
+            rc = sitecheck.cmd_site(argparse.Namespace(
+                records=str(root), schemas=str(schema_dir), no_built_pins=False,
+                public=str(root / "public")))
         output = buffer.getvalue()
     if expect == "PASS" and rc == 0:
-        print(f"ok   render-search/{name} (passed as expected)")
+        print(f"ok   site-head/{name} (passed as expected)")
     elif expect != "PASS" and rc == 1 and expect in output:
-        print(f"ok   render-search/{name} (failed as expected: {expect})")
+        print(f"ok   site-head/{name} (failed as expected: {expect})")
     else:
-        print(f"FAIL render-search/{name}: expected "
+        print(f"FAIL site-head/{name}: expected "
               f"{'exit 0' if expect == 'PASS' else 'exit 1 and ' + repr(expect)}; got exit "
               f"{rc}; output:")
         for line in output.splitlines():
             print(f"     | {line}")
 if not rows or bad:
-    print(f"FAIL render-search/table: {len(rows)} rows, {bad} malformed")
+    print(f"FAIL site-head/table: {len(rows)} rows, {bad} malformed")
 else:
-    print(f"ok   render-search/table ({len(rows)} rows)")
+    print(f"ok   site-head/table ({len(rows)} rows)")
 PY
 }
 
@@ -495,6 +648,13 @@ selftest_main() {
   out="$(mktemp)"
   # shellcheck disable=SC2064 # expand now: the path is fixed
   trap "rm -f '$out'" RETURN
+  # Python exits with 120 when it cannot flush stdout at exit (ENOSPC, EDQUOT,
+  # ENOMEM or a closed pipe). Probe the temp file first, so a full or
+  # over-quota /tmp is named before 20 fixtures fail with empty output.
+  if ! { printf 'x' >"$out" && : >"$out"; } 2>/dev/null; then
+    echo "FAIL selftest: cannot write $out; the temp file system is full or over its quota ($(df -h "$(dirname "$out")" | awk 'NR==2 {print $1, $5, "used,", $4, "free"}'))"
+    return 1
+  fi
 
   for dir in "$FIXTURES"/*/*/; do
     dir="${dir%/}"
@@ -576,7 +736,11 @@ selftest_main() {
       site)
         # <dir>/hugo.toml holds params.csp, <dir>/content the records whose
         # artifacts must not appear live in the built tree <dir>/public.
-        site_check "$dir" "$SELFTEST_ROOT/schema" "$dir/public" >"$out" 2>&1
+        # The built pins (M4 PR 3 fix round 5) run only in a case with a
+        # built-pins.txt: every other case's files are hand-made, no build.
+        pins_mode=no-built-pins
+        [[ -f "$dir/built-pins.txt" ]] && pins_mode=""
+        site_check "$dir" "$SELFTEST_ROOT/schema" "$dir/public" "$pins_mode" >"$out" 2>&1
         rc=$?
         ;;
       render)
@@ -587,8 +751,9 @@ selftest_main() {
         # check of the production run. The feed rules (11 to 13) run only
         # in a case with a feed.txt, which holds a public/feed.json and a
         # public/data-feed/ page (or proves one missing), and the search
-        # rules (15) only in a case with a search.txt, which holds a
-        # public/a-z/ page and the Home search form: the other cases pin
+        # rules (15 and 16) only in a case with a search.txt, which holds a
+        # public/a-z/ page, the Home search form and its hidden result
+        # sections: the other cases pin
         # the page contract alone, as both builds of check.sh always run
         # the feed and search rules.
         leak_fixtures=""
@@ -638,6 +803,16 @@ selftest_main() {
         ;;
     esac
 
+    # Exit 120 is Python's "could not flush stdout at exit": the output file
+    # is on a full or over-quota filesystem (or the pipe closed). The
+    # message itself went to the same failing file ($out, 2>&1), so name the
+    # cause here instead of printing an empty output.
+    if [[ $rc -eq 120 ]]; then
+      echo "FAIL $check/$name: exit 120, the check could not write its output to $out ($(df -h "$(dirname "$out")" | awk 'NR==2 {print $1, $5, "used,", $4, "free"}')); the temp file system is full or over its quota, or the output pipe closed; free space and rerun"
+      n_failed=$((n_failed + 1))
+      continue
+    fi
+
     if [[ "$kind" == pass ]]; then
       expect=""
       [[ -s "$dir/expect.txt" ]] && expect="$(head -n 1 "$dir/expect.txt")"
@@ -684,8 +859,7 @@ selftest_main() {
   # turns the self-test red too.
   local render_args
   render_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render)"
-  if ! declare -f check_main \
-      | grep -qE '^ *run_step "render \(D6, D7, D10, structured data\)" step_render;?$'; then
+  if ! grep -qE '^ *run_step "render \(D6, D7, D10, structured data\)" step_render;?$' <<<"$(declare -f check_main)"; then
     echo "FAIL wiring/render-step: check_main in tools/check.sh does not run" \
       "the production render step (run_step \"render (...)\" step_render)"
     n_failed=$((n_failed + 1))
@@ -705,8 +879,7 @@ selftest_main() {
   # passes --no-feed, and check_main runs the fixture-build render step.
   local feed_args
   feed_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render; step_render_fixtures)"
-  if ! declare -f check_main \
-      | grep -qE '^ *run_step "render \(fixture build\)" step_render_fixtures;?$'; then
+  if ! grep -qE '^ *run_step "render \(fixture build\)" step_render_fixtures;?$' <<<"$(declare -f check_main)"; then
     echo "FAIL wiring/render-feed-rules: check_main in tools/check.sh does not run" \
       "the fixture-build render step (run_step \"render (fixture build)\" step_render_fixtures)"
     n_failed=$((n_failed + 1))
@@ -719,17 +892,35 @@ selftest_main() {
     n_passed=$((n_passed + 1))
   fi
 
-  # Wiring: both builds run the search rules (render rule 15, ADR-0005 part
+  # Wiring: both site steps check the built pins (M4 PR 3 fix round 5):
+  # check_main runs step_site and step_site_fixtures, and neither, run
+  # against a stub sitecheck, passes --no-built-pins.
+  local pins_args
+  pins_args="$(sitecheck() { printf '%s\n' "$@"; }; step_site; step_site_fixtures)"
+  if ! grep -qE '^ *run_step "site \(third-party, CSP, defang\)" step_site;?$' <<<"$(declare -f check_main)" \
+      || ! grep -qE '^ *run_step "site \(fixture build\)" step_site_fixtures;?$' <<<"$(declare -f check_main)"; then
+    echo "FAIL wiring/site-built-pins: check_main in tools/check.sh does not run" \
+      "both site steps (step_site and step_site_fixtures)"
+    n_failed=$((n_failed + 1))
+  elif [[ "$(grep -c '^site$' <<<"$pins_args")" != 2 ]] \
+      || grep -qx -- '--no-built-pins' <<<"$pins_args"; then
+    echo "FAIL wiring/site-built-pins: step_site or step_site_fixtures in tools/check.sh" \
+      "does not run sitecheck site with the built pins (it passes --no-built-pins)"
+    n_failed=$((n_failed + 1))
+  else
+    echo "ok   wiring/site-built-pins (both site steps check the built pins; no --no-built-pins)"
+    n_passed=$((n_passed + 1))
+  fi
+
+  # Wiring: both builds run the search rules (render rules 15 and 16, ADR-0005 part
   # 6), the --no-feed precedent: neither step_render nor
   # step_render_fixtures, run against a stub sitecheck, passes --no-search,
   # and check_main runs both render steps (the two lines above prove the
   # step lines; this one repeats the check so it stands alone).
   local search_args
   search_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render; step_render_fixtures)"
-  if ! declare -f check_main \
-      | grep -qE '^ *run_step "render \(D6, D7, D10, structured data\)" step_render;?$' \
-      || ! declare -f check_main \
-      | grep -qE '^ *run_step "render \(fixture build\)" step_render_fixtures;?$'; then
+  if ! grep -qE '^ *run_step "render \(D6, D7, D10, structured data\)" step_render;?$' <<<"$(declare -f check_main)" \
+      || ! grep -qE '^ *run_step "render \(fixture build\)" step_render_fixtures;?$' <<<"$(declare -f check_main)"; then
     echo "FAIL wiring/render-search-rules: check_main in tools/check.sh does not run" \
       "both render steps (step_render and step_render_fixtures)"
     n_failed=$((n_failed + 1))
@@ -739,7 +930,7 @@ selftest_main() {
       "tools/check.sh does not run sitecheck render with the search rules (it passes --no-search)"
     n_failed=$((n_failed + 1))
   else
-    echo "ok   wiring/render-search-rules (both render steps run rule 15; no --no-search)"
+    echo "ok   wiring/render-search-rules (both render steps run rules 15 and 16; no --no-search)"
     n_passed=$((n_passed + 1))
   fi
 
@@ -849,9 +1040,8 @@ PY
   # Wiring: check_main must run the literals step (ADR-0004 part 13), which
   # the fixtures above prove only through literals_check.
   # shellcheck disable=SC2016 # the patterns match a literal $CHECK_ROOT
-  if declare -f check_main \
-      | grep -qE '^ *run_step "literals \(fixed copy only from data/labels\.toml\)" step_literals;?$' \
-      && declare -f step_literals | grep -qE '^ *literals_check "\$CHECK_ROOT";?$'; then
+  if grep -qE '^ *run_step "literals \(fixed copy only from data/labels\.toml\)" step_literals;?$' <<<"$(declare -f check_main)" \
+      && grep -qE '^ *literals_check "\$CHECK_ROOT";?$' <<<"$(declare -f step_literals)"; then
     echo "ok   wiring/literals-step (check_main runs step_literals on the repo root)"
     n_passed=$((n_passed + 1))
   else
@@ -863,7 +1053,7 @@ PY
   # Wiring: hugo_build passes --panicOnWarning, so a warnf message fails
   # the build instead of rendering; literals exempts warnf arguments only
   # because of it (and bans try, the one function that catches a warning).
-  if declare -f hugo_build | grep -qE '(^| )--panicOnWarning( |$)'; then
+  if grep -qE '(^| )--panicOnWarning( |$)' <<<"$(declare -f hugo_build)"; then
     echo "ok   wiring/hugo-build-panic-on-warning (hugo_build passes --panicOnWarning)"
     n_passed=$((n_passed + 1))
   else
@@ -919,9 +1109,8 @@ PINNED
   if [[ "$(declare -f hugo_build step_build)" != "$hugo_build_pinned" ]]; then
     echo "FAIL wiring/hugo-build-pinned: hugo_build or step_build in tools/check.sh differs from the copy pinned in tools/selftest.sh"
     n_failed=$((n_failed + 1))
-  elif ! declare -f check_main | grep -qE '^ *run_step build step_build;?$' \
-      || ! declare -f step_fixture_build \
-        | grep -qE '^ *hugo_build "\$FIXTURE_SITE" "\$FIXTURE_PUBLIC"( \|\| return 1)?;?$'; then
+  elif ! grep -qE '^ *run_step build step_build;?$' <<<"$(declare -f check_main)" \
+      || ! grep -qE '^ *hugo_build "\$FIXTURE_SITE" "\$FIXTURE_PUBLIC"( \|\| return 1)?;?$' <<<"$(declare -f step_fixture_build)"; then
     echo "FAIL wiring/hugo-build-pinned: check_main does not build through step_build, or step_fixture_build not through hugo_build"
     n_failed=$((n_failed + 1))
   else
@@ -946,8 +1135,8 @@ PINNED
     echo "FAIL wiring/work-tree-required: require_work_tree passed outside a git work tree"
     n_failed=$((n_failed + 1))
   elif [[ "$tree_out" == "FAIL: check.sh needs a git work tree (guard reads git)"* ]] \
-      && declare -f check_main | grep -qE '^ *require_work_tree \|\| return 1;?$' \
-      && declare -f selftest_main | grep -qE '^ *require_work_tree \|\| return 1;?$'; then
+      && grep -qE '^ *require_work_tree \|\| return 1;?$' <<<"$(declare -f check_main)" \
+      && grep -qE '^ *require_work_tree \|\| return 1;?$' <<<"$(declare -f selftest_main)"; then
     echo "ok   wiring/work-tree-required (check_main and selftest_main stop outside a git work tree with one message)"
     n_passed=$((n_passed + 1))
   else
@@ -1103,7 +1292,34 @@ PINNED
   fi
   rm -f "$fields_table"
 
-  # render-search (M4 PR 2, ADR-0005 part 6): render rule 15 branch by
+  # page-suffixes (M4 PR 3 fix round 10): site rule (n) and literals L6 for
+  # every member of HTML_SUFFIXES (page_suffixes_runner above).
+  page_suffixes_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+    "$FIXTURES/site/pass-two-scripts" "$SELFTEST_ROOT/schema" >"$out" 2>&1
+  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+  if ! grep -q '^ok   page-suffixes/table' "$out"; then
+    echo "FAIL page-suffixes: the runner did not finish; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+
+  # site-head (M4 PR 3 fix rounds 7 and 8): site rule (m) row by row from
+  # tests/fixtures/site/head-cases.tsv (site_cases_runner above).
+  site_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+    "$FIXTURES/site/head-cases.tsv" "$FIXTURES/site/pass-built-pins" \
+    "$SELFTEST_ROOT/schema" >"$out" 2>&1
+  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+  if ! grep -qE '^(ok   |FAIL )site-head/table' "$out"; then
+    echo "FAIL site-head: the runner did not finish; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+
+  # render-search (M4 PR 2 and PR 3, ADR-0005 part 6): render rules 15 and 16 branch by
   # branch and member by member from tests/fixtures/render/search-cases.tsv
   # on a copy of render/pass-search (search_cases_runner above).
   search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
@@ -1118,12 +1334,181 @@ PINNED
     n_failed=$((n_failed + 1))
   fi
 
+  # render-search-count (M4 PR 3 fix round 12b, QA recheck of 54d4517): the
+  # COUNT=<n> expectation itself. Rows of the real table with a wrong count
+  # must each fail: one finding pinned as 0 and as 2, and two findings pinned
+  # as 1 and as 3, so a runner that ignores the count, reads it as at least
+  # or at most n, or as "some findings" fails this line.
+  count_table=$(mktemp)
+  awk -F'\t' -v OFS='\t' '
+    $1 == "unread-home-form-icon" { for (c = 0; c <= 2; c += 2) { r = $0; sub(/COUNT=1 /, "COUNT=" c " ", r); split(r, f, "\t"); f[1] = f[1] "-count-" c; print f[1], f[2], f[3], f[4], f[5] } }
+    $1 == "unread-unclosed-only-finding" { for (c = 1; c <= 3; c += 2) { r = $0; sub(/COUNT=2 /, "COUNT=" c " ", r); split(r, f, "\t"); f[1] = f[1] "-count-" c; print f[1], f[2], f[3], f[4], f[5] } }
+  ' "$FIXTURES/render/search-cases.tsv" >"$count_table"
+  search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$count_table" \
+    "$FIXTURES/render/pass-search" "$SELFTEST_ROOT/schema" >"$out" 2>&1
+  rm -f "$count_table"
+  count_rows=$(grep -cE '^(ok   |FAIL )render-search/.*-count-[0-9]' "$out")
+  count_fails=$(grep -cE '^FAIL render-search/.*-count-[0-9]' "$out")
+  if [[ "$count_rows" == 4 && "$count_fails" == 4 ]]; then
+    echo "ok   render-search-count (4 rows with a wrong COUNT= each fail)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL render-search-count: $count_fails of $count_rows rows with a wrong COUNT= failed (need 4 of 4); output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+
+  # fixture-script-copies (M4 PR 3 fix round 2, QA): every fixture copy of
+  # assets/js/search.js, found by name under tests/fixtures/reflow (the
+  # cases of case (6) load one), equals the real script byte for byte, so
+  # no case proves the on-load and reveal behaviour of a script the site
+  # no longer ships. No copy at all fails too, so the line cannot pass by
+  # finding nothing. The literals cases are no copies: each stands in for
+  # a repo root with a script crafted to fail one rule (fix round 4).
+  local script_copy n_copies=0 stale_copies=""
+  while IFS= read -r -d '' script_copy; do
+    n_copies=$((n_copies + 1))
+    cmp -s "$script_copy" "$SELFTEST_ROOT/assets/js/search.js" \
+      || stale_copies+=" ${script_copy#"$FIXTURES"/}"
+  done < <(find "$FIXTURES/reflow" -type f -name search.js -print0)
+  if (( n_copies == 0 )) || [[ -n "$stale_copies" ]]; then
+    echo "FAIL fixture-script-copies: $n_copies fixture copies of search.js; these differ" \
+      "from assets/js/search.js:${stale_copies:- (none found)}"
+    n_failed=$((n_failed + 1))
+  else
+    echo "ok   fixture-script-copies ($n_copies fixture copies equal assets/js/search.js)"
+    n_passed=$((n_passed + 1))
+  fi
+
+  # site-built-pins-missing-stem (M4 PR 3 fix round 6, QA): a pinned stem
+  # without a built pin is a finding, never a pass on its own bytes. The
+  # line drops one built pin at a time through importlib and runs the real
+  # cmd_site on site/pass-built-pins, which must then fail on that stem.
+  if python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/site/pass-built-pins" \
+      "$SELFTEST_ROOT/schema" >"$out" 2>&1 <<'PY'
+import argparse
+import contextlib
+import importlib.util
+import io
+import sys
+
+case, schemas = sys.argv[2], sys.argv[3]
+bad = []
+for table, stem, want in (("BUILT_SCRIPT_SHA384", "copy", "the script copy"),
+                          ("BUILT_SCRIPT_SHA384", "search", "the script search"),
+                          ("BUILT_STYLESHEET_SHA256", "site", "the stylesheet site")):
+    spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+    sitecheck = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sitecheck)
+    del getattr(sitecheck, table)[stem]
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        rc = sitecheck.cmd_site(argparse.Namespace(records=case, schemas=schemas,
+                                                   no_built_pins=False,
+                                                   public=case + "/public"))
+    if rc != 1 or f"are not the pinned build of {want}" not in buffer.getvalue():
+        bad.append(f"{table} without {stem}: exit {rc}")
+if bad:
+    print("; ".join(bad))
+    sys.exit(1)
+PY
+  then
+    echo "ok   site-built-pins-missing-stem (a pinned stem without a built pin fails)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL site-built-pins-missing-stem: $(cat "$out")"
+    n_failed=$((n_failed + 1))
+  fi
+
+  # guard-stylesheet-unreadable (M4 PR 3 fix round 5, QA): a stylesheet
+  # source that cannot be read is a finding, never skipped. Git cannot hold
+  # an unreadable file, so the line builds a root with one stylesheet in a
+  # temporary directory and makes its read fail through importlib.
+  if python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
+import importlib.util
+import pathlib
+import sys
+import tempfile
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    (root / "assets" / "css").mkdir(parents=True)
+    target = root / "assets" / "css" / "site.css"
+    target.write_text(".x { color: inherit; }\n")
+    real = pathlib.Path.read_bytes
+
+    def read_bytes(path):
+        if path == target:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path)
+    pathlib.Path.read_bytes = read_bytes
+    findings = sitecheck.Findings()
+    sitecheck.guard_stylesheet_pins(root, findings)
+    pathlib.Path.read_bytes = real
+    found = [i for i in findings.items if "cannot read a stylesheet source" in i]
+    if len(found) != 1 or len(findings.items) != 1:
+        print(findings.items)
+        sys.exit(1)
+PY
+  then
+    echo "ok   guard-stylesheet-unreadable (an unreadable stylesheet source is a finding)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL guard-stylesheet-unreadable: an unreadable stylesheet source was skipped:" \
+      "$(cat "$out")"
+    n_failed=$((n_failed + 1))
+  fi
+
+  # site-script-stems (M4 PR 3, ADR-0005 part 5): site rule (j) reads the
+  # stems of the pinned scripts from SCRIPT_SHA256, and only a key
+  # assets/js/<stem>.js gives one. The real pin holds only such keys, so
+  # the line patches the pin through importlib with a key in another
+  # directory, one in a subdirectory, an .mjs key, one with a hyphen and
+  # one with an upper-case letter, none of which may give a stem (a
+  # hyphen and an upper-case letter are outside the closed path alphabet
+  # of resource_path, so such a script could never be served).
+  if python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+real = sitecheck.script_stems()
+# Fix round 6 (QA): every pinned script and stylesheet has a built pin and
+# no built pin names anything else, so no stem falls back to its own bytes.
+if set(sitecheck.BUILT_SCRIPT_SHA384) != real \
+        or set(sitecheck.BUILT_STYLESHEET_SHA256) != set(sitecheck.BUILT_STYLESHEETS):
+    print(f"built pins {sorted(sitecheck.BUILT_SCRIPT_SHA384)} and "
+          f"{sorted(sitecheck.BUILT_STYLESHEET_SHA256)} differ from the stems {sorted(real)} "
+          f"and {sorted(sitecheck.BUILT_STYLESHEETS)}")
+    sys.exit(1)
+sitecheck.SCRIPT_SHA256 = {"assets/js/a.js": "0", "assets/x/b.js": "0",
+                           "assets/js/sub/c.js": "0", "assets/js/d.mjs": "0",
+                           "assets/js/e-f.js": "0", "assets/js/Up.js": "0"}
+got = sitecheck.script_stems()
+if real != {"copy", "search"} or got != {"a"}:
+    print(f"real pin {sorted(real)}, patched pin {sorted(got)}")
+    sys.exit(1)
+PY
+  then
+    echo "ok   site-script-stems (only assets/js/<stem>.js keys of SCRIPT_SHA256 give a stem; the built pins name exactly the pinned stems)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL site-script-stems: script_stems reads other keys than assets/js/<stem>.js:" \
+      "$(cat "$out")"
+    n_failed=$((n_failed + 1))
+  fi
+
   # Wiring: the fixture build classifies its inputs before it copies them
   # (ADR-0004 part 10, amended), and copies exactly the FIXTURE_COPY
   # entries; declare -f prints the function without comments.
   # shellcheck disable=SC2016 # the patterns match literal $ names
-  if declare -f step_fixture_build | grep -qE '^ *fixture_inputs "\$CHECK_ROOT" \|\| return 1;?$' \
-      && declare -f step_fixture_build | grep -qF 'for item in "${FIXTURE_COPY[@]}"'; then
+  if grep -qE '^ *fixture_inputs "\$CHECK_ROOT" \|\| return 1;?$' <<<"$(declare -f step_fixture_build)" \
+      && grep -qF 'for item in "${FIXTURE_COPY[@]}"' <<<"$(declare -f step_fixture_build)"; then
     echo "ok   wiring/fixture-inputs-step (step_fixture_build classifies \$CHECK_ROOT, then copies FIXTURE_COPY)"
     n_passed=$((n_passed + 1))
   else

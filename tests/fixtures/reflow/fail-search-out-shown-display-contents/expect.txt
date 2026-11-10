@@ -1,0 +1,1 @@
+(6) with the script blocked: search result element 'div#search-results[.]search-out' is shown (display 'contents')

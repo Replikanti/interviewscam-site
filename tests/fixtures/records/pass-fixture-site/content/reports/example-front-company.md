@@ -41,7 +41,7 @@ handles = [
 packages = [{ registry = "npm", name = "frontco-meeting-sdk" }]
 sha256 = [
   { value = "193e081078047d86ba2b1417cc3e80ad6d3c8e75c7d9f7ab66929e04cd564bd6", file_name = "FrontCoMeet-Setup[.]exe", listed_on = ["malwarebazaar", "virustotal"] },
-  { value = "aaf3f631a833b757820fa2005bf19e5e1fd2b559ae60c795bb2d4c680eb10a5c", file_name = "FrontCoMeet[.]dmg", listed_on = ["virustotal"] },
+  { value = "aaf3f631a833b757820fa2005bf19e5e1fd2b559ae60c795bb2d4c680eb10a5c", listed_on = ["virustotal"] },
 ]
 
 [[params.sources]]

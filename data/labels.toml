@@ -89,13 +89,30 @@ browse_link = "Browse every report A to Z"
 # no entry is never a sign of safety. browse_text follows the A to Z list
 # of /a-z/, which shows every report by its name and its other names but
 # no artifact and no hidden name, so it states only what the list holds
-# (wording approved by the operator at STOP 2 of #36, D7). It is pinned a second time in tools/sitecheck.py
-# (NO_REPORT_BROWSE_TEXT, render rule 15), and so are the two link texts,
+# (wording approved by the operator at STOP 2 of #36, D7). text follows
+# the result sections of the Home search (no match, or only close
+# candidates); the search matches names, other names and the artifacts of
+# a report but not names hidden on request, so it states what the search
+# looks at, never that the registry holds nothing. Both sentences are
+# pinned a second time in tools/sitecheck.py (NO_REPORT_BROWSE_TEXT, render
+# rule 15; NO_REPORT_TEXT, render rule 16), and so are the two link texts,
 # so a change turns render red until the same change lands there too.
 [no_report]
+text = "Not finding a report here does not mean it is safe. The search looks at the names, other names, addresses, handles and files listed in each report, but not at names hidden on request. New fake interviews also use names nobody has reported yet."
 browse_text = "Not finding a name here does not mean it is safe. This list shows each report by its name and its other names. Apart from those names, it does not show the addresses, handles and files listed inside a report, or names hidden on request. New fake interviews also use names nobody has reported yet."
 before_link = "Before your call"
 report_link = "Report a scam"
+
+# The result sections of the Home search (layouts/home.html, ADR-0005
+# part 4), revealed by assets/js/search.js: an exact match, close
+# candidates only, or no match. The answer section reuses the warning
+# panel of the report pages (report.warning_*), the partial one the A to Z
+# link (a_z.browse_link). Render rule 16 pins all three headings in
+# tools/sitecheck.py (SEARCH_HEADINGS).
+[search]
+answer_heading = "Found in the registry"
+partial_heading = "No exact match, but these come close"
+none_heading = "No report matches your search"
 
 # How to send a report or a correction request today
 # (layouts/_partials/how-to-send.html): the address as plain text and the

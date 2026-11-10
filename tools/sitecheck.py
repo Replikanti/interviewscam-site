@@ -1424,7 +1424,13 @@ SRCSET_ATTRS = {"srcset", "imagesrcset"}
 # that host to its own punycode name, another origin.
 SAME_ORIGIN = re.compile(r"^https://interviewscam\.com(?:[/?#]|$)", re.I | re.A)
 HAS_SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:")
-HTML_SUFFIXES = {".html", ".htm", ".xhtml"}
+HTML_SUFFIXES = {".html", ".htm", ".xhtml", ".xht", ".shtml"}
+# M4 PR 3 fix round 9 (delta review 8 finding 2): the one page suffix. A
+# browser opens a file of any HTML_SUFFIXES member, in any case, as a page;
+# site and render still check such a file as one, but rule (n) refuses every
+# suffix but this one, so the browser cases of reflow, which load exactly
+# this suffix, see every page.
+PAGE_SUFFIX = ".html"
 # XML outputs (sitemap, M3 feeds, XSL) get no CSP on Pages, so every
 # attribute and every <?xml-stylesheet?> counts, as in an SVG file.
 XML_SUFFIXES = {".svg", ".xml", ".xsl", ".xslt", ".rss", ".atom"}
@@ -1817,8 +1823,19 @@ IMPORTANT = re.compile(r"![\t\n\f\r ]*important", re.I | re.A)
 # 0,2,0) and whose :focus reveal cannot match an element display: none
 # keeps from focus. Inline style is banned by rule (c). The rule is required
 # exactly once on a site with a Copy button.
-COPY_HIDDEN = ".copy[hidden]"
-COPY_HIDDEN_DECLARATION = ("display", "none")
+# M4 PR 3 (ADR-0005 parts 4 and 6): the same holds for the result sections of
+# the Home search, which carry the class search-out and the hidden attribute
+# until search.js reveals one, so the rule is a table of the classes hidden
+# until their script runs, each with its own `.<class>[hidden]` rule.
+HIDDEN_UNTIL_SCRIPT = {
+    "copy": ("a Copy button (class copy)",
+             "copy.js reveals it (ADR-0004 part 11)"),
+    "search-out": ("search results (class search-out)",
+                   "search.js reveals one of them (ADR-0005 part 4)"),
+}
+HIDDEN_RULES = {f".{cls}[hidden]": cls for cls in HIDDEN_UNTIL_SCRIPT}
+HIDDEN_DECLARATION = ("display", "none")
+HIDDEN_RULE_NAMES = " and ".join(f"the {sel} rule" for sel in HIDDEN_RULES)
 CLASS_ATTRIBUTE_SELECTOR = re.compile(r"(?i)\[\s*(?:[\w*-]*\|)?class\s*(?:[~|^$*]?=|\])")
 
 
@@ -1841,7 +1858,7 @@ class CssRuleResult:
         self.problems = []
         self.definitions = 0
         self.reveals = 0
-        self.copy_hidden = 0
+        self.hidden_rules = dict.fromkeys(HIDDEN_UNTIL_SCRIPT, 0)  # class -> count
 
 
 def css_rule_problems(css):
@@ -1855,17 +1872,19 @@ def css_rule_problems(css):
         top_level = not rule.parents
         is_definition = top_level and selector == VH_DEFINITION
         is_reveal = top_level and all(p.strip() in VH_REVEAL for p in selector.split(","))
-        if top_level and selector == COPY_HIDDEN:
-            result.copy_hidden += 1
+        if top_level and selector in HIDDEN_RULES:
+            cls = HIDDEN_RULES[selector]
+            result.hidden_rules[cls] += 1
             found = [(len(IMPORTANT.findall(css_unescape(d))), css_declaration(d))
                      for d in rule.declarations]
             attributed += sum(n for n, _ in found)
             got = [(prop, css_value_text(value)) for _, (prop, value) in found]
-            if got != [COPY_HIDDEN_DECLARATION] or [n for n, _ in found] != [1]:
+            if got != [HIDDEN_DECLARATION] or [n for n, _ in found] != [1]:
                 problems.append(f"{show(selector)}: the rule must be exactly `display: "
                                 f"none !important` (found {show('; '.join(rule.declarations))}"
-                                "); it hides the Copy button until the script reveals it, "
-                                "and no other rule may override it (ADR-0004 part 11)")
+                                f"); it hides {HIDDEN_UNTIL_SCRIPT[cls][0]} until "
+                                f"{HIDDEN_UNTIL_SCRIPT[cls][1]}, and no other rule may "
+                                "override it")
             continue
         if not selector.startswith("@") and CLASS_ATTRIBUTE_SELECTOR.search(selector):
             problems.append(f"{show(selector)}: attribute selector on class; select "
@@ -1928,7 +1947,7 @@ def css_rule_problems(css):
             if found:
                 problems.append(f"{show(selector)}: !important outside the "
                                 ".visually-hidden definition and its reveal "
-                                f"and the {COPY_HIDDEN} rule ({show(declaration)})")
+                                f"and {HIDDEN_RULE_NAMES} ({show(declaration)})")
     # Fail closed: an !important the block walk did not attribute to a
     # declaration (in a selector, an at-rule prelude, a stray statement).
     stripped = CSS_COMMENT_OR_STRING.sub(lambda m: m.group(0) if m.group(1) else " ", css)
@@ -1936,7 +1955,7 @@ def css_rule_problems(css):
     if total > attributed:
         problems.append(f"!important outside any declaration ({total - attributed} "
                         "occurrence(s)); it is allowed only in the .visually-hidden "
-                        f"definition and its reveal and the {COPY_HIDDEN} rule")
+                        f"definition and its reveal and {HIDDEN_RULE_NAMES}")
     return result
 
 
@@ -1946,6 +1965,34 @@ def css_rule_problems(css):
 FORM_ATTRS = {("form", "action"), ("button", "formaction"), ("input", "formaction")}
 URL_ATTRS = ("href", "src", "action", "formaction", "xlink:href", "data")
 JSON_LD = "application/ld+json"
+
+
+# Rule (j) (ADR-0005 part 5; exact from M4 PR 3 fix round 2): the path of a
+# built script is exactly the name resources.Minify and
+# resources.Fingerprint "sha384" give it, /js/<stem>.min.<the SHA-384 hex of
+# the file's own bytes>.js, compared as a whole string, not read with a
+# pattern, so no other length, alphabet or separator can pass.
+BUILT_SCRIPT_DIR = "/js/"
+BUILT_SCRIPT_INFIX = ".min."
+BUILT_SCRIPT_SUFFIX = ".js"
+
+
+def built_script_path(stem, data):
+    """The path Hugo writes for the pinned script stem whose built bytes
+    are data."""
+    return (BUILT_SCRIPT_DIR + stem + BUILT_SCRIPT_INFIX + hashlib.sha384(data).hexdigest()
+            + BUILT_SCRIPT_SUFFIX)
+
+
+def script_stems():
+    """The stems of the scripts SCRIPT_SHA256 pins under assets/js/: the
+    key assets/js/<stem>.js gives <stem>."""
+    stems = set()
+    for key in SCRIPT_SHA256:
+        match = re.fullmatch(r"assets/js/([a-z0-9]+)\.js", key)
+        if match:
+            stems.add(match.group(1))
+    return stems
 
 
 def url_scheme(url):
@@ -2186,9 +2233,15 @@ def cmd_site(args):
 
     allowed = token_colors(root)
     scripts = []  # (rel, page path, src) of every <script src>, for rule (j)
-    vh_definitions = vh_reveals = copy_hidden = 0
-    vh_used, copy_used = [], []
-    copy_hidden_files = set()  # site paths of the built CSS files holding the rule
+    page_scripts = {}  # page rel -> the attributes of each of its <script> elements
+    vh_definitions = vh_reveals = 0
+    vh_used = []
+    # Per class of HIDDEN_UNTIL_SCRIPT: the number of its rules across the
+    # built CSS, the pages with an element of the class, and the site paths
+    # of the built CSS files holding its rule.
+    hidden_counts = dict.fromkeys(HIDDEN_UNTIL_SCRIPT, 0)
+    hidden_used = {cls: [] for cls in HIDDEN_UNTIL_SCRIPT}
+    hidden_files = {cls: set() for cls in HIDDEN_UNTIL_SCRIPT}
     vh_files, reveal_files = set(), set()  # the same for the definition and the reveal
     stylesheets = {}  # page rel -> the site paths of the stylesheets it applies
     n_html = 0
@@ -2234,6 +2287,10 @@ def cmd_site(args):
                     scans += [value, urllib.parse.unquote(value)]
             if suffix in HTML_SUFFIXES:
                 n_html += 1
+                if path.suffix != PAGE_SUFFIX:
+                    findings.add(rel, f"(n) a page under the suffix {path.suffix!r}; "
+                                 f"the only page suffix is {PAGE_SUFFIX!r}, the one the "
+                                 "browser cases of reflow load (fail closed)")
                 for problem in html_request_problems(page):
                     findings.add(rel, f"third-party request: {problem} (D9)")
                 if csp is not None:
@@ -2250,6 +2307,11 @@ def cmd_site(args):
                     findings.add(rel, problem)
                 scripts += [(rel, attrs["src"]) for tag, attrs in page.elements
                             if tag == "script" and "src" in attrs]
+                page_scripts[rel] = [attrs for tag, attrs in page.elements
+                                     if tag == "script"]
+                # (m) the head by position (M4 PR 3 fix round 7).
+                for problem in head_problems(text, rel, not args.no_built_pins):
+                    findings.add(rel, problem)
                 # (k) per page (M3 PR 10): the stylesheets every page applies.
                 stylesheets[rel], problems = stylesheet_links(page, css_files)
                 for problem in problems:
@@ -2264,9 +2326,10 @@ def cmd_site(args):
                 if any(VISUALLY_HIDDEN in attrs.get("class", "").split()
                        for _, attrs in page.elements):
                     vh_used.append(rel)
-                if any(COPY_CLASS in attrs.get("class", "").split()
-                       for _, attrs in page.elements):
-                    copy_used.append(rel)
+                for cls in HIDDEN_UNTIL_SCRIPT:
+                    if any(cls in attrs.get("class", "").split()
+                           for _, attrs in page.elements):
+                        hidden_used[cls].append(rel)
             else:
                 for problem in svg_request_problems(page):
                     findings.add(rel, f"third-party request: {problem} (D9)")
@@ -2284,9 +2347,10 @@ def cmd_site(args):
             result = css_rule_problems(text)
             vh_definitions += result.definitions
             vh_reveals += result.reveals
-            copy_hidden += result.copy_hidden
-            if result.copy_hidden:
-                copy_hidden_files.add("/" + path.relative_to(public).as_posix())
+            for cls, count in result.hidden_rules.items():
+                hidden_counts[cls] += count
+                if count:
+                    hidden_files[cls].add("/" + path.relative_to(public).as_posix())
             if result.definitions:
                 vh_files.add("/" + path.relative_to(public).as_posix())
             if result.reveals:
@@ -2314,25 +2378,134 @@ def cmd_site(args):
             if any(live in s for s in folded):
                 findings.add(rel, f"the live form of artifact {show(value)} "
                              f"({origin.rel}: {apath}) appears in the built site (R3)")
-    # (j) One script (ADR-0004 part 11, M3 PR 9): at most one .js file in the
-    # built site, and every <script src> names it, so a second script can
-    # reach a page only as a reviewed change of this rule. Every other
-    # <script> is a JSON-LD data block (rule (c)).
+    # (j) The pinned scripts (ADR-0005 part 5, amending ADR-0004 part 11 and
+    # M3 PR 9's one-script rule): every built .js or .mjs file is the
+    # minified, fingerprinted build of a script pinned in SCRIPT_SHA256,
+    # /js/<stem>.min.<96 hex>.js for the stem of a key assets/js/<stem>.js,
+    # at most one file per stem, and every <script src> names one of them,
+    # so a script can reach a page only as a reviewed change of the pin.
+    # Every other <script> is a JSON-LD data block (rule (c)).
     js_files = ["/" + p.relative_to(public).as_posix() for p in files
-                if p.suffix.lower() in (".js", ".mjs")]
-    if len(js_files) > 1:
-        findings.add("public", f"(j) {len(js_files)} script files ({', '.join(js_files)}); "
-                     "at most one .js file is allowed, the Copy button's (ADR-0004 part 11)")
+                if p.suffix.lower() in JS_SUFFIXES]
+    built = {}  # stem -> the built files named for it
+    for path in js_files:
+        data = (public / path[1:]).read_bytes()
+        stem = next((s for s in sorted(script_stems())
+                     if path == built_script_path(s, data)), None)
+        if stem is None:
+            findings.add("public", f"(j) {show(path, 240)} is not the build of a pinned script: "
+                         "every .js or .mjs file is exactly /js/<stem>.min.<SHA-384 hex of its "
+                         "bytes>.js for a script assets/js/<stem>.js of SCRIPT_SHA256 ("
+                         f"{', '.join(sorted(script_stems()))}), as resources.Minify and "
+                         "resources.Fingerprint \"sha384\" name it (ADR-0005 part 5)")
+        else:
+            built.setdefault(stem, []).append(path)
+            digest = hashlib.sha384(data).hexdigest()
+            if not args.no_built_pins and digest != BUILT_SCRIPT_SHA384.get(stem):
+                findings.add("public", f"(j) the bytes of {show(path, 240)} (SHA-384 {digest}) "
+                             f"are not the pinned build of the script {stem} "
+                             "(BUILT_SCRIPT_SHA384 in tools/sitecheck.py): a built script "
+                             "changes only with its pin, whatever input changed it, so the "
+                             "change gets the safety-net review")
+    for stem, paths in sorted(built.items()):
+        if len(paths) > 1:
+            findings.add("public", f"(j) {len(paths)} built files for the script {stem} "
+                         f"({', '.join(paths)}); at most one file per pinned script "
+                         "(ADR-0005 part 5)")
+    allowed_scripts = {p for paths in built.values() for p in paths}
     for rel, src in scripts:
         # M3 PR 10 fix round 1: read as rule (k) reads an href, in the
         # closed path form (resource_path), so no query, fragment or
         # relative path.
         path, problem = resource_path(src)
-        if path is None or path not in js_files[:1]:
-            findings.add(rel, f"(j) <script src={show(src)}> does not name the one script "
-                         f"file of the site ({js_files[0] if js_files else 'none'}); "
-                         "every <script src> names it (ADR-0004 part 11)"
+        if path is None or path not in allowed_scripts:
+            findings.add(rel, f"(j) <script src={show(src)}> does not name the built file "
+                         "of a pinned script ("
+                         f"{', '.join(sorted(allowed_scripts)) or 'none'}); every <script "
+                         "src> names one (ADR-0005 part 5)"
                          + (f"; the src {problem}" if problem else ""))
+    # (j) The script tags (M4 PR 3 fix round 6, delta review 5 finding 1),
+    # in one closed form, as rule (k) holds <link>: a <script src> has
+    # exactly the attributes src, integrity and defer, defer empty (no
+    # async, nomodule, type, crossorigin or any later attribute, so no tag
+    # can turn a script off, defer it otherwise or run it as a module), and
+    # every other <script> exactly type="application/ld+json" (rule (c)'s
+    # data block); no page names a script twice. With the built pins on
+    # (every build, never a hand-made fixture), the integrity is the
+    # SHA-384 of the file the src names, and each page kind loads exactly
+    # the scripts baseof.html emits, in order: copy.js on every page,
+    # search.js after it on Home and on no other page.
+    by_stem = {stem: paths[0] for stem, paths in built.items() if len(paths) == 1}
+    for rel, tags in sorted(page_scripts.items()):
+        srcs = []
+        for attrs in tags:
+            if "src" in attrs:
+                srcs.append(attrs["src"])
+                if sorted(attrs) != sorted(SCRIPT_SRC_ATTRS) or attrs.get("defer") != "":
+                    findings.add(rel, f"(j) <script> has the attributes {show(attrs, 240)}; a "
+                                 "script tag has exactly src, integrity and defer (empty), as "
+                                 "baseof.html emits it, so no attribute can turn the script "
+                                 "off, run it as a module or change when it runs (ADR-0005 "
+                                 "part 5)")
+            elif attrs != {"type": JSON_LD}:
+                findings.add(rel, f"(j) <script> has the attributes {show(attrs, 240)}; a "
+                             "script without src is exactly <script "
+                             f"type=\"{JSON_LD}\">, a JSON-LD data block (rule (c))")
+        twice = sorted({src for src in srcs if srcs.count(src) > 1})
+        if twice:
+            findings.add(rel, f"(j) the page names {', '.join(show(t) for t in twice)} more "
+                         "than once; each script is loaded once (ADR-0005 part 5)")
+        if args.no_built_pins:
+            continue
+        for attrs in tags:
+            path = resource_path(attrs.get("src", ""))[0] if "src" in attrs else None
+            if path in allowed_scripts:
+                data = (public / path[1:]).read_bytes()
+                want = "sha384-" + base64.b64encode(hashlib.sha384(data).digest()).decode()
+                if attrs.get("integrity") != want:
+                    findings.add(rel, f"(j) <script src={show(attrs['src'])}> has the integrity "
+                                 f"{show(attrs.get('integrity', 'none'))}; it is {want}, the "
+                                 "SHA-384 of the file it names (ADR-0005 part 5)")
+        kind = SCRIPTS_BY_PAGE_KIND["home" if rel == "public/index.html" else "other"]
+        want = [by_stem.get(stem) for stem in kind]
+        got = [resource_path(src)[0] for src in srcs]
+        if got != want:
+            findings.add(rel, f"(j) the page loads {got}; "
+                         f"{'Home' if rel == 'public/index.html' else 'every page but Home'} "
+                         f"loads exactly {want} ({', '.join(kind)}), as baseof.html emits "
+                         "them: search.js on Home only, copy.js on every page (ADR-0005 "
+                         "part 5)")
+    # (l) The pinned stylesheet (M4 PR 3 fix round 4): every built .css
+    # file is exactly /css/<stem>.min.<SHA-256 hex of its bytes>.css for a
+    # stem of BUILT_STYLESHEETS, compared as a whole string, at most one
+    # file per stem; with the source pin of `guard`, no stylesheet reaches
+    # a page that the safety-net review has not read.
+    built_styles = {}
+    for path in sorted(css_files):
+        data = (public / path[1:]).read_bytes()
+        stem = next((s for s in sorted(BUILT_STYLESHEETS)
+                     if path == built_style_path(s, data)), None)
+        if stem is None:
+            findings.add("public", f"(l) {show(path, 240)} is not the build of the pinned "
+                         "stylesheet: every .css file is exactly /css/<stem>.min.<SHA-256 hex "
+                         f"of its bytes>.css for a stem of BUILT_STYLESHEETS ("
+                         f"{', '.join(sorted(BUILT_STYLESHEETS))}), as resources.Minify and "
+                         "resources.Fingerprint name it, and its sources are pinned in "
+                         "STYLESHEET_SHA256 (CSS is a reviewed surface)")
+        else:
+            built_styles.setdefault(stem, []).append(path)
+            digest = hashlib.sha256(data).hexdigest()
+            if not args.no_built_pins and digest != BUILT_STYLESHEET_SHA256.get(stem):
+                findings.add("public", f"(l) the bytes of {show(path, 240)} (SHA-256 {digest}) "
+                             f"are not the pinned build of the stylesheet {stem} "
+                             "(BUILT_STYLESHEET_SHA256 in tools/sitecheck.py): a built "
+                             "stylesheet changes only with its pin, whatever input changed it "
+                             "(a source, a second data file Hugo merges into the tokens, a "
+                             "config), so the change gets the safety-net review")
+    for stem, paths in sorted(built_styles.items()):
+        if len(paths) > 1:
+            findings.add("public", f"(l) {len(paths)} built files for the stylesheet {stem} "
+                         f"({', '.join(paths)}); at most one file per pinned stylesheet")
     # Counted across ALL built CSS: a second file could otherwise redefine
     # the class with its own, equally !important, rule.
     if vh_definitions > 1:
@@ -2342,20 +2515,22 @@ def cmd_site(args):
     if vh_reveals > 1:
         findings.add("public", f"CSS: {vh_reveals} .visually-hidden reveal rules across "
                      "the built CSS; at most one is allowed (ADR-0003 part 6)")
-    if copy_hidden > 1:
-        findings.add("public", f"CSS: {copy_hidden} top-level {COPY_HIDDEN} rules across "
-                     "the built CSS; exactly one is allowed (ADR-0004 part 11)")
-    # Per page (fix round 2, delta review 3): the rule counts only in a
-    # stylesheet the page itself applies, so a built CSS file no page links
-    # (`static/css/print.css`) does not satisfy it.
-    for rel in copy_used:
-        if not stylesheets[rel] & copy_hidden_files:
-            findings.add(rel, f"CSS: the page has a Copy button (class copy), but no "
-                         f"built CSS holds the rule `{COPY_HIDDEN} {{ display: none "
-                         "!important }` in a stylesheet the page applies (a <link "
-                         "rel=stylesheet> in the closed form of rule (k)), so an author "
-                         "display value could show it without the script (ADR-0004 "
-                         "part 11)")
+    # Per class of the table (M4 PR 3): one rule across all built CSS, and
+    # (fix round 2 of M3 PR 9, delta review 3) per page: the rule counts
+    # only in a stylesheet the page itself applies, so a built CSS file no
+    # page links (`static/css/print.css`) does not satisfy it.
+    for cls, (what, until) in HIDDEN_UNTIL_SCRIPT.items():
+        selector = f".{cls}[hidden]"
+        if hidden_counts[cls] > 1:
+            findings.add("public", f"CSS: {hidden_counts[cls]} top-level {selector} rules "
+                         f"across the built CSS; exactly one is allowed, for {what}")
+        for rel in hidden_used[cls]:
+            if not stylesheets[rel] & hidden_files[cls]:
+                findings.add(rel, f"CSS: the page has {what}, but no built CSS holds the "
+                             f"rule `{selector} {{ display: none !important }}` in a "
+                             "stylesheet the page applies (a <link rel=stylesheet> in the "
+                             "closed form of rule (k)), so an author display value could "
+                             f"show it without the script; it stays hidden until {until}")
     # Per page (M3 PR 10, #31 Known limit 5): the definition and its reveal
     # count only in a stylesheet the page applies, so a file no page links
     # (`static/css/print.css`) does not satisfy them, and the reveal, capped
@@ -2600,6 +2775,72 @@ class Element:
         return False
 
 
+# M4 PR 3 fix round 12 (delta review 11 finding 1): the end tags a start tag
+# implies. Python's parser nests every start tag where it stands, while the
+# HTML parser's "in body", "in table", "in row", "in cell", "in caption",
+# "in column group" and "in select" insertion modes close, pop, ignore,
+# rename or move elements for some start tags while a matching element is
+# open, so the static tree is not the browser's (<p class="lead"><div> ends
+# the lead; <a> inside <a> ends the first link). RenderPage refuses every
+# such start tag (IMPLIED_RULES, one rule per spec step, checked against the
+# open elements outside <svg> and <math>), and text that the table modes
+# move out of the table (foster parenting). Reflow case (9) is the closure
+# for parser rewrites; these rules mirror the spec so that check.sh catches
+# them without Chrome.
+SPECIAL_TAGS = frozenset(
+    "address applet area article aside base basefont bgsound blockquote body br button "
+    "caption center col colgroup dd details dir div dl dt embed fieldset figcaption figure "
+    "footer form frame frameset h1 h2 h3 h4 h5 h6 head header hgroup hr html iframe img "
+    "input keygen li link listing main marquee menu meta nav noembed noframes noscript "
+    "object ol p param plaintext pre script search section select source style summary "
+    "table tbody td template textarea tfoot th thead title tr track ul wbr xmp".split())
+SCOPE_BOUNDARY = frozenset("applet caption html table td th marquee object template".split())
+FORMATTING_MARKERS = frozenset("applet object marquee template td th caption".split())
+HEADING_TAGS = frozenset(f"h{n}" for n in range(1, 7))
+# "close a p element" if a p is in button scope (in body).
+CLOSE_P_TAGS = frozenset(
+    "address article aside blockquote center details dialog dir div dl fieldset figcaption "
+    "figure footer header hgroup main menu nav ol p search section summary ul pre listing "
+    "form li dd dt plaintext table hr xmp".split()) | HEADING_TAGS
+TABLE_PARTS = frozenset("caption col colgroup tbody td tfoot th thead tr".split())
+TABLE_CONTEXT = frozenset("table tbody thead tfoot tr".split())
+TABLE_ALLOWED = TABLE_PARTS | frozenset({"script", "style", "template"})
+# "generate implied end tags" pops these (fix round 13, reviewer note
+# j-ruby): rb and rtc run it while a ruby is in scope, rp and rt too but
+# leave an rtc open.
+IMPLIED_END_TAGS = frozenset("dd dt li optgroup option p rb rp rt rtc".split())
+IMPLIED_RULES = {
+    "close-p": "closes the open <p> first (\"close a p element\")",
+    "heading-in-heading": "pops the open heading first",
+    "li-in-li": "closes the open <li> first",
+    "dd-dt-in-dd-dt": "closes the open <dd> or <dt> first",
+    "a-in-a": "ends the open <a> first (adoption agency) and reopens what it closed",
+    "nobr-in-nobr": "ends the open <nobr> first (adoption agency)",
+    "button-in-button": "closes the open <button> first",
+    "form-in-form": "ignores the start tag (the form element pointer is set)",
+    "option-in-option": "pops the open <option> (or, in a select, <optgroup>) first",
+    # Chrome 143 builds a customizable select and keeps most content; the
+    # "in select" mode of other parsers drops it, so it is refused for all.
+    "select-content": "closes the <select> or ignores the start tag (in select)",
+    "implied-tbody": "inserts a <tbody> first (in table)",
+    "implied-tr": "inserts a <tr> first (in table body)",
+    "implied-colgroup": "inserts a <colgroup> first (in table)",
+    "colgroup-content": "closes the <colgroup> first (in column group)",
+    "table-part-in-cell": "closes the open cell first (in cell)",
+    "table-part-in-row": "closes the open <tr> first (in row)",
+    "table-part-in-section": "closes the open table section first (in table body)",
+    "table-part-in-caption": "closes the open <caption> first (in caption)",
+    "table-in-table": "closes the open <table> first (in table)",
+    "foster-parented": "moves the element in front of the table (foster parenting)",
+    "ruby-implied": "closes the open ruby annotation first (generate implied end tags)",
+    "image-renamed": "reads <image> as <img>",
+    "frameset-in-body": "ignores the start tag (in body)",
+    # "in body" ignores these start tags outside a table, frame anywhere
+    # (fix round 13, reviewer note j-tdout and QA's differential oracle).
+    "table-part-outside-table": "ignores the start tag outside a table",
+}
+
+
 class RenderPage(Page):
     """Page, plus an element tree that keeps each element's text and class
     list, so the render rules can be scoped to the class hooks."""
@@ -2610,9 +2851,30 @@ class RenderPage(Page):
         self._open = [self.root]
         self.jsonld = []  # raw text of every application/ld+json block
         self._script = None
-        # Elements of OPTIONAL_END closed without their own end tag: the
-        # tree infers no end tags, so such a page is reported, not read.
+        # Elements closed without their own end tag (by an ancestor's end
+        # tag or the end of the page): the tree infers no end tags and does
+        # not model the reopening of formatting elements, so such a page is
+        # reported, not read.
         self.unclosed = []
+        # M4 PR 3 fix round 10 (delta review 9): the raw facts of
+        # foreign_markup_problems, which reads them on HTML pages only (an
+        # XML file may self-close anything): elements written self-closing
+        # outside <svg> and <math>, and end tags that close no open element.
+        self.self_closed = []
+        self.stray = []
+        # (rule of IMPLIED_RULES, tag, the open element it meets) for every
+        # start tag the HTML parser would not nest where it stands, and
+        # ("foster-text", text, element) for table text it moves out.
+        self.implied = []
+        # The markup: findings of foreign_markup_problems; cmd_render sets
+        # them on every HTML page.
+        self.markup = []
+
+    @property
+    def unread(self):
+        """The page has a markup: finding, so the class-scoped rules, which
+        would read a nesting no browser builds, do not read it."""
+        return bool(self.unclosed or self.markup)
 
     def _tree_element(self, tag, attrs):
         first = {}
@@ -2622,8 +2884,107 @@ class RenderPage(Page):
         self._open[-1].children.append(el)
         return el
 
+    def _scope(self, targets, boundary):
+        for el in reversed(self._open[1:]):
+            if el.tag in targets:
+                return el
+            if el.tag in boundary or el.tag in FOREIGN_ROOTS:
+                return None
+        return None
+
+    def _implied(self, tag):
+        """The IMPLIED_RULES this start tag meets, with the open element."""
+        if any(el.tag in FOREIGN_ROOTS for el in self._open):
+            return []
+        top = self._open[-1]
+        hits = []
+
+        def hit(rule, el):
+            hits.append((rule, tag, el.tag))
+        p = self._scope({"p"}, SCOPE_BOUNDARY | {"button"})
+        if tag in CLOSE_P_TAGS and p is not None:
+            hit("close-p", p)
+        if tag in HEADING_TAGS and top.tag in HEADING_TAGS:
+            hit("heading-in-heading", top)
+        for names, rule in (({"li"}, "li-in-li"), ({"dd", "dt"}, "dd-dt-in-dd-dt")):
+            if tag in names:
+                for el in reversed(self._open[1:]):
+                    if el.tag in names:
+                        hit(rule, el)
+                        break
+                    if el.tag in SPECIAL_TAGS and el.tag not in ("address", "div", "p"):
+                        break
+        for name, rule in (("a", "a-in-a"),):
+            if tag == name:
+                for el in reversed(self._open[1:]):
+                    if el.tag == name:
+                        hit(rule, el)
+                        break
+                    if el.tag in FORMATTING_MARKERS:
+                        break
+        if tag == "nobr" and self._scope({"nobr"}, SCOPE_BOUNDARY) is not None:
+            hit("nobr-in-nobr", top)
+        if tag == "button" and self._scope({"button"}, SCOPE_BOUNDARY) is not None:
+            hit("button-in-button", top)
+        if tag == "form" and any(el.tag == "form" for el in self._open) \
+                and not any(el.tag == "template" for el in self._open):
+            hit("form-in-form", next(el for el in self._open if el.tag == "form"))
+        select = next((el for el in self._open if el.tag == "select"), None)
+        # "in body": an option or optgroup start tag pops an open option; in
+        # a select an optgroup also closes an open optgroup.
+        if (tag in ("option", "optgroup") and top.tag == "option") \
+                or (tag == "optgroup" and top.tag == "optgroup" and select is not None):
+            hit("option-in-option", top)
+        # In a select, <hr> pops an open option or optgroup (fix round 13,
+        # reviewer note j-selhr); select-content exempts it only without one.
+        if tag == "hr" and select is not None:
+            opened = [el for el in self._open[self._open.index(select) + 1:]
+                      if el.tag in ("option", "optgroup")]
+            if opened:
+                hit("option-in-option", opened[-1])
+        if select is not None and tag not in ("option", "optgroup", "hr"):
+            hit("select-content", select)
+        cell = self._scope({"td", "th"}, {"html", "table", "template"})
+        if tag in TABLE_PARTS and cell is not None:
+            hit("table-part-in-cell", cell)
+        row = self._scope({"tr"}, {"html", "table", "template"})
+        if tag in TABLE_PARTS - {"td", "th"} and row is not None:
+            hit("table-part-in-row", row)
+        section = self._scope({"tbody", "thead", "tfoot"}, {"html", "table", "template"})
+        if tag in TABLE_PARTS - {"td", "th", "tr"} and section is not None:
+            hit("table-part-in-section", section)
+        caption = self._scope({"caption"}, {"html", "table", "template"})
+        if tag in TABLE_PARTS and caption is not None:
+            hit("table-part-in-caption", caption)
+        if tag == "tr" and top.tag == "table":
+            hit("implied-tbody", top)
+        if tag in ("td", "th") and top.tag in ("table", "tbody", "thead", "tfoot"):
+            hit("implied-tr", top)
+        if tag == "col" and top.tag == "table":
+            hit("implied-colgroup", top)
+        if top.tag == "colgroup" and tag not in ("col", "template"):
+            hit("colgroup-content", top)
+        if tag == "table" and top.tag in TABLE_CONTEXT:
+            hit("table-in-table", top)
+        if top.tag in TABLE_CONTEXT and tag not in TABLE_ALLOWED and tag != "table":
+            hit("foster-parented", top)
+        if tag in ("rb", "rtc", "rp", "rt") \
+                and self._scope({"ruby"}, SCOPE_BOUNDARY) is not None \
+                and top.tag in (IMPLIED_END_TAGS if tag in ("rb", "rtc")
+                                else IMPLIED_END_TAGS - {"rtc"}):
+            hit("ruby-implied", top)
+        if tag == "image":
+            hit("image-renamed", top)
+        if tag == "frameset":
+            hit("frameset-in-body", top)
+        if tag == "frame" or (tag in TABLE_PARTS and not any(
+                el.tag in ("table", "template") for el in self._open)):
+            hit("table-part-outside-table", top)
+        return hits
+
     def handle_starttag(self, tag, attrs):
         super().handle_starttag(tag, attrs)
+        self.implied += self._implied(tag)
         el = self._tree_element(tag, attrs)
         if tag == "script":
             ld = el.attrs.get("type", "").strip().lower() == JSON_LD
@@ -2633,6 +2994,11 @@ class RenderPage(Page):
 
     def handle_startendtag(self, tag, attrs):
         super().handle_startendtag(tag, attrs)
+        # The HTML parser reads <x/> as the start tag <x> (the slash aside).
+        self.implied += self._implied(tag)
+        if tag not in VOID_ELEMENTS and tag not in FOREIGN_ROOTS \
+                and not any(el.tag in FOREIGN_ROOTS for el in self._open):
+            self.self_closed.append(tag)
         self._tree_element(tag, attrs)
 
     def handle_endtag(self, tag):
@@ -2641,24 +3007,34 @@ class RenderPage(Page):
             self.jsonld.append("".join(self._script))
             self._script = None
         # An end tag closes the nearest open element of its name; a stray
-        # one is ignored, as a browser ignores it.
+        # one is ignored, as a browser ignores it. Every element it closes
+        # on the way is unclosed (M4 PR 3 fix round 9, delta review 8
+        # finding 1): not only those of OPTIONAL_END, because the HTML
+        # parser keeps a formatting element (a, b, s, ...) on its list of
+        # active formatting elements and reopens it around later text, so
+        # the browser's tree is not this one.
         for i in range(len(self._open) - 1, 0, -1):
             if self._open[i].tag == tag:
-                self.unclosed += [el.tag for el in self._open[i + 1:]
-                                  if el.tag in OPTIONAL_END]
+                self.unclosed += [el.tag for el in self._open[i + 1:]]
                 del self._open[i:]
                 break
+        else:
+            self.stray.append(tag)
 
     def close(self):
         super().close()
-        self.unclosed += [el.tag for el in self._open[1:] if el.tag in OPTIONAL_END]
+        self.unclosed += [el.tag for el in self._open[1:]]
         del self._open[1:]
 
     def handle_data(self, data):
         super().handle_data(data)
         if self._script is not None:
             self._script.append(data)
-        self._open[-1].children.append(data)
+        top = self._open[-1]
+        if top.tag in TABLE_CONTEXT and data.strip(ASCII_WHITESPACE) \
+                and not any(el.tag in FOREIGN_ROOTS for el in self._open):
+            self.implied.append(("foster-text", data, top.tag))
+        top.children.append(data)
 
 
 def squash(text):
@@ -2671,8 +3047,103 @@ def fold_words(text):
                     .casefold().split())
 
 
+# M4 PR 3 fix round 10 (delta review 9 finding 1): foreign content. Python's
+# parser reads <svg> and <math> content as plain elements, while the HTML
+# parser applies the foreign-content rules: a breakout element (<s/>, <b>,
+# <p>, <font color>, ...) inside <svg> ends the SVG, opens in HTML and, as a
+# formatting element, is reopened around all later text; an integration
+# point (foreignObject, desc, title) switches back to HTML. No list of those
+# rules is complete, so every <svg> of a built page must be exactly one of
+# the three trees layouts/_partials/icon.html emits, as the minifier writes
+# them (icon_trees: element names, every attribute and value, the children in order, no
+# text), and no page holds <math>, which no template emits. Self-closing
+# syntax on an HTML element that is not void, ignored by the HTML parser,
+# leaves it open; an end tag that closes no open element is ignored by
+# Python but not always by the browser (</p> inserts a <p>, </br> a <br>,
+# and inside foreign content either breaks out).
+FOREIGN_ROOTS = ("svg", "math")
+def icon_trees():
+    """The three trees of icon.html, as bare_tree specs (the constants they
+    use are defined with rule 16 below; the attributes are the same on all
+    three)."""
+    return {
+        "search": pinned("svg", SEARCH_ICON_ATTRS, "",
+                         pinned("circle", {"cx": "11", "cy": "11", "r": "6.5"}, ""),
+                         pinned("path", {"d": "m16 16 4.5 4.5"}, "")),
+        "warning": pinned("svg", WARNING_ICON_ATTRS, "",
+                          *(pinned("path", {"d": d}, "") for d in WARNING_ICON_PATHS)),
+        "check": pinned("svg", SEARCH_ICON_ATTRS, "",
+                        pinned("path", {"d": CHECK_ICON_PATH}, "")),
+    }
+
+
+def exact_tree(el):
+    """(tag, attributes, children) of an element, its texts included as
+    ("#text", text), for an exact comparison with a bare_tree."""
+    return (el.tag, el.attrs, [exact_tree(c) if isinstance(c, Element) else ("#text", c)
+                               for c in el.children])
+
+
+def outline(el, limit=240):
+    """The element as markup, attributes in order, for a finding."""
+    def walk(item):
+        if not isinstance(item, Element):
+            return item
+        attrs = "".join(f' {k}="{v}"' for k, v in item.attrs.items())
+        return f"<{item.tag}{attrs}>" + "".join(walk(c) for c in item.children) + \
+            f"</{item.tag}>"
+    return show(walk(el), limit)
+
+
+def foreign_markup_problems(page):
+    """The markup: findings of foreign content on one HTML page (see
+    icon_trees): each <svg> that is none of the icon trees, every
+    <math>, every non-void HTML element written self-closing, every end
+    tag that closes no open element."""
+    problems = []
+    icons = [bare_tree(tree) for tree in icon_trees().values()]
+    for el in page.root.walk():
+        if el.tag == "svg" and exact_tree(el) not in icons:
+            problems.append(f"markup: the <svg> {outline(el)} is none of the three trees "
+                            "layouts/_partials/icon.html emits (search, warning, check); "
+                            "every <svg> is exactly one of them, because the HTML parser "
+                            "reads other SVG content (a breakout element, an integration "
+                            "point, text) another way than this check")
+        elif el.tag == "math":
+            problems.append(f"markup: the <math> {outline(el)}; no template emits MathML, "
+                            "and the HTML parser reads its content by foreign-content rules "
+                            "this check does not model")
+    for tag in dict.fromkeys(page.self_closed):
+        problems.append(f"markup: {page.self_closed.count(tag)} <{tag}/> written self-closing; "
+                        f"<{tag}> is not a void element, so the HTML parser ignores the slash "
+                        "and leaves it open")
+    for rule, tag, where in dict.fromkeys(page.implied):
+        n = page.implied.count((rule, tag, where))
+        if rule == "foster-text":
+            problems.append(f"markup: the text {show(tag, 60)} directly in <{where}>: the HTML "
+                            "parser moves it in front of the table (foster parenting), so "
+                            "the static tree is not the browser's")
+        else:
+            problems.append(f"markup: {n} <{tag}> start tag(s) while <{where}> is open: the "
+                            f"HTML parser {IMPLIED_RULES[rule]} ({rule}), so the static tree "
+                            "is not the browser's; close the element before the tag")
+    for char in getattr(page, "raw_controls", []):
+        problems.append(f"markup: the page holds U+{ord(char):04X}; the HTML parser reads it "
+                        "otherwise than this check (a line feed, a dropped or replaced "
+                        "character), so no built page holds it")
+    for tag in dict.fromkeys(page.stray):
+        problems.append(f"markup: {page.stray.count(tag)} </{tag}> end tag(s) that close no "
+                        "open element; the browser does not always ignore one (</p> inserts "
+                        "a <p>, </br> a <br>, and in SVG content it breaks out)")
+    return problems
+
+
 def parse_render_page(text):
     page = RenderPage()
+    # Fix round 12: the tokenizer-level forms Python reads otherwise than the
+    # HTML parser (U+000D, which the input stream turns into a line feed,
+    # and U+0000, which "in body" drops and attributes read as U+FFFD).
+    page.raw_controls = [c for c in ("\r", "\x00") if c in text]
     page.feed(text)
     page.close()
     return page
@@ -2817,7 +3288,7 @@ def own_record(by_page, rel, page):
     itself, never a page nested under its directory (rule 1 fails that),
     and only when the page has no markup: finding, whose nesting the
     class-scoped reads below cannot trust. None otherwise."""
-    return None if page.unclosed else by_page.get(rel)
+    return None if page.unread else by_page.get(rel)
 
 
 def record_label(record):
@@ -4447,6 +4918,8 @@ def a_z_problems(page, records, campaigns):
     if el is not None and el.tag != "ul":
         problems.append(f"rule 15 (b): the element of class {INDEX_LIST} on /a-z/ is a "
                         f"<{el.tag}>; the A to Z list is one <ul>")
+    if el is not None:
+        problems += chain_problems(el, A_Z_CHAIN, "rule 15 (b): the A to Z list on /a-z/")
     entries = 0
     if el is not None:
         want = {f"/{r.section}/{r.slug}/": r for r in records}
@@ -4495,6 +4968,7 @@ def a_z_problems(page, records, campaigns):
     block, found = one_of_class(page, NO_REPORT, "rule 15 (d): /a-z/")
     problems += found
     if block is not None:
+        problems += chain_problems(block, A_Z_CHAIN, "rule 15 (d): the no-report block on /a-z/")
         problems += shape_problems(block, "rule 15 (d): the no-report block on /a-z/",
                                    "no-report.html", block_tree())
         # The whole text, the sentence and then the two link texts, joined
@@ -4518,6 +4992,39 @@ def a_z_problems(page, records, campaigns):
     return problems, entries
 
 
+# The search form as layouts/home.html emits it (M4 PR 3 fix round 1,
+# review finding 4): every control, attribute and text, so no control can
+# shadow a property of the form (a button named submit or action) and no
+# submitter can change where or how it submits. The texts are
+# home.search_label, home.search_button and a_z.browse_link.
+SEARCH_LABEL = "Company, app, domain or recruiter"
+SEARCH_BUTTON = "Check"
+# The search icon of layouts/_partials/icon.html as the minifier writes it.
+SEARCH_ICON_ATTRS = {"class": "icon", "viewbox": "0 0 24 24", "fill": "none",
+                     "stroke": "currentColor", "stroke-width": "2",
+                     "stroke-linecap": "round", "stroke-linejoin": "round",
+                     "aria-hidden": "true"}
+
+
+def search_form_tree():
+    """The tree of the search form of layouts/home.html."""
+    icon = pinned("span", {"class": "search-icon"}, "",
+                  pinned("svg", SEARCH_ICON_ATTRS, "",
+                         pinned("circle", {"cx": "11", "cy": "11", "r": "6.5"}, ""),
+                         pinned("path", {"d": "m16 16 4.5 4.5"}, "")))
+    query = pinned("input", {"id": "q", "type": "search", "name": "q", "autocomplete": "off",
+                             "spellcheck": "false"}, "")
+    return pinned(
+        "form", {"class": "card search", "role": "search", "method": "get",
+                 "action": A_Z_PATH}, None,
+        pinned("label", {"for": "q"}, SEARCH_LABEL),
+        pinned("div", {"class": "search-row"}, None,
+               pinned("div", {"class": "search-field"}, "", icon, query),
+               pinned("button", {"class": "button-primary", "type": "submit"},
+                      SEARCH_BUTTON)),
+        link_list_spec([(A_Z_PATH, A_Z_LINK_TEXT)]))
+
+
 def home_search_problems(home):
     """Rule 15 (e): Home has a visible link to /a-z/, and its one search form
     (role search), visible, submits get to /a-z/, every submitter of it
@@ -4536,6 +5043,10 @@ def home_search_problems(home):
     if form.concealed():
         problems.append(f"rule 15 (e): the search form on Home is in hidden content "
                         f"({HIDDEN_CONTENT})")
+    what = "rule 15 (e): the search form on Home"
+    problems += chain_problems(form, HOME_CHAIN, what)
+    found = region_problems(form, search_form_tree(), what, "layouts/home.html")
+    problems += found[1] if found else []
     form_id = form.attrs.get("id")
     submits = [("the form", form.attrs.get("action"), form.attrs.get("method"))]
     for el in home.root.walk():
@@ -4560,6 +5071,210 @@ def home_search_problems(home):
     return problems
 
 
+# Rule 16 (ADR-0005 parts 4 and 6, M4 PR 3): the hidden result markup of the
+# Home search, exactly as search.js reveals it. The search sentence of the
+# no-report block in the result sections: the search matches names, other
+# names and artifacts, but not names hidden on request, so the sentence
+# states what the search looks at and never that the registry holds
+# nothing (the absence claim of #36's review finding 7). Draft wording for
+# the operator's D7 approval at STOP 2 of M4 PR 3.
+NO_REPORT_TEXT = ("Not finding a report here does not mean it is safe. The search looks at "
+                  "the names, other names, addresses, handles and files listed in each "
+                  "report, but not at names hidden on request. New fake interviews also "
+                  "use names nobody has reported yet.")
+SEARCH_RESULTS = "search-results"
+SEARCH_OUT = "search-out"
+# The three sections in order, each with its heading (search.*_heading).
+SEARCH_SECTIONS = [("search-answer", "Found in the registry"),
+                   ("search-partial", "No exact match, but these come close"),
+                   ("search-none", "No report matches your search")]
+# The ids search.js reads by name: the input and the four result elements.
+SEARCH_IDS = ["q", SEARCH_RESULTS] + [sid for sid, _ in SEARCH_SECTIONS]
+# The What to do now panel of layouts/_partials/what-to-do.html
+# (report.warning_*), pinned on Home inside the answer, and the A to Z link
+# of the partial section (a_z.browse_link).
+WHAT_TO_DO_HEADING = "What to do now"
+WHAT_TO_DO_TEXT = ("If you were sent code, a repository or an app to run as part of an "
+                   "interview like this, do not install or run it.")
+WHAT_TO_DO_LINKS = [("/before-your-call/", "What to do before your call"),
+                    ("/before-your-call/#already-ran", "Already ran it? What to do now")]
+A_Z_LINK_TEXT = "Browse every report A to Z"
+# The warning icon of layouts/_partials/icon.html as the pinned Hugo's
+# minifier writes it (attribute names lowercased by the parser).
+WARNING_ICON_ATTRS = {"class": "icon", "viewbox": "0 0 24 24", "fill": "none",
+                      "stroke": "currentColor", "stroke-width": "2",
+                      "stroke-linecap": "round", "stroke-linejoin": "round",
+                      "aria-hidden": "true"}
+WARNING_ICON_PATHS = ["M12 3.5 2.5 20h19L12 3.5z", "M12 10v4.5", "M12 17.5h.01"]
+# The check icon's path as the minifier writes it (fix round 10).
+CHECK_ICON_PATH = "m5 12.5L9.5 17 19 7.5"
+
+
+def pinned(tag, attrs=None, text=None, *children):
+    """One element of a region tree with its whole text (hidden content
+    included), or None where only its children's texts are pinned."""
+    return (tag, dict(attrs or {}), list(children), text)
+
+
+def bare_tree(spec):
+    """The (tag, attrs, children) tree of shape_problems."""
+    tag, attrs, children, _ = spec
+    return (tag, attrs, [bare_tree(c) for c in children])
+
+
+def link_list_spec(links):
+    return pinned("ul", {"class": "link-list"}, None,
+                     *(pinned("li", None, None, pinned("a", {"href": path}, label))
+                       for path, label in links))
+
+
+def no_report_tree():
+    return pinned("div", {"class": NO_REPORT}, None,
+                     pinned("p", None, NO_REPORT_TEXT), link_list_spec(NO_REPORT_LINKS))
+
+
+def search_region_tree():
+    """The tree layouts/home.html emits for #search-results: every element,
+    attribute and text, in order."""
+    def section(sid, heading, *body):
+        return pinned("section", {"id": sid, "class": f"card {SEARCH_OUT}",
+                                     "aria-labelledby": f"{sid}-heading", "hidden": ""},
+                         None,
+                         pinned("h2", {"id": f"{sid}-heading", "tabindex": "-1"}, heading),
+                         *body)
+    empty_list = pinned("ul", {"class": INDEX_LIST}, "")
+    icon = pinned("span", {"class": "panel-icon"}, "",
+                     pinned("svg", WARNING_ICON_ATTRS, "",
+                               *(pinned("path", {"d": d}, "")
+                                 for d in WARNING_ICON_PATHS)))
+    panel = pinned("section", {"class": "panel-warn", "aria-labelledby": "what-to-do"},
+                      None, pinned("h3", {"id": "what-to-do"}, WHAT_TO_DO_HEADING, icon),
+                      pinned("p", None, WHAT_TO_DO_TEXT), link_list_spec(WHAT_TO_DO_LINKS))
+    (answer, answer_head), (partial, partial_head), (none, none_head) = SEARCH_SECTIONS
+    return pinned(
+        "div", {"id": SEARCH_RESULTS, "class": SEARCH_OUT, "hidden": ""}, None,
+        section(answer, answer_head, empty_list, panel),
+        section(partial, partial_head, empty_list, link_list_spec([(A_Z_PATH, A_Z_LINK_TEXT)]),
+                no_report_tree()),
+        section(none, none_head, no_report_tree()))
+
+
+def tree_texts(spec):
+    """Every text the region shows once revealed, in document order."""
+    tag, attrs, children, text = spec
+    if text is not None:
+        return [text] if text else []
+    return [t for child in children for t in tree_texts(child)]
+
+
+def search_results_problems(home):
+    """Rule 16 (ADR-0005 parts 4 and 6): Home holds the hidden result
+    sections of the search exactly as layouts/home.html emits them, the tree
+    of search_region_tree compared raw in count, order and nesting, every
+    attribute byte for byte, and the text of every pinned element, hidden
+    content included (it is what search.js reveals); the empty lists hold
+    no report link, chip or name. The ids search.js reads occur once on the
+    page, q is an input of the search form, and no ancestor of the region
+    hides it, so revealing it shows it."""
+    problems = []
+    ids = {}
+    for el in home.root.walk():
+        if "id" in el.attrs:
+            ids.setdefault(el.attrs["id"], []).append(el)
+    for name in SEARCH_IDS:
+        found = ids.get(name, [])
+        if len(found) != 1:
+            problems.append(f"rule 16: Home holds {len(found)} elements with the id "
+                            f"{name}; search.js reads it by name, so it occurs exactly once "
+                            "(ADR-0005 part 4)")
+    if problems:
+        return problems
+    query = (ids.get("q") or [None])[0]
+    form = query.nearest("form") if query is not None else None
+    if query is None or query.tag != "input" or "form" in query.attrs or form is None \
+            or "search" not in ascii_lower(form.attrs.get("role", "")).split():
+        problems.append("rule 16: the element with the id q on Home is not an <input> of "
+                        "the search form (role search, no form attribute); search.js reads "
+                        "the query and the form through it (ADR-0005 part 4)")
+    region = (ids.get(SEARCH_RESULTS) or [None])[0]
+    if region is None:
+        return problems
+    problems += chain_problems(region, HOME_CHAIN, f"rule 16: #{SEARCH_RESULTS} on Home")
+    what = f"rule 16: #{SEARCH_RESULTS} on Home"
+    found = region_problems(region, search_region_tree(), what, "layouts/home.html")
+    if found and found[0] == "shape":
+        return problems + found[1]
+    for cls_el in home.root.walk():
+        if SEARCH_OUT in cls_el.classes and not is_within(cls_el, region):
+            problems.append(f"rule 16: an element of class {SEARCH_OUT} on Home sits outside "
+                            f"#{SEARCH_RESULTS}; the class marks only the result box and its "
+                            "three sections (ADR-0005 part 4)")
+            break
+    return problems + (found[1] if found else [])
+
+
+def region_problems(root, want, what, template):
+    """A pinned region against its tree (`pinned` specs): ("shape",
+    problems) when an element or attribute differs (shape_problems), else
+    ("text", problems) for every pinned element whose text, hidden content
+    included, differs, and then for the region's whole text, so no loose
+    text sits between its elements; None when it matches."""
+    shape = shape_problems(root, what, template, bare_tree(want))
+    if shape:
+        return ("shape", shape)
+
+    def texts(el, spec):
+        tag, attrs, children, text = spec
+        found = []
+        if text is not None and el.text(" ", shown=False) != text:
+            label = f"<{tag}{' id=' + attrs['id'] if 'id' in attrs else ''}" \
+                f"{' class=' + attrs['class'] if 'class' in attrs else ''}>"
+            found.append(f"{what}: {label} reads {show(el.text(' ', shown=False), 300)}; it "
+                         f"reads exactly {show(text, 300)} (labels.toml through "
+                         f"{template}, pinned here)")
+        elements = [c for c in el.children if isinstance(c, Element)]
+        for child, child_spec in zip(elements, children):
+            found += texts(child, child_spec)
+        return found
+    problems = texts(root, want)
+    whole = squash(" ".join(tree_texts(want)))
+    if not problems and root.text(" ", shown=False) != whole:
+        problems.append(f"{what} reads {show(root.text(' ', shown=False), 300)}; its whole "
+                        f"text is exactly {show(whole, 300)}, so no loose text sits between "
+                        "its elements")
+    return ("text", problems) if problems else None
+
+
+# The ancestors of the pinned regions (M4 PR 3 fix round 1, review finding
+# 3): each region sits exactly where its templates put it, every ancestor's
+# tag and whole attribute map as baseof.html, page.html and a-z.html emit
+# them, so no wrapper (popover, inert, dialog, details, hidden, a style
+# hook) and no added attribute can conceal or disable it. An exact chain,
+# not a list of concealing constructs: a list closes only the probes.
+HTML_CHAIN = [("main", {"id": "main", "class": "container", "tabindex": "-1"}),
+              ("body", {}), ("html", {"lang": "en"})]
+HOME_CHAIN = HTML_CHAIN  # #search-results and the search form, in layouts/home.html
+A_Z_CHAIN = [("div", {"class": "card"})] + HTML_CHAIN  # the list and the block, a-z.html
+
+
+def chain_problems(el, want, what):
+    """el's ancestors (the #document root aside), innermost first, against
+    want: the same tags and exactly the same attributes, none more."""
+    got, parent = [], el.parent
+    while parent is not None and parent.tag != "#document":
+        got.append((parent.tag, parent.attrs))
+        parent = parent.parent
+    if got == want:
+        return []
+
+    def shown(chain):
+        return " in ".join("<" + tag + "".join(f" {k}={show(v, 40)}" for k, v in attrs.items())
+                           + ">" for tag, attrs in chain)
+    return [f"{what} sits in {shown(got) or 'no element'}; its ancestors are exactly "
+            f"{shown(want)}, as the templates emit them, so no wrapper or attribute can hide, "
+            "cover or disable it"]
+
+
 def search_problems(pages, records, campaigns):
     """Rule 15 on a site build: (a) /a-z/ exists; (b) to (d) its list and its
     no-report block; (e) the Home search. A page with a markup: finding is
@@ -4569,15 +5284,16 @@ def search_problems(pages, records, campaigns):
     if page is None:
         problems.append((A_Z_REL, "rule 15 (a): /a-z/ was not built; it is the A to Z list "
                                   "of every report and campaign family (ADR-0005 part 2)"))
-    elif not page.unclosed:
+    elif not page.unread:
         found, entries = a_z_problems(page, records, campaigns)
         problems += [(A_Z_REL, p) for p in found]
     home = pages.get(HOME_REL)
     if home is None:
         problems.append((HOME_REL, "rule 15 (e): no Home page was built"))
-    elif not home.unclosed:
+    elif not home.unread:
         problems += [(HOME_REL, p) for p in home_search_problems(home)]
-    return problems, f"; search: {entries} entries on /a-z/"
+        problems += [(HOME_REL, p) for p in search_results_problems(home)]
+    return problems, f"; search: {entries} entries on /a-z/, 3 result sections on Home"
 
 
 def cmd_render(args):
@@ -4633,6 +5349,12 @@ def cmd_render(args):
                 page = parse_render_page(data.decode("utf-8"))
             except UnicodeDecodeError:
                 page = None
+            if page is not None and suffix in HTML_SUFFIXES:
+                # Set before any rule reads the page (fix round 11, QA recheck
+                # of 5b1519d): own_record reads page.unread, and a markup:
+                # finding found later left a page with foreign content read
+                # by the own-page exemptions of rule 4.
+                page.markup = foreign_markup_problems(page)
         scans = file_scans(rel, data, page)
         problems = []
         # Rule 8: the retired fact-check type appears nowhere, in any form.
@@ -4662,9 +5384,10 @@ def cmd_render(args):
                 problems.append(f"markup: {n} <{tag}> element(s) closed without their own "
                                 f"</{tag}>; close every <{tag}> explicitly, because the "
                                 "render check infers no end tags")
+            problems += page.markup
         if page is not None and suffix in HTML_SUFFIXES:
             pages[rel] = page
-        if page is not None and suffix in HTML_SUFFIXES and not page.unclosed:
+        if page is not None and suffix in HTML_SUFFIXES and not page.unread:
             parts = rel.split("/")
             # Every HTML page under a record directory is that record's page,
             # so an alternative page meets the record rules too (rule 1
@@ -4793,6 +5516,8 @@ VENDOR_VALUE = re.compile(r"(?i)(?<![\w-])-(?:webkit|moz|ms|o)-[\w-]+")
 CSS_STRING_LITERAL = re.compile(r"""(["'])(?:\\.|(?!\1)[^\\])*\1""", re.S)
 TEMPLATE_ACTION = re.compile(r"\{\{.*?\}\}", re.S)
 MARKUP_SUFFIXES = {".html", ".htm", ".svg", ".xml"}
+# The suffixes a file under static/ may have, exactly (L6).
+STATIC_SUFFIXES = {".html", ".svg", ".xml", ".css"}
 # Raster images cannot carry a CSS colour; any other file that is not UTF-8
 # fails closed.
 RASTER_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico"}
@@ -5308,9 +6033,10 @@ LITERALS_FILE_FUNCTIONS = {"split": frozenset(LITERALS_LABELS_READERS),
 # ExecuteAsTemplate or Concat is any string), so the names are a closed
 # list, exactly what today's baseof.html uses: three names and, from M3 PR 9,
 # the script js/copy.js and the algorithm of its fingerprint, sha384 (#29
-# Known limit 3). ExecuteAsTemplate's context is the bare dot, nothing else.
+# Known limit 3), and from M4 PR 3 the search script js/search.js (ADR-0005
+# part 5). ExecuteAsTemplate's context is the bare dot, nothing else.
 LITERALS_RESOURCE_KEYS = frozenset({"favicon.svg", "css/tokens.css", "css/site.css",
-                                    "js/copy.js", "sha384"})
+                                    "js/copy.js", "js/search.js", "sha384"})
 # The resources.* functions whose first operand names the resource they
 # build (M3 PR 9 fix round 2, delta review 4): that name sets the served
 # file's path and suffix. Named as a script (a suffix of JS_SUFFIXES, ASCII
@@ -5427,6 +6153,7 @@ LITERALS_PASSING_SETS = (
     "LITERALS_DATE_LAYOUTS", "LITERALS_CONTEXT_PARTIALS", "LITERALS_PRINTF_VERBS", "LITERALS_KEY_OPERANDS",
     "LITERALS_RESOURCE_KEYS", "LITERALS_LABEL_ASSIGNS", "LITERALS_PASSING_SETS",
     "LITERALS_PRINT_SOURCES", "LITERALS_META_PLAIN_NAMES", "LITERALS_META_PLAIN_HTTP_EQUIV",
+    "LITERALS_SCRIPT_PATTERNS",
 )
 # The allowlists whose contents the self-test pins entry by entry in
 # tests/fixtures/literals/allowlists.tsv (review3 A3): every passing set of
@@ -8324,6 +9051,13 @@ JS_SIMPLE = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v", "
 JS_WORD = re.compile(r"[A-Za-z0-9_$]+")
 JS_VALUE_WORDS = frozenset("this super null true false undefined".split())
 JS_SUFFIXES = {".js", ".mjs"}
+# L7's one exception (M4 PR 3 fix round 4): a script string literal that is
+# the source of a regular expression, accepted exactly, by file and value.
+# search.js keeps a key or query form only when it holds a letter or digit
+# (Unicode \p{L} or \p{N}); JavaScript has no other way to test a Unicode
+# category, and a regular expression literal fails L7. The value is a
+# character class, which a script passes to RegExp and never prints.
+LITERALS_SCRIPT_PATTERNS = frozenset({("assets/js/search.js", "[\\p{L}\\p{N}]")})
 # The script pin (M3 PR 9 fix round 1, review 4, #31 Known limit 1): L7
 # reads a script's literals, not what its code computes (a join of tokens,
 # String.fromCharCode, an identifier, the DOM), so every script under
@@ -8334,8 +9068,247 @@ JS_SUFFIXES = {".js", ".mjs"}
 # identifiers: computed text passes any identifier list
 # (`String(target.id) + button.type`), a hash catches every change. L7
 # still runs, so a new pin never admits a copy literal.
+# The stylesheet pin (M4 PR 3 fix round 4, delta review 3 finding 2),
+# mirroring the script pin: CSS can degrade text in more ways than an
+# outcome check short of reading the pixels can close (opacity, blur, a
+# tiny font, line clipping, transforms, letter-spacing, near-background
+# colours), so CSS is a reviewed surface, as images (#29) and scripts (#31)
+# are. Every stylesheet source is pinned by the SHA-256 of its bytes: the
+# two CSS files under assets/ and data/tokens.toml, whose values
+# assets/css/tokens.css turns into the custom properties site.css uses.
+# `guard` fails a stylesheet source that is not pinned (any .css file under
+# assets/ or static/, any case) or whose bytes differ, and `site` rule (l)
+# allows only the exact built path of the one built stylesheet. So no
+# stylesheet can change or be added without a tools/ change, which gets the
+# safety-net review. Inline CSS is refused elsewhere: `site` rule (c) fails
+# every style attribute and <style> element of a built page, and the CSP's
+# style-src 'self' would block them.
+STYLESHEET_SHA256 = {
+    "assets/css/site.css": "692d492f09fa807f81d2b9fc4a83c13eb00c9e16c952d9e85fd70cf3a378c866",
+    "assets/css/tokens.css": "725a7b2808e32866e206468f43b1097c8b34e879e13baeee309391f1fe53ad27",
+    "data/tokens.toml": "b867bb5bae4cc1a95bf730e132b3e2d4f0744a984308835837b73279dce39182",
+}
+STYLESHEET_SOURCE_DIRS = ("assets", "static")
+# The built stylesheets by stem: baseof.html concatenates tokens.css and
+# site.css into the resource css/site.css, minified and fingerprinted.
+BUILT_STYLESHEETS = frozenset({"site"})
+BUILT_STYLE_DIR = "/css/"
+BUILT_STYLE_INFIX = ".min."
+BUILT_STYLE_SUFFIX = ".css"
+
+
+# The built pins (M4 PR 3 fix round 5, delta review 4 finding 1): the bytes
+# of every built stylesheet and script, pinned by hash, so any input route
+# that changes them fails, whatever it took: a second data file that Hugo
+# merges into hugo.Data.tokens (data/tokens.yaml, data/tokens/color.toml),
+# a config or a module, not only an edit of a pinned source. The source
+# pins stay; they name what a reviewer reads. A stylesheet by the SHA-256
+# that names its file, a script by the SHA-384 of its integrity attribute.
+# `site --no-built-pins` turns them off for the hand-made site fixtures,
+# whose files are no build (the --no-feed precedent); check.sh never
+# passes it (wiring/site-built-pins).
+# The script tag of baseof.html (rule (j), fix round 6) and the scripts each
+# page kind loads, by stem, in order.
+SCRIPT_SRC_ATTRS = ("src", "integrity", "defer")
+SCRIPTS_BY_PAGE_KIND = {"home": ("copy", "search"), "other": ("copy",)}
+# Rule (m), the head by position (M4 PR 3 fix round 7, delta review 6
+# finding 1). An element whose effect depends on its place and namespace
+# (script, link, meta, base) works only as a direct child of the one <head>:
+# inside <math> or <svg> a script is no HTMLScriptElement and never runs, a
+# CSP meta outside the head or in foreign content is ignored, a link in a
+# wrapper may apply to nothing. So these elements are direct children of
+# the head and appear nowhere else (every page, hand-made fixtures too),
+# and with the built pins on the head holds exactly the children
+# baseof.html emits for the page kind, in order, with exactly their
+# attribute names and fixed values (the HOME_CHAIN mechanism applied to the
+# head); None stands for a value another rule pins (the CSP content against
+# params.csp, rule (c); the canonical href, rule (d); the theme colour, rule
+# (f); the description, render; the stylesheet href, rules (k) and (l); the
+# script src and integrity, rule (j)). A JSON-LD block is the last child of
+# the head on a record page and a section page (one each, as jsonld.html
+# emits it) and absent elsewhere. Exact positions, not a list of wrappers.
+HEAD_ONLY_TAGS = ("script", "link", "meta", "base")
+# Fix round 8 (delta review 7 finding 1): the tree of parse_render_page
+# does not model the end of the head that the HTML parser implies, so
+# rule (m) fails closed on everything that makes a browser end the head
+# early: text that is not ASCII whitespace before <html>, inside <html>
+# before <body> or inside <head> (a stray "." after the charset moves every
+# later head element into the body, the CSP meta included, which is then
+# ignored), an element in <html> before <body> other than <head>, and a
+# head child outside the head content model. Reflow case (9) reads the
+# browser's own head, so a differential this list misses is still caught.
+# (ASCII_WHITESPACE is the one of rule (k) above.)
+HEAD_CONTENT_MODEL = frozenset({"base", "link", "meta", "noscript", "script", "style",
+                                "template", "title"})
+HEAD_PREFIX = [
+    ("meta", {"charset": "utf-8"}),
+    ("meta", {"http-equiv": "Content-Security-Policy", "content": None}),
+    ("meta", {"name": "viewport", "content": "width=device-width,initial-scale=1"}),
+    ("meta", {"name": "color-scheme", "content": "light"}),
+    ("meta", {"name": "description", "content": None}),
+    ("title", {}),
+]
+HEAD_CANONICAL = ("link", {"rel": "canonical", "href": None})
+HEAD_SUFFIX = [
+    ("meta", {"name": "theme-color", "content": None}),
+    ("link", {"rel": "icon", "href": None, "type": "image/svg+xml"}),
+    ("link", {"rel": "stylesheet", "href": None}),
+]
+HEAD_SCRIPT = ("script", {"src": None, "integrity": None, "defer": ""})
+HEAD_JSONLD = ("script", {"type": JSON_LD})
+# Fix round 11 (delta review 10 finding 1): the document skeleton. The HTML
+# parser builds exactly one <html>, <head> and <body>; a later html or body
+# start tag is no element but adds its attributes to the one the page has
+# (so <body hidden> or <body aria-hidden="true"> anywhere hides the whole
+# page), and a later head start tag is ignored, while Python keeps each as
+# a nested element. So every page holds exactly one of each, at its place
+# (#document > html > head, html > body), nothing but ASCII whitespace after
+# <body> (the browser moves anything there into the body), and exactly the
+# attributes baseof.html emits (SKELETON_ATTRS), so no page-kind
+# conditional in baseof.html can add one either.
+SKELETON_ATTRS = {"html": {"lang": "en"}, "head": {}, "body": {}}
+NOT_FOUND_REL = "public/404.html"
+RECORD_SECTIONS_REL = ("public/reports/", "public/campaigns/")
+
+
+def head_spec(rel):
+    """The direct children of <head> that baseof.html emits for the page
+    rel (`public/...`), in order: (tag, {attribute: value or None})."""
+    spec = list(HEAD_PREFIX)
+    if rel != NOT_FOUND_REL:
+        spec.append(HEAD_CANONICAL)
+    spec += HEAD_SUFFIX
+    kind = SCRIPTS_BY_PAGE_KIND["home" if rel == "public/index.html" else "other"]
+    spec += [HEAD_SCRIPT] * len(kind)
+    if rel.startswith(RECORD_SECTIONS_REL) and rel.endswith("/index.html"):
+        spec.append(HEAD_JSONLD)  # a section page or a record page
+    return spec
+
+
+def skeleton_problems(tree, html, head):
+    """Rule (m), the skeleton (see SKELETON_ATTRS): html is the single
+    <html> right inside the document or None, head its single <head> or
+    None."""
+    problems = []
+    bodies = [el for el in html.children if isinstance(el, Element) and el.tag == "body"] \
+        if html is not None else []
+    body = bodies[0] if bodies else None
+    if html is not None and body is None:
+        problems.append("(m) the page has no <body> right inside its <html>")
+    for el in tree.root.walk():
+        if el.tag in SKELETON_ATTRS and el not in (html, head, body):
+            where = el.parent.tag if el.parent is not None else "nothing"
+            problems.append(f"(m) a second <{el.tag}> {show(el.attrs, 120)} in <{where}>: the "
+                            f"browser makes no element of it and adds its attributes to the "
+                            f"page's one <{el.tag}> (a head start tag it ignores), so "
+                            "hidden, aria-hidden or inert there hides the whole page; one "
+                            "<html>, <head> and <body> each, at their place")
+    for el, tag in ((html, "html"), (head, "head"), (body, "body")):
+        if el is not None and el.attrs != SKELETON_ATTRS[tag]:
+            problems.append(f"(m) <{tag}> has the attributes {show(el.attrs, 120)}; "
+                            f"baseof.html emits exactly {show(SKELETON_ATTRS[tag], 60)}, on "
+                            "every page, so no attribute there can hide, translate or "
+                            "restyle the page")
+    after = []
+    if body is not None:
+        after += html.children[html.children.index(body) + 1:]
+    if html is not None:
+        after += tree.root.children[tree.root.children.index(html) + 1:]
+    for item in after:
+        if isinstance(item, Element):
+            problems.append(f"(m) <{item.tag}> after <body>: the browser moves it into the "
+                            "body, so the page is not the tree the static checks read")
+        elif isinstance(item, str) and item.strip(ASCII_WHITESPACE):
+            problems.append(f"(m) the text {show(item, 60)} after <body>: the browser moves it "
+                            "into the body, so the page is not the tree the static checks read")
+    return problems
+
+
+def head_problems(text, rel, built):
+    """Rule (m) on one HTML page (see HEAD_ONLY_TAGS). built: also the exact
+    head of baseof.html (the built pins are on)."""
+    tree = parse_render_page(text)
+    htmls = [el for el in tree.root.children if isinstance(el, Element) and el.tag == "html"]
+    heads = [el for el in htmls[0].children if isinstance(el, Element) and el.tag == "head"] \
+        if len(htmls) == 1 else []
+    head = heads[0] if len(heads) == 1 else None
+    problems = []
+    html = htmls[0] if len(htmls) == 1 else None
+    for owner, what in ((tree.root, "before <html>"), (html, "in <html> before <body>"),
+                        (head, "in <head>")):
+        if owner is None:
+            continue
+        for child in owner.children:
+            if isinstance(child, Element):
+                if owner is tree.root and child.tag == "html":
+                    break
+                if owner is html:
+                    if child.tag == "body":
+                        break
+                    if child.tag != "head":
+                        problems.append(f"(m) <{child.tag}> {what}: the browser ends the head "
+                                        "there and puts it and everything after it in the body")
+                if owner is head and child.tag not in HEAD_CONTENT_MODEL:
+                    problems.append(f"(m) <{child.tag}> {what} is outside the head content "
+                                    "model; the browser ends the head there and moves it and "
+                                    "every later head element into the body")
+            elif child.strip(ASCII_WHITESPACE):
+                problems.append(f"(m) the text {show(child, 60)} {what}: the browser ends the "
+                                "head at text that is not ASCII whitespace and moves every later "
+                                "head element into the body, the CSP meta included, which is "
+                                "then ignored")
+    if head is None:
+        problems.append("(m) the page has no single <head> right inside its single <html>; "
+                        "script, link, meta and base work only as children of that head")
+    problems += skeleton_problems(tree, html, head)
+    for el in tree.root.walk():
+        if el.tag in HEAD_ONLY_TAGS and (head is None or el.parent is not head):
+            chain, parent = [], el.parent
+            while parent is not None and parent.tag != "#document":
+                chain.append("<" + parent.tag + ">")
+                parent = parent.parent
+            where = " in ".join(chain)
+            problems.append(f"(m) <{el.tag} {show(el.attrs, 160)}> sits in {where or 'nothing'}"
+                            "; it is a direct child of <head>, where its place and namespace "
+                            "give it its effect (inside <math> or <svg> a script never runs, "
+                            "a CSP meta outside the head is ignored)")
+    if head is None or not built:
+        return problems
+    got = [(el.tag, el.attrs) for el in head.children if isinstance(el, Element)]
+    want = head_spec(rel)
+
+    def matches(item, spec):
+        tag, attrs = item
+        stag, sattrs = spec
+        return tag == stag and set(attrs) == set(sattrs) and all(
+            v is None or attrs.get(k) == v for k, v in sattrs.items())
+    if len(got) != len(want) or not all(matches(g, w) for g, w in zip(got, want)):
+        def shown(items):
+            return ", ".join("<" + t + "".join(f" {k}" + ("" if v is None else f"={show(v, 40)}")
+                                             for k, v in a.items()) + ">" for t, a in items)
+        problems.append(f"(m) the head holds {shown([(t, {k: None for k in a}) for t, a in got])}"
+                        f"; baseof.html emits exactly {shown(want)} for this page, in this "
+                        "order (values shown are pinned here, the others by their own rule)")
+    return problems
+BUILT_STYLESHEET_SHA256 = {
+    "site": "470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38",
+}
+BUILT_SCRIPT_SHA384 = {
+    "copy": "64df53ed5d62c8c5c8be3aee6bd39c1171a2bb88742b3424790354056657c3faf100ea7cc044affe06e76164b883b924",
+    "search": "2b9f7b42bbac16efb718132e221f2214be1478c3c99660e158b61c5c629d70fca54748d3055c7e96ca415ba59abe1483",
+}
+
+
+def built_style_path(stem, data):
+    """The path Hugo writes for the stylesheet stem whose built bytes are
+    data: resources.Fingerprint without an algorithm uses SHA-256."""
+    return (BUILT_STYLE_DIR + stem + BUILT_STYLE_INFIX + hashlib.sha256(data).hexdigest()
+            + BUILT_STYLE_SUFFIX)
+
+
 SCRIPT_SHA256 = {
     "assets/js/copy.js": "5cca51768d7caa004240fccdcfe84cd588f2686f3e4481da5561673d8592cc89",
+    "assets/js/search.js": "48915ad64fddd4044a734fa3ef938523e61f5476083b67d8a061e3e4e932332e",
 }
 
 
@@ -8392,6 +9365,9 @@ def script_literal_problems(rel, text, findings, counts):
                 i, value_before = k + 1, True
                 continue
             value = js_unquote(raw)
+            if (rel, value) in LITERALS_SCRIPT_PATTERNS:
+                i, value_before = k + 1, True
+                continue
             for problem in literal_problems(value, False):
                 add(i, problem.replace("(L3)", "(L7, the L3 test on a script literal)")
                     + f"; {LITERALS_FIX}")
@@ -8459,12 +9435,16 @@ def cmd_literals(args):
                              "cannot read, so it fails closed until an image rule "
                              "exists (L6)")
                 continue
-            if top == "static" and suffix not in MARKUP_SUFFIXES | {".css"}:
-                # robots.txt included (A2): M6 adds it with its own rule.
+            if top == "static" and path.suffix not in STATIC_SUFFIXES:
+                # robots.txt included (A2): M6 adds it with its own rule. A
+                # page under any suffix but .html, or a suffix in another
+                # case, too (M4 PR 3 fix round 9): site rule (n) refuses it in
+                # the build, because reflow loads only .html pages.
                 findings.add(rel, "a static file this check cannot read for copy "
                              "(script, plain text, any type but HTML, SVG, XML and "
-                             "CSS); the browser can still show or run it, so it fails "
-                             "closed (L6)")
+                             "CSS, a page under any suffix but .html, a suffix not "
+                             "in lower case); the browser can still show or run it, "
+                             "so it fails closed (L6)")
                 continue
             counts["layouts" if top == "layouts" else "other"] += 1
             if top == "assets" and suffix in JS_SUFFIXES:
@@ -8637,6 +9617,432 @@ REFLOW_TAB_KEY = {"key": "Tab", "code": "Tab", "windowsVirtualKeyCode": 9,
 # measuring script writes it, whether it has the class, its box, the scroll
 # position and, for the paint finding's message, its computed opacity,
 # visibility, clip and clip-path and the element at the box centre.
+# Case (6), the revealed search results (M4 PR 3 fix round 1, review
+# finding 3): in S0, on a page with #search-results, each result section is
+# revealed in turn as search.js reveals it (the box and that one section
+# lose their hidden attribute), and then it must be perceivable and
+# operable: the box and every element of the section that holds text pass
+# checkVisibility with its opacity and visibility checks, focus moves to
+# the section heading, and elementFromPoint at the heading's centre (after
+# scrolling it into view) is the heading or inside it. That reads the
+# outcome of any mechanism, a popover or inert wrapper, pointer-events, an
+# overlay or CSS that hides part of a section, not a list of them.
+REFLOW_REVEAL_SCRIPT = r"""
+(function () {
+  var results = document.getElementById("search-results");
+  if (!results) { return {present: false}; }
+  var ids = %(ids)s;
+  var opts = {opacityProperty: true, visibilityProperty: true};
+  function label(el) {
+    if (!el) { return "nothing"; }
+    var text = el.localName || el.nodeName;
+    if (el.id) { text += "#" + el.id; }
+    if (el.classList && el.classList.length) { text += "." + Array.from(el.classList).join("."); }
+    return text;
+  }
+  function hideAll() {
+    ids.forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) { el.hidden = true; }
+    });
+  }
+  var out = [];
+  ids.forEach(function (id) {
+    hideAll();
+    results.hidden = false;
+    var section = document.getElementById(id);
+    if (!section) { out.push({id: id, missing: true}); return; }
+    section.hidden = false;
+    var found = {id: id, region: results.checkVisibility(opts), hiddenText: []};
+    [section].concat(Array.from(section.querySelectorAll("*"))).forEach(function (el) {
+      var own = Array.from(el.childNodes).some(function (n) {
+        return n.nodeType === 3 && n.textContent.trim() !== "";
+      });
+      if (own && !el.checkVisibility(opts)) { found.hiddenText.push(label(el)); }
+    });
+    var heading = section.querySelector("h2");
+    if (heading) {
+      // The scroll is the step's own (focus without its scroll), so the
+      // hit test reads the heading where the scroll puts it.
+      heading.scrollIntoView({block: "center"});
+      heading.focus({preventScroll: true});
+      found.focus = document.activeElement === heading;
+      found.focused = label(document.activeElement);
+      var box = heading.getBoundingClientRect();
+      var hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      found.hit = !!hit && heading.contains(hit);
+      found.hitLabel = label(hit);
+    }
+    out.push(found);
+  });
+  hideAll();
+  results.hidden = true;
+  window.scrollTo(0, 0);
+  return {present: true, sections: out};
+})()
+"""
+# Case (9), the head in the browser (M4 PR 3 fix round 8, delta review 7
+# finding 1): the browser's own DOM, not a Python model of it. For every
+# page loaded in S0, document.head's element children (tag, order, every
+# attribute) must equal the head that parse_render_page reads in the file,
+# which rule (m) of `site` pins to the head baseof.html emits for the page
+# kind; script, link, meta and base exist only as HTML children of
+# document.head; and every CSP meta's parent is document.head. So a parser
+# differential nobody modelled (a stray text, an element that ends the
+# head) is caught by its outcome.
+REFLOW_HEAD_SCRIPT = r"""
+(function () {
+  var head = document.head;
+  function attrs(el) {
+    var out = {};
+    Array.prototype.forEach.call(el.attributes, function (a) { out[a.name] = a.value; });
+    return out;
+  }
+  function label(el) {
+    var where = el.parentElement ? el.parentElement.localName : "nothing";
+    return el.localName + " in " + where +
+      (el.namespaceURI === "http://www.w3.org/1999/xhtml" ? "" : " (" + el.namespaceURI + ")");
+  }
+  var stray = Array.prototype.filter.call(
+    document.querySelectorAll("script, link, meta, base"), function (el) {
+      return el.parentElement !== head || el.namespaceURI !== "http://www.w3.org/1999/xhtml";
+    }).map(label);
+  var csp = Array.prototype.filter.call(document.querySelectorAll("meta"), function (el) {
+    return (el.getAttribute("http-equiv") || "").toLowerCase() === "content-security-policy";
+  });
+  return {
+    head: head ? Array.prototype.map.call(head.children, function (el) {
+      return [el.localName, attrs(el)];
+    }) : null,
+    stray: stray,
+    cspOutside: csp.filter(function (el) { return el.parentElement !== head; }).map(label)
+  };
+})()
+"""
+
+
+# Case (9), the pinned regions in the browser (M4 PR 3 fix round 9, delta
+# review 8 finding 1): for every page loaded in S0, before any reveal, each
+# region the render rules pin to a tree (rules 15 and 16: the search form,
+# #search-results with its sections, the what-to-do copy and the no-report
+# blocks inside it, every index-list and every no-report block), found by
+# the same test in the browser's DOM and in the file, must be the same in
+# both: its ancestors (tag, namespace, every attribute) up to <html>, and its
+# whole subtree (tag, namespace, every attribute, every text, adjacent
+# text merged, comments skipped; read_text has normalised CR as the parser
+# does). The
+# file's tree is the one region_problems, shape_problems and chain_problems
+# pin, so any rewrite by the browser (a formatting element reopened around
+# later text, an implied end tag, foreign content) fails by its outcome,
+# whatever parser rule caused it. Names are compared lowercased, as the
+# static parser reads them (SVG's viewBox is viewbox); the namespace of the
+# file's elements is html, svg below <svg> and math below <math>, html again
+# below <foreignObject>.
+REFLOW_REGION_KINDS = ("the search form", "#search-results", ".index-list", ".no-report")
+# The tree serialization both browser halves of case (9) share: an
+# element as [tag, namespace, attributes, children], a text as
+# ["#text", data], adjacent text merged, comments skipped.
+REFLOW_TREE_JS = r"""
+  var NS = {"http://www.w3.org/1999/xhtml": "html", "http://www.w3.org/2000/svg": "svg",
+            "http://www.w3.org/1998/Math/MathML": "math"};
+  function ns(el) { return NS[el.namespaceURI] || String(el.namespaceURI); }
+  function tokens(v) {
+    return (v || "").toLowerCase().split(/[\t\n\f\r ]+/).filter(function (t) { return t; });
+  }
+  function classes(v) {
+    return (v || "").split(/[\t\n\f\r ]+/).filter(function (t) { return t; });
+  }
+  function attrs(el) {
+    var out = {};
+    Array.prototype.forEach.call(el.attributes, function (a) {
+      // Two names that lowercase alike (a script's setAttributeNS) both
+      // count: the second as "<name> (again)", which no file attribute is.
+      var k = a.name.toLowerCase();
+      while (k in out) k += " (again)";
+      out[k] = a.value;
+    });
+    return out;
+  }
+  function tree(el) {
+    var kids = [];
+    Array.prototype.forEach.call(el.childNodes, function (c) {
+      if (c.nodeType === 3) {
+        if (!c.data) return;
+        var last = kids[kids.length - 1];
+        if (last && last[0] === "#text") last[1] += c.data;
+        else kids.push(["#text", c.data]);
+      } else if (c.nodeType === 1) {
+        kids.push(tree(c));
+      }
+    });
+    return [el.localName.toLowerCase(), ns(el), attrs(el), kids];
+  }
+  function chain(el) {
+    var out = [];
+    for (var p = el.parentElement; p; p = p.parentElement)
+      out.push([p.localName.toLowerCase(), ns(p), attrs(p)]);
+    return out;
+  }
+"""
+REFLOW_REGIONS_SCRIPT = "(function () {\n" + REFLOW_TREE_JS + r"""
+  function kind(el) {
+    var html = ns(el) === "html";
+    if (html && el.localName === "form" && tokens(el.getAttribute("role")).indexOf("search") >= 0)
+      return "the search form";
+    if (el.getAttribute("id") === "search-results") return "#search-results";
+    var cls = classes(el.getAttribute("class"));
+    if (cls.indexOf("index-list") >= 0) return ".index-list";
+    if (cls.indexOf("no-report") >= 0) return ".no-report";
+    return null;
+  }
+  var out = [];
+  Array.prototype.forEach.call(document.getElementsByTagName("*"), function (el) {
+    var k = kind(el);
+    if (k) out.push([k, chain(el), tree(el)]);
+  });
+  return out;
+})()
+"""
+
+
+# Case (9), the whole document (M4 PR 3 fix round 11, delta review 10
+# finding 1): on every page of both trees, in S2 (scripting off, so no
+# script has changed the DOM and a <noscript> holds markup, as Python's
+# parser reads it), document.documentElement with its attributes and its
+# whole subtree must equal the file's <html> as parse_render_page reads it
+# (static_document). Not only the pinned regions: a second <body hidden>
+# whose attributes Chrome merges onto the page's one <body>, a reopened
+# formatting element or a foreign-content breakout on a report page differ
+# here, whatever parser rule caused them.
+REFLOW_DOCUMENT_SCRIPT = ("(function () {\n" + REFLOW_TREE_JS
+                          + "  return tree(document.documentElement);\n})()\n")
+
+
+def static_spaces(root):
+    """{id(element): namespace} of every element under root, as the static
+    model reads it: html, svg below <svg>, math below <math>, html again
+    below <foreignObject> (case (9) reports where the browser differs)."""
+    spaces = {}
+    for el in root.walk():  # document order: a parent before its children
+        if el is root:
+            continue
+        parent = el.parent
+        up = spaces.get(id(parent), "html") if parent is not None else "html"
+        if up == "html" and el.tag in ("svg", "math"):
+            spaces[id(el)] = el.tag
+        elif up == "svg" and parent.tag == "foreignobject":
+            spaces[id(el)] = "html"
+        else:
+            spaces[id(el)] = up
+    return spaces
+
+
+def merge_text(kids):
+    """Adjacent texts merged and empty ones dropped, as the browser's
+    serialization in REFLOW_TREE_JS has them."""
+    out = []
+    for kid in kids:
+        if kid[0] == "#text":
+            if not kid[1]:
+                continue
+            if out and out[-1][0] == "#text":
+                out[-1] = ["#text", out[-1][1] + kid[1]]
+                continue
+        out.append(kid)
+    return out
+
+
+def static_subtree(el, spaces):
+    """el as REFLOW_TREE_JS serializes it: [tag, namespace, attributes,
+    children], texts merged."""
+    kids = [static_subtree(c, spaces) if isinstance(c, Element) else ["#text", c]
+            for c in el.children]
+    return [el.tag, spaces[id(el)], dict(el.attrs), merge_text(kids)]
+
+
+# What the HTML parser does by the spec that parse_render_page does not
+# model, applied to the file's tree before the comparison and named one by
+# one (no other tolerance): (N1) whitespace before <head> inside <html> is
+# dropped ("before head" insertion mode ignores it); (N2) everything after
+# <body> inside <html>, and everything after </html> in the document, ends
+# up at the end of the body ("after body" and "after after body" process it
+# with the "in body" rules, and </body> leaves the body the current element);
+# whitespace before <html> is dropped too ("before html" ignores it), and it
+# is not under <html> anyway; (N3) a line feed right after a <pre>,
+# <listing> or <textarea> start tag is dropped ("in body": "if the next
+# token is a U+000A LINE FEED (LF) character token, then ignore that
+# token"). CR was normalised by read_text, as the input stream
+# preprocessing does. Anything else the parser rewrites (an implied
+# <tbody>, foster parenting, attributes merged onto <html> or <body>, a
+# reopened formatting element, a breakout) is a difference, and site rule
+# (m) refuses the skeleton forms statically.
+LEADING_LF_TAGS = ("pre", "listing", "textarea")
+
+
+def static_document(text):
+    """The file's <html> as REFLOW_DOCUMENT_SCRIPT serializes the browser's,
+    after N1 to N3 above, or None without a single <html> with a <body>."""
+    tree = parse_render_page(text)
+    top = [c for c in tree.root.children if isinstance(c, Element)]
+    htmls = [el for el in top if el.tag == "html"]
+    if len(htmls) != 1:
+        return None
+    html = htmls[0]
+    spaces = static_spaces(tree.root)
+    doc = static_subtree(html, spaces)
+    kids = doc[3]
+    tags = [k[0] for k in kids]
+    if "body" not in tags:
+        return None
+    if "head" in tags:  # N1
+        h = tags.index("head")
+        kids[:h] = [k for k in kids[:h] if not (k[0] == "#text"
+                                                and not k[1].strip(ASCII_WHITESPACE))]
+        tags = [k[0] for k in kids]
+    b = tags.index("body")
+    after = kids[b + 1:]  # N2
+    del kids[b + 1:]
+    index = tree.root.children.index(html)
+    for c in tree.root.children[index + 1:]:
+        after.append(static_subtree(c, spaces) if isinstance(c, Element) else ["#text", c])
+    body = kids[b]
+    body[3] = merge_text(body[3] + after)
+
+    def lf(item):  # N3
+        if item[0] == "#text":
+            return
+        if item[0] in LEADING_LF_TAGS and item[1] == "html" and item[3] \
+                and item[3][0][0] == "#text" and item[3][0][1].startswith("\n"):
+            item[3][0] = ["#text", item[3][0][1][1:]]
+            item[3][:] = merge_text(item[3])
+        for k in item[3]:
+            lf(k)
+    lf(doc)
+    return doc
+
+
+def static_regions(text):
+    """The regions of REFLOW_REGIONS_SCRIPT as parse_render_page reads the
+    page, in document order: [[kind, chain, tree]]."""
+    tree = parse_render_page(text)
+    spaces = static_spaces(tree.root)
+
+    def split(value):
+        return [t for t in re.split(r"[\t\n\f\r ]+", value) if t]
+
+    def kind(el):
+        if spaces[id(el)] == "html" and el.tag == "form" \
+                and "search" in split(ascii_lower(el.attrs.get("role", ""))):
+            return "the search form"
+        if el.attrs.get("id") == "search-results":
+            return "#search-results"
+        classes = split(el.attrs.get("class", ""))
+        if INDEX_LIST in classes:
+            return ".index-list"
+        if NO_REPORT in classes:
+            return ".no-report"
+        return None
+
+    out = []
+    for el in tree.root.walk():
+        if el is tree.root:
+            continue
+        found = kind(el)
+        if found is None:
+            continue
+        chain, parent = [], el.parent
+        while parent is not None and parent is not tree.root:
+            chain.append([parent.tag, spaces[id(parent)], dict(parent.attrs)])
+            parent = parent.parent
+        out.append([found, chain, static_subtree(el, spaces)])
+    return out
+
+
+def tree_difference(seen, parsed, where):
+    """Where two nodes of REFLOW_REGIONS_SCRIPT (["#text", data] or [tag,
+    namespace, attributes, children]) first differ, and how; None if equal.
+    where names the path, from the region down."""
+    def name(item):
+        if item is None:
+            return "nothing"
+        if not isinstance(item, list) or not item:
+            return show(item, 80)
+        return "text " + show(item[1], 80) if item[0] == "#text" else f"<{item[0]}>"
+    if seen == parsed:
+        return None
+    if not (isinstance(seen, list) and isinstance(parsed, list) and seen and parsed) \
+            or seen[0] != parsed[0] or seen[0] == "#text":
+        return f"{where}: the browser has {name(seen)}, the file {name(parsed)}"
+    if seen[1] != parsed[1]:
+        return f"{where}: the browser has it in the {seen[1]} namespace, the file {parsed[1]}"
+    if seen[2] != parsed[2]:
+        key = next(k for k in sorted(set(seen[2]) | set(parsed[2]))
+                   if seen[2].get(k) != parsed[2].get(k))
+        def value(v):
+            return "absent" if v is None else show(v, 80)
+        return (f"{where}: attribute {key} is {value(seen[2].get(key))} in the browser, "
+                f"{value(parsed[2].get(key))} in the file")
+    if len(seen) < 4:
+        return None
+    for i in range(max(len(seen[3]), len(parsed[3]))):
+        a = seen[3][i] if i < len(seen[3]) else None
+        b = parsed[3][i] if i < len(parsed[3]) else None
+        here = b if isinstance(b, list) and b else a
+        label = ("text" if here[0] == "#text" else f"<{here[0]}>") \
+            if isinstance(here, list) and here else "nothing"
+        found = tree_difference(a, b, f"{where} > child {i + 1} {label}")
+        if found:
+            return found
+    return None
+
+
+def region_differences(seen, parsed):
+    """One line per region of REFLOW_REGIONS_SCRIPT that differs between the
+    browser (seen) and the file (parsed); the lists of kinds first."""
+    kinds = [r[0] for r in seen], [r[0] for r in parsed]
+    if kinds[0] != kinds[1]:
+        return [f"the browser has the regions {show(kinds[0], 160)}, the file "
+                f"{show(kinds[1], 160)}"]
+
+    def chain(ancestors):
+        return " in ".join(f"<{a[0]}>" for a in ancestors) or "nothing"
+    out = []
+    for i, (a, b) in enumerate(zip(seen, parsed)):
+        if a == b:
+            continue
+        kind, nth = a[0], kinds[0][:i + 1].count(a[0])
+        if a[1] != b[1] and chain(a[1]) == chain(b[1]):
+            # The same tags: name the innermost ancestor that differs, and how
+            # (M4 PR 3 fix round 10, QA recheck of ceb2356).
+            j = next(j for j, (x, y) in enumerate(zip(a[1], b[1])) if x != y)
+            up = f"its ancestor <{a[1][j][0]}> {j + 1}"
+            if a[1][j][1] != b[1][j][1]:
+                out.append(f"{kind} {nth}: {up} is in the {a[1][j][1]} namespace in the "
+                           f"browser, {b[1][j][1]} in the file")
+            else:
+                out.append(f"{kind} {nth}: {up} has the attributes {show(a[1][j][2], 120)} in "
+                           f"the browser, {show(b[1][j][2], 120)} in the file")
+        elif a[1] != b[1]:
+            out.append(f"{kind} {nth}: the browser has it in {chain(a[1])}, the file in "
+                       f"{chain(b[1])}")
+        else:
+            out.append(tree_difference(a[2], b[2], f"{kind} {nth} <{b[2][0]}>"))
+    return out
+
+
+def static_head(text):
+    """[(tag, attributes)] of the element children of the one <head> right
+    inside the one <html> of the page as parse_render_page reads it, or
+    None without such a head."""
+    tree = parse_render_page(text)
+    htmls = [el for el in tree.root.children if isinstance(el, Element) and el.tag == "html"]
+    heads = [el for el in htmls[0].children if isinstance(el, Element) and el.tag == "head"] \
+        if len(htmls) == 1 else []
+    if len(heads) != 1:
+        return None
+    return [[el.tag, dict(el.attrs)] for el in heads[0].children if isinstance(el, Element)]
+
+
 REFLOW_FOCUS_SCRIPT = r"""
 (() => {
   const exempt = %(exempt)s;
@@ -9226,15 +10632,32 @@ def png_difference(first, second):
                 if ra), default=0)
 
 
+# Case (6) per class of HIDDEN_UNTIL_SCRIPT (M4 PR 3, ADR-0005 part 6): the
+# tag its elements are counted on (None: any element) and the display wanted
+# in S0, the page loaded with its script running and no visitor action.
+# Every class is display none in S1 and S2. A Copy button is revealed in S0;
+# the search results stay hidden in S0, because no query was made.
+# The noun names an element in the findings.
+REFLOW_HIDDEN = {"copy": ("button", "shown", "Copy button"),
+                 "search-out": (None, "hidden", "search result element")}
+
+
+def reflow_hidden_class(tag, classes, cls):
+    """An element of tag (lowercase) and class list counts for cls."""
+    want_tag = REFLOW_HIDDEN[cls][0]
+    return cls in classes and (want_tag is None or tag == want_tag)
+
+
 def reflow_copy_buttons(tools, session):
-    """Case (6): ([(label, computed display)] of every <button> whose class
-    holds `copy`, [(label, type)] of every shadow root that is not the
-    browser's own), read from the whole tree with the DOM and CSS domains,
-    which run no page script. Shadow roots are pierced; template content
-    is inert and skipped."""
+    """Case (6): ({class: [(label, computed display)]} of every element that
+    counts for a class of REFLOW_HIDDEN (a <button> whose class holds
+    `copy`, any element whose class holds `search-out`), [(label, type)] of
+    every shadow root that is not the browser's own), read from the whole
+    tree with the DOM and CSS domains, which run no page script. Shadow
+    roots are pierced; template content is inert and skipped."""
     root = tools.send("DOM.getDocument", {"depth": -1, "pierce": True},
                       session=session)["root"]
-    buttons, shadows, stack = [], [], [root]
+    buttons, shadows, stack = {cls: [] for cls in REFLOW_HIDDEN}, [], [root]
     while stack:
         item = stack.pop()
         raw = item.get("attributes") or []
@@ -9244,12 +10667,15 @@ def reflow_copy_buttons(tools, session):
             label += "#" + attrs["id"]
         classes = [c for c in re.split(r"[\t\n\f\r ]+", attrs.get("class", "")) if c]
         label += "".join("." + c for c in classes)
-        if item.get("nodeType") == 1 and item.get("localName") == "button" \
-                and COPY_CLASS in classes:
-            style = tools.send("CSS.getComputedStyleForNode", {"nodeId": item["nodeId"]},
-                               session=session).get("computedStyle", [])
-            display = next((p.get("value") for p in style if p.get("name") == "display"), "?")
-            buttons.append((label, display))
+        for cls in REFLOW_HIDDEN:
+            if item.get("nodeType") == 1 \
+                    and reflow_hidden_class(item.get("localName"), classes, cls):
+                style = tools.send("CSS.getComputedStyleForNode",
+                                   {"nodeId": item["nodeId"]},
+                                   session=session).get("computedStyle", [])
+                display = next((p.get("value") for p in style
+                                if p.get("name") == "display"), "?")
+                buttons[cls].append((label, display))
         for shadow in item.get("shadowRoots") or []:
             if shadow.get("shadowRootType") != "user-agent":
                 shadows.append((label, shadow.get("shadowRootType", "?")))
@@ -9281,7 +10707,7 @@ def cmd_reflow(args):
     log_path = None
     launched = False
     n_items = 0
-    n_copy = n_reveals = 0
+    n_copy = n_search = n_reveals = n_revealed = n_heads = n_regions = n_documents = 0
     try:
         # The launch: start Chrome and wait for its first answer, within
         # args.launch_timeout (REFLOW_LAUNCH_TIMEOUT). Only the two launch
@@ -9359,26 +10785,32 @@ def cmd_reflow(args):
             tools.wait_event("Page.loadEventFired", session)
             return None
 
-        def copy_state(where, state, want):
-            """Case (6) in one state: every Copy button's computed display,
-            the count against the page's file, and in S1 the shadow roots.
-            want: "shown" (S0, the script revealed them) or "hidden"."""
-            buttons, shadows = reflow_copy_buttons(tools, session)
-            if len(buttons) != len(static_copies):
-                findings.add(where, f"(6) {state}: the browser sees {len(buttons)} Copy "
-                             f"button(s), the page's file holds {len(static_copies)}; the "
-                             "browser built another tree than the static checks read "
-                             "(inert template content, a shadow root, foreign content)")
-            for label, display in buttons:
-                if want == "hidden" and display != "none":
-                    findings.add(where, f"(6) {state}: Copy button {show(label, 80)} is "
-                                 f"shown (display {show(display)}); it must stay hidden "
-                                 "while its script does not run (ADR-0004 part 11)")
-                elif want == "shown" and display == "none":
-                    findings.add(where, f"(6) {state}: Copy button {show(label, 80)} is "
-                                 "still hidden (display none) after the script ran; a rule "
-                                 "hides it for good, so its hiding is not shown to depend on "
-                                 "the script (ADR-0004 part 11)")
+        def copy_state(where, state, first):
+            """Case (6) in one state, per class of REFLOW_HIDDEN: every
+            element's computed display, the count against the page's file,
+            and in S1 the shadow roots. first: S0, where a class wants its
+            REFLOW_HIDDEN display; in S1 and S2 every class is hidden."""
+            found, shadows = reflow_copy_buttons(tools, session)
+            for cls, (_, s0_want, noun) in REFLOW_HIDDEN.items():
+                until = HIDDEN_UNTIL_SCRIPT[cls][1]
+                want = s0_want if first else "hidden"
+                if len(found[cls]) != len(static_hidden[cls]):
+                    findings.add(where, f"(6) {state}: the browser sees {len(found[cls])} "
+                                 f"{noun}(s), the page's file holds "
+                                 f"{len(static_hidden[cls])}; the browser built another "
+                                 "tree than the static checks read (inert template "
+                                 "content, a shadow root, foreign content)")
+                for label, display in found[cls]:
+                    if want == "hidden" and display != "none":
+                        findings.add(where, f"(6) {state}: {noun} {show(label, 80)} is "
+                                     f"shown (display {show(display)}); it must stay hidden "
+                                     f"until {until}"
+                                     + ("" if first else ", and its script does not run"))
+                    elif want == "shown" and display == "none":
+                        findings.add(where, f"(6) {state}: {noun} {show(label, 80)} is "
+                                     "still hidden (display none) after the script ran; a "
+                                     "rule hides it for good, so its hiding is not shown to "
+                                     f"depend on the script ({until})")
             if state == REFLOW_STATES[1]:
                 for label, kind in shadows:
                     findings.add(where, f"(6) {state}: {show(label, 80)} holds a{'n' if kind == 'open' else ''} "
@@ -9428,11 +10860,12 @@ def cmd_reflow(args):
         focus_script = REFLOW_FOCUS_SCRIPT % {"exempt": json.dumps(VISUALLY_HIDDEN)}
         for rel, path in pages:
             where = f"public/{rel}"
-            static_copies = [attrs for tag, attrs in
-                             parse_page((public / rel).read_text(encoding="utf-8",
-                                                                 errors="replace")).elements
-                             if tag == "button" and COPY_CLASS in
-                             re.split(r"[\t\n\f\r ]+", attrs.get("class") or "")]
+            elements = parse_page((public / rel).read_text(encoding="utf-8",
+                                                           errors="replace")).elements
+            static_hidden = {
+                cls: [attrs for tag, attrs in elements if reflow_hidden_class(
+                    tag, re.split(r"[\t\n\f\r ]+", attrs.get("class") or ""), cls)]
+                for cls in REFLOW_HIDDEN}
             error = load(origin + path)
             if error:
                 findings.add(where, f"did not load: {error}")
@@ -9475,8 +10908,40 @@ def cmd_reflow(args):
                 findings.add(where, f"(4) .visually-hidden element {show(item, 120)}; "
                              "the class is exempt only while its box is at most 1 x 1 "
                              "CSS px and its display is not contents")
-            # (6) S0: the script ran, so every Copy button is revealed.
-            copy_state(where, REFLOW_STATES[0], "shown")
+            # (9) the head in the browser, S0 (fix round 8).
+            seen = reflow_value(tools, session, REFLOW_HEAD_SCRIPT, where)
+            parsed = static_head((public / rel).read_text(encoding="utf-8", errors="replace"))
+            if seen.get("head") != parsed:
+                findings.add(where, f"(9) the browser's head holds {show(seen.get('head'), 300)}; "
+                             f"the file's head is {show(parsed, 300)}, which rule (m) pins: the "
+                             "browser read the page another way than the static checks (an "
+                             "implied end of the head, foreign content), so an element the "
+                             "head needs did not reach it")
+            else:
+                n_heads += 1
+            for label in seen.get("stray", []):
+                findings.add(where, f"(9) the browser has a {show(label, 120)}; script, link, "
+                             "meta and base work only as HTML children of document.head")
+            for label in seen.get("cspOutside", []):
+                findings.add(where, f"(9) the browser has the CSP meta as a {show(label, 120)}; "
+                             "outside document.head the policy is ignored")
+            # (9) the pinned regions in the browser, S0, before any reveal
+            # (fix round 9).
+            # (reflow_value reads an empty list as {}: a page without regions.)
+            seen = reflow_value(tools, session, REFLOW_REGIONS_SCRIPT, where) or []
+            parsed = static_regions((public / rel).read_text(encoding="utf-8",
+                                                             errors="replace"))
+            if seen == parsed:
+                n_regions += len(parsed)
+            for detail in region_differences(seen, parsed):
+                findings.add(where, f"(9) a pinned region differs between the browser and the "
+                             f"file: {detail}; the browser read the page another way than "
+                             "the static checks (a formatting element reopened, an implied "
+                             "end tag, foreign content) or a script changed it, so the tree "
+                             "rules 15 and 16 pin is not the one it shows")
+            # (6) S0: the script ran, so every Copy button is revealed, and
+            # the search results stay hidden: no query was made.
+            copy_state(where, REFLOW_STATES[0], True)
             # (7) The skip link's reveal applies on keyboard focus: one Tab
             # press from the loaded page focuses the first focusable
             # element, which must carry the class and grow past 1 x 1 px
@@ -9509,6 +10974,40 @@ def cmd_reflow(args):
                                  "viewport; the revealed skip link must be on screen")
                 else:
                     reveal_paint(where, focus, box)
+            # (6) In S0, each search result section revealed must be
+            # perceivable and operable (REFLOW_REVEAL_SCRIPT).
+            if static_hidden["search-out"]:
+                revealed = reflow_value(tools, session, REFLOW_REVEAL_SCRIPT % {
+                    "ids": json.dumps([sid for sid, _ in SEARCH_SECTIONS])}, where)
+                if not revealed.get("present"):
+                    findings.add(where, f"(6) {REFLOW_STATES[0]}: the page has search result "
+                                 f"elements but no #{SEARCH_RESULTS} the browser can reveal")
+                for item in revealed.get("sections", []):
+                    sid = item.get("id")
+                    if item.get("missing"):
+                        findings.add(where, f"(6) revealed: no #{sid} to reveal")
+                        continue
+                    n_revealed += 1
+                    if not item.get("region"):
+                        findings.add(where, f"(6) revealed #{sid}: #{SEARCH_RESULTS} is not "
+                                     "visible once revealed (checkVisibility with opacity and "
+                                     "visibility); a wrapper, popover or style hides it, so "
+                                     "the answer never shows (ADR-0005 part 4)")
+                    for label in item.get("hiddenText", []):
+                        findings.add(where, f"(6) revealed #{sid}: {show(label, 80)} holds "
+                                     "text but is not visible (checkVisibility with opacity "
+                                     "and visibility); the revealed answer must show all of "
+                                     "its text (ADR-0005 part 4)")
+                    if not item.get("focus"):
+                        findings.add(where, f"(6) revealed #{sid}: focus does not move to its "
+                                     f"heading (it is on {show(item.get('focused'), 80)}); "
+                                     "an inert or hidden ancestor or a missing heading "
+                                     "keeps the answer from screen readers and keyboards")
+                    if not item.get("hit"):
+                        findings.add(where, f"(6) revealed #{sid}: the centre of its heading "
+                                     f"hits {show(item.get('hitLabel'), 80)}, not the "
+                                     "heading; an overlay, pointer-events or a hidden "
+                                     "heading keeps the answer from the visitor")
             # (6) S1: scripting on, the script URLs blocked.
             tools.send("Network.enable", session=session)
             tools.send("Network.setBlockedURLs", {"urls": list(REFLOW_BLOCKED_SCRIPTS)},
@@ -9517,7 +11016,7 @@ def cmd_reflow(args):
             if error:
                 findings.add(where, f"did not load with the script blocked: {error}")
             else:
-                copy_state(where, REFLOW_STATES[1], "hidden")
+                copy_state(where, REFLOW_STATES[1], False)
             tools.send("Network.setBlockedURLs", {"urls": []}, session=session)
             tools.send("Network.disable", session=session)
             # (6) S2: scripting off.
@@ -9527,10 +11026,28 @@ def cmd_reflow(args):
             if error:
                 findings.add(where, f"did not load with scripting off: {error}")
             else:
-                copy_state(where, REFLOW_STATES[2], "hidden")
+                copy_state(where, REFLOW_STATES[2], False)
+                # (9) the whole document in the browser, S2 (fix round 11).
+                seen = reflow_value(tools, session, REFLOW_DOCUMENT_SCRIPT, where) or None
+                parsed = static_document((public / rel).read_text(encoding="utf-8",
+                                                                  errors="replace"))
+                if parsed is None:
+                    findings.add(where, "(9) the file has no single <html> with a <body>, so "
+                                 "its document cannot be compared with the browser's")
+                elif seen == parsed:
+                    n_documents += 1
+                else:
+                    findings.add(where, "(9) the document differs between the browser "
+                                 "(scripting off) and the file: "
+                                 + str(tree_difference(seen, parsed, "<html>"))
+                                 + "; the browser read the page another way than the static "
+                                 "checks (attributes merged onto <html> or <body>, a "
+                                 "formatting element reopened, an implied end tag or element, "
+                                 "foreign content)")
             tools.send("Emulation.setScriptExecutionDisabled", {"value": False},
                        session=session)
-            n_copy += len(static_copies)
+            n_copy += len(static_hidden["copy"])
+            n_search += len(static_hidden["search-out"])
         for error in sorted(set(SiteHandler.errors)):
             findings.add("public", f"the local server answered {error}; a page was "
                          "measured without one of its files")
@@ -9559,8 +11076,12 @@ def cmd_reflow(args):
         shutil.rmtree(work, ignore_errors=True)
     return findings.report(f"reflow checked: {len(pages)} pages at {REFLOW_WIDTH} "
                            f"CSS px, {n_items} words and replaced elements; Copy buttons "
-                           f"hidden without the script: {n_copy} in 2 states; skip-link "
-                           f"reveals: {n_reveals}")
+                           f"hidden without the script: {n_copy} in 2 states; search "
+                           f"results hidden until a query: {n_search} in 3 states, "
+                           f"{n_revealed} sections revealed and reachable; "
+                           f"skip-link reveals: {n_reveals}; heads as parsed: {n_heads}; "
+                           f"pinned regions as parsed: {n_regions}; documents as parsed "
+                           f"(scripting off): {n_documents}")
 
 
 # ---------------------------------------------------------------------------
@@ -10443,6 +11964,42 @@ def guard_lighthouse_workflow(root, files, findings):
                              "no checkout and uploads nothing (ADR-0003 part 2)")
 
 
+def guard_stylesheet_pins(root, findings):
+    """The stylesheet source pin (M4 PR 3 fix round 4): every .css file
+    under assets/ and static/ (any case, read from the disk, as Hugo reads
+    it) and data/tokens.toml must be a key of STYLESHEET_SHA256 with the
+    SHA-256 of its bytes. A pinned source that is missing is the build's
+    failure, not this one's."""
+    sources = []
+    for top in STYLESHEET_SOURCE_DIRS:
+        base = root / top
+        if base.is_dir():
+            sources += [p for p in sorted(base.rglob("*"))
+                        if p.is_file() and p.suffix.lower() == ".css"]
+    tokens = root / "data" / "tokens.toml"
+    if tokens.is_file():
+        sources.append(tokens)
+    for path in sources:
+        rel = path.relative_to(root).as_posix()
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            findings.add(rel, f"cannot read a stylesheet source: {exc}")
+            continue
+        pinned = STYLESHEET_SHA256.get(rel)
+        if pinned is None:
+            findings.add(rel, "a stylesheet source that is not pinned: every .css file "
+                         "under assets/ and static/ and data/tokens.toml is pinned by its "
+                         "SHA-256 in tools/sitecheck.py (STYLESHEET_SHA256), so adding one "
+                         "is a tools/ change with the safety-net review (CSS is a reviewed "
+                         "surface, M4 PR 3)")
+        elif digest != pinned:
+            findings.add(rel, f"the stylesheet source's SHA-256 is {digest}, not the one "
+                         "pinned in tools/sitecheck.py (STYLESHEET_SHA256); a stylesheet "
+                         "change updates the pin there, so it is a tools/ change with the "
+                         "safety-net review (CSS is a reviewed surface, M4 PR 3)")
+
+
 def cmd_guard(args):
     root = Path(args.root).resolve()
     if not root.is_dir():
@@ -10456,6 +12013,7 @@ def cmd_guard(args):
     guard_hugo_env_names(root, files, findings)
     guard_workflows(root, files, findings)
     guard_lighthouse_workflow(root, files, findings)
+    guard_stylesheet_pins(root, findings)
     n_workflows = sum(f.startswith(".github/workflows/") for f in files)
     return findings.report(f"guard checked: {len(files)} files, "
                            f"{n_workflows} workflows")
@@ -10489,6 +12047,7 @@ def build_parser():
     p = sub.add_parser("site", allow_abbrev=False)
     p.add_argument("--records", required=True)
     p.add_argument("--schemas")
+    p.add_argument("--no-built-pins", action="store_true")
     p.add_argument("public")
     p.set_defaults(func=cmd_site)
     p = sub.add_parser("render", allow_abbrev=False)

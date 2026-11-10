@@ -1,0 +1,1 @@
+(m) the text '[.]' after <body>: the browser moves it into the body

@@ -1,0 +1,179 @@
+# site rule (m), the head by position (M4 PR 3 fix rounds 7 and 8), one
+# row per fixed head value and per branch, on a copy of
+# site/pass-built-pins with the built pins on (site_cases_runner in
+# tools/selftest.sh). Columns: name, file (relative to the case), find
+# (exactly one occurrence), replace, expect (PASS, or a text the findings
+# must hold). \n in find and replace is a newline, \t a tab, \v U+000B.
+value-charset	public/index.html	<meta charset="utf-8">	<meta charset="utf-16">	(m) the head holds
+value-csp-http-equiv	public/index.html	http-equiv="Content-Security-Policy"	http-equiv="content-security-policy"	(m) the head holds
+value-viewport-name	public/index.html	name="viewport"	name="Viewport"	(m) the head holds
+value-viewport-content	public/index.html	content="width=device-width,initial-scale=1"	content="width=device-width,initial-scale=2"	(m) the head holds
+value-color-scheme-name	public/index.html	name="color-scheme"	name="color-schemes"	(m) the head holds
+value-color-scheme-content	public/index.html	content="light"	content="dark"	(m) the head holds
+value-description-name	public/index.html	name="description"	name="Description"	(m) the head holds
+value-canonical-rel	public/index.html	rel="canonical"	rel="Canonical"	(m) the head holds
+value-theme-color-name	public/index.html	name="theme-color"	name="theme-colour"	(m) the head holds
+value-icon-rel	public/index.html	rel="icon"	rel="shortcut icon"	(m) the head holds
+value-icon-type	public/index.html	type="image/svg+xml"	type="image/png"	(m) the head holds
+value-stylesheet-rel	public/index.html	rel="stylesheet"	rel="stylesheet alternate"	(m) the head holds
+value-script-defer	public/index.html	<script src="/js/copy.min.64df53ed5d62c8c5c8be3aee6bd39c1171a2bb88742b3424790354056657c3faf100ea7cc044affe06e76164b883b924.js" integrity="sha384-ZN9T7V1iyMXIvjrua9OcEXGiu4h0KzQkeQNUBWZXw/rxAOp8wESv/gbnYWS4g7kk" defer>	<script src="/js/copy.min.64df53ed5d62c8c5c8be3aee6bd39c1171a2bb88742b3424790354056657c3faf100ea7cc044affe06e76164b883b924.js" integrity="sha384-ZN9T7V1iyMXIvjrua9OcEXGiu4h0KzQkeQNUBWZXw/rxAOp8wESv/gbnYWS4g7kk" defer="defer">	(m) the head holds
+value-jsonld-type	public/reports/index.html	<script type="application/ld+json">	<script type="application/json">	(m) the head holds
+attribute-missing	public/index.html	 type="image/svg+xml"		(m) the head holds
+value-superstring	public/index.html	content="light"	content="light dark"	(m) the head holds
+value-superstring-charset	public/index.html	<meta charset="utf-8">	<meta charset="utf-8x">	(m) the head holds
+second-html	public/index.html	</html>	</html><html></html>	(m) the page has no single <head>
+jsonld-on-home	public/index.html	</head>	<script type="application/ld+json">{}</script></head>	(m) the head holds
+jsonld-missing-on-section	public/reports/index.html	<script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": []}</script>		(m) the head holds
+text-before-html	public/index.html	<html lang="en">	.<html lang="en">	(m) the text '[.]' before <html>
+text-in-html-before-head	public/index.html	<head>	.<head>	(m) the text '[.]' in <html> before <body>
+text-after-head	public/index.html	</head>	</head>|	(m) the text '|' in <html> before <body>
+text-in-head-dot	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">.	(m) the text '[.]' in <head>
+text-in-head-entity	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">&#46;	(m) the text '[.]' in <head>
+text-in-head-pipe	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">|	(m) the text '|' in <head>
+text-in-head-nbsp	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">&nbsp;	in <head>: the browser ends the head
+text-in-head-ideographic-space	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">　	in <head>: the browser ends the head
+element-in-html-before-body	public/index.html	</head>	</head><div></div>	(m) <div> in <html> before <body>
+head-content-model-span	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><span></span>	(m) <span> in <head> is outside the head content model
+head-content-model-math	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><math></math>	(m) <math> in <head> is outside the head content model
+pass-ascii-whitespace-in-head	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">\t\n 	PASS
+text-after-body	public/index.html	</body>	</body>.	(m) the text '[.]' after <body>
+nested-head-in-body	public/index.html	<p>text</p>	<p>text</p><head><meta name="x" content="y"></head>	(m) <meta
+second-html-elements	public/index.html	</html>	</html><html></html>	(m) <meta
+tag-swapped-same-attributes	public/index.html	<title>fixture</title>	<noscript></noscript>	(m) the head holds
+attribute-missing-any-value	public/index.html	<meta name="description" content="A fixture page.">	<meta name="description">	(m) the head holds
+# Fix round 9 (QA recheck of e5c348a): U+000B and U+200B, which are not
+# ASCII whitespace, as text at each position, and one row per element
+# outside the head content model.
+text-before-html-vt	public/index.html	<html lang="en">	\v<html lang="en">	(m) the text '\x0b' before <html>: the browser ends the head
+text-in-head-vt	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">\v	(m) the text '\x0b' in <head>: the browser ends the head
+text-after-head-vt	public/index.html	</head>	</head>\v	(m) the text '\x0b' in <html> before <body>: the browser ends the head
+text-before-html-zwsp	public/index.html	<html lang="en">	​<html lang="en">	(m) the text '\u200b' before <html>: the browser ends the head
+text-in-head-zwsp	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">​	(m) the text '\u200b' in <head>: the browser ends the head
+text-after-head-zwsp	public/index.html	</head>	</head>​	(m) the text '\u200b' in <html> before <body>: the browser ends the head
+head-content-model-svg	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><svg></svg>	(m) <svg> in <head> is outside the head content model
+head-content-model-div	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><div></div>	(m) <div> in <head> is outside the head content model
+head-content-model-img	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><img>	(m) <img> in <head> is outside the head content model
+head-content-model-a	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><a></a>	(m) <a> in <head> is outside the head content model
+head-content-model-p	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><p></p>	(m) <p> in <head> is outside the head content model
+head-content-model-iframe	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><iframe></iframe>	(m) <iframe> in <head> is outside the head content model
+head-content-model-input	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><input>	(m) <input> in <head> is outside the head content model
+head-content-model-body	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><body></body>	(m) <body> in <head> is outside the head content model
+head-content-model-head	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><head></head>	(m) <head> in <head> is outside the head content model
+head-content-model-br	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><br>	(m) <br> in <head> is outside the head content model
+head-content-model-object	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><object></object>	(m) <object> in <head> is outside the head content model
+head-content-model-form	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><form></form>	(m) <form> in <head> is outside the head content model
+# Fix round 11 (delta review 10 finding 1): the skeleton, per page kind
+# (Home and a section page): a second html, head and body start tag in the
+# body, in the head and before <html>; a second one with each attribute of
+# hidden, aria-hidden, inert, dir, lang, class and style; each of those on
+# the real <html>, <head> and <body>; an element and a text after <body>.
+skeleton-home-second-html-in-body	public/index.html	<p>text</p>	<p>text</p><html></html>	(m) a second <html>
+skeleton-home-second-html-in-head	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><html></html>	(m) a second <html>
+skeleton-home-second-html-before-html	public/index.html	<!doctype html><html lang="en">	<!doctype html><html></html><html lang="en">	(m) a second <html>
+skeleton-home-second-html-hidden	public/index.html	<p>text</p>	<p>text</p><html hidden></html>	(m) a second <html> "{'hidden': ''}" in <body>
+skeleton-home-second-html-aria-hidden	public/index.html	<p>text</p>	<p>text</p><html aria-hidden="true"></html>	(m) a second <html> "{'aria-hidden': 'true'}" in <body>
+skeleton-home-second-html-inert	public/index.html	<p>text</p>	<p>text</p><html inert></html>	(m) a second <html> "{'inert': ''}" in <body>
+skeleton-home-second-html-dir	public/index.html	<p>text</p>	<p>text</p><html dir="rtl"></html>	(m) a second <html> "{'dir': 'rtl'}" in <body>
+skeleton-home-second-html-lang	public/index.html	<p>text</p>	<p>text</p><html lang="de"></html>	(m) a second <html> "{'lang': 'de'}" in <body>
+skeleton-home-second-html-class	public/index.html	<p>text</p>	<p>text</p><html class="x"></html>	(m) a second <html> "{'class': 'x'}" in <body>
+skeleton-home-second-html-style	public/index.html	<p>text</p>	<p>text</p><html style="x"></html>	(m) a second <html> "{'style': 'x'}" in <body>
+skeleton-home-html-attr-hidden	public/index.html	<html lang="en">	<html lang="en" hidden>	(m) <html> has the attributes "{'lang': 'en', 'hidden': ''}"
+skeleton-home-html-attr-aria-hidden	public/index.html	<html lang="en">	<html lang="en" aria-hidden="true">	(m) <html> has the attributes "{'lang': 'en', 'aria-hidden': 'true'}"
+skeleton-home-html-attr-inert	public/index.html	<html lang="en">	<html lang="en" inert>	(m) <html> has the attributes "{'lang': 'en', 'inert': ''}"
+skeleton-home-html-attr-dir	public/index.html	<html lang="en">	<html lang="en" dir="rtl">	(m) <html> has the attributes "{'lang': 'en', 'dir': 'rtl'}"
+skeleton-home-html-attr-lang	public/index.html	<html lang="en">	<html lang="de">	(m) <html> has the attributes "{'lang': 'de'}"
+skeleton-home-html-attr-class	public/index.html	<html lang="en">	<html lang="en" class="x">	(m) <html> has the attributes "{'lang': 'en', 'class': 'x'}"
+skeleton-home-html-attr-style	public/index.html	<html lang="en">	<html lang="en" style="x">	(m) <html> has the attributes "{'lang': 'en', 'style': 'x'}"
+skeleton-home-second-head-in-body	public/index.html	<p>text</p>	<p>text</p><head></head>	(m) a second <head>
+skeleton-home-second-head-in-head	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><head></head>	(m) a second <head>
+skeleton-home-second-head-before-html	public/index.html	<!doctype html><html lang="en">	<!doctype html><head></head><html lang="en">	(m) a second <head>
+skeleton-home-second-head-hidden	public/index.html	<p>text</p>	<p>text</p><head hidden></head>	(m) a second <head> "{'hidden': ''}" in <body>
+skeleton-home-second-head-aria-hidden	public/index.html	<p>text</p>	<p>text</p><head aria-hidden="true"></head>	(m) a second <head> "{'aria-hidden': 'true'}" in <body>
+skeleton-home-second-head-inert	public/index.html	<p>text</p>	<p>text</p><head inert></head>	(m) a second <head> "{'inert': ''}" in <body>
+skeleton-home-second-head-dir	public/index.html	<p>text</p>	<p>text</p><head dir="rtl"></head>	(m) a second <head> "{'dir': 'rtl'}" in <body>
+skeleton-home-second-head-lang	public/index.html	<p>text</p>	<p>text</p><head lang="de"></head>	(m) a second <head> "{'lang': 'de'}" in <body>
+skeleton-home-second-head-class	public/index.html	<p>text</p>	<p>text</p><head class="x"></head>	(m) a second <head> "{'class': 'x'}" in <body>
+skeleton-home-second-head-style	public/index.html	<p>text</p>	<p>text</p><head style="x"></head>	(m) a second <head> "{'style': 'x'}" in <body>
+skeleton-home-head-attr-hidden	public/index.html	<head>	<head hidden>	(m) <head> has the attributes "{'hidden': ''}"
+skeleton-home-head-attr-aria-hidden	public/index.html	<head>	<head aria-hidden="true">	(m) <head> has the attributes "{'aria-hidden': 'true'}"
+skeleton-home-head-attr-inert	public/index.html	<head>	<head inert>	(m) <head> has the attributes "{'inert': ''}"
+skeleton-home-head-attr-dir	public/index.html	<head>	<head dir="rtl">	(m) <head> has the attributes "{'dir': 'rtl'}"
+skeleton-home-head-attr-lang	public/index.html	<head>	<head lang="de">	(m) <head> has the attributes "{'lang': 'de'}"
+skeleton-home-head-attr-class	public/index.html	<head>	<head class="x">	(m) <head> has the attributes "{'class': 'x'}"
+skeleton-home-head-attr-style	public/index.html	<head>	<head style="x">	(m) <head> has the attributes "{'style': 'x'}"
+skeleton-home-second-body-in-body	public/index.html	<p>text</p>	<p>text</p><body></body>	(m) a second <body>
+skeleton-home-second-body-in-head	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><body></body>	(m) a second <body>
+skeleton-home-second-body-before-html	public/index.html	<!doctype html><html lang="en">	<!doctype html><body></body><html lang="en">	(m) a second <body>
+skeleton-home-second-body-hidden	public/index.html	<p>text</p>	<p>text</p><body hidden></body>	(m) a second <body> "{'hidden': ''}" in <body>
+skeleton-home-second-body-aria-hidden	public/index.html	<p>text</p>	<p>text</p><body aria-hidden="true"></body>	(m) a second <body> "{'aria-hidden': 'true'}" in <body>
+skeleton-home-second-body-inert	public/index.html	<p>text</p>	<p>text</p><body inert></body>	(m) a second <body> "{'inert': ''}" in <body>
+skeleton-home-second-body-dir	public/index.html	<p>text</p>	<p>text</p><body dir="rtl"></body>	(m) a second <body> "{'dir': 'rtl'}" in <body>
+skeleton-home-second-body-lang	public/index.html	<p>text</p>	<p>text</p><body lang="de"></body>	(m) a second <body> "{'lang': 'de'}" in <body>
+skeleton-home-second-body-class	public/index.html	<p>text</p>	<p>text</p><body class="x"></body>	(m) a second <body> "{'class': 'x'}" in <body>
+skeleton-home-second-body-style	public/index.html	<p>text</p>	<p>text</p><body style="x"></body>	(m) a second <body> "{'style': 'x'}" in <body>
+skeleton-home-body-attr-hidden	public/index.html	<body>	<body hidden>	(m) <body> has the attributes "{'hidden': ''}"
+skeleton-home-body-attr-aria-hidden	public/index.html	<body>	<body aria-hidden="true">	(m) <body> has the attributes "{'aria-hidden': 'true'}"
+skeleton-home-body-attr-inert	public/index.html	<body>	<body inert>	(m) <body> has the attributes "{'inert': ''}"
+skeleton-home-body-attr-dir	public/index.html	<body>	<body dir="rtl">	(m) <body> has the attributes "{'dir': 'rtl'}"
+skeleton-home-body-attr-lang	public/index.html	<body>	<body lang="de">	(m) <body> has the attributes "{'lang': 'de'}"
+skeleton-home-body-attr-class	public/index.html	<body>	<body class="x">	(m) <body> has the attributes "{'class': 'x'}"
+skeleton-home-body-attr-style	public/index.html	<body>	<body style="x">	(m) <body> has the attributes "{'style': 'x'}"
+skeleton-home-element-after-body	public/index.html	</body></html>	</body><p>x</p></html>	(m) <p> after <body>
+skeleton-home-text-after-html	public/index.html	</body></html>	</body></html>x	(m) the text 'x
+skeleton-section-second-html-in-body	public/reports/index.html	<p>text</p>	<p>text</p><html></html>	(m) a second <html>
+skeleton-section-second-html-in-head	public/reports/index.html	<meta charset="utf-8">	<meta charset="utf-8"><html></html>	(m) a second <html>
+skeleton-section-second-html-before-html	public/reports/index.html	<!doctype html><html lang="en">	<!doctype html><html></html><html lang="en">	(m) a second <html>
+skeleton-section-second-html-hidden	public/reports/index.html	<p>text</p>	<p>text</p><html hidden></html>	(m) a second <html> "{'hidden': ''}" in <body>
+skeleton-section-second-html-aria-hidden	public/reports/index.html	<p>text</p>	<p>text</p><html aria-hidden="true"></html>	(m) a second <html> "{'aria-hidden': 'true'}" in <body>
+skeleton-section-second-html-inert	public/reports/index.html	<p>text</p>	<p>text</p><html inert></html>	(m) a second <html> "{'inert': ''}" in <body>
+skeleton-section-second-html-dir	public/reports/index.html	<p>text</p>	<p>text</p><html dir="rtl"></html>	(m) a second <html> "{'dir': 'rtl'}" in <body>
+skeleton-section-second-html-lang	public/reports/index.html	<p>text</p>	<p>text</p><html lang="de"></html>	(m) a second <html> "{'lang': 'de'}" in <body>
+skeleton-section-second-html-class	public/reports/index.html	<p>text</p>	<p>text</p><html class="x"></html>	(m) a second <html> "{'class': 'x'}" in <body>
+skeleton-section-second-html-style	public/reports/index.html	<p>text</p>	<p>text</p><html style="x"></html>	(m) a second <html> "{'style': 'x'}" in <body>
+skeleton-section-html-attr-hidden	public/reports/index.html	<html lang="en">	<html lang="en" hidden>	(m) <html> has the attributes "{'lang': 'en', 'hidden': ''}"
+skeleton-section-html-attr-aria-hidden	public/reports/index.html	<html lang="en">	<html lang="en" aria-hidden="true">	(m) <html> has the attributes "{'lang': 'en', 'aria-hidden': 'true'}"
+skeleton-section-html-attr-inert	public/reports/index.html	<html lang="en">	<html lang="en" inert>	(m) <html> has the attributes "{'lang': 'en', 'inert': ''}"
+skeleton-section-html-attr-dir	public/reports/index.html	<html lang="en">	<html lang="en" dir="rtl">	(m) <html> has the attributes "{'lang': 'en', 'dir': 'rtl'}"
+skeleton-section-html-attr-lang	public/reports/index.html	<html lang="en">	<html lang="de">	(m) <html> has the attributes "{'lang': 'de'}"
+skeleton-section-html-attr-class	public/reports/index.html	<html lang="en">	<html lang="en" class="x">	(m) <html> has the attributes "{'lang': 'en', 'class': 'x'}"
+skeleton-section-html-attr-style	public/reports/index.html	<html lang="en">	<html lang="en" style="x">	(m) <html> has the attributes "{'lang': 'en', 'style': 'x'}"
+skeleton-section-second-head-in-body	public/reports/index.html	<p>text</p>	<p>text</p><head></head>	(m) a second <head>
+skeleton-section-second-head-in-head	public/reports/index.html	<meta charset="utf-8">	<meta charset="utf-8"><head></head>	(m) a second <head>
+skeleton-section-second-head-before-html	public/reports/index.html	<!doctype html><html lang="en">	<!doctype html><head></head><html lang="en">	(m) a second <head>
+skeleton-section-second-head-hidden	public/reports/index.html	<p>text</p>	<p>text</p><head hidden></head>	(m) a second <head> "{'hidden': ''}" in <body>
+skeleton-section-second-head-aria-hidden	public/reports/index.html	<p>text</p>	<p>text</p><head aria-hidden="true"></head>	(m) a second <head> "{'aria-hidden': 'true'}" in <body>
+skeleton-section-second-head-inert	public/reports/index.html	<p>text</p>	<p>text</p><head inert></head>	(m) a second <head> "{'inert': ''}" in <body>
+skeleton-section-second-head-dir	public/reports/index.html	<p>text</p>	<p>text</p><head dir="rtl"></head>	(m) a second <head> "{'dir': 'rtl'}" in <body>
+skeleton-section-second-head-lang	public/reports/index.html	<p>text</p>	<p>text</p><head lang="de"></head>	(m) a second <head> "{'lang': 'de'}" in <body>
+skeleton-section-second-head-class	public/reports/index.html	<p>text</p>	<p>text</p><head class="x"></head>	(m) a second <head> "{'class': 'x'}" in <body>
+skeleton-section-second-head-style	public/reports/index.html	<p>text</p>	<p>text</p><head style="x"></head>	(m) a second <head> "{'style': 'x'}" in <body>
+skeleton-section-head-attr-hidden	public/reports/index.html	<head>	<head hidden>	(m) <head> has the attributes "{'hidden': ''}"
+skeleton-section-head-attr-aria-hidden	public/reports/index.html	<head>	<head aria-hidden="true">	(m) <head> has the attributes "{'aria-hidden': 'true'}"
+skeleton-section-head-attr-inert	public/reports/index.html	<head>	<head inert>	(m) <head> has the attributes "{'inert': ''}"
+skeleton-section-head-attr-dir	public/reports/index.html	<head>	<head dir="rtl">	(m) <head> has the attributes "{'dir': 'rtl'}"
+skeleton-section-head-attr-lang	public/reports/index.html	<head>	<head lang="de">	(m) <head> has the attributes "{'lang': 'de'}"
+skeleton-section-head-attr-class	public/reports/index.html	<head>	<head class="x">	(m) <head> has the attributes "{'class': 'x'}"
+skeleton-section-head-attr-style	public/reports/index.html	<head>	<head style="x">	(m) <head> has the attributes "{'style': 'x'}"
+skeleton-section-second-body-in-body	public/reports/index.html	<p>text</p>	<p>text</p><body></body>	(m) a second <body>
+skeleton-section-second-body-in-head	public/reports/index.html	<meta charset="utf-8">	<meta charset="utf-8"><body></body>	(m) a second <body>
+skeleton-section-second-body-before-html	public/reports/index.html	<!doctype html><html lang="en">	<!doctype html><body></body><html lang="en">	(m) a second <body>
+skeleton-section-second-body-hidden	public/reports/index.html	<p>text</p>	<p>text</p><body hidden></body>	(m) a second <body> "{'hidden': ''}" in <body>
+skeleton-section-second-body-aria-hidden	public/reports/index.html	<p>text</p>	<p>text</p><body aria-hidden="true"></body>	(m) a second <body> "{'aria-hidden': 'true'}" in <body>
+skeleton-section-second-body-inert	public/reports/index.html	<p>text</p>	<p>text</p><body inert></body>	(m) a second <body> "{'inert': ''}" in <body>
+skeleton-section-second-body-dir	public/reports/index.html	<p>text</p>	<p>text</p><body dir="rtl"></body>	(m) a second <body> "{'dir': 'rtl'}" in <body>
+skeleton-section-second-body-lang	public/reports/index.html	<p>text</p>	<p>text</p><body lang="de"></body>	(m) a second <body> "{'lang': 'de'}" in <body>
+skeleton-section-second-body-class	public/reports/index.html	<p>text</p>	<p>text</p><body class="x"></body>	(m) a second <body> "{'class': 'x'}" in <body>
+skeleton-section-second-body-style	public/reports/index.html	<p>text</p>	<p>text</p><body style="x"></body>	(m) a second <body> "{'style': 'x'}" in <body>
+skeleton-section-body-attr-hidden	public/reports/index.html	<body>	<body hidden>	(m) <body> has the attributes "{'hidden': ''}"
+skeleton-section-body-attr-aria-hidden	public/reports/index.html	<body>	<body aria-hidden="true">	(m) <body> has the attributes "{'aria-hidden': 'true'}"
+skeleton-section-body-attr-inert	public/reports/index.html	<body>	<body inert>	(m) <body> has the attributes "{'inert': ''}"
+skeleton-section-body-attr-dir	public/reports/index.html	<body>	<body dir="rtl">	(m) <body> has the attributes "{'dir': 'rtl'}"
+skeleton-section-body-attr-lang	public/reports/index.html	<body>	<body lang="de">	(m) <body> has the attributes "{'lang': 'de'}"
+skeleton-section-body-attr-class	public/reports/index.html	<body>	<body class="x">	(m) <body> has the attributes "{'class': 'x'}"
+skeleton-section-body-attr-style	public/reports/index.html	<body>	<body style="x">	(m) <body> has the attributes "{'style': 'x'}"
+skeleton-section-element-after-body	public/reports/index.html	</body></html>	</body><p>x</p></html>	(m) <p> after <body>
+skeleton-section-text-after-html	public/reports/index.html	</body></html>	</body></html>x	(m) the text 'x
+skeleton-home-no-body	public/index.html	<body><p>text</p></body>	<p>text</p>	(m) the page has no <body> right inside its <html>
+skeleton-home-nbsp-after-body	public/index.html	</body></html>	</body>&nbsp;</html>	(m) the text ' ' after <body>
+skeleton-section-no-body	public/reports/index.html	<body><p>text</p></body>	<p>text</p>	(m) the page has no <body> right inside its <html>
+skeleton-section-nbsp-after-body	public/reports/index.html	</body></html>	</body>&nbsp;</html>	(m) the text ' ' after <body>

@@ -1,0 +1,2 @@
+This case runs the built pins of site rules (j) and (l): selftest.sh leaves out
+--no-built-pins when a site case has this file.

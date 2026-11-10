@@ -1,1 +1,1 @@
-(j) <script src='/js/copy[.]min[.]abc[.]js#x'> does not name the one script
+[.]js#x'> does not name the built file of a pinned script

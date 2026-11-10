@@ -1,0 +1,1 @@
+(9) the document differs between the browser (scripting off) and the file: <html> > child 1 text: the browser has <head>, the file text '\u200b'

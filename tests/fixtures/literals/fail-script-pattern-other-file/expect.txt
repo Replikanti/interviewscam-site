@@ -1,0 +1,1 @@
+assets/js/copy.js:1: string literal '[\\p{L}\\p{N}]' is copy (L7

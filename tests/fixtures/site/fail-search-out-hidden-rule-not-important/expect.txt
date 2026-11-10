@@ -1,0 +1,1 @@
+the rule must be exactly `display: none !important` (found 'display:none'); it hides search results (class search-out)

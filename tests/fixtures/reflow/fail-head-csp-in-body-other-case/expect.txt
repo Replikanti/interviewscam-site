@@ -1,0 +1,1 @@
+(9) the browser has the CSP meta as a 'meta in main'

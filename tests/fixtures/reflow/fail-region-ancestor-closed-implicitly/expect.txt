@@ -1,0 +1,1 @@
+(9) a pinned region differs between the browser and the file: #search-results 1: the browser has it in <main> in <body> in <html>, the file in <p> in <main> in <body> in <html>

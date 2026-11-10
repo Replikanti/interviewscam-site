@@ -1,0 +1,1 @@
+public/extra.shtml: (n) a page under the suffix '.shtml'; the only page suffix is '.html'

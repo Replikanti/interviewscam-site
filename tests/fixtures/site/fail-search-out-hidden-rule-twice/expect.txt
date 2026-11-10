@@ -1,0 +1,1 @@
+CSS: 2 top-level .search-out[hidden] rules across the built CSS; exactly one is allowed
