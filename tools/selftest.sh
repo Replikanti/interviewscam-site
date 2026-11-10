@@ -344,8 +344,9 @@ PY
 # render rules 15 and 16 (the A to Z page, the Home search form and its
 # hidden result sections, ADR-0005 part 6) one branch and one flagging-set
 # member per row (M4 PR 2 and PR 3). A row is
-# name, file, find, replace and expect, tab-separated, with \n and \t in
-# find and replace read as a newline and a tab, then optional further find
+# name, file, find, replace and expect, tab-separated, with \n, \t, \r and
+# \0 in find and replace read as a newline, a tab, U+000D and U+0000 (fix
+# round 12: a table line cannot hold the last two), then optional further find
 # and replace pairs, applied in order (fix round 9: a wrapper row closes its
 # wrapper, because an element an ancestor's end tag closes is a markup:
 # finding). It copies the base case to
@@ -377,7 +378,8 @@ table, base, schema_dir = Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]
 
 
 def unescape(text):
-    return text.replace("\\n", "\n").replace("\\t", "\t")
+    return (text.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
+            .replace("\\0", "\x00"))
 
 
 rows = [line.split("\t") for line in table.read_text(encoding="utf-8").splitlines()

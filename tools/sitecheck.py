@@ -2775,6 +2775,66 @@ class Element:
         return False
 
 
+# M4 PR 3 fix round 12 (delta review 11 finding 1): the end tags a start tag
+# implies. Python's parser nests every start tag where it stands, while the
+# HTML parser's "in body", "in table", "in row", "in cell", "in caption",
+# "in column group" and "in select" insertion modes close, pop, ignore,
+# rename or move elements for some start tags while a matching element is
+# open, so the static tree is not the browser's (<p class="lead"><div> ends
+# the lead; <a> inside <a> ends the first link). RenderPage refuses every
+# such start tag (IMPLIED_RULES, one rule per spec step, checked against the
+# open elements outside <svg> and <math>), and text that the table modes
+# move out of the table (foster parenting). Reflow case (9) is the closure
+# for parser rewrites; these rules mirror the spec so that check.sh catches
+# them without Chrome.
+SPECIAL_TAGS = frozenset(
+    "address applet area article aside base basefont bgsound blockquote body br button "
+    "caption center col colgroup dd details dir div dl dt embed fieldset figcaption figure "
+    "footer form frame frameset h1 h2 h3 h4 h5 h6 head header hgroup hr html iframe img "
+    "input keygen li link listing main marquee menu meta nav noembed noframes noscript "
+    "object ol p param plaintext pre script search section select source style summary "
+    "table tbody td template textarea tfoot th thead title tr track ul wbr xmp".split())
+SCOPE_BOUNDARY = frozenset("applet caption html table td th marquee object template".split())
+FORMATTING_MARKERS = frozenset("applet object marquee template td th caption".split())
+HEADING_TAGS = frozenset(f"h{n}" for n in range(1, 7))
+# "close a p element" if a p is in button scope (in body).
+CLOSE_P_TAGS = frozenset(
+    "address article aside blockquote center details dialog dir div dl fieldset figcaption "
+    "figure footer header hgroup main menu nav ol p search section summary ul pre listing "
+    "form li dd dt plaintext table hr xmp".split()) | HEADING_TAGS
+TABLE_PARTS = frozenset("caption col colgroup tbody td tfoot th thead tr".split())
+TABLE_CONTEXT = frozenset("table tbody thead tfoot tr".split())
+TABLE_ALLOWED = TABLE_PARTS | frozenset({"script", "style", "template"})
+RUBY_TAGS = frozenset("rb rp rt rtc".split())
+IMPLIED_RULES = {
+    "close-p": "closes the open <p> first (\"close a p element\")",
+    "heading-in-heading": "pops the open heading first",
+    "li-in-li": "closes the open <li> first",
+    "dd-dt-in-dd-dt": "closes the open <dd> or <dt> first",
+    "a-in-a": "ends the open <a> first (adoption agency) and reopens what it closed",
+    "nobr-in-nobr": "ends the open <nobr> first (adoption agency)",
+    "button-in-button": "closes the open <button> first",
+    "form-in-form": "ignores the start tag (the form element pointer is set)",
+    "option-in-option": "pops the open <option> (or, in a select, <optgroup>) first",
+    # Chrome 143 builds a customizable select and keeps most content; the
+    # "in select" mode of other parsers drops it, so it is refused for all.
+    "select-content": "closes the <select> or ignores the start tag (in select)",
+    "implied-tbody": "inserts a <tbody> first (in table)",
+    "implied-tr": "inserts a <tr> first (in table body)",
+    "implied-colgroup": "inserts a <colgroup> first (in table)",
+    "colgroup-content": "closes the <colgroup> first (in column group)",
+    "table-part-in-cell": "closes the open cell first (in cell)",
+    "table-part-in-row": "closes the open <tr> first (in row)",
+    "table-part-in-section": "closes the open table section first (in table body)",
+    "table-part-in-caption": "closes the open <caption> first (in caption)",
+    "table-in-table": "closes the open <table> first (in table)",
+    "foster-parented": "moves the element in front of the table (foster parenting)",
+    "ruby-implied": "closes the open ruby annotation first (generate implied end tags)",
+    "image-renamed": "reads <image> as <img>",
+    "frameset-in-body": "ignores the start tag (in body)",
+}
+
+
 class RenderPage(Page):
     """Page, plus an element tree that keeps each element's text and class
     list, so the render rules can be scoped to the class hooks."""
@@ -2796,6 +2856,10 @@ class RenderPage(Page):
         # outside <svg> and <math>, and end tags that close no open element.
         self.self_closed = []
         self.stray = []
+        # (rule of IMPLIED_RULES, tag, the open element it meets) for every
+        # start tag the HTML parser would not nest where it stands, and
+        # ("foster-text", text, element) for table text it moves out.
+        self.implied = []
         # The markup: findings of foreign_markup_problems; cmd_render sets
         # them on every HTML page.
         self.markup = []
@@ -2814,8 +2878,95 @@ class RenderPage(Page):
         self._open[-1].children.append(el)
         return el
 
+    def _scope(self, targets, boundary):
+        for el in reversed(self._open[1:]):
+            if el.tag in targets:
+                return el
+            if el.tag in boundary or el.tag in FOREIGN_ROOTS:
+                return None
+        return None
+
+    def _implied(self, tag):
+        """The IMPLIED_RULES this start tag meets, with the open element."""
+        if any(el.tag in FOREIGN_ROOTS for el in self._open):
+            return []
+        top = self._open[-1]
+        hits = []
+
+        def hit(rule, el):
+            hits.append((rule, tag, el.tag))
+        p = self._scope({"p"}, SCOPE_BOUNDARY | {"button"})
+        if tag in CLOSE_P_TAGS and p is not None:
+            hit("close-p", p)
+        if tag in HEADING_TAGS and top.tag in HEADING_TAGS:
+            hit("heading-in-heading", top)
+        for names, rule in (({"li"}, "li-in-li"), ({"dd", "dt"}, "dd-dt-in-dd-dt")):
+            if tag in names:
+                for el in reversed(self._open[1:]):
+                    if el.tag in names:
+                        hit(rule, el)
+                        break
+                    if el.tag in SPECIAL_TAGS and el.tag not in ("address", "div", "p"):
+                        break
+        for name, rule in (("a", "a-in-a"),):
+            if tag == name:
+                for el in reversed(self._open[1:]):
+                    if el.tag == name:
+                        hit(rule, el)
+                        break
+                    if el.tag in FORMATTING_MARKERS:
+                        break
+        if tag == "nobr" and self._scope({"nobr"}, SCOPE_BOUNDARY) is not None:
+            hit("nobr-in-nobr", top)
+        if tag == "button" and self._scope({"button"}, SCOPE_BOUNDARY) is not None:
+            hit("button-in-button", top)
+        if tag == "form" and any(el.tag == "form" for el in self._open) \
+                and not any(el.tag == "template" for el in self._open):
+            hit("form-in-form", next(el for el in self._open if el.tag == "form"))
+        select = next((el for el in self._open if el.tag == "select"), None)
+        # "in body": an option or optgroup start tag pops an open option; in
+        # a select an optgroup also closes an open optgroup.
+        if (tag in ("option", "optgroup") and top.tag == "option") \
+                or (tag == "optgroup" and top.tag == "optgroup" and select is not None):
+            hit("option-in-option", top)
+        if select is not None and tag not in ("option", "optgroup", "hr"):
+            hit("select-content", select)
+        cell = self._scope({"td", "th"}, {"html", "table", "template"})
+        if tag in TABLE_PARTS and cell is not None:
+            hit("table-part-in-cell", cell)
+        row = self._scope({"tr"}, {"html", "table", "template"})
+        if tag in TABLE_PARTS - {"td", "th"} and row is not None:
+            hit("table-part-in-row", row)
+        section = self._scope({"tbody", "thead", "tfoot"}, {"html", "table", "template"})
+        if tag in TABLE_PARTS - {"td", "th", "tr"} and section is not None:
+            hit("table-part-in-section", section)
+        caption = self._scope({"caption"}, {"html", "table", "template"})
+        if tag in TABLE_PARTS and caption is not None:
+            hit("table-part-in-caption", caption)
+        if tag == "tr" and top.tag == "table":
+            hit("implied-tbody", top)
+        if tag in ("td", "th") and top.tag in ("table", "tbody", "thead", "tfoot"):
+            hit("implied-tr", top)
+        if tag == "col" and top.tag == "table":
+            hit("implied-colgroup", top)
+        if top.tag == "colgroup" and tag not in ("col", "template"):
+            hit("colgroup-content", top)
+        if tag == "table" and top.tag in TABLE_CONTEXT:
+            hit("table-in-table", top)
+        if top.tag in TABLE_CONTEXT and tag not in TABLE_ALLOWED and tag != "table":
+            hit("foster-parented", top)
+        if (tag in ("rb", "rtc") and top.tag in RUBY_TAGS) \
+                or (tag in ("rp", "rt") and top.tag in ("rb", "rp", "rt")):
+            hit("ruby-implied", top)
+        if tag == "image":
+            hit("image-renamed", top)
+        if tag == "frameset":
+            hit("frameset-in-body", top)
+        return hits
+
     def handle_starttag(self, tag, attrs):
         super().handle_starttag(tag, attrs)
+        self.implied += self._implied(tag)
         el = self._tree_element(tag, attrs)
         if tag == "script":
             ld = el.attrs.get("type", "").strip().lower() == JSON_LD
@@ -2825,6 +2976,8 @@ class RenderPage(Page):
 
     def handle_startendtag(self, tag, attrs):
         super().handle_startendtag(tag, attrs)
+        # The HTML parser reads <x/> as the start tag <x> (the slash aside).
+        self.implied += self._implied(tag)
         if tag not in VOID_ELEMENTS and tag not in FOREIGN_ROOTS \
                 and not any(el.tag in FOREIGN_ROOTS for el in self._open):
             self.self_closed.append(tag)
@@ -2859,7 +3012,11 @@ class RenderPage(Page):
         super().handle_data(data)
         if self._script is not None:
             self._script.append(data)
-        self._open[-1].children.append(data)
+        top = self._open[-1]
+        if top.tag in TABLE_CONTEXT and data.strip(ASCII_WHITESPACE) \
+                and not any(el.tag in FOREIGN_ROOTS for el in self._open):
+            self.implied.append(("foster-text", data, top.tag))
+        top.children.append(data)
 
 
 def squash(text):
@@ -2942,6 +3099,20 @@ def foreign_markup_problems(page):
         problems.append(f"markup: {page.self_closed.count(tag)} <{tag}/> written self-closing; "
                         f"<{tag}> is not a void element, so the HTML parser ignores the slash "
                         "and leaves it open")
+    for rule, tag, where in dict.fromkeys(page.implied):
+        n = page.implied.count((rule, tag, where))
+        if rule == "foster-text":
+            problems.append(f"markup: the text {show(tag, 60)} directly in <{where}>: the HTML "
+                            "parser moves it in front of the table (foster parenting), so "
+                            "the static tree is not the browser's")
+        else:
+            problems.append(f"markup: {n} <{tag}> start tag(s) while <{where}> is open: the "
+                            f"HTML parser {IMPLIED_RULES[rule]} ({rule}), so the static tree "
+                            "is not the browser's; close the element before the tag")
+    for char in getattr(page, "raw_controls", []):
+        problems.append(f"markup: the page holds U+{ord(char):04X}; the HTML parser reads it "
+                        "otherwise than this check (a line feed, a dropped or replaced "
+                        "character), so no built page holds it")
     for tag in dict.fromkeys(page.stray):
         problems.append(f"markup: {page.stray.count(tag)} </{tag}> end tag(s) that close no "
                         "open element; the browser does not always ignore one (</p> inserts "
@@ -2951,6 +3122,10 @@ def foreign_markup_problems(page):
 
 def parse_render_page(text):
     page = RenderPage()
+    # Fix round 12: the tokenizer-level forms Python reads otherwise than the
+    # HTML parser (U+000D, which the input stream turns into a line feed,
+    # and U+0000, which "in body" drops and attributes read as U+FFFD).
+    page.raw_controls = [c for c in ("\r", "\x00") if c in text]
     page.feed(text)
     page.close()
     return page
