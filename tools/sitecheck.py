@@ -8959,6 +8959,17 @@ HEAD_SUFFIX = [
 ]
 HEAD_SCRIPT = ("script", {"src": None, "integrity": None, "defer": ""})
 HEAD_JSONLD = ("script", {"type": JSON_LD})
+# Fix round 11 (delta review 10 finding 1): the document skeleton. The HTML
+# parser builds exactly one <html>, <head> and <body>; a later html or body
+# start tag is no element but adds its attributes to the one the page has
+# (so <body hidden> or <body aria-hidden="true"> anywhere hides the whole
+# page), and a later head start tag is ignored, while Python keeps each as
+# a nested element. So every page holds exactly one of each, at its place
+# (#document > html > head, html > body), nothing but ASCII whitespace after
+# <body> (the browser moves anything there into the body), and exactly the
+# attributes baseof.html emits (SKELETON_ATTRS), so no page-kind
+# conditional in baseof.html can add one either.
+SKELETON_ATTRS = {"html": {"lang": "en"}, "head": {}, "body": {}}
 NOT_FOUND_REL = "public/404.html"
 RECORD_SECTIONS_REL = ("public/reports/", "public/campaigns/")
 
@@ -8975,6 +8986,45 @@ def head_spec(rel):
     if rel.startswith(RECORD_SECTIONS_REL) and rel.endswith("/index.html"):
         spec.append(HEAD_JSONLD)  # a section page or a record page
     return spec
+
+
+def skeleton_problems(tree, html, head):
+    """Rule (m), the skeleton (see SKELETON_ATTRS): html is the single
+    <html> right inside the document or None, head its single <head> or
+    None."""
+    problems = []
+    bodies = [el for el in html.children if isinstance(el, Element) and el.tag == "body"] \
+        if html is not None else []
+    body = bodies[0] if bodies else None
+    if html is not None and body is None:
+        problems.append("(m) the page has no <body> right inside its <html>")
+    for el in tree.root.walk():
+        if el.tag in SKELETON_ATTRS and el not in (html, head, body):
+            where = el.parent.tag if el.parent is not None else "nothing"
+            problems.append(f"(m) a second <{el.tag}> {show(el.attrs, 120)} in <{where}>: the "
+                            f"browser makes no element of it and adds its attributes to the "
+                            f"page's one <{el.tag}> (a head start tag it ignores), so "
+                            "hidden, aria-hidden or inert there hides the whole page; one "
+                            "<html>, <head> and <body> each, at their place")
+    for el, tag in ((html, "html"), (head, "head"), (body, "body")):
+        if el is not None and el.attrs != SKELETON_ATTRS[tag]:
+            problems.append(f"(m) <{tag}> has the attributes {show(el.attrs, 120)}; "
+                            f"baseof.html emits exactly {show(SKELETON_ATTRS[tag], 60)}, on "
+                            "every page, so no attribute there can hide, translate or "
+                            "restyle the page")
+    after = []
+    if body is not None:
+        after += html.children[html.children.index(body) + 1:]
+    if html is not None:
+        after += tree.root.children[tree.root.children.index(html) + 1:]
+    for item in after:
+        if isinstance(item, Element):
+            problems.append(f"(m) <{item.tag}> after <body>: the browser moves it into the "
+                            "body, so the page is not the tree the static checks read")
+        elif item.strip(ASCII_WHITESPACE):
+            problems.append(f"(m) the text {show(item, 60)} after <body>: the browser moves it "
+                            "into the body, so the page is not the tree the static checks read")
+    return problems
 
 
 def head_problems(text, rel, built):
@@ -9013,6 +9063,7 @@ def head_problems(text, rel, built):
     if head is None:
         problems.append("(m) the page has no single <head> right inside its single <html>; "
                         "script, link, meta and base work only as children of that head")
+    problems += skeleton_problems(tree, html, head)
     for el in tree.root.walk():
         if el.tag in HEAD_ONLY_TAGS and (head is None or el.parent is not head):
             chain, parent = [], el.parent
@@ -9491,8 +9542,10 @@ REFLOW_HEAD_SCRIPT = r"""
 # file's elements is html, svg below <svg> and math below <math>, html again
 # below <foreignObject>.
 REFLOW_REGION_KINDS = ("the search form", "#search-results", ".index-list", ".no-report")
-REFLOW_REGIONS_SCRIPT = r"""
-(function () {
+# The tree serialization both browser halves of case (9) share: an
+# element as [tag, namespace, attributes, children], a text as
+# ["#text", data], adjacent text merged, comments skipped.
+REFLOW_TREE_JS = r"""
   var NS = {"http://www.w3.org/1999/xhtml": "html", "http://www.w3.org/2000/svg": "svg",
             "http://www.w3.org/1998/Math/MathML": "math"};
   function ns(el) { return NS[el.namespaceURI] || String(el.namespaceURI); }
@@ -9533,6 +9586,8 @@ REFLOW_REGIONS_SCRIPT = r"""
       out.push([p.localName.toLowerCase(), ns(p), attrs(p)]);
     return out;
   }
+"""
+REFLOW_REGIONS_SCRIPT = "(function () {\n" + REFLOW_TREE_JS + r"""
   function kind(el) {
     var html = ns(el) === "html";
     if (html && el.localName === "form" && tokens(el.getAttribute("role")).indexOf("search") >= 0)
@@ -9553,20 +9608,127 @@ REFLOW_REGIONS_SCRIPT = r"""
 """
 
 
+# Case (9), the whole document (M4 PR 3 fix round 11, delta review 10
+# finding 1): on every page of both trees, in S2 (scripting off, so no
+# script has changed the DOM and a <noscript> holds markup, as Python's
+# parser reads it), document.documentElement with its attributes and its
+# whole subtree must equal the file's <html> as parse_render_page reads it
+# (static_document). Not only the pinned regions: a second <body hidden>
+# whose attributes Chrome merges onto the page's one <body>, a reopened
+# formatting element or a foreign-content breakout on a report page differ
+# here, whatever parser rule caused them.
+REFLOW_DOCUMENT_SCRIPT = ("(function () {\n" + REFLOW_TREE_JS
+                          + "  return tree(document.documentElement);\n})()\n")
+
+
+def static_spaces(root):
+    """{id(element): namespace} of every element under root, as the static
+    model reads it: html, svg below <svg>, math below <math>, html again
+    below <foreignObject> (case (9) reports where the browser differs)."""
+    spaces = {}
+    for el in root.walk():  # document order: a parent before its children
+        if el is root:
+            continue
+        parent = el.parent
+        up = spaces.get(id(parent), "html") if parent is not None else "html"
+        if up == "html" and el.tag in ("svg", "math"):
+            spaces[id(el)] = el.tag
+        elif up == "svg" and parent.tag == "foreignobject":
+            spaces[id(el)] = "html"
+        else:
+            spaces[id(el)] = up
+    return spaces
+
+
+def merge_text(kids):
+    """Adjacent texts merged and empty ones dropped, as the browser's
+    serialization in REFLOW_TREE_JS has them."""
+    out = []
+    for kid in kids:
+        if kid[0] == "#text":
+            if not kid[1]:
+                continue
+            if out and out[-1][0] == "#text":
+                out[-1] = ["#text", out[-1][1] + kid[1]]
+                continue
+        out.append(kid)
+    return out
+
+
+def static_subtree(el, spaces):
+    """el as REFLOW_TREE_JS serializes it: [tag, namespace, attributes,
+    children], texts merged."""
+    kids = [static_subtree(c, spaces) if isinstance(c, Element) else ["#text", c]
+            for c in el.children]
+    return [el.tag, spaces[id(el)], dict(el.attrs), merge_text(kids)]
+
+
+# What the HTML parser does by the spec that parse_render_page does not
+# model, applied to the file's tree before the comparison and named one by
+# one (no other tolerance): (N1) whitespace before <head> inside <html> is
+# dropped ("before head" insertion mode ignores it); (N2) everything after
+# <body> inside <html>, and everything after </html> in the document, ends
+# up at the end of the body ("after body" and "after after body" process it
+# with the "in body" rules, and </body> leaves the body the current element);
+# whitespace before <html> is dropped too ("before html" ignores it), and it
+# is not under <html> anyway; (N3) a line feed right after a <pre>,
+# <listing> or <textarea> start tag is dropped ("in body": "if the next
+# token is a U+000A LINE FEED (LF) character token, then ignore that
+# token"). CR was normalised by read_text, as the input stream
+# preprocessing does. Anything else the parser rewrites (an implied
+# <tbody>, foster parenting, attributes merged onto <html> or <body>, a
+# reopened formatting element, a breakout) is a difference, and site rule
+# (m) refuses the skeleton forms statically.
+LEADING_LF_TAGS = ("pre", "listing", "textarea")
+
+
+def static_document(text):
+    """The file's <html> as REFLOW_DOCUMENT_SCRIPT serializes the browser's,
+    after N1 to N3 above, or None without a single <html> with a <body>."""
+    tree = parse_render_page(text)
+    top = [c for c in tree.root.children if isinstance(c, Element)]
+    htmls = [el for el in top if el.tag == "html"]
+    if len(htmls) != 1:
+        return None
+    html = htmls[0]
+    spaces = static_spaces(tree.root)
+    doc = static_subtree(html, spaces)
+    kids = doc[3]
+    tags = [k[0] for k in kids]
+    if "body" not in tags:
+        return None
+    if "head" in tags:  # N1
+        h = tags.index("head")
+        kids[:h] = [k for k in kids[:h] if not (k[0] == "#text"
+                                                and not k[1].strip(ASCII_WHITESPACE))]
+        tags = [k[0] for k in kids]
+    b = tags.index("body")
+    after = kids[b + 1:]  # N2
+    del kids[b + 1:]
+    index = tree.root.children.index(html)
+    for c in tree.root.children[index + 1:]:
+        after.append(static_subtree(c, spaces) if isinstance(c, Element) else ["#text", c])
+    body = kids[b]
+    body[3] = merge_text(body[3] + after)
+
+    def lf(item):  # N3
+        if item[0] == "#text":
+            return
+        if item[0] in LEADING_LF_TAGS and item[1] == "html" and item[3] \
+                and item[3][0][0] == "#text" and item[3][0][1].startswith("\n"):
+            item[3][0] = ["#text", item[3][0][1][1:]]
+            item[3][:] = merge_text(item[3])
+        for k in item[3]:
+            lf(k)
+    lf(doc)
+    return doc
+
+
 def static_regions(text):
     """The regions of REFLOW_REGIONS_SCRIPT as parse_render_page reads the
     page, in document order: [[kind, chain, tree]]."""
     tree = parse_render_page(text)
-    spaces = {}
-
-    def namespace(el):
-        parent = el.parent
-        up = spaces.get(id(parent), "html") if parent is not None else "html"
-        if up == "html" and el.tag in ("svg", "math"):
-            return el.tag
-        if up == "svg" and parent.tag == "foreignobject":
-            return "html"
-        return up
+    spaces = static_spaces(tree.root)
 
     def split(value):
         return [t for t in re.split(r"[\t\n\f\r ]+", value) if t]
@@ -9584,26 +9746,10 @@ def static_regions(text):
             return ".no-report"
         return None
 
-    def subtree(el):
-        kids = []
-        for child in el.children:
-            if isinstance(child, Element):
-                kids.append(subtree(child))
-                continue
-            data = child
-            if not data:
-                continue
-            if kids and kids[-1][0] == "#text":
-                kids[-1][1] += data
-            else:
-                kids.append(["#text", data])
-        return [el.tag, spaces[id(el)], dict(el.attrs), kids]
-
-    elements = [el for el in tree.root.walk() if el is not tree.root]
-    for el in elements:  # document order: a parent before its children
-        spaces[id(el)] = namespace(el)
     out = []
-    for el in elements:
+    for el in tree.root.walk():
+        if el is tree.root:
+            continue
         found = kind(el)
         if found is None:
             continue
@@ -9611,7 +9757,7 @@ def static_regions(text):
         while parent is not None and parent is not tree.root:
             chain.append([parent.tag, spaces[id(parent)], dict(parent.attrs)])
             parent = parent.parent
-        out.append([found, chain, subtree(el)])
+        out.append([found, chain, static_subtree(el, spaces)])
     return out
 
 
@@ -9644,7 +9790,10 @@ def tree_difference(seen, parsed, where):
     for i in range(max(len(seen[3]), len(parsed[3]))):
         a = seen[3][i] if i < len(seen[3]) else None
         b = parsed[3][i] if i < len(parsed[3]) else None
-        found = tree_difference(a, b, f"{where} > child {i + 1}")
+        here = b if isinstance(b, list) and b else a
+        label = ("text" if here[0] == "#text" else f"<{here[0]}>") \
+            if isinstance(here, list) and here else "nothing"
+        found = tree_difference(a, b, f"{where} > child {i + 1} {label}")
         if found:
             return found
     return None
@@ -10361,7 +10510,7 @@ def cmd_reflow(args):
     log_path = None
     launched = False
     n_items = 0
-    n_copy = n_search = n_reveals = n_revealed = n_heads = n_regions = 0
+    n_copy = n_search = n_reveals = n_revealed = n_heads = n_regions = n_documents = 0
     try:
         # The launch: start Chrome and wait for its first answer, within
         # args.launch_timeout (REFLOW_LAUNCH_TIMEOUT). Only the two launch
@@ -10681,6 +10830,23 @@ def cmd_reflow(args):
                 findings.add(where, f"did not load with scripting off: {error}")
             else:
                 copy_state(where, REFLOW_STATES[2], False)
+                # (9) the whole document in the browser, S2 (fix round 11).
+                seen = reflow_value(tools, session, REFLOW_DOCUMENT_SCRIPT, where) or None
+                parsed = static_document((public / rel).read_text(encoding="utf-8",
+                                                                  errors="replace"))
+                if parsed is None:
+                    findings.add(where, "(9) the file has no single <html> with a <body>, so "
+                                 "its document cannot be compared with the browser's")
+                elif seen == parsed:
+                    n_documents += 1
+                else:
+                    findings.add(where, "(9) the document differs between the browser "
+                                 "(scripting off) and the file: "
+                                 + str(tree_difference(seen, parsed, "<html>"))
+                                 + "; the browser read the page another way than the static "
+                                 "checks (attributes merged onto <html> or <body>, a "
+                                 "formatting element reopened, an implied end tag or element, "
+                                 "foreign content)")
             tools.send("Emulation.setScriptExecutionDisabled", {"value": False},
                        session=session)
             n_copy += len(static_hidden["copy"])
@@ -10717,7 +10883,8 @@ def cmd_reflow(args):
                            f"results hidden until a query: {n_search} in 3 states, "
                            f"{n_revealed} sections revealed and reachable; "
                            f"skip-link reveals: {n_reveals}; heads as parsed: {n_heads}; "
-                           f"pinned regions as parsed: {n_regions}")
+                           f"pinned regions as parsed: {n_regions}; documents as parsed "
+                           f"(scripting off): {n_documents}")
 
 
 # ---------------------------------------------------------------------------

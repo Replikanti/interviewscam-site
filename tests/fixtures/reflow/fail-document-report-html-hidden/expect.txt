@@ -1,0 +1,1 @@
+(9) the document differs between the browser (scripting off) and the file: <html>: attribute hidden is '' in the browser, absent in the file

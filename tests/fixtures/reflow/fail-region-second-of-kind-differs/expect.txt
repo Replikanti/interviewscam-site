@@ -1,1 +1,1 @@
-(9) a pinned region differs between the browser and the file: .index-list 2 <ul> > child 2 > child 1: the browser has <b>, the file text 'y'
+(9) a pinned region differs between the browser and the file: .index-list 2 <ul> > child 2 <li> > child 1 text: the browser has <b>, the file text 'y'

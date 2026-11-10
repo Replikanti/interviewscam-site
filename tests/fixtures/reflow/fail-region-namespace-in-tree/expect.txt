@@ -1,1 +1,1 @@
-(9) a pinned region differs between the browser and the file: the search form 1 <form> > child 1 > child 2 > child 1 > child 1: the browser has it in the html namespace, the file svg
+(9) a pinned region differs between the browser and the file: the search form 1 <form> > child 1 <label> > child 2 <svg> > child 1 <desc> > child 1 <span>: the browser has it in the html namespace, the file svg

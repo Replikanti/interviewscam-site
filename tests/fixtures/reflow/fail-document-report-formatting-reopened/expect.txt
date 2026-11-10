@@ -1,0 +1,1 @@
+(9) the document differs between the browser (scripting off) and the file: <html> > child 2 <body> > child 3 <main> > child 8 <section> > child 1 <h2> > child 1 <span>: the browser has <s>, the file <span>
