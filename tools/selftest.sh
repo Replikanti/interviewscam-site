@@ -1317,6 +1317,30 @@ PINNED
     n_failed=$((n_failed + 1))
   fi
 
+  # render-search-count (M4 PR 3 fix round 12b, QA recheck of 54d4517): the
+  # COUNT=<n> expectation itself. Rows of the real table with a wrong count
+  # must each fail: one finding pinned as 0 and as 2, and two findings pinned
+  # as 1 and as 3, so a runner that ignores the count, reads it as at least
+  # or at most n, or as "some findings" fails this line.
+  count_table=$(mktemp)
+  awk -F'\t' -v OFS='\t' '
+    $1 == "unread-home-form-icon" { for (c = 0; c <= 2; c += 2) { r = $0; sub(/COUNT=1 /, "COUNT=" c " ", r); split(r, f, "\t"); f[1] = f[1] "-count-" c; print f[1], f[2], f[3], f[4], f[5] } }
+    $1 == "unread-unclosed-only-finding" { for (c = 1; c <= 3; c += 2) { r = $0; sub(/COUNT=2 /, "COUNT=" c " ", r); split(r, f, "\t"); f[1] = f[1] "-count-" c; print f[1], f[2], f[3], f[4], f[5] } }
+  ' "$FIXTURES/render/search-cases.tsv" >"$count_table"
+  search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$count_table" \
+    "$FIXTURES/render/pass-search" "$SELFTEST_ROOT/schema" >"$out" 2>&1
+  rm -f "$count_table"
+  count_rows=$(grep -cE '^(ok   |FAIL )render-search/.*-count-[0-9]' "$out")
+  count_fails=$(grep -cE '^FAIL render-search/.*-count-[0-9]' "$out")
+  if [[ "$count_rows" == 4 && "$count_fails" == 4 ]]; then
+    echo "ok   render-search-count (4 rows with a wrong COUNT= each fail)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL render-search-count: $count_fails of $count_rows rows with a wrong COUNT= failed (need 4 of 4); output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+
   # fixture-script-copies (M4 PR 3 fix round 2, QA): every fixture copy of
   # assets/js/search.js, found by name under tests/fixtures/reflow (the
   # cases of case (6) load one), equals the real script byte for byte, so

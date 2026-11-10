@@ -9200,7 +9200,7 @@ def skeleton_problems(tree, html, head):
         if isinstance(item, Element):
             problems.append(f"(m) <{item.tag}> after <body>: the browser moves it into the "
                             "body, so the page is not the tree the static checks read")
-        elif item.strip(ASCII_WHITESPACE):
+        elif isinstance(item, str) and item.strip(ASCII_WHITESPACE):
             problems.append(f"(m) the text {show(item, 60)} after <body>: the browser moves it "
                             "into the body, so the page is not the tree the static checks read")
     return problems
