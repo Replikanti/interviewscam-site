@@ -614,3 +614,19 @@ g-azsvg	public/a-z/index.html	<div class="card"><ul class="index-list">	<p><svg>
 markup-chain-formatting-second	public/index.html	before you install or run anything.</p>	before you install or run anything.<span><s></p>	markup: 1 <s> element(s) closed without their own </s>
 markup-chain-formatting-third	public/index.html	before you install or run anything.</p>	before you install or run anything.<span><span><b></p>	markup: 1 <b> element(s) closed without their own </b>
 markup-chain-at-end-formatting-second	public/index.html	</footer>\n</body>\n</html>	</footer><span><i>	markup: 1 <i> element(s) closed without their own </i>
+# Fix round 11 (QA recheck of 5b1519d): a child element and a text below each
+# path and circle of the icons; and the unread pages: a page whose only
+# finding is markup: (COUNT=<n> pins the whole finding set), one per gate
+# (Home and rules 15 and 16, /a-z/, the per-page rules, the own-page
+# exemptions of rule 4, an unclosed element).
+svg-icon-search-circle-child-element	public/index.html	<circle cx="11" cy="11" r="6.5"/>	<circle cx="11" cy="11" r="6.5"><g></g></circle>	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-search-circle-child-text	public/index.html	<circle cx="11" cy="11" r="6.5"/>	<circle cx="11" cy="11" r="6.5">x</circle>	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-search-path-child-element	public/index.html	<path d="m16 16 4.5 4.5"/>	<path d="m16 16 4.5 4.5"><g></g></path>	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-search-path-child-text	public/index.html	<path d="m16 16 4.5 4.5"/>	<path d="m16 16 4.5 4.5">x</path>	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-warning-path-child-element	public/index.html	<path d="M12 3.5 2.5 20h19L12 3.5z"/>	<path d="M12 3.5 2.5 20h19L12 3.5z"><g></g></path>	is none of the three trees layouts/_partials/icon.html emits
+svg-icon-warning-path-child-text	public/index.html	<path d="M12 3.5 2.5 20h19L12 3.5z"/>	<path d="M12 3.5 2.5 20h19L12 3.5z">x</path>	is none of the three trees layouts/_partials/icon.html emits
+unread-home-form-icon	public/index.html	<path d="m16 16 4.5 4.5"/></svg>	<path d="m16 16 4.5 4.5"/><g></g></svg>	COUNT=1 is none of the three trees layouts/_partials/icon.html emits
+unread-a-z-entry-svg	public/a-z/index.html	<li><a href="/reports/meetfix/">MeetFix</a>	<li><a href="/reports/meetfix/">MeetFix</a><svg></svg>	COUNT=1 is none of the three trees layouts/_partials/icon.html emits
+unread-home-list-item-svg	public/index.html	<li><a href="/reports/meetfix/">MeetFix</a>	<li><a href="/reports/meetfix/">MeetFix</a><svg></svg>	COUNT=1 is none of the three trees layouts/_partials/icon.html emits
+unread-persona-page-svg	public/reports/persona-1/index.html	</h1>	</h1><svg></svg>	COUNT=2 is none of the three trees layouts/_partials/icon.html emits
+unread-unclosed-only-finding	public/a-z/index.html	</span></span></li>\n<li><a href="/reports/persona-2/">	</span></span>\n<li><a href="/reports/persona-2/">	COUNT=1 markup: 1 <li> element(s) closed without their own </li>

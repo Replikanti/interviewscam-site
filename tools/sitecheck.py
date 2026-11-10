@@ -5156,6 +5156,12 @@ def cmd_render(args):
                 page = parse_render_page(data.decode("utf-8"))
             except UnicodeDecodeError:
                 page = None
+            if page is not None and suffix in HTML_SUFFIXES:
+                # Set before any rule reads the page (fix round 11, QA recheck
+                # of 5b1519d): own_record reads page.unread, and a markup:
+                # finding found later left a page with foreign content read
+                # by the own-page exemptions of rule 4.
+                page.markup = foreign_markup_problems(page)
         scans = file_scans(rel, data, page)
         problems = []
         # Rule 8: the retired fact-check type appears nowhere, in any form.
@@ -5185,9 +5191,7 @@ def cmd_render(args):
                 problems.append(f"markup: {n} <{tag}> element(s) closed without their own "
                                 f"</{tag}>; close every <{tag}> explicitly, because the "
                                 "render check infers no end tags")
-            if suffix in HTML_SUFFIXES:
-                page.markup = foreign_markup_problems(page)
-                problems += page.markup
+            problems += page.markup
         if page is not None and suffix in HTML_SUFFIXES:
             pages[rel] = page
         if page is not None and suffix in HTML_SUFFIXES and not page.unread:

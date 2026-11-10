@@ -353,7 +353,9 @@ PY
 # (relative to the case; find `*` deletes the file instead) and runs the
 # real cmd_render with the feed rules off (the base has no feed) and the
 # search rules on: expect PASS needs exit 0, any other expect exit 1 with
-# that text in the output. A find string that is absent, or present more
+# that text in the output; an expect COUNT=<n> <text> (fix round 11, QA
+# recheck of 5b1519d) also needs exactly n findings, so a row can prove that
+# the class-scoped rules stay off on a page with a markup: finding. A find string that is absent, or present more
 # than once, fails the row, so a row cannot turn into a no-op when the
 # base case changes. The last line, render-search/table, counts the rows.
 # -B: no tools/__pycache__.
@@ -415,14 +417,22 @@ for row in rows:
                 records=str(root), schemas=str(schema_dir), fixtures=None, no_feed=True,
                 no_search=False, public=str(root / "public")))
         output = buffer.getvalue()
+    count = None
+    if expect.startswith("COUNT="):
+        head, _, expect = expect.partition(" ")
+        count = int(head[len("COUNT="):])
+    findings = sum(line.startswith("FAIL: ") for line in output.splitlines())
     if expect == "PASS" and rc == 0:
         print(f"ok   render-search/{name} (passed as expected)")
-    elif expect != "PASS" and rc == 1 and expect in output:
-        print(f"ok   render-search/{name} (failed as expected: {expect})")
+    elif expect != "PASS" and rc == 1 and expect in output \
+            and (count is None or findings == count):
+        print(f"ok   render-search/{name} (failed as expected: {expect}"
+              + ("" if count is None else f", exactly {count} finding(s)") + ")")
     else:
         print(f"FAIL render-search/{name}: expected "
-              f"{'exit 0' if expect == 'PASS' else 'exit 1 and ' + repr(expect)}; got exit "
-              f"{rc}; output:")
+              f"{'exit 0' if expect == 'PASS' else 'exit 1 and ' + repr(expect)}"
+              + ("" if count is None else f" with exactly {count} finding(s)")
+              + f"; got exit {rc} with {findings} finding(s); output:")
         for line in output.splitlines():
             print(f"     | {line}")
 if not rows or bad:
