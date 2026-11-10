@@ -648,6 +648,13 @@ selftest_main() {
   out="$(mktemp)"
   # shellcheck disable=SC2064 # expand now: the path is fixed
   trap "rm -f '$out'" RETURN
+  # Python exits with 120 when it cannot flush stdout at exit (ENOSPC, EDQUOT,
+  # ENOMEM or a closed pipe). Probe the temp file first, so a full or
+  # over-quota /tmp is named before 20 fixtures fail with empty output.
+  if ! { printf 'x' >"$out" && : >"$out"; } 2>/dev/null; then
+    echo "FAIL selftest: cannot write $out; the temp file system is full or over its quota ($(df -h "$(dirname "$out")" | awk 'NR==2 {print $1, $5, "used,", $4, "free"}'))"
+    return 1
+  fi
 
   for dir in "$FIXTURES"/*/*/; do
     dir="${dir%/}"
@@ -795,6 +802,16 @@ selftest_main() {
         continue
         ;;
     esac
+
+    # Exit 120 is Python's "could not flush stdout at exit": the output file
+    # is on a full or over-quota filesystem (or the pipe closed). The
+    # message itself went to the same failing file ($out, 2>&1), so name the
+    # cause here instead of printing an empty output.
+    if [[ $rc -eq 120 ]]; then
+      echo "FAIL $check/$name: exit 120, the check could not write its output to $out ($(df -h "$(dirname "$out")" | awk 'NR==2 {print $1, $5, "used,", $4, "free"}')); the temp file system is full or over its quota, or the output pipe closed; free space and rerun"
+      n_failed=$((n_failed + 1))
+      continue
+    fi
 
     if [[ "$kind" == pass ]]; then
       expect=""

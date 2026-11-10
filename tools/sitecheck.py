@@ -2805,7 +2805,10 @@ CLOSE_P_TAGS = frozenset(
 TABLE_PARTS = frozenset("caption col colgroup tbody td tfoot th thead tr".split())
 TABLE_CONTEXT = frozenset("table tbody thead tfoot tr".split())
 TABLE_ALLOWED = TABLE_PARTS | frozenset({"script", "style", "template"})
-RUBY_TAGS = frozenset("rb rp rt rtc".split())
+# "generate implied end tags" pops these (fix round 13, reviewer note
+# j-ruby): rb and rtc run it while a ruby is in scope, rp and rt too but
+# leave an rtc open.
+IMPLIED_END_TAGS = frozenset("dd dt li optgroup option p rb rp rt rtc".split())
 IMPLIED_RULES = {
     "close-p": "closes the open <p> first (\"close a p element\")",
     "heading-in-heading": "pops the open heading first",
@@ -2832,6 +2835,9 @@ IMPLIED_RULES = {
     "ruby-implied": "closes the open ruby annotation first (generate implied end tags)",
     "image-renamed": "reads <image> as <img>",
     "frameset-in-body": "ignores the start tag (in body)",
+    # "in body" ignores these start tags outside a table, frame anywhere
+    # (fix round 13, reviewer note j-tdout and QA's differential oracle).
+    "table-part-outside-table": "ignores the start tag outside a table",
 }
 
 
@@ -2929,6 +2935,13 @@ class RenderPage(Page):
         if (tag in ("option", "optgroup") and top.tag == "option") \
                 or (tag == "optgroup" and top.tag == "optgroup" and select is not None):
             hit("option-in-option", top)
+        # In a select, <hr> pops an open option or optgroup (fix round 13,
+        # reviewer note j-selhr); select-content exempts it only without one.
+        if tag == "hr" and select is not None:
+            opened = [el for el in self._open[self._open.index(select) + 1:]
+                      if el.tag in ("option", "optgroup")]
+            if opened:
+                hit("option-in-option", opened[-1])
         if select is not None and tag not in ("option", "optgroup", "hr"):
             hit("select-content", select)
         cell = self._scope({"td", "th"}, {"html", "table", "template"})
@@ -2955,13 +2968,18 @@ class RenderPage(Page):
             hit("table-in-table", top)
         if top.tag in TABLE_CONTEXT and tag not in TABLE_ALLOWED and tag != "table":
             hit("foster-parented", top)
-        if (tag in ("rb", "rtc") and top.tag in RUBY_TAGS) \
-                or (tag in ("rp", "rt") and top.tag in ("rb", "rp", "rt")):
+        if tag in ("rb", "rtc", "rp", "rt") \
+                and self._scope({"ruby"}, SCOPE_BOUNDARY) is not None \
+                and top.tag in (IMPLIED_END_TAGS if tag in ("rb", "rtc")
+                                else IMPLIED_END_TAGS - {"rtc"}):
             hit("ruby-implied", top)
         if tag == "image":
             hit("image-renamed", top)
         if tag == "frameset":
             hit("frameset-in-body", top)
+        if tag == "frame" or (tag in TABLE_PARTS and not any(
+                el.tag in ("table", "template") for el in self._open)):
+            hit("table-part-outside-table", top)
         return hits
 
     def handle_starttag(self, tag, attrs):
