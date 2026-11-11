@@ -11014,10 +11014,15 @@ def png_rows(data):
     return width, height, channels, rows
 
 
-def pixel_difference(first, second):
+def pixel_difference(first, second, tolerance=REFLOW_PAINT_TOLERANCE):
     """None when two screenshots (base64 PNG) are the same image, else the
-    count of differing pixels and their bounding box (case (8) and the
-    pinned regions' pixel occlusion check, fix round 2)."""
+    count of differing pixels and their bounding box (the pinned regions'
+    pixel occlusion check, fix round 2). A pixel differs when a channel
+    differs by more than tolerance: CI's Chrome 156 renders one pixel of a
+    rounded chip corner 1 of 255 apart between two captures of the same
+    paint (runs on 1de2f6f and a15a6e9), the raster noise case (7)'s
+    REFLOW_PAINT_TOLERANCE was measured on; an overprint differs by far
+    more (the px-* rows: dozens of pixels by 100 and more)."""
     a = png_rows(base64.b64decode(first))
     b = png_rows(base64.b64decode(second))
     if a[:3] != b[:3]:
@@ -11029,12 +11034,12 @@ def pixel_difference(first, second):
             continue
         for x in range(width):
             i = x * channels
-            if ra[i:i + channels] != rb[i:i + channels]:
+            delta = max(abs(p - q) for p, q in zip(ra[i:i + channels], rb[i:i + channels]))
+            if delta > tolerance:
                 count += 1
                 xs.append(x)
                 ys.append(y)
-                most = max(most, max(abs(p - q) for p, q in zip(ra[i:i + channels],
-                                                                 rb[i:i + channels])))
+                most = max(most, delta)
     if not count:
         return None
     return (f"{count} pixel(s) differ, x {min(xs)} to {max(xs)}, y {min(ys)} to {max(ys)} "
@@ -11849,10 +11854,10 @@ def reflow_hits(tools, session, findings, where, revealed=None):
                     "scale": 1}
             # The pixel occlusion check (fix round 2): the slice as rendered
             # and with everything outside the region hidden, both with the
-            # animations paused and no caret, must be the same image, read
-            # on the pixels wholly inside the region's box (a pixel the box
-            # only partly covers also shows its neighbours' antialiased
-            # edges, 1 pixel in CI's first run).
+            # animations paused and no caret, must be the same image within
+            # the raster noise (pixel_difference), read on the pixels wholly
+            # inside the region's box (a pixel the box only partly covers
+            # also shows its neighbours' antialiased edges).
             x0, x1 = math.ceil(clip["x"]), math.floor(clip["x"] + clip["width"])
             y0, y1 = math.ceil(clip["y"]), math.floor(clip["y"] + clip["height"])
             inner = {"x": x0, "y": y0, "width": max(x1 - x0, 1), "height": max(y1 - y0, 1),
