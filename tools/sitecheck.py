@@ -5207,6 +5207,27 @@ def search_results_problems(home):
     if region is None:
         return problems
     problems += chain_problems(region, HOME_CHAIN, f"rule 16: #{SEARCH_RESULTS} on Home")
+    # The children of Home's <main> up to the result box (M4 PR 4), tag and
+    # attributes as layouts/home.html emits them, so no element the template
+    # does not emit (a <dialog open> or any other layer) sits before or
+    # between the search form and its answers, where it could cover them.
+    if region.parent is not None and region.parent.tag == "main":
+        got = []
+        for child in region.parent.children:
+            if isinstance(child, Element):
+                got.append((child.tag, child.attrs))
+                if child is region:
+                    break
+        want = [("h1", {"class": "home-title"}), ("p", {"class": "lead"}),
+                ("form", dict(search_form_tree()[1])),
+                ("div", {"id": SEARCH_RESULTS, "class": SEARCH_OUT, "hidden": ""})]
+        if got != want:
+            def shown(items):
+                return ", ".join("<" + t + "".join(f" {k}={show(v, 30)}" for k, v in a.items())
+                                 + ">" for t, a in items)
+            problems.append(f"rule 16: Home's <main> holds {shown(got)} up to #{SEARCH_RESULTS}; "
+                            f"layouts/home.html emits exactly {shown(want)}, so no other "
+                            "element sits before or between the search form and its answers")
     what = f"rule 16: #{SEARCH_RESULTS} on Home"
     found = region_problems(region, search_region_tree(), what, "layouts/home.html")
     if found and found[0] == "shape":
@@ -9725,12 +9746,12 @@ REFLOW_HEIGHT = 640
 # attempt alone outlasts the longest stall seen, at most 70.3 s (PR 5 job
 # 20, image 20261101), so it is absorbed whether a killed Chrome keeps its
 # progress, the stall lies outside the VM, or only a fresh Chrome helps.
-# Upper bound: the 13-minute workflow cap (re-derived in M3 PR 10 fix
-# round 1, ADR-0004 Numbers) holds the slowest green run of that round
-# (370 s), a fully used window (2 x L) and one more 70 s stall, so L is at
-# most 170 s; 75 s leaves 190 s of the cap. Below 71 s job 20's shape
-# depends on a restart helping again; above 170 s an absorbed window plus
-# a second stall is cancelled at 13 minutes.
+# Upper bound: the 31-minute workflow cap (re-derived in M4 PR 4, ADR-0004
+# Numbers) holds the slowest green run of that PR (919 s), a fully used
+# window (2 x L) and one more 70 s stall, so L is at most 435 s; 75 s
+# leaves 720 s of the cap. Below 71 s job 20's shape depends on a restart
+# helping again; above 435 s an absorbed window plus a second stall is
+# cancelled at 31 minutes.
 REFLOW_LAUNCH_TIMEOUT = 75
 # The budget of every later answer (ADR-0003 Numbers). A 23-page call makes
 # about 70 page-level calls in 1.9 to 2.8 s on the runner, and no later call

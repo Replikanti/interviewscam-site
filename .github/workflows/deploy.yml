@@ -23,16 +23,16 @@ concurrency:
 jobs:
   pages-artifact:
     runs-on: ubuntu-24.04
-    # ADR-0004 Numbers, "check.sh workflow timeouts": re-derived in M3 PR 10
-    # fix round 1 (#4) from its own green runs of check.sh (case (7) also
-    # captures the skip link three times, 63 reflow fixtures); the slowest,
-    # 370 s (ci.yml check, run 42448235548, stall-free), sets both terms.
-    # Cap >= max(2 x 370 s = 740 s, 370 s + 2 x 75 s (REFLOW_LAUNCH_TIMEOUT)
-    # + 70 s = 590 s), rounded up to 13 min. Re-derive in the next PR that
-    # changes check.sh.
+    # ADR-0004 Numbers, "check.sh workflow timeouts": re-derived in M4 PR 4
+    # (Replikanti/interviewscam#5) from its own green runs of check.sh
+    # (reflow case (8), the hit test and paint check, 35 reflow-search rows,
+    # 47 render-report rows); the slowest, 919 s (lighthouse.yml build, run
+    # 42937840342, stall-free), sets both terms. Cap >= max(2 x 919 s =
+    # 1838 s, 919 s + 2 x 75 s (REFLOW_LAUNCH_TIMEOUT) + 70 s = 1139 s),
+    # rounded up to 31 min. Re-derive in the next PR that changes check.sh.
     # Same check.sh as the check job in ci.yml; a cap that is too low here
     # would block a deploy once M6 adds it.
-    timeout-minutes: 30
+    timeout-minutes: 31
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
