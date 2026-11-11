@@ -11571,14 +11571,15 @@ REFLOW_HIT_SCRIPT = r"""
     }
   }
   window.__iscRegions = regions.map(function (r) { return r[1]; });
-  // The occlusion check (fix round 1): every element that paints in a
-  // layer above the normal flow (positioned, transformed, translucent,
-  // filtered, clipped, isolated, blended, contained or with a z-index) and
-  // shows, outside a region and its ancestors, whose box meets the region's
-  // box is a finding, whatever its pointer-events: elementFromPoint skips a
-  // layer with pointer-events none, and a slice that still paints on its
-  // uncovered part passes the paint check. A layered ::before or ::after
-  // anywhere is a finding too: its box cannot be read, and none is emitted.
+  // The occlusion check (fix round 1): every element that shows, outside a
+  // region and its ancestors, whose box meets the region's box is a
+  // finding, whatever paints it there (a positioned or transformed layer,
+  // a negative margin, an inline-block or a flex item painted after the
+  // region's text) and whatever its pointer-events: elementFromPoint skips
+  // a layer with pointer-events none, and a slice that still paints on its
+  // uncovered part passes the paint check. The templates lay no element
+  // over another outside a region. A layered ::before or ::after anywhere
+  // is a finding too: its box cannot be read, and none is emitted.
   var vis = {opacityProperty: true, visibilityProperty: true};
   function layeredStyle(cs) {
     return cs.position !== "static" || cs.transform !== "none" || cs.translate !== "none" ||
@@ -11596,7 +11597,7 @@ REFLOW_HIT_SCRIPT = r"""
         pseudo.push(label(el) + p);
     });
     if (el.getClientRects().length === 0 || !el.checkVisibility(vis)) return;
-    if (layeredStyle(getComputedStyle(el))) layers.push(el);
+    layers.push(el);
   });
   function meets(a, b) {
     return a.left < b.right - 0.5 && b.left < a.right - 0.5 &&
@@ -11684,9 +11685,9 @@ def reflow_hits(tools, session, findings, where, revealed=None):
         what = f"{region['kind']} ({show(region['label'], 80)})"
         for layer in region.get("over", [])[:REFLOW_NAMED]:
             findings.add(where, f"(occlusion) {show(layer, 160)} lies over {what}: an element "
-                         "outside the region paints above it (positioned, transformed or "
-                         "another layer), whatever its pointer-events or z-index, so it can "
-                         "cover the region's words")
+                         "outside the region meets its box (a layer, a negative margin, an "
+                         "inline-block or flex item), whatever its pointer-events or z-index, "
+                         "so it can cover the region's words")
         for item in region.get("pseudo", []):
             findings.add(where, f"(occlusion) the pseudo-element {show(item, 120)} paints in its "
                          "own layer; its box cannot be read, so it could cover a pinned region "
