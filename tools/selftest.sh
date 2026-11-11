@@ -235,7 +235,7 @@ def render(root, schemas):
     with contextlib.redirect_stdout(buffer):
         rc = sitecheck.cmd_render(argparse.Namespace(
             records=str(root), schemas=str(schemas), fixtures=None, no_feed=False,
-            no_search=True, public=str(root / "public")))
+            no_search=True, no_report_pins=True, public=str(root / "public")))
     output = buffer.getvalue()
     return rc, output, sum(line.startswith("FAIL: ") for line in output.splitlines())
 
@@ -361,7 +361,7 @@ PY
 # base case changes. The last line, render-search/table, counts the rows.
 # -B: no tools/__pycache__.
 search_cases_runner() {
-  python3 -I -B - "$1" "$2" "$3" "$4" <<'PY'
+  python3 -I -B - "$1" "$2" "$3" "$4" "${5:-render-search}" <<'PY'
 import argparse
 import contextlib
 import importlib.util
@@ -375,6 +375,12 @@ spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
 sitecheck = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sitecheck)
 table, base, schema_dir = Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
+# The label of the lines (render-search, or render-report for rule 17), and
+# the switches the base case asks for, as in the fixture loop: the feed
+# rules with a feed.txt, rule 17 with a report-pins.txt.
+label = sys.argv[5]
+no_feed = not (base / "feed.txt").is_file()
+no_report_pins = not (base / "report-pins.txt").is_file()
 
 
 def unescape(text):
@@ -387,7 +393,7 @@ rows = [line.split("\t") for line in table.read_text(encoding="utf-8").splitline
 names, bad = set(), 0
 for row in rows:
     if len(row) < 5 or (len(row) - 5) % 2 or not row[0] or row[0] in names:
-        print(f"FAIL render-search/table: malformed or duplicate row {row!r}")
+        print(f"FAIL {label}/table: malformed or duplicate row {row!r}")
         bad += 1
         continue
     name, rel, find, replace, expect = row[:5]
@@ -398,7 +404,7 @@ for row in rows:
         shutil.copytree(base, root)
         path = root / rel
         if not path.is_file():
-            print(f"FAIL render-search/{name}: {rel} is not a file of {base.name}")
+            print(f"FAIL {label}/{name}: {rel} is not a file of {base.name}")
             continue
         if edits[0][0] == "*":
             path.unlink()
@@ -409,15 +415,15 @@ for row in rows:
                 counts.append(text.count(find))
                 text = text.replace(find, replace, 1)
             if counts != [1] * len(edits):
-                print(f"FAIL render-search/{name}: the find strings occur "
+                print(f"FAIL {label}/{name}: the find strings occur "
                       f"{counts} times in {rel} (in turn), the row needs exactly one each")
                 continue
             path.write_text(text, encoding="utf-8")
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             rc = sitecheck.cmd_render(argparse.Namespace(
-                records=str(root), schemas=str(schema_dir), fixtures=None, no_feed=True,
-                no_search=False, public=str(root / "public")))
+                records=str(root), schemas=str(schema_dir), fixtures=None, no_feed=no_feed,
+                no_search=False, no_report_pins=no_report_pins, public=str(root / "public")))
         output = buffer.getvalue()
     count = None
     if expect.startswith("COUNT="):
@@ -425,22 +431,215 @@ for row in rows:
         count = int(head[len("COUNT="):])
     findings = sum(line.startswith("FAIL: ") for line in output.splitlines())
     if expect == "PASS" and rc == 0:
-        print(f"ok   render-search/{name} (passed as expected)")
+        print(f"ok   {label}/{name} (passed as expected)")
     elif expect != "PASS" and rc == 1 and expect in output \
             and (count is None or findings == count):
-        print(f"ok   render-search/{name} (failed as expected: {expect}"
+        print(f"ok   {label}/{name} (failed as expected: {expect}"
               + ("" if count is None else f", exactly {count} finding(s)") + ")")
     else:
-        print(f"FAIL render-search/{name}: expected "
+        print(f"FAIL {label}/{name}: expected "
               f"{'exit 0' if expect == 'PASS' else 'exit 1 and ' + repr(expect)}"
               + ("" if count is None else f" with exactly {count} finding(s)")
               + f"; got exit {rc} with {findings} finding(s); output:")
         for line in output.splitlines():
             print(f"     | {line}")
 if not rows or bad:
-    print(f"FAIL render-search/table: {len(rows)} rows, {bad} malformed")
+    print(f"FAIL {label}/table: {len(rows)} rows, {bad} malformed")
 else:
-    print(f"ok   render-search/table ({len(rows)} rows)")
+    print(f"ok   {label}/table ({len(rows)} rows)")
+PY
+}
+
+# reflow_search_runner <sitecheck.py> <cases table> <base case> <search.js>
+# <chrome> (M4 PR 4, CI only): reflow case (8) one branch per row. A row is
+# name, file, find, replace, expect, an optional patch list and optional
+# further file, find and replace triples, applied in order. It copies
+# the base case (reflow/pass-search: Home, /a-z/, /feed.json and the built
+# assets of the fixture build) to a temporary directory and always puts
+# today's assets/js/search.js in as the built search script (its
+# integrity attribute on Home recomputed), so the rows run the real
+# script; file `search.js` edits that script, any other file is a path in
+# the tree. The find string must occur exactly once (a row never turns
+# into a no-op), `-` as find leaves the file as it is and `*` deletes it. The patch list
+# (NAME=number, comma-separated) sets module constants through importlib,
+# as reflow-launch/first-answer-deadline does (the aria-busy row shortens
+# REFLOW_TIMEOUT, the fetch row SEARCH_FETCH_BUDGET). Then the real
+# cmd_reflow runs with case (8) on: expect PASS needs exit 0, any other
+# expect exit 1 with that text in the output. The last line,
+# reflow-search/table, counts the rows. -B: no tools/__pycache__.
+reflow_search_runner() {
+  python3 -I -B - "$1" "$2" "$3" "$4" "$5" <<'PY'
+import argparse
+import base64
+import contextlib
+import hashlib
+import importlib.util
+import io
+import re
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+source, table, base, script, chrome = sys.argv[1:6]
+rows = [line.split("\t") for line in Path(table).read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")]
+real = Path(script).read_text(encoding="utf-8")
+names, bad = set(), 0
+for row in rows:
+    if len(row) < 5 or (len(row) > 6 and (len(row) - 6) % 3) or not row[0] \
+            or row[0] in names:
+        print(f"FAIL reflow-search/table: malformed or duplicate row {row!r}")
+        bad += 1
+        continue
+    name, expect = row[0], row[4]
+    names.add(name)
+    edits = [tuple(row[1:4])] + [tuple(row[i:i + 3]) for i in range(6, len(row), 3)]
+    edits = [(rel, f.replace("\\n", "\n").replace("\\t", "\t"),
+              r.replace("\\n", "\n").replace("\\t", "\t")) for rel, f, r in edits]
+    spec = importlib.util.spec_from_file_location("sitecheck", source)
+    sitecheck = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sitecheck)
+    for patch in (row[5].split(",") if len(row) == 6 and row[5] else []):
+        key, _, value = patch.partition("=")
+        setattr(sitecheck, key, float(value) if "." in value else int(value))
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "case"
+        shutil.copytree(base, root)
+        built = sorted((root / "js").glob("search.min.*.js"))
+        text, problem = real, None
+        for rel, find, replace in edits:
+            if rel == "search.js" and find != "-":
+                if text.count(find) != 1:
+                    problem = (f"the find string occurs {text.count(find)} times in "
+                               "assets/js/search.js, the row needs exactly one")
+                text = text.replace(find, replace, 1)
+        if len(built) != 1:
+            problem = f"the base holds {len(built)} built search scripts, it needs exactly one"
+        else:
+            data = text.encode("utf-8")
+            built[0].write_bytes(data)
+            home = root / "index.html"
+            page = home.read_text(encoding="utf-8")
+            tag = re.search(r'<script src=/js/search\.min\.[0-9a-f]+\.js integrity=(\S+) defer>',
+                            page)
+            if tag is None:
+                problem = "Home of the base has no search script tag"
+            else:
+                integrity = "sha384-" + base64.b64encode(hashlib.sha384(data).digest()).decode()
+                home.write_text(page.replace(tag.group(1), integrity, 1), encoding="utf-8")
+        for rel, find, replace in edits:
+            if problem or rel == "search.js" or find == "-":
+                continue
+            target = root / rel
+            if not target.is_file():
+                problem = f"{rel} is not a file of {base}"
+                continue
+            if find == "*":
+                target.unlink()
+                continue
+            body = target.read_text(encoding="utf-8")
+            if body.count(find) != 1:
+                problem = (f"the find string occurs {body.count(find)} times in {rel}, the "
+                           "row needs exactly one")
+                continue
+            target.write_text(body.replace(find, replace, 1), encoding="utf-8")
+        if problem:
+            print(f"FAIL reflow-search/{name}: {problem}")
+            continue
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            try:
+                rc = sitecheck.cmd_reflow(argparse.Namespace(
+                    public=str(root), chrome=chrome, no_search=False,
+                    launch_timeout=sitecheck.REFLOW_LAUNCH_TIMEOUT))
+            except sitecheck.UsageError as exc:
+                print(exc)
+                rc = 2
+        output = buffer.getvalue()
+    if expect == "PASS" and rc == 0:
+        print(f"ok   reflow-search/{name} (passed as expected)")
+    elif expect != "PASS" and rc == 1 and expect in output:
+        print(f"ok   reflow-search/{name} (failed as expected: {expect})")
+    else:
+        print(f"FAIL reflow-search/{name}: expected "
+              f"{'exit 0' if expect == 'PASS' else 'exit 1 and ' + repr(expect)}; got exit "
+              f"{rc}; output:")
+        for line in output.splitlines()[-12:]:
+            print(f"     | {line}")
+if not rows or bad:
+    print(f"FAIL reflow-search/table: {len(rows)} rows, {bad} malformed")
+else:
+    print(f"ok   reflow-search/table ({len(rows)} rows)")
+PY
+}
+
+# search_oracle_tables <sitecheck.py> <search.js> (M4 PR 4, the amendment's
+# item 4): the tables of search_expect, the oracle of reflow case (8), are
+# its own copies taken from ADR-0005; this line proves each equal to
+# sitecheck's table (DEFAULT_IGNORABLE, DOT_CHARS, DEFANGS plus hxxp) and to
+# the script's (IGNORABLE, DOTS, DEFANGS, SPACES against str.isspace,
+# SCHEMES, VALUE_LISTS, OBJECT_FIELDS, PARTIAL_MIN, PARTIAL_CAP), and names
+# every member that differs. Runs locally and in CI.
+search_oracle_tables() {
+  python3 -I -B - "$1" "$2" <<'PY'
+import importlib.util
+import json
+import re
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sc)
+js = Path(sys.argv[2]).read_text(encoding="utf-8")
+
+
+def js_value(name):
+    m = re.search(r"var " + name + r" = (.*?);\n", js, re.S)
+    if m is None:
+        return None
+    text = re.sub(r"0x([0-9A-Fa-f]+)", lambda h: str(int(h.group(1), 16)), m.group(1))
+    return json.loads(text)
+
+
+def ranges(pairs):
+    return {c for lo, hi in pairs for c in range(lo, hi + 1)}
+
+
+problems = []
+
+
+def compare(what, oracle, other):
+    oracle, other = set(oracle), set(other)
+    for member in sorted(oracle - other, key=repr):
+        problems.append(f"{what}: {member!r} is in the oracle's table only")
+    for member in sorted(other - oracle, key=repr):
+        problems.append(f"{what}: {member!r} is not in the oracle's table")
+
+
+compare("DEFAULT_IGNORABLE (sitecheck)", sc.ORACLE_IGNORABLE, sc.DEFAULT_IGNORABLE)
+compare("IGNORABLE (search.js)", [tuple(p) for p in sc.ORACLE_IGNORABLE],
+        [tuple(p) for p in js_value("IGNORABLE") or []])
+compare("DOT_CHARS (sitecheck)", sc.ORACLE_DOTS, sc.DOT_CHARS)
+compare("DOTS (search.js)", [ord(c) for c in sc.ORACLE_DOTS], js_value("DOTS") or [])
+compare("DEFANGS (sitecheck, plus hxxp)", sc.ORACLE_DEFANGS,
+        list(sc.DEFANGS) + [("hxxp", "http")])
+compare("DEFANGS (search.js)", sc.ORACLE_DEFANGS,
+        [tuple(p) for p in js_value("DEFANGS") or []])
+compare("SPACES (search.js) against str.isspace",
+        {c for c in range(0x110000) if chr(c).isspace()}, ranges(js_value("SPACES") or []))
+compare("SCHEMES (search.js)", sc.ORACLE_SCHEMES,
+        [s + js_value("SCHEME_END") for s in js_value("SCHEMES") or []])
+compare("VALUE_LISTS (search.js)", sc.ORACLE_VALUE_LISTS, js_value("VALUE_LISTS") or [])
+compare("OBJECT_FIELDS (search.js)", sc.ORACLE_OBJECT_FIELDS,
+        [tuple(p) for p in js_value("OBJECT_FIELDS") or []])
+compare("PARTIAL_MIN (search.js)", [sc.SEARCH_PARTIAL_MIN], [js_value("PARTIAL_MIN")])
+compare("PARTIAL_CAP (search.js)", [sc.SEARCH_PARTIAL_CAP], [js_value("PARTIAL_CAP")])
+for problem in problems:
+    print(f"FAIL search-oracle/tables: {problem}")
+if not problems:
+    print("ok   search-oracle/tables (the oracle's tables equal sitecheck's and search.js's)")
 PY
 }
 
@@ -644,7 +843,7 @@ selftest_main() {
   bash "$SELFTEST_ROOT/tools/fetch-tools.sh" || return 1
 
   local n_passed=0 n_failed=0 html_total=0 html_run=0 reflow_total=0 reflow_run=0
-  local dir check name kind out rc expect leak_fixtures feed_mode inputs_root
+  local dir check name kind out rc expect leak_fixtures feed_mode search_mode pins_mode inputs_root
   out="$(mktemp)"
   # shellcheck disable=SC2064 # expand now: the path is fixed
   trap "rm -f '$out'" RETURN
@@ -690,7 +889,9 @@ selftest_main() {
           continue
         fi
         reflow_run=$((reflow_run + 1))
-        reflow_check "$dir" >"$out" 2>&1
+        search_mode=no-search
+        [[ -f "$dir/search.txt" ]] && search_mode=""
+        reflow_check "$dir" "$search_mode" >"$out" 2>&1
         rc=$?
         ;;
       tokens)
@@ -762,8 +963,13 @@ selftest_main() {
         [[ -f "$dir/feed.txt" ]] && feed_mode=""
         search_mode=no-search
         [[ -f "$dir/search.txt" ]] && search_mode=""
+        # Rule 17 (the exact trees of a report page, M4 PR 4) only in a
+        # case with a report-pins.txt, which holds real built report pages:
+        # the other cases' hand-made report pages predate those templates.
+        pins_mode=no-report-pins
+        [[ -f "$dir/report-pins.txt" ]] && pins_mode=""
         render_check "$dir" "$SELFTEST_ROOT/schema" "$dir/public" "$leak_fixtures" \
-          "$feed_mode" "$search_mode" >"$out" 2>&1
+          "$feed_mode" "$search_mode" "$pins_mode" >"$out" 2>&1
         rc=$?
         ;;
       lighthouse)
@@ -931,6 +1137,45 @@ selftest_main() {
     n_failed=$((n_failed + 1))
   else
     echo "ok   wiring/render-search-rules (both render steps run rules 15 and 16; no --no-search)"
+    n_passed=$((n_passed + 1))
+  fi
+
+  # Wiring: both builds run rule 17, the exact trees of the report pages
+  # (M4 PR 4): neither render step, run against a stub sitecheck, passes
+  # --no-report-pins (check_main runs both steps, proven above).
+  local report_pins_args
+  report_pins_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render; step_render_fixtures)"
+  if [[ "$(grep -c '^render$' <<<"$report_pins_args")" != 2 ]] \
+      || grep -qx -- '--no-report-pins' <<<"$report_pins_args"; then
+    echo "FAIL wiring/render-report-pins: step_render or step_render_fixtures in" \
+      "tools/check.sh does not run sitecheck render with rule 17 (it passes --no-report-pins)"
+    n_failed=$((n_failed + 1))
+  else
+    echo "ok   wiring/render-report-pins (both render steps run rule 17; no --no-report-pins)"
+    n_passed=$((n_passed + 1))
+  fi
+
+  # Wiring: both reflow steps run case (8), the search outcome proof (M4 PR
+  # 4, ADR-0005 part 6): check_main runs step_reflow, and step_reflow, run
+  # against a stub sitecheck and a stub Chrome on PATH, calls sitecheck
+  # reflow twice without --no-search.
+  local reflow_args reflow_bin
+  reflow_bin="$(mktemp -d)"
+  printf '#!/bin/sh\nexit 0\n' >"$reflow_bin/google-chrome"
+  chmod +x "$reflow_bin/google-chrome"
+  reflow_args="$(sitecheck() { printf '%s\n' "$@"; }; PATH="$reflow_bin:$PATH" step_reflow)"
+  rm -rf "$reflow_bin"
+  if ! grep -qE '^ *run_step "reflow' <<<"$(declare -f check_main)" \
+      || ! grep -q 'step_reflow' <<<"$(declare -f check_main)"; then
+    echo "FAIL wiring/reflow-search-case: check_main in tools/check.sh does not run step_reflow"
+    n_failed=$((n_failed + 1))
+  elif [[ "$(grep -c '^reflow$' <<<"$reflow_args")" != 2 ]] \
+      || grep -qx -- '--no-search' <<<"$reflow_args"; then
+    echo "FAIL wiring/reflow-search-case: step_reflow in tools/check.sh does not run" \
+      "sitecheck reflow on both trees with case (8) (it passes --no-search)"
+    n_failed=$((n_failed + 1))
+  else
+    echo "ok   wiring/reflow-search-case (both reflow steps run case (8); no --no-search)"
     n_passed=$((n_passed + 1))
   fi
 
@@ -1334,6 +1579,22 @@ PINNED
     n_failed=$((n_failed + 1))
   fi
 
+  # render-report/<row> (M4 PR 4): render rule 17, the exact trees of a
+  # report page, branch by branch from tests/fixtures/render/report-cases.tsv
+  # on a copy of render/pass-report-pins, the real fixture build, with the
+  # feed rules and rule 17 on (search_cases_runner above).
+  search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+    "$FIXTURES/render/report-cases.tsv" "$FIXTURES/render/pass-report-pins" \
+    "$SELFTEST_ROOT/schema" render-report >"$out" 2>&1
+  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+  if ! grep -qE '^(ok   |FAIL )render-report/table' "$out"; then
+    echo "FAIL render-report: the runner did not finish; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+
   # render-search-count (M4 PR 3 fix round 12b, QA recheck of 54d4517): the
   # COUNT=<n> expectation itself. Rows of the real table with a wrong count
   # must each fail: one finding pinned as 0 and as 2, and two findings pinned
@@ -1659,7 +1920,7 @@ STUB
     chmod +x "$stub_dir/chrome"
     budget_args=(--launch-timeout 1)
     [[ "$name" == default-budget ]] && budget_args=()
-    sitecheck reflow --chrome "$stub_dir/chrome" "${budget_args[@]}" \
+    sitecheck reflow --chrome "$stub_dir/chrome" --no-search "${budget_args[@]}" \
       "$FIXTURES/reflow/pass-fluid" >"$out" 2>&1
     rc=$?
     launches=0
@@ -1956,6 +2217,48 @@ PY
   else
     echo "ok   reflow-launch/log-dir-fallback (missing, not a tmpfs, no directory made: work directory)"
     n_passed=$((n_passed + 1))
+  fi
+
+  # search-oracle/tables (M4 PR 4): the oracle's own tables against
+  # sitecheck's and the script's, member by member (search_oracle_tables).
+  search_oracle_tables "$SELFTEST_ROOT/tools/sitecheck.py" \
+    "$SELFTEST_ROOT/assets/js/search.js" >"$out" 2>&1
+  sed -n '/^ok   \|^FAIL /p' "$out"
+  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+  if ! grep -qE '^(ok   |FAIL )search-oracle/tables' "$out"; then
+    echo "FAIL search-oracle/tables: the runner did not finish; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+
+  # reflow-search/<row> (M4 PR 4, CI only): reflow case (8) branch by
+  # branch from tests/fixtures/reflow/search-cases.tsv on a copy of
+  # reflow/pass-search with today's search.js (reflow_search_runner),
+  # counted with the reflow fixtures.
+  local search_rows search_chrome
+  search_rows="$(grep -cv '^#\|^$' "$FIXTURES/reflow/search-cases.tsv")"
+  reflow_total=$((reflow_total + search_rows))
+  if in_github_actions; then
+    if search_chrome="$(command -v google-chrome || command -v google-chrome-stable)"; then
+      reflow_search_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+        "$FIXTURES/reflow/search-cases.tsv" "$FIXTURES/reflow/pass-search" \
+        "$SELFTEST_ROOT/assets/js/search.js" "$search_chrome" >"$out" 2>&1
+      sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+      n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+      n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+      reflow_run=$((reflow_run + $(grep -c '^\(ok   \|FAIL \)reflow-search/[^t]' "$out")))
+      if ! grep -qE '^(ok   |FAIL )reflow-search/table' "$out"; then
+        echo "FAIL reflow-search: the runner did not finish; output:"
+        sed 's/^/     | /' "$out"
+        n_failed=$((n_failed + 1))
+      fi
+    else
+      echo "FAIL reflow-search: Google Chrome not found; in CI case (8) must run"
+      n_failed=$((n_failed + 1))
+    fi
+  else
+    echo "NOT RUN reflow-search/* ($search_rows rows, CI only)"
   fi
 
   if [[ $html_total -eq 0 ]]; then

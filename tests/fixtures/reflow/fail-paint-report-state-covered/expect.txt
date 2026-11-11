@@ -1,0 +1,1 @@
+(paint) a D6, D7 or D10 line of a report page

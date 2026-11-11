@@ -1,0 +1,1 @@
+configSettings.screenEmulation.width is 360

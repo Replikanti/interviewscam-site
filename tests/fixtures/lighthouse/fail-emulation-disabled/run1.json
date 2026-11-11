@@ -1,0 +1,143 @@
+{
+ "lighthouseVersion": "13.6.0",
+ "requestedUrl": "http://127.0.0.1:8137/",
+ "configSettings": {
+  "formFactor": "mobile",
+  "screenEmulation": {
+   "mobile": true,
+   "width": 412,
+   "height": 823,
+   "deviceScaleFactor": 1.75,
+   "disabled": true
+  },
+  "throttlingMethod": "simulate",
+  "throttling": {
+   "rttMs": 150,
+   "throughputKbps": 1638.4,
+   "requestLatencyMs": 562.5,
+   "downloadThroughputKbps": 1474.5600000000002,
+   "uploadThroughputKbps": 675,
+   "cpuSlowdownMultiplier": 4
+  }
+ },
+ "categories": {
+  "performance": {
+   "score": 1,
+   "auditRefs": [
+    {
+     "id": "largest-contentful-paint",
+     "weight": 1
+    },
+    {
+     "id": "performance-ok",
+     "weight": 1
+    },
+    {
+     "id": "performance-info",
+     "weight": 0
+    }
+   ]
+  },
+  "accessibility": {
+   "score": 1,
+   "auditRefs": [
+    {
+     "id": "color-contrast",
+     "weight": 1
+    },
+    {
+     "id": "accessibility-ok",
+     "weight": 1
+    },
+    {
+     "id": "accessibility-info",
+     "weight": 0
+    }
+   ]
+  },
+  "best-practices": {
+   "score": 1,
+   "auditRefs": [
+    {
+     "id": "errors-in-console",
+     "weight": 1
+    },
+    {
+     "id": "best-practices-ok",
+     "weight": 1
+    },
+    {
+     "id": "best-practices-info",
+     "weight": 0
+    }
+   ]
+  },
+  "seo": {
+   "score": 1,
+   "auditRefs": [
+    {
+     "id": "meta-description",
+     "weight": 1
+    },
+    {
+     "id": "seo-ok",
+     "weight": 1
+    },
+    {
+     "id": "seo-info",
+     "weight": 0
+    }
+   ]
+  }
+ },
+ "audits": {
+  "largest-contentful-paint": {
+   "score": 1
+  },
+  "performance-ok": {
+   "score": 1
+  },
+  "performance-info": {
+   "score": 0
+  },
+  "color-contrast": {
+   "score": 1
+  },
+  "accessibility-ok": {
+   "score": 1
+  },
+  "accessibility-info": {
+   "score": 0
+  },
+  "errors-in-console": {
+   "score": 1
+  },
+  "best-practices-ok": {
+   "score": 1
+  },
+  "best-practices-info": {
+   "score": 0
+  },
+  "meta-description": {
+   "score": 1
+  },
+  "seo-ok": {
+   "score": 1
+  },
+  "seo-info": {
+   "score": 0
+  },
+  "network-requests": {
+   "details": {
+    "items": [
+     {
+      "url": "http://127.0.0.1:8137/"
+     },
+     {
+      "url": "http://127.0.0.1:8137/css/site.min.css"
+     }
+    ]
+   }
+  }
+ }
+}

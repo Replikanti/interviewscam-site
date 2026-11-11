@@ -1,0 +1,1 @@
+configSettings.screenEmulation.mobile is false

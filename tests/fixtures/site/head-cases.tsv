@@ -177,3 +177,5 @@ skeleton-home-no-body	public/index.html	<body><p>text</p></body>	<p>text</p>	(m)
 skeleton-home-nbsp-after-body	public/index.html	</body></html>	</body>&nbsp;</html>	(m) the text ' ' after <body>
 skeleton-section-no-body	public/reports/index.html	<body><p>text</p></body>	<p>text</p>	(m) the page has no <body> right inside its <html>
 skeleton-section-nbsp-after-body	public/reports/index.html	</body></html>	</body>&nbsp;</html>	(m) the text ' ' after <body>
+doctype-missing	public/index.html	<!doctype html>		(m) the page starts with
+doctype-quirks	public/index.html	<!doctype html>	<!doctype html public "-//W3C//DTD HTML 4.0 Transitional//EN">	(m) the page starts with
