@@ -47,7 +47,7 @@ jobs:
     # ADR-0004 Numbers, "check.sh workflow timeouts": re-derived in M4 PR 4
     # fix round 1 (Replikanti/interviewscam#5) from its own green runs of
     # check.sh (fix round 2: the pixel occlusion check, 83 reflow-search
-    # rows, 112 render-report rows); the slowest, 1427 s (ci.yml check, run
+    # rows, 114 render-report rows); the slowest, 1427 s (ci.yml check, run
     # 43047496592, stall-free), sets both terms. Cap >= max(2 x 1427 s =
     # 2854 s, 1427 s + 2 x 75 s (REFLOW_LAUNCH_TIMEOUT) + 70 s = 1647 s),
     # rounded up to 48 min.
