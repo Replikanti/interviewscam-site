@@ -11023,7 +11023,7 @@ def pixel_difference(first, second):
     if a[:3] != b[:3]:
         return f"the images differ in size, {a[0]} x {a[1]} and {b[0]} x {b[1]}"
     width, channels = a[0], a[2]
-    count, xs, ys = 0, [], []
+    count, xs, ys, most = 0, [], [], 0
     for y, (ra, rb) in enumerate(zip(a[3], b[3])):
         if ra == rb:
             continue
@@ -11033,10 +11033,12 @@ def pixel_difference(first, second):
                 count += 1
                 xs.append(x)
                 ys.append(y)
+                most = max(most, max(abs(p - q) for p, q in zip(ra[i:i + channels],
+                                                                 rb[i:i + channels])))
     if not count:
         return None
     return (f"{count} pixel(s) differ, x {min(xs)} to {max(xs)}, y {min(ys)} to {max(ys)} "
-            "of the slice")
+            f"of the slice, by up to {most} of 255")
 
 
 def png_difference(first, second):
@@ -11847,11 +11849,18 @@ def reflow_hits(tools, session, findings, where, revealed=None):
                     "scale": 1}
             # The pixel occlusion check (fix round 2): the slice as rendered
             # and with everything outside the region hidden, both with the
-            # animations paused and no caret, must be the same image.
+            # animations paused and no caret, must be the same image, read
+            # on the pixels wholly inside the region's box (a pixel the box
+            # only partly covers also shows its neighbours' antialiased
+            # edges, 1 pixel in CI's first run).
+            x0, x1 = math.ceil(clip["x"]), math.floor(clip["x"] + clip["width"])
+            y0, y1 = math.ceil(clip["y"]), math.floor(clip["y"] + clip["height"])
+            inner = {"x": x0, "y": y0, "width": max(x1 - x0, 1), "height": max(y1 - y0, 1),
+                     "scale": 1}
             iso = []
             for mode in ("isolate", "unisolate"):
                 iso.append(tools.send("Page.captureScreenshot",
-                                      {"format": "png", "clip": clip},
+                                      {"format": "png", "clip": inner},
                                       session=session).get("data"))
                 state = reflow_value(tools, session, REFLOW_REGION_PAINT_SCRIPT % {
                     "index": region["index"], "mode": json.dumps(mode), "saved": "null",
