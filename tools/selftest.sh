@@ -595,7 +595,7 @@ else:
 PY
 }
 
-# search_oracle_tables <sitecheck.py> <search.js> (M4 PR 4, the amendment's
+# search_oracle_tables <sitecheck.py> <search.js> <ADR-0005> (M4 PR 4, the amendment's
 # item 4): the tables of search_expect, the oracle of reflow case (8), are
 # its own copies taken from ADR-0005; this line proves each equal to
 # sitecheck's table (DEFAULT_IGNORABLE, DOT_CHARS, DEFANGS plus hxxp) and to
@@ -603,7 +603,7 @@ PY
 # SCHEMES, VALUE_LISTS, OBJECT_FIELDS, PARTIAL_MIN, PARTIAL_CAP), and names
 # every member that differs. Runs locally and in CI.
 search_oracle_tables() {
-  python3 -I -B - "$1" "$2" <<'PY'
+  python3 -I -B - "$1" "$2" "$3" <<'PY'
 import importlib.util
 import json
 import re
@@ -660,8 +660,7 @@ compare("PARTIAL_CAP (search.js)", [sc.SEARCH_PARTIAL_CAP], [js_value("PARTIAL_C
 # The ADR's numbers (fix round 1, QA): SEARCH_FETCH_BUDGET, the gzip level,
 # the partial minimum and cap, and the viewport, read from the ADR-0005
 # Numbers table, so a changed constant without its derivation fails.
-adr = (Path(sys.argv[1]).resolve().parent.parent / "docs/adr/0005-search.md").read_text(
-    encoding="utf-8")
+adr = Path(sys.argv[3]).read_text(encoding="utf-8")
 
 
 def adr_number(pattern):
@@ -2267,7 +2266,7 @@ PY
   # search-oracle/tables (M4 PR 4): the oracle's own tables against
   # sitecheck's and the script's, member by member (search_oracle_tables).
   search_oracle_tables "$SELFTEST_ROOT/tools/sitecheck.py" \
-    "$SELFTEST_ROOT/assets/js/search.js" >"$out" 2>&1
+    "$SELFTEST_ROOT/assets/js/search.js" "$SELFTEST_ROOT/docs/adr/0005-search.md" >"$out" 2>&1
   sed -n '/^ok   \|^FAIL /p' "$out"
   n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
   n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
