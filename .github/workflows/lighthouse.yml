@@ -46,15 +46,15 @@ jobs:
     runs-on: ubuntu-24.04
     # ADR-0004 Numbers, "check.sh workflow timeouts": re-derived in M4 PR 4
     # fix round 1 (Replikanti/interviewscam#5) from its own green runs of
-    # check.sh (case (8) with the part 4 checks, the occlusion check, 66
-    # reflow-search rows, 54 render-report rows); the slowest, 1103 s
-    # (deploy.yml pages-artifact, run 42958685228, stall-free), sets both
-    # terms. Cap >= max(2 x 1103 s = 2206 s, 1103 s + 2 x 75 s
-    # (REFLOW_LAUNCH_TIMEOUT) + 70 s = 1323 s), rounded up to 37 min.
+    # check.sh (case (8) with the part 4 checks, the occlusion check, 68
+    # reflow-search rows, 54 render-report rows); the slowest, 1149 s
+    # (lighthouse.yml build, run 42971007210, stall-free), sets both terms.
+    # Cap >= max(2 x 1149 s = 2298 s, 1149 s + 2 x 75 s
+    # (REFLOW_LAUNCH_TIMEOUT) + 70 s = 1369 s), rounded up to 39 min.
     # Re-derive in the next PR that changes check.sh.
     # It runs the same check.sh as the check job in ci.yml, plus the
     # artifact upload.
-    timeout-minutes: 37
+    timeout-minutes: 39
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
