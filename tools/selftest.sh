@@ -465,7 +465,9 @@ PY
 # as reflow-launch/first-answer-deadline does (the aria-busy row shortens
 # REFLOW_TIMEOUT, the fetch row SEARCH_FETCH_BUDGET). Then the real
 # cmd_reflow runs with case (8) on: expect PASS needs exit 0, any other
-# expect exit 1 with that text in the output. The last line,
+# expect exit 1 with that text in the output. The rows run four at a time,
+# each in a forked process with its own Chrome, and print in table order
+# (the job's time: a row takes 10 to 15 s). The last line,
 # reflow-search/table, counts the rows. -B: no tools/__pycache__.
 reflow_search_runner() {
   python3 -I -B - "$1" "$2" "$3" "$4" "$5" <<'PY'
@@ -475,6 +477,7 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import multiprocessing
 import re
 import shutil
 import sys
@@ -482,18 +485,18 @@ import tempfile
 from pathlib import Path
 
 source, table, base, script, chrome = sys.argv[1:6]
+REFLOW_SEARCH_JOBS = 4
 rows = [line.split("\t") for line in Path(table).read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")]
 real = Path(script).read_text(encoding="utf-8")
-names, bad = set(), 0
-for row in rows:
-    if len(row) < 5 or (len(row) > 6 and (len(row) - 6) % 3) or not row[0] \
-            or row[0] in names:
-        print(f"FAIL reflow-search/table: malformed or duplicate row {row!r}")
-        bad += 1
-        continue
+
+
+def run_row(row):
+    """One row in its own process (its own module, patches and stdout):
+    the lines it prints."""
+    lines = []
+    print = lines.append  # noqa: A001 (the row's output, printed in order)
     name, expect = row[0], row[4]
-    names.add(name)
     edits = [tuple(row[1:4])] + [tuple(row[i:i + 3]) for i in range(6, len(row), 3)]
     edits = [(rel, f.replace("\\n", "\n").replace("\\t", "\t"),
               r.replace("\\n", "\n").replace("\\t", "\t")) for rel, f, r in edits]
@@ -546,7 +549,7 @@ for row in rows:
             target.write_text(body.replace(find, replace, 1), encoding="utf-8")
         if problem:
             print(f"FAIL reflow-search/{name}: {problem}")
-            continue
+            return lines
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             try:
@@ -554,7 +557,7 @@ for row in rows:
                     public=str(root), chrome=chrome, no_search=False,
                     launch_timeout=sitecheck.REFLOW_LAUNCH_TIMEOUT))
             except sitecheck.UsageError as exc:
-                print(exc)
+                buffer.write(f"{exc}\n")
                 rc = 2
         output = buffer.getvalue()
     if expect == "PASS" and rc == 0:
@@ -567,6 +570,24 @@ for row in rows:
               f"{rc}; output:")
         for line in output.splitlines()[-12:]:
             print(f"     | {line}")
+    return lines
+
+
+names, bad, good = set(), 0, []
+for row in rows:
+    if len(row) < 5 or (len(row) > 6 and (len(row) - 6) % 3) or not row[0] \
+            or row[0] in names:
+        print(f"FAIL reflow-search/table: malformed or duplicate row {row!r}")
+        bad += 1
+        continue
+    names.add(row[0])
+    good.append(row)
+# REFLOW_SEARCH_JOBS rows at a time, each in a forked process with its own
+# Chrome (the job's time; the rows share nothing), printed in table order.
+with multiprocessing.get_context("fork").Pool(REFLOW_SEARCH_JOBS) as pool:
+    for lines in pool.map(run_row, good, chunksize=1):
+        for line in lines:
+            print(line)
 if not rows or bad:
     print(f"FAIL reflow-search/table: {len(rows)} rows, {bad} malformed")
 else:

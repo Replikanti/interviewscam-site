@@ -10910,6 +10910,9 @@ SEARCH_PARTIAL_CAP = 5
 # answer waits after the submit; below it CI fails before a visitor waits.
 SEARCH_FETCH_BUDGET = 385655
 SEARCH_GZIP_LEVEL = 6
+# Printable ASCII to its fullwidth form (U+FF01 to U+FF5E), which NFKC
+# folds back: a query that only NFKC can match.
+SEARCH_FULLWIDTH = {c: c + 0xFEE0 for c in range(0x21, 0x7F)}
 SEARCH_FEED_REL = "feed.json"
 SEARCH_A_Z_REL = "a-z/index.html"
 # The query the oracle must prove matches nothing (letters only, so every
@@ -11119,6 +11122,9 @@ def search_queries(feed):
                         out.append(f"{live}?utm_source=mail#join")
                     elif list_name == "repositories":
                         out.append(f"https://{live}")
+                    elif list_name == "file_names":
+                        # r0 and r_at decide these alone: no host, no scheme.
+                        out += [f"{live}?dl=1#top", f"@{live}"]
             for list_name, field in ORACLE_OBJECT_FIELDS:
                 values = artifacts.get(list_name)
                 for obj in values if isinstance(values, list) else []:
@@ -11129,8 +11135,23 @@ def search_queries(feed):
                     out.append(live)
                     if list_name == "handles":
                         out.append(live[1:] if live.startswith("@") else "@" + live)
+    # Variants in which one normalisation step decides the answer on its own
+    # (the implementer's mutation sweep: a domain query matches through its
+    # host whatever bare, the whitespace or NFKC rule does, so those steps
+    # need queries of their own): the first name in fullwidth letters
+    # (NFKC) and with runs of mixed whitespace; a 4-code-point stem of it
+    # behind www., each scheme and @, and before a / (bare and r_at, in the
+    # partial branch); the first domain with a trailing dot, a port and
+    # userinfo (the host form).
+    if names:
+        name = names[0]
+        out.append(name.translate(SEARCH_FULLWIDTH))
+        out.append("\t " + "\u3000 \u00a0".join(name.split()) + "  ")
+        stem = "".join(oracle_fold(name).split())[:SEARCH_PARTIAL_MIN + 1]
+        out += [f"www.{stem}", f"http://{stem}", f"https://{stem}", f"{stem}/", f"@{stem}"]
     if domains:
         first = domains[0]
+        out += [f"{first}.", f"{first}:8443/join", f"https://user:pw@{first}/join"]
         out += [first.replace(".", dot) for dot in DOT_CHARS]
         for lo, hi in DEFAULT_IGNORABLE:
             for code in sorted({lo, hi}):
