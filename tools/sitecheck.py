@@ -11119,7 +11119,12 @@ def search_queries(feed):
                         out += [f"https://{live}/login?next=1", f"www.{live}", live.upper(),
                                 f"careers.{live}"]
                     elif list_name == "urls":
-                        out.append(f"{live}?utm_source=mail#join")
+                        # The stored form and its other defanged spellings
+                        # ([://], [:]//): a visitor may paste a defanged URL.
+                        out += [f"{live}?utm_source=mail#join", raw,
+                                live.replace("://", "[://]", 1), live.replace("://", "[:]//", 1)]
+                    elif list_name == "emails":
+                        out.append(live.replace("@", "[@]", 1))
                     elif list_name == "repositories":
                         out.append(f"https://{live}")
                     elif list_name == "file_names":
@@ -11146,7 +11151,9 @@ def search_queries(feed):
     if names:
         name = names[0]
         out.append(name.translate(SEARCH_FULLWIDTH))
-        out.append("\t " + "\u3000 \u00a0".join(name.split()) + "  ")
+        # A name of several words, so the runs fall between them as well.
+        spaced = next((n for n in names if len(n.split()) > 1), name)
+        out.append("\t " + "\u3000 \u00a0".join(spaced.split()) + "  ")
         stem = "".join(oracle_fold(name).split())[:SEARCH_PARTIAL_MIN + 1]
         out += [f"www.{stem}", f"http://{stem}", f"https://{stem}", f"{stem}/", f"@{stem}"]
     if domains:
@@ -11242,6 +11249,7 @@ SEARCH_STATE_SCRIPT = "(function () {\n" + REFLOW_TREE_JS + r"""
     var el = document.getElementById(id);
     if (el && getComputedStyle(el).display !== "none") out.shown.push(id);
   });
+  out.visible = !!results && results.checkVisibility(opts);
   var q = document.getElementById("q");
   // The tap focuses the submit button in Chrome before the submit, so an
   // empty query leaves focus in the form (the input or that button).
@@ -11258,7 +11266,6 @@ SEARCH_STATE_SCRIPT = "(function () {\n" + REFLOW_TREE_JS + r"""
   });
   clone.removeAttribute("hidden");
   out.section = tree(clone);
-  out.visible = !!results && results.checkVisibility(opts);
   out.hiddenText = [];
   [section].concat(Array.from(section.querySelectorAll("*"))).forEach(function (el) {
     var own = Array.from(el.childNodes).some(function (n) {

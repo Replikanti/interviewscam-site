@@ -2268,7 +2268,8 @@ PY
       sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
       n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
       n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-      reflow_run=$((reflow_run + $(grep -c '^\(ok   \|FAIL \)reflow-search/[^t]' "$out")))
+      reflow_run=$((reflow_run + $(grep '^\(ok   \|FAIL \)reflow-search/' "$out" \
+        | grep -cv '^\(ok   \|FAIL \)reflow-search/table')))
       if ! grep -qE '^(ok   |FAIL )reflow-search/table' "$out"; then
         echo "FAIL reflow-search: the runner did not finish; output:"
         sed 's/^/     | /' "$out"
