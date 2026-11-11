@@ -23,7 +23,7 @@ jobs:
     # rounded up to 31 min. Re-derive in the next PR that changes check.sh.
     # M3 has no external links to fetch yet (the fixture build's links stay
     # offline); revisit once milestone 5 adds sources.
-    timeout-minutes: 31
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

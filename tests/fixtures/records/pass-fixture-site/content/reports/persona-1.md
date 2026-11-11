@@ -2,7 +2,7 @@
 date = 2026-11-01
 [params]
 name = "Avery Exampleton"
-aliases = ["A. Exampleton"]
+aliases = ["A. Exampleton", "Avery E."]
 name_type = "persona"
 state = "front"
 state_basis = [

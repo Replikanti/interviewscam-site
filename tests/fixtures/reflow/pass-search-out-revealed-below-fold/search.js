@@ -65,6 +65,7 @@
   // The normalization form, built at run time: L3 reads an upper-case
   // literal as copy.
   var NFKC = "nfkc".toUpperCase();
+  var NFC = "nfc".toUpperCase();
   // The built-in methods, read from their prototypes, never through the
   // document or the form (clobbering, see above).
   var getById = Document.prototype.getElementById;
@@ -106,8 +107,10 @@
     }
   }
 
-  // fold(s): NFKC, invisibles removed, dot look-alikes to ".", lowercase,
-  // whitespace runs to one space, trimmed (ADR-0005 part 3).
+  // fold(s): NFKC, invisibles removed, dot look-alikes to ".", NFC again
+  // (a removed invisible between a letter and its accent leaves the two to
+  // compose), lowercase, whitespace runs to one space, trimmed (ADR-0005
+  // part 3, M4 PR 4 fix round 1).
   function fold(text) {
     var kept = "";
     codePoints(text.normalize(NFKC), function (code) {
@@ -117,7 +120,7 @@
     });
     var out = "";
     var gap = false;
-    codePoints(kept.toLowerCase(), function (code) {
+    codePoints(kept.normalize(NFC).toLowerCase(), function (code) {
       if (inRanges(code, SPACES)) {
         gap = out !== "";
       } else {

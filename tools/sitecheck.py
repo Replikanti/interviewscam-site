@@ -170,9 +170,11 @@ TO_DOT = str.maketrans(dict.fromkeys(DOT_CHARS, "."))
 
 
 def norm(text):
-    """Fold a string for live-form comparison: NFKC, dots, invisibles, case."""
+    """Fold a string for live-form comparison: NFKC, dots, invisibles, NFC
+    again (an invisible removed between a letter and its accent leaves the
+    two to compose, M4 PR 4 fix round 1), case."""
     text = unicodedata.normalize("NFKC", text)
-    return text.translate(INVISIBLE).translate(TO_DOT).lower()
+    return unicodedata.normalize("NFC", text.translate(INVISIBLE).translate(TO_DOT)).lower()
 
 
 # Defanged spellings and the character each stands for. The one table that
@@ -5211,6 +5213,10 @@ def search_results_problems(home):
     # attributes as layouts/home.html emits them, so no element the template
     # does not emit (a <dialog open> or any other layer) sits before or
     # between the search form and its answers, where it could cover them.
+    mains = [el for el in home.root.walk() if el.tag == "main"]
+    if len(mains) != 1:
+        problems.append(f"rule 16: Home holds {len(mains)} <main> elements; layouts/home.html "
+                        "emits exactly one, and the pins read the page through it")
     if region.parent is not None and region.parent.tag == "main":
         got = []
         for child in region.parent.children:
@@ -5228,6 +5234,15 @@ def search_results_problems(home):
             problems.append(f"rule 16: Home's <main> holds {shown(got)} up to #{SEARCH_RESULTS}; "
                             f"layouts/home.html emits exactly {shown(want)}, so no other "
                             "element sits before or between the search form and its answers")
+        else:
+            # Their text too (fix round 1): the title and the lead, exact
+            # trees with their whole text, from labels.toml pinned here.
+            kids = [c for c in region.parent.children if isinstance(c, Element)]
+            for el, spec in ((kids[0], pinned("h1", {"class": "home-title"}, HOME_TITLE)),
+                             (kids[1], pinned("p", {"class": "lead"}, HOME_LEAD))):
+                found = region_problems(el, spec, f"rule 16: the {el.tag} of Home's <main>",
+                                        "layouts/home.html")
+                problems += found[1] if found else []
     what = f"rule 16: #{SEARCH_RESULTS} on Home"
     found = region_problems(region, search_region_tree(), what, "layouts/home.html")
     if found and found[0] == "shape":
@@ -5313,6 +5328,11 @@ def chain_problems(el, want, what):
 # chip, the label or the panel, a panel deleted or reworded, or a link's
 # href changed is a finding, and case (9) proves in the browser that the
 # page parses into the tree read here.
+BREADCRUMB_LABEL = "Breadcrumb"
+BREADCRUMB_HOME = "Home"
+HOME_TITLE = "Check a name from your interview invite"
+HOME_LEAD = ("Got a meeting link or a coding test from a recruiter you do not know? Look up "
+             "the company, the app or the domain before you install or run anything.")
 HIDDEN_NOTICE = ("The person named on this page asked for the name to be hidden. It stays "
                  "hidden while the request is reviewed.")
 CORRECTIONS_LINK = ("/corrections/", "Corrections and removal")
@@ -5366,7 +5386,15 @@ def report_regions(record):
     # persona-label span leaves a space before the text after it.
     title = f"{name} {PERSONA_LABEL} {REPORT_TITLE.format(name='')}" if persona \
         else record_title(record)
-    regions = [("h1", HTML_CHAIN, pinned("h1", None, squash(title), *labelled(record)),
+    crumb = squash(f"{name} {PERSONA_LABEL}") if persona else rendered_name(record)
+    regions = [("breadcrumb", HTML_CHAIN, pinned(
+        "nav", {"class": "breadcrumb", "aria-label": BREADCRUMB_LABEL}, None,
+        pinned("ol", None, None,
+               pinned("li", None, None, pinned("a", {"href": "/"}, BREADCRUMB_HOME)),
+               pinned("li", None, None, pinned("a", {"href": "/reports/"},
+                                               SECTION_TITLES["reports"])),
+               pinned("li", {"aria-current": "page"}, crumb, *labelled(record)))), True),
+               ("h1", HTML_CHAIN, pinned("h1", None, squash(title), *labelled(record)),
                 True)]
     notice = pinned("p", {"class": "hidden-name-notice"},
                     f"{HIDDEN_NOTICE} {CORRECTIONS_LINK[1]}",
@@ -5390,6 +5418,10 @@ def report_regions(record):
     regions.append(("aliases", HTML_CHAIN, pinned(
         "p", {"class": "aliases"}, squash(shown), *(labelled(record) * len(aliases)))
         if aliases else None, True))
+    summary = record.params.get("summary")
+    if isinstance(summary, str):
+        regions.append(("lead", HTML_CHAIN, pinned("p", {"class": "lead"}, squash(summary)),
+                        True))
     regions.append(("panel-warn", HTML_CHAIN, what_to_do_tree("h2"), True))
     line = campaign_line_tree(record)
     if line is not None:
@@ -5443,7 +5475,11 @@ def report_page_problems(page, record):
     # emit, a <dialog open> or any other layer, sits among the D6, D7 and
     # D10 lines or before the panel, where it could cover them.
     mains = [el for el in page.root.walk() if el.tag == "main"]
-    if len(mains) == 1 and report_regions(record):
+    if len(mains) != 1:
+        problems.append(f"rule 17: the report page holds {len(mains)} <main> elements; the "
+                        "templates emit exactly one, and the pins above read the page "
+                        "through it")
+    elif report_regions(record):
         got = []
         for child in mains[0].children:
             if isinstance(child, Element):
@@ -5458,6 +5494,29 @@ def report_page_problems(page, record):
             problems.append(f"rule 17: the report page's <main> holds {shown(got)} up to the "
                             f"panel; the templates emit exactly {shown(want)}, so no other "
                             "element sits among the state, the label and the panel")
+    return problems
+
+
+def state_text_problems(page, record):
+    """Rule 17, the complement of the trees (fix round 1): the page's visible
+    text holds its own state sentence exactly once and the other state's
+    sentence nowhere, so no other element of the page (a lead, a body
+    paragraph, a footer line) states the other state."""
+    state = record.params.get("state")
+    if state not in STATE_SENTENCE:
+        return []
+    shown = squash(page.root.text(" "))
+    everywhere = squash(" ".join([page.root.text(" ", shown=False)] + page_texts(page)))
+    problems = []
+    if shown.count(STATE_SENTENCE[state]) != 1:
+        problems.append(f"rule 17: the report page shows its state sentence "
+                        f"{shown.count(STATE_SENTENCE[state])} times; the templates emit it "
+                        "exactly once (D6)")
+    for other, sentence in STATE_SENTENCE.items():
+        if other != state and sentence in everywhere:
+            problems.append(f"rule 17: the report page of a {state} record shows the "
+                            f"{other} sentence {show(sentence, 90)}; a page states only its own "
+                            "state (D6)")
     return problems
 
 
@@ -5612,6 +5671,7 @@ def cmd_render(args):
                     problems += label_problems(page, record)
                     if own is record and not args.no_report_pins:
                         problems += report_page_problems(page, record)
+                        problems += state_text_problems(page, record)
                     problems += campaign_line_problems(page, record, campaigns, page_path)
                     problems += artifact_problems(page, record)
                 else:
@@ -9429,6 +9489,89 @@ def skeleton_problems(tree, html, head):
     return problems
 
 
+# Rule (m), the body skeleton (M4 PR 4 fix round 1, review findings 1 and 2,
+# QA's dialog reproductions): with the built pins on, <body> holds exactly
+# the skip link, the header, the one <main> and the footer that baseof.html
+# emits, tag and attributes, no text; the skip link and the header are
+# exact trees with their whole text (labels.toml, pinned here; the nav pill
+# of the page itself carries aria-current), the footer its exact shape
+# (its texts are the operator's and the contact address, which `literals`
+# and render rule 14 read). So no <dialog>, popover or stray element sits
+# before, around or after <main>, where it could cover the pinned regions.
+SKIP_LINK_TEXT = "Skip to content"
+HEADER_BRAND = ("interviewscam", ".com")
+HEADER_CTA = ("/report-a-scam/", "Report a scam")
+HEADER_NAV_LABEL = "Main"
+HEADER_PILLS = [("/before-your-call/", "Before your call"), ("/methodology/", "Methodology"),
+                ("/about/", "About")]
+
+
+def header_tree(path):
+    """The tree of layouts/_partials/header.html on the page at path."""
+    icon = pinned("svg", SEARCH_ICON_ATTRS, "",
+                  pinned("circle", {"cx": "11", "cy": "11", "r": "6.5"}, ""),
+                  pinned("path", {"d": "m16 16 4.5 4.5"}, ""))
+    brand, tld = HEADER_BRAND
+    pills = [pinned("li", None, None, pinned(
+        "a", {"class": "pill", "href": href, **({"aria-current": "page"} if href == path else {})},
+        label)) for href, label in HEADER_PILLS]
+    return pinned("header", {"class": "site-header"}, None, pinned(
+        "div", {"class": "container"}, None,
+        pinned("div", {"class": "header-row"}, None,
+               pinned("a", {"class": "brand", "href": "/"}, None,
+                      pinned("span", {"class": "brand-tile"}, "", icon),
+                      pinned("span", None, f"{brand} {tld}",
+                             pinned("span", {"class": "brand-tld"}, tld))),
+               pinned("a", {"class": "cta", "href": HEADER_CTA[0]}, HEADER_CTA[1])),
+        pinned("nav", {"aria-label": HEADER_NAV_LABEL}, None,
+               pinned("ul", {"class": "nav"}, None, *pills))))
+
+
+def footer_shape():
+    """The element shape of the footer of baseof.html (tags and attributes)."""
+    return tree("footer", {"class": "site-footer"}, tree(
+        "div", {"class": "container"},
+        tree("p", None, tree("span", {"class": "address", "id": "contact"}),
+             tree("button", {"type": "button", "class": "copy", "hidden": "",
+                             "data-copy-target": "contact", "data-copy-done": "Copied",
+                             "data-copy-failed": "Copy failed, select the text instead"}),
+             tree("span", {"class": "copy-status", "role": "status", "aria-live": "polite"})),
+        tree("nav", {"aria-label": "Site"}, tree(
+            "ul", {"class": "footer-links"},
+            *(tree("li", None, tree("a", {"href": href}))
+              for href in ("/methodology/", "/corrections/", "/privacy/", "/data-feed/")))),
+        tree("p")))
+
+
+def body_skeleton_problems(tree_page, html, rel):
+    """Rule (m), the body skeleton (see SKIP_LINK_TEXT)."""
+    bodies = [el for el in html.children if isinstance(el, Element) and el.tag == "body"] \
+        if html is not None else []
+    if len(bodies) != 1:
+        return []  # skeleton_problems names it
+    body = bodies[0]
+    kids = [c for c in body.children if isinstance(c, Element)]
+    want = [("a", {"class": VISUALLY_HIDDEN, "href": "#main"}), ("header", {"class": "site-header"}),
+            ("main", {"id": "main", "class": "container", "tabindex": "-1"}),
+            ("footer", {"class": "site-footer"})]
+    got = [(c.tag, c.attrs) for c in kids]
+    problems = []
+    if got != want:
+        return [f"(m) <body> holds {show([t for t, _ in got], 200)}; baseof.html emits exactly "
+                "the skip link, the header, one <main> and the footer, so no other element "
+                "(a <dialog>, a popover, a stray element) sits around <main>"]
+    loose = [c for c in body.children if not isinstance(c, Element) and c.strip(ASCII_WHITESPACE)]
+    if loose:
+        problems.append(f"(m) <body> holds the text {show(loose[0], 60)} between its elements")
+    path = own_path(rel[len("public/"):]) if rel.startswith("public/") else rel
+    for el, spec, what in ((kids[0], pinned("a", want[0][1], SKIP_LINK_TEXT), "the skip link"),
+                           (kids[1], header_tree(path), "the header")):
+        found = region_problems(el, spec, f"(m) {what}", "baseof.html")
+        problems += found[1] if found else []
+    problems += shape_problems(kids[3], "(m) the footer", "baseof.html", footer_shape())
+    return problems
+
+
 def head_problems(text, rel, built):
     """Rule (m) on one HTML page (see HEAD_ONLY_TAGS). built: also the exact
     head of baseof.html (the built pins are on)."""
@@ -9488,6 +9631,7 @@ def head_problems(text, rel, built):
                             "a CSP meta outside the head is ignored)")
     if head is None or not built:
         return problems
+    problems += body_skeleton_problems(tree, html, rel)
     got = [(el.tag, el.attrs) for el in head.children if isinstance(el, Element)]
     want = head_spec(rel)
 
@@ -9509,7 +9653,7 @@ BUILT_STYLESHEET_SHA256 = {
 }
 BUILT_SCRIPT_SHA384 = {
     "copy": "64df53ed5d62c8c5c8be3aee6bd39c1171a2bb88742b3424790354056657c3faf100ea7cc044affe06e76164b883b924",
-    "search": "2b9f7b42bbac16efb718132e221f2214be1478c3c99660e158b61c5c629d70fca54748d3055c7e96ca415ba59abe1483",
+    "search": "24d7130ce8ebb46802b4b528df7a396c9ab645d0824c498f487d4b3e743701a7ba64f82d6716560d8e4adfbb95a856d6",
 }
 
 
@@ -9522,7 +9666,7 @@ def built_style_path(stem, data):
 
 SCRIPT_SHA256 = {
     "assets/js/copy.js": "5cca51768d7caa004240fccdcfe84cd588f2686f3e4481da5561673d8592cc89",
-    "assets/js/search.js": "48915ad64fddd4044a734fa3ef938523e61f5476083b67d8a061e3e4e932332e",
+    "assets/js/search.js": "6e6a6e22f040d7dfa742fe4c1808ed1917f463eb05297056d6a21101e16b2b7f",
 }
 
 
@@ -10934,6 +11078,10 @@ SEARCH_GZIP_LEVEL = 6
 # Printable ASCII to its fullwidth form (U+FF01 to U+FF5E), which NFKC
 # folds back: a query that only NFKC can match.
 SEARCH_FULLWIDTH = {c: c + 0xFEE0 for c in range(0x21, 0x7F)}
+# Hidden characters a copy-paste carries between a letter and its accent
+# (zero width space, zero width joiner, soft hyphen), one per class of
+# DEFAULT_IGNORABLE that pasted text holds (fix round 1).
+SEARCH_COMPOSE_PROBES = ("\u200b", "\u200d", "\u00ad")
 SEARCH_FEED_REL = "feed.json"
 SEARCH_A_Z_REL = "a-z/index.html"
 # The query the oracle must prove matches nothing (letters only, so every
@@ -10972,15 +11120,17 @@ ORACLE_OBJECT_FIELDS = (("handles", "value"), ("packages", "name"), ("sha256", "
 
 def oracle_fold(text):
     """ADR-0005 part 3, fold: NFKC; every Default_Ignorable code point
-    removed; every dot look-alike to "."; default lowercase; runs of
-    whitespace (str.isspace) to one space; trimmed."""
+    removed; every dot look-alike to "."; NFC (fix round 1: a removed
+    invisible between a base and a composing mark or Hangul jamo leaves
+    them to compose); default lowercase; runs of whitespace (str.isspace)
+    to one space; trimmed."""
     kept = []
     for ch in unicodedata.normalize("NFKC", text):
         code = ord(ch)
         if any(lo <= code <= hi for lo, hi in ORACLE_IGNORABLE):
             continue
         kept.append("." if ch in ORACLE_DOTS else ch)
-    return " ".join("".join(kept).lower().split())
+    return " ".join(unicodedata.normalize("NFC", "".join(kept)).lower().split())
 
 
 def oracle_refang(text):
@@ -11184,6 +11334,18 @@ def search_queries(feed):
         for lo, hi in DEFAULT_IGNORABLE:
             for code in sorted({lo, hi}):
                 out.append(first[:1] + chr(code) + first[1:])
+    # The fold order (fix round 1, QA's code-point probe): a hidden
+    # character between a letter and its accent, or between two Hangul
+    # jamo, must not hide the composed form. For every name, alias and
+    # artifact with a composed character, its first one decomposed with
+    # each of SEARCH_COMPOSE_PROBES between the base and the rest.
+    for text in list(out):
+        for i, ch in enumerate(text):
+            parts = unicodedata.normalize("NFD", ch)
+            if parts != ch:
+                for probe in SEARCH_COMPOSE_PROBES:
+                    out.append(text[:i] + parts[0] + probe + parts[1:] + text[i + 1:])
+                break
     for name in names:
         points = list(name)
         for n in (SEARCH_PARTIAL_MIN, SEARCH_PARTIAL_MIN + 1):
@@ -11219,6 +11381,22 @@ SEARCH_SETUP_SCRIPT = "(function () {\n" + REFLOW_TREE_JS + r"""
   window.__iscSubmits = 0;
   var form = document.getElementById("q") && document.getElementById("q").form;
   if (form) form.addEventListener("submit", function () { window.__iscSubmits++; }, true);
+  // What the script does between a submit and its answer (fix round 1,
+  // ADR-0005 part 4): aria-busy set on the result box, and every section
+  // revealed and hidden again (its hidden attribute added back).
+  window.__iscBusySets = 0;
+  window.__iscReveals = [];
+  var box = document.getElementById("search-results");
+  if (box) new MutationObserver(function (records) {
+    records.forEach(function (r) {
+      if (r.attributeName === "aria-busy" && r.oldValue === null) window.__iscBusySets++;
+      // A hidden attribute added (absent before) proves the element was
+      // revealed in between; the state script adds the ones still shown.
+      if (r.attributeName === "hidden" && r.oldValue === null && r.target.id)
+        window.__iscReveals.push(r.target.id);
+    });
+  }).observe(box, {attributes: true, attributeOldValue: true, subtree: true,
+                   attributeFilter: ["aria-busy", "hidden"]});
   var out = {};
   %(ids)s.forEach(function (id) {
     var el = document.getElementById(id);
@@ -11234,6 +11412,8 @@ SEARCH_SETUP_SCRIPT = "(function () {\n" + REFLOW_TREE_JS + r"""
 SEARCH_FOCUS_SCRIPT = r"""
 (function () {
   var q = document.getElementById("q");
+  window.__iscBusySets = 0;
+  window.__iscReveals = [];
   q.value = "";
   q.focus();
   return document.activeElement === q;
@@ -11260,7 +11440,11 @@ SEARCH_STATE_SCRIPT = "(function () {\n" + REFLOW_TREE_JS + r"""
   var ids = %(ids)s;
   var results = document.getElementById("search-results");
   var out = {marker: window.__iscSearchMarker === %(marker)s, path: location.pathname,
-             submits: window.__iscSubmits || 0,
+             submits: window.__iscSubmits || 0, busySets: window.__iscBusySets || 0,
+             reveals: (window.__iscReveals || []).concat(ids.filter(function (id) {
+               var el = document.getElementById(id);
+               return el && !el.hasAttribute("hidden");
+             })),
              busy: !!results && results.hasAttribute("aria-busy"),
              results: results ? getComputedStyle(results).display : null,
              shown: [], vh: innerHeight};
@@ -11304,7 +11488,23 @@ SEARCH_STATE_SCRIPT = "(function () {\n" + REFLOW_TREE_JS + r"""
   out.heading = box(heading);
   out.first = list ? box(list.firstElementChild) : null;
   out.height = section.getBoundingClientRect().height;
+  out.sectionTop = section.getBoundingClientRect().top;
+  out.atBottom = scrollY >= document.documentElement.scrollHeight - innerHeight - 1;
   return out;
+})()
+"""
+# Two submits in one task (fix round 1, ADR-0005 part 4: the latest submit
+# wins): the first query, then the second, before either answer.
+SEARCH_DOUBLE_SCRIPT = r"""
+(function () {
+  var q = document.getElementById("q");
+  window.__iscBusySets = 0;
+  window.__iscReveals = [];
+  q.value = %(first)s;
+  HTMLFormElement.prototype.requestSubmit.call(q.form);
+  q.value = %(second)s;
+  HTMLFormElement.prototype.requestSubmit.call(q.form);
+  return {};
 })()
 """
 # The /a-z/ entries as trees, in order (the display source of every answer).
@@ -11359,18 +11559,60 @@ REFLOW_HIT_SCRIPT = r"""
     Array.prototype.forEach.call(document.querySelectorAll(".panel-warn"), function (el) {
       if (!results || !results.contains(el)) add(kinds[3], el);
     });
-    // The D6, D7 and D10 lines of a report page (render rule 17), which a
-    // layer could cover without covering a control.
-    if (document.querySelector(".state-sentence")) {
+    // The pinned lines of a report page (render rule 17: the breadcrumb, the
+    // h1, the notice, the D6 and D7 lines, the aliases, the lead, the
+    // campaign line, What was checked) and of Home (rule 16: its title and
+    // lead), which a layer could cover without covering a control.
+    if (document.querySelector(".state-sentence") || results) {
       Array.prototype.forEach.call(document.querySelectorAll(
-          "main > h1, .record-type, .state-sentence, .record-label, .aliases, .campaign-line, .state-basis"),
-          function (el) { add(kinds[5], el); });
+          "main > .breadcrumb, main > h1, main > .lead, .hidden-name-notice, .record-type, " +
+          ".state-sentence, .record-label, .aliases, .campaign-line, .state-basis"),
+          function (el) { if (!results || !results.contains(el)) add(kinds[5], el); });
     }
   }
   window.__iscRegions = regions.map(function (r) { return r[1]; });
+  // The occlusion check (fix round 1): every element that paints in a
+  // layer above the normal flow (positioned, transformed, translucent,
+  // filtered, clipped, isolated, blended, contained or with a z-index) and
+  // shows, outside a region and its ancestors, whose box meets the region's
+  // box is a finding, whatever its pointer-events: elementFromPoint skips a
+  // layer with pointer-events none, and a slice that still paints on its
+  // uncovered part passes the paint check. A layered ::before or ::after
+  // anywhere is a finding too: its box cannot be read, and none is emitted.
+  var vis = {opacityProperty: true, visibilityProperty: true};
+  function layeredStyle(cs) {
+    return cs.position !== "static" || cs.transform !== "none" || cs.translate !== "none" ||
+      cs.rotate !== "none" || cs.scale !== "none" || parseFloat(cs.opacity) < 1 ||
+      cs.filter !== "none" || (cs.backdropFilter || "none") !== "none" ||
+      cs.clipPath !== "none" || (cs.maskImage || "none") !== "none" ||
+      cs.isolation === "isolate" || cs.mixBlendMode !== "normal" || cs.willChange !== "auto" ||
+      /paint|layout|strict|content/.test(cs.contain) || cs.zIndex !== "auto";
+  }
+  var layers = [], pseudo = [];
+  Array.prototype.forEach.call(document.body ? document.body.querySelectorAll("*") : [], function (el) {
+    ["::before", "::after"].forEach(function (p) {
+      var ps = getComputedStyle(el, p);
+      if (ps.content !== "none" && ps.content !== "normal" && layeredStyle(ps))
+        pseudo.push(label(el) + p);
+    });
+    if (el.getClientRects().length === 0 || !el.checkVisibility(vis)) return;
+    if (layeredStyle(getComputedStyle(el))) layers.push(el);
+  });
+  function meets(a, b) {
+    return a.left < b.right - 0.5 && b.left < a.right - 0.5 &&
+      a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5;
+  }
   var out = [];
   regions.forEach(function (pair, i) {
     var region = pair[1], misses = [], controls = 0;
+    var own = region.getBoundingClientRect(), over = [];
+    layers.forEach(function (el) {
+      if (region.contains(el) || el.contains(region)) return;
+      var b = el.getBoundingClientRect();
+      if (meets(own, b)) over.push(label(el) + " (" + getComputedStyle(el).position + ") at x " +
+        Math.round(b.left) + " to " + Math.round(b.right) + ", y " + Math.round(b.top) + " to " +
+        Math.round(b.bottom));
+    });
     Array.prototype.forEach.call(region.querySelectorAll("a, button, input"), function (c) {
       if (c.getClientRects().length === 0) return;
       controls++;
@@ -11390,7 +11632,7 @@ REFLOW_HIT_SCRIPT = r"""
     window.scrollTo(0, 0);
     var r = region.getBoundingClientRect();
     out.push({kind: pair[0], label: label(region), index: i, controls: controls,
-              misses: misses, top: r.top + scrollY, height: r.height, left: r.left,
+              misses: misses, over: over, pseudo: i === 0 ? pseudo : [], top: r.top + scrollY, height: r.height, left: r.left,
               width: r.width, content: controls > 0 || region.textContent.trim() !== ""});
   });
   return out;
@@ -11429,7 +11671,7 @@ SEARCH_NAVIGATION_EVENTS = frozenset({"Page.frameRequestedNavigation",
                                       "Page.frameStartedLoading", "Page.frameNavigated"})
 REFLOW_HIT_KINDS = ("the search form", "/a-z/ entries (.index-list)", "a .no-report block",
                     "the What to do now panel", "a revealed result section",
-                    "a D6, D7 or D10 line of a report page")
+                    "a pinned line of a report page or Home")
 
 
 def reflow_hits(tools, session, findings, where, revealed=None):
@@ -11440,6 +11682,15 @@ def reflow_hits(tools, session, findings, where, revealed=None):
         "kinds": json.dumps(REFLOW_HIT_KINDS), "revealed": json.dumps(revealed)}, where) or []
     for region in regions:
         what = f"{region['kind']} ({show(region['label'], 80)})"
+        for layer in region.get("over", [])[:REFLOW_NAMED]:
+            findings.add(where, f"(occlusion) {show(layer, 160)} lies over {what}: an element "
+                         "outside the region paints above it (positioned, transformed or "
+                         "another layer), whatever its pointer-events or z-index, so it can "
+                         "cover the region's words")
+        for item in region.get("pseudo", []):
+            findings.add(where, f"(occlusion) the pseudo-element {show(item, 120)} paints in its "
+                         "own layer; its box cannot be read, so it could cover a pinned region "
+                         "unseen, and the templates emit none")
         for miss in region["misses"][:REFLOW_NAMED]:
             findings.add(where, f"(hit) in {what}, the centre of {show(miss, 160)}, not the "
                          "control or inside it; an overlay, a positioned layer or a "
@@ -11565,12 +11816,25 @@ def search_case(tools, session, findings, public, origin, load):
                 url = (event.get("params") or {}).get("request", {}).get("url")
                 requests.append(url if isinstance(url, str) else repr(url))
 
+    fresh = {"home": False}
+
+    def feed_requested(since):
+        return any(urllib.parse.urlsplit(u).path == "/" + SEARCH_FEED_REL
+                   for u in requests[since:])
+
     def open_home():
         harvest()
+        since = len(requests)
         error = load(origin + "/")
         harvest()
         if error:
             raise UsageError(f"reflow: case (8) could not load Home: {error}")
+        # Never on load (ADR-0005 part 4): the fetch waits for the visitor.
+        if feed_requested(since):
+            findings.add(where, f"(8) Home requested /{SEARCH_FEED_REL} on load, before any "
+                         "focus or submit; the search fetches on the first focus of #q or the "
+                         "first submit, never on load (ADR-0005 part 4)")
+        fresh["home"] = True
         return reflow_value(tools, session, SEARCH_SETUP_SCRIPT % {
             "marker": marker, "ids": json.dumps(ids)}, where)
 
@@ -11607,9 +11871,25 @@ def search_case(tools, session, findings, public, origin, load):
             label = show(query, 80)
             expected, want = search_expect(index, query)
             counts[expected] += 1
+            harvest()
+            since = len(requests)
             if not reflow_value(tools, session, SEARCH_FOCUS_SCRIPT, where):
                 findings.add(where, f"(8) query {label}: the input #q does not take focus")
                 continue
+            if fresh["home"]:
+                # The first focus after a load starts the fetch (ADR-0005
+                # part 4), before any submit.
+                fresh["home"] = False
+                deadline = time.monotonic() + REFLOW_TIMEOUT
+                while not feed_requested(since) and time.monotonic() < deadline:
+                    reflow_value(tools, session, "(function () { return {}; })()", where)
+                    harvest()
+                    time.sleep(0.02)
+                if not feed_requested(since):
+                    findings.add(where, f"(8) the first focus of #q requested no "
+                                 f"/{SEARCH_FEED_REL} within {REFLOW_TIMEOUT:g} s; the fetch "
+                                 "starts on the first focus, so it runs while the visitor "
+                                 "types (ADR-0005 part 4)")
             if query:
                 tools.send("Input.insertText", {"text": query}, session=session)
             for event in [e for e in tools.events if e.get("method") in SEARCH_NAVIGATION_EVENTS
@@ -11680,8 +11960,17 @@ def search_case(tools, session, findings, public, origin, load):
                                  "no section and focus stays in the search form (ADR-0005 "
                                  "part 3; the tap itself focuses the submit button)")
                 continue
+            if not seen.get("busySets"):
+                findings.add(where, f"(8) query {label}: aria-busy was never set on "
+                             f"#{SEARCH_RESULTS} between the submit and the answer; it tells a "
+                             "screen reader the answer is on its way (ADR-0005 part 4)")
             sid = tiers[expected]
-            if shown != [sid] or seen.get("results") == "none" or not seen.get("visible"):
+            if shown == [sid] and seen.get("results") != "none" and not seen.get("visible"):
+                findings.add(where, f"(8c) query {label}: #{SEARCH_RESULTS} is not visible "
+                             "(checkVisibility with opacity and visibility), so the revealed "
+                             "answer does not show")
+                continue
+            if shown != [sid] or seen.get("results") == "none":
                 findings.add(where, f"(8c) query {label} shows {show(shown)} (results "
                              f"display {show(seen.get('results'))}); the oracle expects "
                              f"exactly #{sid} ({expected}), the others display none")
@@ -11725,6 +12014,13 @@ def search_case(tools, session, findings, public, origin, load):
                                  f"y {box[0]:.1f} to {box[1]:.1f}, not wholly inside the "
                                  f"{width} x {vh} viewport; the answer shows on one phone "
                                  "screen after one submit (SPEC section 8)")
+            top = seen.get("sectionTop")
+            if isinstance(top, (int, float)) and abs(top) > REFLOW_EPSILON \
+                    and not seen.get("atBottom"):
+                findings.add(where, f"(8e) query {label}: the top of #{sid} is at y {top:.1f}, "
+                             "not scrolled to the top of the viewport (and the page could "
+                             "scroll there); the script scrolls the answer's top into view "
+                             "(ADR-0005 part 4)")
             if expected == "partial" and partial_height is None:
                 partial_height = seen.get("height")
             if expected not in reflowed:
@@ -11748,6 +12044,36 @@ def search_case(tools, session, findings, public, origin, load):
                     findings.add(where, f"(8f) with #{sid} revealed for {label}: "
                                  f"{show(item, 200)} lies outside the {REFLOW_WIDTH} px "
                                  "viewport or is cut by a clipping ancestor")
+        # The latest submit wins (fix round 1, ADR-0005 part 4): an exact
+        # query and then the no-match query, submitted in one task before
+        # either answer; the first answer must change nothing, so its
+        # section is never revealed and the none section shows.
+        first = next((q for q in queries if search_expect(index, q)[0] == "exact"), None)
+        if first is not None:
+            open_home()
+            reflow_value(tools, session, SEARCH_FOCUS_SCRIPT, where)
+            fresh["home"] = False
+            reflow_value(tools, session, SEARCH_DOUBLE_SCRIPT % {
+                "first": json.dumps(first), "second": json.dumps(SEARCH_NO_MATCH)}, where)
+            deadline = time.monotonic() + REFLOW_TIMEOUT
+            while True:
+                seen = state()
+                if seen is not None and (not seen.get("marker") or (
+                        seen.get("submits", 0) >= 2 and not seen.get("busy"))):
+                    break
+                if time.monotonic() > deadline:
+                    break
+                time.sleep(0.02)
+            label = show(first, 80)
+            if seen is None or not seen.get("marker") or seen.get("busy"):
+                findings.add(where, f"(8) two submits ({label}, then the no-match query) gave "
+                             "no settled answer on Home")
+            elif tiers["exact"] in (seen.get("reveals") or []) \
+                    or seen.get("shown") != [tiers["none"]]:
+                findings.add(where, f"(8) two submits in a row ({label}, then the no-match "
+                             f"query): the page revealed {show(seen.get('reveals'))} and shows "
+                             f"{show(seen.get('shown'))}; the latest submit wins, so the "
+                             "earlier answer changes nothing (ADR-0005 part 4)")
         harvest()
         own = url_origin(origin)
         for url in dict.fromkeys(requests):
@@ -12296,11 +12622,11 @@ def cmd_lighthouse(args):
             findings.add(name, f"formFactor {json.dumps(form)}, the gate needs the "
                          "mobile profile (SPEC section 8)")
         settings = []
-        for path, want in lighthouse_settings():
-            got = dig(report, "configSettings", *path)
-            settings.append(f"{'.'.join(path)} {json.dumps(got)}")
+        for setting, want in lighthouse_settings():
+            got = dig(report, "configSettings", *setting)
+            settings.append(f"{'.'.join(setting)} {json.dumps(got)}")
             if not same_setting(got, want):
-                findings.add(name, f"configSettings.{'.'.join(path)} is {json.dumps(got)}, the "
+                findings.add(name, f"configSettings.{'.'.join(setting)} is {json.dumps(got)}, the "
                              f"gate pins {json.dumps(want)}: the viewport case (8) proves the "
                              "answer in and the inputs of SEARCH_FETCH_BUDGET (ADR-0005 "
                              "Numbers); a re-pin re-derives them")

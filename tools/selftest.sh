@@ -657,6 +657,30 @@ compare("OBJECT_FIELDS (search.js)", sc.ORACLE_OBJECT_FIELDS,
         [tuple(p) for p in js_value("OBJECT_FIELDS") or []])
 compare("PARTIAL_MIN (search.js)", [sc.SEARCH_PARTIAL_MIN], [js_value("PARTIAL_MIN")])
 compare("PARTIAL_CAP (search.js)", [sc.SEARCH_PARTIAL_CAP], [js_value("PARTIAL_CAP")])
+# The ADR's numbers (fix round 1, QA): SEARCH_FETCH_BUDGET, the gzip level,
+# the partial minimum and cap, and the viewport, read from the ADR-0005
+# Numbers table, so a changed constant without its derivation fails.
+adr = (Path(sys.argv[1]).resolve().parent.parent / "docs/adr/0005-search.md").read_text(
+    encoding="utf-8")
+
+
+def adr_number(pattern):
+    m = re.search(pattern, adr)
+    return [int(m.group(1).replace(",", ""))] if m else ["missing in ADR-0005"]
+
+
+compare("SEARCH_FETCH_BUDGET (ADR-0005 Numbers)", [sc.SEARCH_FETCH_BUDGET],
+        adr_number(r"\| `SEARCH_FETCH_BUDGET` ([0-9,]+) bytes"))
+compare("SEARCH_GZIP_LEVEL (ADR-0005 Numbers)", [sc.SEARCH_GZIP_LEVEL],
+        adr_number(r"Gzip at level ([0-9]+)"))
+compare("SEARCH_PARTIAL_MIN (ADR-0005 Numbers)", [sc.SEARCH_PARTIAL_MIN],
+        adr_number(r"\| `SEARCH_PARTIAL_MIN` ([0-9]+) code points"))
+compare("SEARCH_PARTIAL_CAP (ADR-0005 Numbers)", [sc.SEARCH_PARTIAL_CAP],
+        adr_number(r"\| `SEARCH_PARTIAL_CAP` ([0-9]+) entries"))
+compare("SEARCH_VIEWPORT width (ADR-0005 Numbers)", [sc.SEARCH_VIEWPORT[0]],
+        adr_number(r"mobile emulation, ([0-9]+) × [0-9]+"))
+compare("SEARCH_VIEWPORT height (ADR-0005 Numbers)", [sc.SEARCH_VIEWPORT[1]],
+        adr_number(r"mobile emulation, [0-9]+ × ([0-9]+)"))
 for problem in problems:
     print(f"FAIL search-oracle/tables: {problem}")
 if not problems:
