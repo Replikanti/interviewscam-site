@@ -5499,10 +5499,14 @@ def report_page_problems(page, record):
 
 # Rule 17, the state sentences folded (fix round 2, delta review finding
 # 1): both sides compared the way the search folds a query (ADR-0005 part
-# 3: NFKC, the invisible characters removed, NFC, case folded), then on
-# letters and digits only, so a soft hyphen, a zero width character, a
-# case change (`| lower`), a compatibility form, punctuation, line breaks
-# and markup splits (`<b>com</b>pany,<br>person`) cannot hide a sentence;
+# 3: NFKC, the invisible characters removed, case folded), then on letters
+# and digits only, so a soft hyphen, a zero width character, a case change
+# (`| lower`), a compatibility form, punctuation, line breaks and markup
+# splits (`<b>com</b>pany,<br>person`) cannot hide a sentence; the
+# canonical form is NFD instead of the search's NFC, so the letters-and-
+# digits filter drops the combining marks and an accented copy ("Nó réal
+# company") cannot either (both sentences are basic Latin, so NFC could
+# only ever make a page's letter differ from a sentence's);
 # and with the Cyrillic and Greek lowercase letters that draw like a basic
 # Latin letter of the two sentences mapped to it (STATE_LOOKALIKES; a
 # look-alike of a letter neither sentence holds cannot hide one), so a
@@ -5517,13 +5521,13 @@ STATE_LOOKALIKES = str.maketrans({
 
 def sentence_fold(text):
     """text folded for the state sentence comparison (see STATE_LOOKALIKES):
-    NFKC, invisibles removed, NFC, case folded, look-alikes mapped, and
-    only its letters and digits kept."""
+    NFKC, invisibles removed, NFD, case folded, look-alikes mapped, and
+    only its letters and digits kept (combining marks are not letters)."""
     # The look-alikes before NFKC too: it turns some of them (U+03F2, the
     # lunate sigma, which draws like "c") into letters that look like no
     # Latin one.
     text = unicodedata.normalize("NFKC", text.translate(STATE_LOOKALIKES)).translate(INVISIBLE)
-    text = unicodedata.normalize("NFC", text).casefold().translate(STATE_LOOKALIKES)
+    text = unicodedata.normalize("NFD", text).casefold().translate(STATE_LOOKALIKES)
     return "".join(ch for ch in text if unicodedata.category(ch)[0] in "LN")
 
 
@@ -9924,12 +9928,12 @@ REFLOW_HEIGHT = 640
 # attempt alone outlasts the longest stall seen, at most 70.3 s (PR 5 job
 # 20, image 20261101), so it is absorbed whether a killed Chrome keeps its
 # progress, the stall lies outside the VM, or only a fresh Chrome helps.
-# Upper bound: the 40-minute workflow cap (re-derived in M4 PR 4 fix round
-# 2, ADR-0004 Numbers) holds the slowest green run of that round (1180 s),
+# Upper bound: the 48-minute workflow cap (re-derived in M4 PR 4 fix round
+# 2, ADR-0004 Numbers) holds the slowest green run of that round (1427 s),
 # a fully used window (2 x L) and one more 70 s stall, so L is at most
-# 575 s; 75 s leaves 1000 s of the cap. Below 71 s job 20's shape depends
-# on a restart helping again; above 575 s an absorbed window plus a second
-# stall is cancelled at 40 minutes.
+# 691 s; 75 s leaves 1233 s of the cap. Below 71 s job 20's shape depends
+# on a restart helping again; above 691 s an absorbed window plus a second
+# stall is cancelled at 48 minutes.
 REFLOW_LAUNCH_TIMEOUT = 75
 # The budget of every later answer (ADR-0003 Numbers). A 23-page call makes
 # about 70 page-level calls in 1.9 to 2.8 s on the runner, and no later call
