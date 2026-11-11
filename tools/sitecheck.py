@@ -5497,26 +5497,60 @@ def report_page_problems(page, record):
     return problems
 
 
+# Rule 17, the state sentences folded (fix round 2, delta review finding
+# 1): both sides compared the way the search folds a query (ADR-0005 part
+# 3: NFKC, the invisible characters removed, NFC, case folded), then on
+# letters and digits only, so a soft hyphen, a zero width character, a
+# case change (`| lower`), a compatibility form, punctuation, line breaks
+# and markup splits (`<b>com</b>pany,<br>person`) cannot hide a sentence;
+# and with the Cyrillic and Greek lowercase letters that draw like a basic
+# Latin letter of the two sentences mapped to it (STATE_LOOKALIKES; a
+# look-alike of a letter neither sentence holds cannot hide one), so a
+# Cyrillic "о" in "No" cannot either.
+STATE_LOOKALIKES = str.maketrans({
+    "\u0430": "a", "\u0435": "e", "\u0455": "s", "\u0456": "i", "\u043e": "o",
+    "\u0440": "p", "\u0441": "c", "\u0443": "y", "\u04bb": "h", "\u0501": "d",
+    "\u051d": "w", "\u04cf": "l", "\u03b1": "a", "\u03bf": "o", "\u03c1": "p",
+    "\u03b9": "i", "\u03bd": "v", "\u03c5": "u", "\u03f2": "c",
+})
+
+
+def sentence_fold(text):
+    """text folded for the state sentence comparison (see STATE_LOOKALIKES):
+    NFKC, invisibles removed, NFC, case folded, look-alikes mapped, and
+    only its letters and digits kept."""
+    # The look-alikes before NFKC too: it turns some of them (U+03F2, the
+    # lunate sigma, which draws like "c") into letters that look like no
+    # Latin one.
+    text = unicodedata.normalize("NFKC", text.translate(STATE_LOOKALIKES)).translate(INVISIBLE)
+    text = unicodedata.normalize("NFC", text).casefold().translate(STATE_LOOKALIKES)
+    return "".join(ch for ch in text if unicodedata.category(ch)[0] in "LN")
+
+
 def state_text_problems(page, record):
-    """Rule 17, the complement of the trees (fix round 1): the page's visible
-    text holds its own state sentence exactly once and the other state's
-    sentence nowhere, so no other element of the page (a lead, a body
-    paragraph, a footer line) states the other state."""
+    """Rule 17, the complement of the trees (fix rounds 1 and 2): folded
+    (sentence_fold), the page's visible text holds its own state sentence
+    exactly once, and no text of the page, hidden content, JSON-LD strings
+    and attribute values included, holds the other state's sentence, so no
+    other element of the page (a lead, a body paragraph, a footer line)
+    states the other state, however it is spelt."""
     state = record.params.get("state")
     if state not in STATE_SENTENCE:
         return []
-    shown = squash(page.root.text(" "))
-    everywhere = squash(" ".join([page.root.text(" ", shown=False)] + page_texts(page)))
+    shown = sentence_fold(page.root.text(" "))
+    own = sentence_fold(STATE_SENTENCE[state])
+    texts = [sentence_fold(page.root.text(" ", shown=False))]
+    texts += [sentence_fold(t) for t in page_texts(page)]
     problems = []
-    if shown.count(STATE_SENTENCE[state]) != 1:
+    if shown.count(own) != 1:
         problems.append(f"rule 17: the report page shows its state sentence "
-                        f"{shown.count(STATE_SENTENCE[state])} times; the templates emit it "
-                        "exactly once (D6)")
+                        f"{shown.count(own)} times (folded to letters and digits); the "
+                        "templates emit it exactly once (D6)")
     for other, sentence in STATE_SENTENCE.items():
-        if other != state and sentence in everywhere:
+        if other != state and any(sentence_fold(sentence) in t for t in texts):
             problems.append(f"rule 17: the report page of a {state} record shows the "
-                            f"{other} sentence {show(sentence, 90)}; a page states only its own "
-                            "state (D6)")
+                            f"{other} sentence {show(sentence, 90)} (folded to letters and "
+                            "digits); a page states only its own state (D6)")
     return problems
 
 
@@ -10980,6 +11014,31 @@ def png_rows(data):
     return width, height, channels, rows
 
 
+def pixel_difference(first, second):
+    """None when two screenshots (base64 PNG) are the same image, else the
+    count of differing pixels and their bounding box (case (8) and the
+    pinned regions' pixel occlusion check, fix round 2)."""
+    a = png_rows(base64.b64decode(first))
+    b = png_rows(base64.b64decode(second))
+    if a[:3] != b[:3]:
+        return f"the images differ in size, {a[0]} x {a[1]} and {b[0]} x {b[1]}"
+    width, channels = a[0], a[2]
+    count, xs, ys = 0, [], []
+    for y, (ra, rb) in enumerate(zip(a[3], b[3])):
+        if ra == rb:
+            continue
+        for x in range(width):
+            i = x * channels
+            if ra[i:i + channels] != rb[i:i + channels]:
+                count += 1
+                xs.append(x)
+                ys.append(y)
+    if not count:
+        return None
+    return (f"{count} pixel(s) differ, x {min(xs)} to {max(xs)}, y {min(ys)} to {max(ys)} "
+            "of the slice")
+
+
 def png_difference(first, second):
     """The largest difference of one channel of one pixel between two
     screenshots (base64 PNG), 255 when their sizes differ."""
@@ -11645,8 +11704,69 @@ REFLOW_HIT_SCRIPT = r"""
 REFLOW_REGION_PAINT_SCRIPT = r"""
 (function () {
   var el = (window.__iscRegions || [])[%(index)d];
-  var mode = %(mode)s, saved = %(saved)s, old = null;
+  var mode = %(mode)s, saved = %(saved)s, old = null, extra = {};
+  function label(e) {
+    var s = e.localName;
+    if (e.id) s += "#" + e.id;
+    if (e.classList && e.classList.length) s += "." + Array.from(e.classList).join(".");
+    return s;
+  }
+  function box(e) {
+    var r = e.getBoundingClientRect();
+    return [r.left, r.top, r.width, r.height].join(",");
+  }
   if (mode === "scroll") window.scrollTo(0, %(y)s);
+  // The pixel occlusion check (fix round 2): "isolate" hides every element
+  // outside the region and its ancestors (visibility, so the layout holds),
+  // with animations paused and the caret blurred; "unisolate" restores
+  // all of it. The ancestors must hold no text and no pseudo-element of
+  // their own, the only things of theirs that could paint over the region.
+  if (el && mode === "isolate") {
+    var anims = document.getAnimations().filter(function (a) { return a.playState === "running"; });
+    anims.forEach(function (a) { a.pause(); });
+    window.__iscAnims = anims;
+    window.__iscFocus = document.activeElement;
+    if (window.__iscFocus && window.__iscFocus.blur) window.__iscFocus.blur();
+    var anc = [];
+    for (var p = el.parentElement; p; p = p.parentElement) anc.push(p);
+    var before = box(el), hidden = [];
+    Array.prototype.forEach.call(document.querySelectorAll("body *"), function (e) {
+      if (el.contains(e) || anc.indexOf(e) >= 0 || !e.style) return;
+      hidden.push([e, e.style.getPropertyValue("visibility"),
+                   e.style.getPropertyPriority("visibility"), e.hasAttribute("style")]);
+      e.style.setProperty("visibility", "hidden", "important");
+    });
+    window.__iscHidden = hidden;
+    var own = [], leak = [];
+    anc.forEach(function (a) {
+      Array.prototype.forEach.call(a.childNodes, function (n) {
+        if (n.nodeType === 3 && n.data.trim()) own.push(label(a) + " (its text)");
+      });
+      ["::before", "::after"].forEach(function (ps) {
+        var c = getComputedStyle(a, ps).content;
+        if (c !== "none" && c !== "normal") own.push(label(a) + ps);
+      });
+    });
+    hidden.forEach(function (h) {
+      ["::before", "::after"].forEach(function (ps) {
+        var cs = getComputedStyle(h[0], ps);
+        if (cs.content !== "none" && cs.content !== "normal" && cs.visibility === "visible")
+          leak.push(label(h[0]) + ps);
+      });
+    });
+    extra = {moved: box(el) !== before, own: own, leak: leak, hidden: hidden.length};
+  } else if (mode === "unisolate") {
+    (window.__iscHidden || []).forEach(function (h) {
+      if (h[1]) h[0].style.setProperty("visibility", h[1], h[2]);
+      else h[0].style.removeProperty("visibility");
+      if (h[0].getAttribute("style") === "" && !h[3]) h[0].removeAttribute("style");
+    });
+    window.__iscHidden = [];
+    (window.__iscAnims || []).forEach(function (a) { a.play(); });
+    window.__iscAnims = [];
+    var f = window.__iscFocus;
+    if (f && f.focus && f !== document.body) f.focus({preventScroll: true});
+  }
   if (el && el.style && mode === "hide") {
     old = ["opacity", "transition"].map(function (p) {
       return [el.style.getPropertyValue(p), el.style.getPropertyPriority(p)];
@@ -11663,7 +11783,7 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
     if (el.getAttribute("style") === "" && !saved[2]) el.removeAttribute("style");
     getComputedStyle(el).opacity;
   }
-  return {x: scrollX, y: scrollY, vh: innerHeight, saved: old};
+  return {x: scrollX, y: scrollY, vh: innerHeight, saved: old, extra: extra};
 })()
 """
 # The Page events of a navigation of the page's own frame (case (8)).
@@ -11725,6 +11845,38 @@ def reflow_hits(tools, session, findings, where, revealed=None):
             clip = {"x": max(region["left"], 0) + state["x"], "y": y,
                     "width": max(min(region["width"], 10000), 1), "height": size,
                     "scale": 1}
+            # The pixel occlusion check (fix round 2): the slice as rendered
+            # and with everything outside the region hidden, both with the
+            # animations paused and no caret, must be the same image.
+            iso = []
+            for mode in ("isolate", "unisolate"):
+                iso.append(tools.send("Page.captureScreenshot",
+                                      {"format": "png", "clip": clip},
+                                      session=session).get("data"))
+                state = reflow_value(tools, session, REFLOW_REGION_PAINT_SCRIPT % {
+                    "index": region["index"], "mode": json.dumps(mode), "saved": "null",
+                    "y": "0"}, where)
+                extra = state.get("extra") or {}
+                if mode == "isolate":
+                    if extra.get("moved"):
+                        findings.add(where, f"(occlusion) {what} moved when everything outside "
+                                     "it was hidden, so its paint cannot be compared")
+                    for item in (extra.get("own") or [])[:REFLOW_NAMED]:
+                        findings.add(where, f"(occlusion) {show(item, 120)}, an ancestor of "
+                                     f"{what}, holds text or a pseudo-element of its own, which "
+                                     "could paint over the region; the templates give the "
+                                     "regions' ancestors none")
+                    for item in (extra.get("leak") or [])[:REFLOW_NAMED]:
+                        findings.add(where, f"(occlusion) the pseudo-element {show(item, 120)} "
+                                     "stays visible when its element is hidden, so the pixel "
+                                     f"check of {what} cannot read it")
+            diff = pixel_difference(iso[0], iso[1])
+            if diff:
+                findings.add(where, f"(occlusion) the pixels of {what} change when everything "
+                             f"outside it is hidden ({diff}): something outside the region "
+                             "paints over it (an element, overflowing text, a shadow, an "
+                             "outline, an indent or spacing, a pseudo-element), whatever its "
+                             "pointer-events")
             shots, saved = [], None
             for mode in ("hide", "restore", "read"):
                 shots.append(tools.send("Page.captureScreenshot",

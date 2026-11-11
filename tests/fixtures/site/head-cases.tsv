@@ -190,3 +190,8 @@ header-aria-current-wrong	public/index.html	<a class=pill href=/about/>	<a class
 skip-link-text	public/index.html	Skip to content	Skip	(m) the skip link: <a class=visually-hidden> reads
 footer-extra-element	public/index.html	<nav aria-label=Site>	<div></div><nav aria-label=Site>	(m) the footer holds <div>
 doctype-late	public/index.html	<!doctype html><html lang="en">	<html lang="en"><!doctype html>	(m) the page starts with
+body-skip-link-deleted	public/index.html	<a class=visually-hidden href=#main>Skip to content</a>		(m) <body> holds
+body-header-not-a-header	public/index.html	<header class=site-header>	<div class=site-header>	(m) <body> holds
+body-main-not-a-main	public/index.html	<main id=main class=container tabindex=-1>	<div id=main class=container tabindex=-1>	(m) <body> holds
+body-footer-not-a-footer	public/index.html	<footer class=site-footer>	<div class=site-footer>	(m) <body> holds
+body-main-hidden	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1 hidden>	(m) <body> holds
