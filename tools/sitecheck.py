@@ -9928,12 +9928,12 @@ REFLOW_HEIGHT = 640
 # attempt alone outlasts the longest stall seen, at most 70.3 s (PR 5 job
 # 20, image 20261101), so it is absorbed whether a killed Chrome keeps its
 # progress, the stall lies outside the VM, or only a fresh Chrome helps.
-# Upper bound: the 50-minute workflow cap (re-derived in M5b PR 2 fix round
-# 1, ADR-0004 Numbers) holds the slowest green run (1497 s), a fully used
-# window (2 x L) and one more 70 s stall, so L is at most 716 s; 75 s leaves
-# 1283 s of the cap. Below 71 s job 20's shape depends on a restart helping
-# again; above 716 s an absorbed window plus a second stall is cancelled at
-# 50 minutes.
+# Upper bound: the 51-minute workflow cap (re-derived in M5b PR 2 fix round
+# 2 from the job duration, ADR-0004 Numbers) holds the slowest green job
+# (1503 s), a fully used window (2 x L) and one more 70 s stall, so L is at
+# most 743 s; 75 s leaves 1337 s of the cap. Below 71 s job 20's shape
+# depends on a restart helping again; above 743 s an absorbed window plus a
+# second stall is cancelled at 51 minutes.
 REFLOW_LAUNCH_TIMEOUT = 75
 # The budget of every later answer (ADR-0003 Numbers). A 23-page call makes
 # about 70 page-level calls in 1.9 to 2.8 s on the runner, and no later call
@@ -13049,6 +13049,9 @@ INTAKE_CLIENT_LIMIT = 6
 INTAKE_CLIENT_WINDOW_MS = 3_600_000
 INTAKE_CLIENT_DAILY_MAILS = 3
 INTAKE_DAILY_CAP = 50
+# ADR-0006 Numbers, "Global cap": the pause notice is tried at most 3 times
+# per UTC day (fix round 2 of PR 2).
+INTAKE_NOTICE_TRIES = 3
 INTAKE_LIMITER_KEY_BYTES = 32
 # The Rate Limiting binding (ADR-0006 part 3 step 3, Numbers): 6 per 60 s
 # per key and location. The namespace_id was drawn in PR 2 with
@@ -13075,7 +13078,7 @@ INTAKE_RESULT_IDS = ("too-large", "too-many-files", "not-an-image", "missing-fie
 # tools/intake.py refuses to deploy a source that differs from this pin.
 INTAKE_WORKER_DIR = "worker"
 INTAKE_WORKER_SHA256 = {
-    "worker/intake.js": "01c462e68ffe2b06179437948b6632113a53a59a06dcd5deb94cb160273c5e25",
+    "worker/intake.js": "b9897d0a5ad314e48e1cd5ff5104f8177d66bd1b508c418693482e9df8898cbf",
 }
 
 

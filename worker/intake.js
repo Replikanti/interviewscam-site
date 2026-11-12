@@ -22,6 +22,11 @@ const SITE_ORIGIN = "https://interviewscam.com";
 const PATH = "/submit";
 const LIMITER_NAME = "intake";
 
+// The pause notice is tried at most this often per UTC day (Numbers, "Global
+// cap"): a send() that throws after the message went out must not mail the
+// operator on every paused refusal.
+const NOTICE_TRIES = 3;
+
 const FIELD = (name, type, required, cap, autocomplete) => Object.freeze({ name, type, required, cap, autocomplete });
 
 // The values of the INTAKE_* constants of tools/sitecheck.py
@@ -69,6 +74,7 @@ export const INTAKE = Object.freeze({
   CLIENT_WINDOW_MS: 3600000,
   CLIENT_DAILY_MAILS: 3,
   DAILY_CAP: 50,
+  NOTICE_TRIES,
   LIMITER_KEY_BYTES: 32,
   BURST_ABSENT_BINDING: "RATE_LIMITER_ABSENT",
   BURST_ABSENT_VALUE: "refused-by-cloudflare",
@@ -149,10 +155,18 @@ function bodyText(value) {
   return defangSchemes(normalizeText(value).replace(/[\u0000-\u0008\u000B-\u001F]/g, ""));
 }
 
+// One line: every White_Space character becomes a space (fix round 2 of PR
+// 2). LF and TAB, and U+0085, U+2028 and U+2029, which line-splitting
+// readers and mail views break on, would otherwise start a forged label
+// line ("Own name: yes") in the body.
+function oneLine(value) {
+  return value.replace(/\p{White_Space}/gu, " ");
+}
+
 // Part 4: an original file name as context, on one line, cut to
 // FILE_NAME_CAP UTF-16 code units without splitting a surrogate pair.
 function fileNameText(value) {
-  let text = bodyText(value).replace(/[\t\n]/g, " ");
+  let text = oneLine(bodyText(value));
   if (text.length > INTAKE.FILE_NAME_CAP) {
     text = text.slice(0, INTAKE.FILE_NAME_CAP);
     if (/[\uD800-\uDBFF]$/.test(text)) text = text.slice(0, -1);
@@ -359,7 +373,7 @@ function buildMail(checked) {
     // from text, email and url inputs, so only a hand-made request sends
     // one, and it could forge a label line ("Own name: yes") below.
     if (BLOCK_FIELDS.has(field.name)) lines.push("", `${LABELS[field.name]}:`, value, "");
-    else lines.push(`${LABELS[field.name]}: ${value.replace(/[\t\n]/g, " ")}`);
+    else lines.push(`${LABELS[field.name]}: ${oneLine(value)}`);
   }
   if (checked.attachments.length) {
     lines.push("", "Files (attachment: original name, cut to 100 characters):");
@@ -595,8 +609,14 @@ export class IntakeLimiter extends DurableObject {
     const row = this.sql.exec("SELECT n FROM days WHERE day = ?", day).toArray()[0];
     const total = row ? row.n : 0;
     if (total >= INTAKE.DAILY_CAP) {
-      if (total === INTAKE.DAILY_CAP) {
-        this.sql.exec("UPDATE days SET n = ? WHERE day = ?", INTAKE.DAILY_CAP + 1, day);
+      // The notice state lives in days.n above the cap (fix round 2 of PR 2):
+      // an even step (0, 2, 4) means "send a notice" (none yet, or the last
+      // try failed), an odd one (1, 3, 5) a try in flight or sent, and
+      // 2 * NOTICE_TRIES the tries used up. So at most NOTICE_TRIES notices
+      // per UTC day, even when send() fails after the message went out.
+      const step = total - INTAKE.DAILY_CAP;
+      if (step % 2 === 0 && step < 2 * NOTICE_TRIES) {
+        this.sql.exec("UPDATE days SET n = ? WHERE day = ?", total + 1, day);
         return { ok: false, reason: "paused", notice: true, day };
       }
       return { ok: false, reason: "paused", notice: false, day };
@@ -608,10 +628,12 @@ export class IntakeLimiter extends DurableObject {
     return { ok: true, day };
   }
 
-  // A notice that failed to send: the next refusal of the day sends it.
+  // A notice that failed to send: the next refusal of the day tries again,
+  // until NOTICE_TRIES tries are used up.
   noticeFailed(day) {
     checkDay(day);
-    this.sql.exec("UPDATE days SET n = ? WHERE day = ? AND n = ?", INTAKE.DAILY_CAP, day, INTAKE.DAILY_CAP + 1);
+    this.sql.exec("UPDATE days SET n = n + 1 WHERE day = ? AND n > ? AND (n - ?) % 2 = 1",
+      day, INTAKE.DAILY_CAP, INTAKE.DAILY_CAP);
     return { ok: true };
   }
 

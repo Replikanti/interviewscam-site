@@ -58,6 +58,9 @@ class Stub:
         self.content_mode = "raw"  # raw | multipart | multipart-extra | entrypoint-foreign | corrupt
         self.routes = []           # zone Worker routes
         self.redirect = False      # every settings GET answers 302 elsewhere
+        self.versions = []         # uploaded version ids, newest first
+        self.deployments = []      # newest first, each {strategy, versions: [{version_id, percentage}]}
+        self.version_override = {} # replaces keys of a version's resources
 
     def settings(self):
         bindings = []
@@ -112,6 +115,12 @@ class Stub:
             self.module_type = module.get_content_type()
             self.content = module.get_payload(decode=True)
             self.state = "deployed"
+            # An upload through this endpoint creates a version and deploys
+            # it at 100 %.
+            vid = f"v{len(self.versions) + 1}"
+            self.versions.insert(0, vid)
+            self.deployments.insert(0, {"strategy": "percentage",
+                                        "versions": [{"version_id": vid, "percentage": 100}]})
             return 200, {"success": True, "errors": [], "result": {"id": SCRIPT}}
         if method == "GET" and path == f"{base}/scripts/{SCRIPT}/content/v2":
             mode = self.content_mode
@@ -134,6 +143,20 @@ class Stub:
                     headers["CF-Entrypoint"] = "intake.js"
                 return 200, (data, headers)
             return 200, self.content
+        if method == "GET" and path == f"{base}/scripts/{SCRIPT}/deployments":
+            return 200, {"success": True, "errors": [], "result": {"deployments": self.deployments}}
+        if method == "GET" and path == f"{base}/scripts/{SCRIPT}/versions":
+            return 200, {"success": True, "errors": [], "result": {"items": [{"id": v} for v in self.versions]}}
+        if method == "GET" and path.startswith(f"{base}/scripts/{SCRIPT}/versions/"):
+            vid = path.rsplit("/", 1)[1]
+            if vid not in self.versions:
+                return 404, {"success": False, "errors": [{"code": 10007, "message": "version not found"}]}
+            settings = self.settings()
+            resources = {"bindings": settings["bindings"],
+                         "script_runtime": {"compatibility_date": settings["compatibility_date"]},
+                         "script": {"etag": "x", "handlers": ["fetch"]}}
+            resources.update(copy.deepcopy(self.version_override))
+            return 200, {"success": True, "errors": [], "result": {"id": vid, "resources": resources}}
         if method == "GET" and path == f"/client/v4/zones/{ZONE}/workers/routes":
             return 200, {"success": True, "errors": [], "result": self.routes}
         if method == "PUT" and path == f"{base}/domains":
@@ -376,6 +399,7 @@ class Tool(ToolCase):
         rc, out = self.run_tool("verify")
         self.assertEqual(rc, 0, out)
         good = (copy.deepcopy(self.stub.metadata), self.stub.content, copy.deepcopy(self.stub.domains))
+        good_versions = list(self.stub.versions)
         drifts = {
             "content": lambda: setattr(self.stub, "content", self.stub.content + b"\n"),
             "destination": lambda: self.stub.settings_override.update(
@@ -421,10 +445,41 @@ class Tool(ToolCase):
                                                                      "script": "other"}]),
             "bare wildcard route": lambda: setattr(self.stub, "routes", [{"pattern": "*interviewscam.com/*",
                                                                           "script": SCRIPT}]),
+            # Fix round 2: the route forms Cloudflare accepts (a scheme, capitals).
+            "https route": lambda: setattr(self.stub, "routes", [{"pattern": "https://intake.interviewscam.com/*",
+                                                                  "script": "other"}]),
+            "http route": lambda: setattr(self.stub, "routes", [{"pattern": "http://intake.interviewscam.com/*",
+                                                                 "script": "other"}]),
+            "https wildcard route": lambda: setattr(self.stub, "routes", [{"pattern": "HTTPS://*.interviewscam.com/*",
+                                                                           "script": "other"}]),
+            "capital wildcard route": lambda: setattr(self.stub, "routes", [{"pattern": "*.INTERVIEWSCAM.COM/*",
+                                                                             "script": "other"}]),
+            "capital host route": lambda: setattr(self.stub, "routes", [{"pattern": "INTAKE.interviewscam.com/submit",
+                                                                         "script": "other"}]),
+            # Fix round 2: the active deployment.
+            "split deployment": lambda: setattr(self.stub, "deployments", [
+                {"strategy": "percentage", "versions": [{"version_id": self.stub.versions[0], "percentage": 50},
+                                                        {"version_id": "evil", "percentage": 50}]}]),
+            "version at 0 %": lambda: setattr(self.stub, "deployments", [
+                {"strategy": "percentage", "versions": [{"version_id": self.stub.versions[0], "percentage": 100},
+                                                        {"version_id": "old", "percentage": 0}]}]),
+            "no deployment": lambda: setattr(self.stub, "deployments", []),
+            "one version below 100 %": lambda: setattr(self.stub, "deployments", [
+                {"strategy": "percentage", "versions": [{"version_id": self.stub.versions[0], "percentage": 50}]}]),
+            "deployed version not latest": lambda: self.stub.versions.insert(0, "undeployed"),
+            "deployed version bindings": lambda: self.stub.version_override.update(
+                bindings=[dict(b, destination_address="other@example.com") if b["name"] == "EMAIL" else b
+                          for b in self.stub.settings()["bindings"]]),
+            "malformed route": lambda: setattr(self.stub, "routes", ["intake.interviewscam.com/*"]),
+            "deployed version date": lambda: self.stub.version_override.update(
+                script_runtime={"compatibility_date": "2020-01-01"}),
         })
         for name, drift in drifts.items():
             with self.subTest(drift=name):
-                self.stub.content_mode, self.stub.routes = "raw", []
+                self.stub.content_mode, self.stub.routes, self.stub.version_override = "raw", [], {}
+                self.stub.versions = list(good_versions)
+                self.stub.deployments = [{"strategy": "percentage",
+                                          "versions": [{"version_id": good_versions[0], "percentage": 100}]}]
                 self.stub.metadata, self.stub.content, self.stub.domains = copy.deepcopy(good[0]), good[1], \
                     copy.deepcopy(good[2])
                 self.stub.settings_override = {}
@@ -578,6 +633,39 @@ class ToolFixRound1(ToolCase):
         self.assertEqual(rc, 2, out)
         self.assertIn("symlink", out)
         self.assertEqual(self.stub.requests, [])
+
+
+
+class ToolFixRound2(ToolCase):
+    """Fix round 2 of PR 2: delta review N1 and N2, QA's tool rows."""
+
+    def test_marker_text_drift(self):
+        self.assertEqual(self.run_tool("deploy", "--without-rate-limiter")[0], 0)
+        self.stub.settings_override = {"bindings": [dict(b, text="other") if b["name"] == "RATE_LIMITER_ABSENT" else b
+                                                    for b in self.stub.settings()["bindings"]]}
+        rc, out = self.run_tool("verify", "--without-rate-limiter")
+        self.assertEqual(rc, 1, out)
+
+    def test_route_pattern_table(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        for pattern, covers in (("*.example.org/*", False), ("*other.com/*", False),
+                                ("other.interviewscam.com/*", False), ("https://www.interviewscam.com/*", False),
+                                ("http://*.example.org/*", False), ("*.INTERVIEWSCAM.COM/*", True),
+                                ("INTAKE.interviewscam.com/submit", True), ("https://intake.interviewscam.com/*", True),
+                                ("Http://intake.interviewscam.com/x", True), ("https://*interviewscam.com/*", True)):
+            with self.subTest(pattern=pattern):
+                self.stub.routes = [{"pattern": pattern, "script": "o"}]
+                rc, out = self.run_tool("verify")
+                self.assertEqual(rc, 1 if covers else 0, out)
+
+    def test_deployment_endpoints_read(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        self.stub.requests.clear()
+        self.assertEqual(self.run_tool("verify")[0], 0)
+        paths = [r["path"] for r in self.stub.requests if r["method"] == "GET"]
+        base = f"/client/v4/accounts/{ACCOUNT}/workers/scripts/{SCRIPT}"
+        for want in (f"{base}/deployments", f"{base}/versions", f"{base}/versions/v1"):
+            self.assertIn(want, paths)
 
 
 if __name__ == "__main__":

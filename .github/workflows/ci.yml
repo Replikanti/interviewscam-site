@@ -16,14 +16,14 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     # ADR-0004 Numbers, "check.sh workflow timeouts": re-derived in M5b PR 2
-    # fix round 1 (Replikanti/interviewscam#13) from its own green runs of
-    # check.sh; the slowest, 1497 s (ci.yml check, run 43237837506,
-    # stall-free), sets both terms. Cap >= max(2 x 1497 s = 2994 s, 1497 s
-    # + 2 x 75 s (REFLOW_LAUNCH_TIMEOUT) + 70 s = 1717 s), rounded up to 50
-    # min.
+    # fix round 2 (Replikanti/interviewscam#13) from the job duration, which
+    # timeout-minutes counts: the slowest green job, 1503 s (ci.yml check,
+    # run 43237837506, stall-free), sets both terms. Cap >= max(2 x 1503 s =
+    # 3006 s, 1503 s + 2 x 75 s (REFLOW_LAUNCH_TIMEOUT) + 70 s = 1723 s),
+    # rounded up to 51 min.
     # Re-derive in the next PR that changes check.sh.
     # The 360-minute default would let a hung run block merges for hours.
-    timeout-minutes: 50
+    timeout-minutes: 51
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

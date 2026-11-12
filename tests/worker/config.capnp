@@ -32,6 +32,8 @@ const config :Workerd.Config = (
     (name = "intake-no-burst", worker = .intakeNoBurst),
     # Neither the binding nor the marker: every submission is #error.
     (name = "intake-missing-burst", worker = .intakeMissingBurst),
+    # A limiter that records the times and days the Worker passes (probe.js).
+    (name = "intake-record", worker = .intakeRecord),
     (name = "capture", worker = .capture),
     (name = "burst", worker = .burst),
     (name = "probe", worker = .probe),
@@ -48,6 +50,7 @@ const config :Workerd.Config = (
     (name = "intake-no-burst", address = "127.0.0.1:0", http = (), service = "intake-no-burst"),
     (name = "intake-missing-burst", address = "127.0.0.1:0", http = (),
      service = "intake-missing-burst"),
+    (name = "intake-record", address = "127.0.0.1:0", http = (), service = "intake-record"),
     (name = "probe", address = "127.0.0.1:0", http = (), service = "probe"),
   ],
 );
@@ -122,6 +125,17 @@ const intakeMissingBurst :Workerd.Worker = (
   ],
 );
 
+const intakeRecord :Workerd.Worker = (
+  modules = [(name = "intake.js", esModule = embed "../../worker/intake.js")],
+  compatibilityDate = "2026-11-10",
+  bindings = [
+    (name = "EMAIL", service = "capture"),
+    (name = "RATE_LIMITER", service = "burst"),
+    (name = "LIMITER", durableObjectNamespace = (className = "RecordingLimiter", serviceName = "probe")),
+    (name = "LIMITER_KEY", text = "f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246"),
+  ],
+);
+
 const capture :Workerd.Worker = (
   modules = [(name = "capture.js", esModule = embed "capture.js")],
   compatibilityDate = "2026-11-10",
@@ -142,8 +156,10 @@ const probe :Workerd.Worker = (
     (name = "LIMITER", durableObjectNamespace = (className = "IntakeLimiter", serviceName = "intake")),
     (name = "CAPTURE", service = "capture"),
     (name = "BURST", service = "burst"),
+    (name = "RECORD", durableObjectNamespace = "RecordingLimiter"),
   ],
   durableObjectNamespaces = [
+    (className = "RecordingLimiter", uniqueKey = "interviewscam-intake-test-record"),
     (className = "BrokenLimiter", uniqueKey = "interviewscam-intake-test-broken"),
     (className = "BrokenReserveLimiter", uniqueKey = "interviewscam-intake-test-broken-reserve"),
   ],

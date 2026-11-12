@@ -374,13 +374,62 @@ def settings_problems(sc, pins, settings, destination, without_rate_limiter=Fals
     return problems
 
 
+ROUTE_SCHEME = re.compile(r"(?i)https?://")
+
+
 def route_matches(pattern, host):
-    """A zone Worker route pattern (host part up to the first /, an optional
-    leading * wildcard) that covers host."""
-    route_host = str(pattern).split("/", 1)[0].lower()
+    """A zone Worker route pattern that covers host. By the Routes docs
+    (Workers, "Routes and domains", read 2026-11-12) a pattern may begin
+    with http:// or https://, its host part runs to the first /, and a
+    leading * matches any prefix; hosts compare without case (fix round 2
+    of PR 2: a scheme or capitals hid a covering route)."""
+    text = str(pattern).strip()
+    scheme = ROUTE_SCHEME.match(text)
+    rest = text[scheme.end():] if scheme else text
+    route_host = rest.split("/", 1)[0].lower()
     if route_host.startswith("*"):
         return host.endswith(route_host[1:])
     return route_host == host
+
+
+def deployment_problems(api, sc, pins, account, destination, without_rate_limiter):
+    """The active deployment (fix round 2 of PR 2). By the API reference
+    (List Worker deployments: "The first deployment in the list is the
+    latest deployment actively serving traffic"; List Worker Versions: "The
+    first version in the list is the latest version"; Get Version: its
+    resources.bindings and resources.script_runtime), the active deployment
+    must hold exactly one version at 100 %, so no split and no version at
+    0 % that a Cloudflare-Workers-Version-Overrides header could select
+    (version overrides docs: "even those set to serve 0% of traffic"); that
+    version must be the latest upload, so the content and settings read
+    above describe it whichever version those endpoints answer for; and its
+    own bindings and compatibility date must be the expected ones."""
+    problems = []
+    result = api.call("GET", script_path(sc, account, "/deployments")) or {}
+    deployments = result.get("deployments") if isinstance(result, dict) else None
+    if not deployments:
+        return ["no active deployment"]
+    active = deployments[0]
+    versions = active.get("versions") if isinstance(active, dict) else None
+    if (not isinstance(versions, list) or len(versions) != 1 or not isinstance(versions[0], dict)
+            or versions[0].get("percentage") != 100 or active.get("strategy", "percentage") != "percentage"):
+        shares = [(v.get("version_id"), v.get("percentage")) for v in versions or [] if isinstance(v, dict)]
+        return [f"the active deployment is not one version at 100 %: {shares!r}"]
+    deployed = versions[0].get("version_id")
+    listed = api.call("GET", script_path(sc, account, "/versions")) or {}
+    items = listed.get("items") if isinstance(listed, dict) else None
+    latest = items[0].get("id") if items and isinstance(items[0], dict) else None
+    if latest != deployed:
+        problems.append(f"the deployed version {deployed!r} is not the latest upload {latest!r}")
+    version = api.call("GET", script_path(sc, account, f"/versions/{deployed}")) or {}
+    resources = version.get("resources") if isinstance(version, dict) else None
+    resources = resources if isinstance(resources, dict) else {}
+    problems += [f"deployed version: {p}" for p in
+                 binding_problems(sc, resources.get("bindings"), destination, without_rate_limiter)]
+    runtime = resources.get("script_runtime") if isinstance(resources.get("script_runtime"), dict) else {}
+    if runtime.get("compatibility_date") != pins["WORKERD_COMPAT_DATE"]:
+        problems.append(f"deployed version: compatibility_date is {runtime.get('compatibility_date')!r}")
+    return problems
 
 
 def verify_deployed(api, sc, pins, account, zone, destination, without_rate_limiter=False):
@@ -398,11 +447,14 @@ def verify_deployed(api, sc, pins, account, zone, destination, without_rate_limi
         problems.append(f"no script {sc.INTAKE_SCRIPT_NAME} is deployed")
     else:
         problems += settings_problems(sc, pins, settings, destination, without_rate_limiter)
+        problems += deployment_problems(api, sc, pins, account, destination, without_rate_limiter)
     # Fix round 1 of PR 2: a zone Worker route on the intake host could send
     # its requests to another script whatever the custom domain says.
     routes = api.call("GET", f"/zones/{zone}/workers/routes") or []
     for route in routes:
-        if isinstance(route, dict) and route_matches(route.get("pattern", ""), sc.INTAKE_HOSTNAME):
+        if not isinstance(route, dict):
+            problems.append(f"a zone route the tool cannot read: {route!r}")
+        elif route_matches(route.get("pattern", ""), sc.INTAKE_HOSTNAME):
             problems.append(f"the zone route {route.get('pattern')!r} (script {route.get('script')!r}) "
                             f"covers {sc.INTAKE_HOSTNAME}; no route may")
     query = urllib.parse.urlencode({"hostname": sc.INTAKE_HOSTNAME})

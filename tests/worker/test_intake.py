@@ -35,7 +35,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "tests" / "worker" / "config.capnp"
 SOCKETS = ("intake", "intake-broken-limiter", "intake-bad-key", "intake-broken-reserve", "intake-no-burst",
-           "intake-missing-burst", "probe")
+           "intake-missing-burst", "intake-record", "probe")
 LOG_LINE = re.compile(r"^intake event=[a-z-]+( code=[A-Z_]+)?$")
 FAR_FUTURE = 8_000_000_000_000  # ms, year 2223: purges every limiter row
 
@@ -963,6 +963,7 @@ class ResponsesAndMail(WorkerCase):
             "MAX_BODY": SC.INTAKE_MAX_BODY, "CLIENT_LIMIT": SC.INTAKE_CLIENT_LIMIT,
             "CLIENT_WINDOW_MS": SC.INTAKE_CLIENT_WINDOW_MS, "CLIENT_DAILY_MAILS": SC.INTAKE_CLIENT_DAILY_MAILS,
             "DAILY_CAP": SC.INTAKE_DAILY_CAP, "FILE_NAME_CAP": SC.INTAKE_FILE_NAME_CAP,
+            "NOTICE_TRIES": SC.INTAKE_NOTICE_TRIES,
             "RESULT_IDS": list(SC.INTAKE_RESULT_IDS), "LIMITER_KEY_BYTES": SC.INTAKE_LIMITER_KEY_BYTES,
             "BURST_ABSENT_BINDING": SC.INTAKE_BURST_ABSENT_BINDING,
             "BURST_ABSENT_VALUE": SC.INTAKE_BURST_ABSENT_VALUE,
@@ -1193,6 +1194,13 @@ class FixRound1(WorkerCase):
         slots = [probe("limiter", "reserve", f"{i:064x}", now) for i in range(10)]
         probe("limiter", "noticeFailed", slots[0]["day"])
         self.assertEqual(probe("limiter", "rows")["days"], [{"day": slots[0]["day"], "n": 10}])
+        # After a failed try (an even step) a second report of failure changes nothing.
+        for i in range(10, SC.INTAKE_DAILY_CAP):
+            probe("limiter", "reserve", f"{i:064x}", now)
+        self.assertTrue(probe("limiter", "reserve", "c" * 64, now)["notice"])
+        probe("limiter", "noticeFailed", slots[0]["day"])
+        probe("limiter", "noticeFailed", slots[0]["day"])
+        self.assertEqual(probe("limiter", "rows")["days"][0]["n"], SC.INTAKE_DAILY_CAP + 2)
 
     def test_reserve_refusal_code_client_mails(self):
         """The mail cap checked again at reserve(): a key reaches it while its
@@ -1356,6 +1364,140 @@ class FixRound1(WorkerCase):
                          ["intake event=too-many-attempts code=E_CLIENT_MAILS"])
         probe("capture", "setFail", "throw")
         self.assertEqual(logged(lambda: send(self, report())), ["intake event=error code=E_SEND"])
+
+
+class FixRound2(WorkerCase):
+    """Fix round 2 of PR 2: the delta review (N3, N7) and QA's recheck."""
+
+    def setUp(self):
+        super().setUp()
+        probe("record", "setup", False, False, False)
+
+    def raw_submit(self, port_name, parts=None, pause=0.0):
+        """One POST over a raw socket; the body after its first 50 bytes is
+        held back for pause seconds, as a slow upload would be."""
+        body, mp = multipart(parts if parts is not None else report())
+        head = ("POST /submit HTTP/1.1\r\nHost: intake.test\r\nOrigin: https://interviewscam.com\r\n"
+                f"CF-Connecting-IP: {fresh_ip()}\r\nContent-Type: {mp}\r\nContent-Length: {len(body)}\r\n"
+                "Connection: close\r\n\r\n").encode()
+        sock = socket.create_connection(("127.0.0.1", SERVER["ports"][port_name]), timeout=30)
+        try:
+            sock.sendall(head + body[:50])
+            time.sleep(pause)
+            sock.sendall(body[50:])
+            data = b""
+            while chunk := sock.recv(65536):
+                data += chunk
+        finally:
+            sock.close()
+        return data
+
+    # --- QA: the fresh time and the reserved day reach the limiter
+    def test_reserve_gets_fresh_time_after_slow_body(self):
+        data = self.raw_submit("intake-record", pause=1.5)
+        self.assertIn(b"/sent/", data)
+        times = probe("record")
+        attempt = [t for k, t in times if k == "attempt"][-1]
+        reserve = [t for k, t in times if k == "reserve"][-1]
+        self.assertGreaterEqual(reserve - attempt, 1000, times)
+
+    def test_refund_uses_reserved_day(self):
+        probe("capture", "setFail", "throw")
+        self.assertIn(b"#error", self.raw_submit("intake-record"))
+        self.assertIn(["refund", "2000-01-01"], probe("record"))
+
+    def test_notice_names_reserved_day(self):
+        probe("record", "setup", True, False, False)
+        self.assertIn(b"#paused", self.raw_submit("intake-record"))
+        (notice,) = mails()
+        self.assertIn("on 2000-01-01", notice["subject"])
+
+    def test_attempt_failure_fails_closed_even_if_reserve_works(self):
+        probe("record", "setup", False, True, False)
+        lines = logged(lambda: self.assertIn(b"#error", self.raw_submit("intake-record")))
+        self.assertEqual(lines, ["intake event=error code=E_LIMITER"])
+        self.assertEqual([k for k, _ in probe("record")], ["attempt"])
+        self.assertEqual(mails(), [])
+
+    def test_refund_failure_is_logged_and_still_error(self):
+        probe("record", "setup", False, False, True)
+        probe("capture", "setFail", "throw")
+        lines = logged(lambda: self.assertIn(b"#error", self.raw_submit("intake-record")))
+        self.assertEqual(lines, ["intake event=error code=E_REFUND", "intake event=error code=E_SEND"])
+
+    def test_notice_reopen_failure_is_logged_and_still_paused(self):
+        probe("record", "setup", True, False, True)
+        probe("capture", "setFail", "notice")
+        lines = logged(lambda: self.assertIn(b"#paused", self.raw_submit("intake-record")))
+        self.assertEqual(lines, ["intake event=paused code=E_NOTICE_REOPEN", "intake event=paused code=E_NOTICE"])
+
+    # --- QA: the limiter's own rows
+    def test_access_expiry_is_own_key_only(self):
+        now, a, b = base_now(), "a" * 64, "b" * 64
+        self.assertTrue(probe("limiter", "attempt", a, now)["ok"])
+        self.assertTrue(probe("limiter", "attempt", b, now)["ok"])
+        later = now + SC.INTAKE_CLIENT_WINDOW_MS + 1
+        self.assertTrue(probe("limiter", "attempt", a, later)["ok"])
+        rows = [(r["key"][0], r["at"]) for r in probe("limiter", "rows")["attempts"]]
+        self.assertEqual(sorted(rows), sorted([("a", later), ("b", now)]))
+
+    def test_paused_refusal_writes_no_mail_row(self):
+        now = base_now()
+        for i in range(SC.INTAKE_DAILY_CAP):
+            self.assertTrue(probe("limiter", "reserve", f"{i:064x}", now)["ok"])
+        before = probe("limiter", "rows")
+        probe("limiter", "reserve", "c" * 64, now)  # the notice refusal
+        probe("limiter", "reserve", "d" * 64, now)  # a plain paused refusal
+        after = probe("limiter", "rows")
+        self.assertEqual(before["mails"], after["mails"])
+        self.assertEqual(after["days"][0]["n"], SC.INTAKE_DAILY_CAP + 1)
+
+    # --- N3: every White_Space character stays inside its line
+    WHITE_SPACE = FixRound1.WHITE_SPACE
+
+    def forged_lines(self, mail):
+        return [line for line in mail["text"].splitlines()
+                if line.startswith(("Reply address: someone", "Own name:"))]
+
+    def test_single_line_white_space_members(self):
+        for name in ("name", "contact_start"):
+            for ch in self.WHITE_SPACE:
+                with self.subTest(field=name, ch=hex(ord(ch))):
+                    probe("capture", "clear")
+                    forged = f"Acme{ch}Reply address: someone-else@example.org{ch}Own name: yes"
+                    self.assertOutcome(send(self, report(**{name: forged})), "sent")
+                    mail = mails()[0]
+                    self.assertEqual(self.forged_lines(mail), [])
+                    self.assertNotRegex(mail["text"].split("\nReply address: ")[0], "[\u0085\u2028\u2029]")
+
+    def test_file_name_white_space_members(self):
+        for ch in self.WHITE_SPACE:
+            if ch in "\n\r\x0b\x0c":
+                continue  # a browser escapes CR and LF, and the C0 strip removes VT and FF first
+            with self.subTest(ch=hex(ord(ch))):
+                probe("capture", "clear")
+                name = f"a{ch}Own name: yes.png"
+                self.assertOutcome(send(self, report() + [("files", (name, "image/png", PNG, "raw"))]), "sent")
+                mail = mails()[0]
+                self.assertEqual(self.forged_lines(mail), [])
+                self.assertIn("evidence-1.png: a Own name: yes.png", mail["text"].splitlines())
+
+    # --- N7: the notice is tried at most NOTICE_TRIES times a day
+    def test_notice_tries_bounded(self):
+        now = int(time.time() * 1000)
+        for i in range(SC.INTAKE_DAILY_CAP):
+            self.assertTrue(probe("limiter", "reserve", f"{i:064x}", now)["ok"])
+        probe("capture", "setFail", "notice")
+        codes = []
+        for _ in range(SC.INTAKE_NOTICE_TRIES + 2):
+            codes += logged(lambda: self.assertOutcome(send(self, report()), "paused"))
+        self.assertEqual(codes, ["intake event=paused code=E_NOTICE"] * SC.INTAKE_NOTICE_TRIES
+                         + ["intake event=paused code=E_DAILY_CAP"] * 2)
+        self.assertEqual(probe("limiter", "rows")["days"][0]["n"],
+                         SC.INTAKE_DAILY_CAP + 2 * SC.INTAKE_NOTICE_TRIES)
+        probe("capture", "setFail", "")
+        self.assertOutcome(send(self, report()), "paused")
+        self.assertEqual(mails(), [], "a fourth notice after the tries ran out")
 
 
 if __name__ == "__main__":
