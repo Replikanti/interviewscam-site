@@ -1,0 +1,1 @@
+public/index.html: the live form of artifact

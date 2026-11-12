@@ -1,0 +1,2 @@
+This case runs render rules 15 and 16 on the real fixture build:
+selftest.sh leaves out --no-search when a render case has this file.

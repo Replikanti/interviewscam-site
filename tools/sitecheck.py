@@ -94,6 +94,7 @@ import decimal
 import encodings.idna
 import fcntl
 import functools
+import gzip
 import hashlib
 import html
 import html.entities
@@ -169,9 +170,11 @@ TO_DOT = str.maketrans(dict.fromkeys(DOT_CHARS, "."))
 
 
 def norm(text):
-    """Fold a string for live-form comparison: NFKC, dots, invisibles, case."""
+    """Fold a string for live-form comparison: NFKC, dots, invisibles, NFC
+    again (an invisible removed between a letter and its accent leaves the
+    two to compose, M4 PR 4 fix round 1), case."""
     text = unicodedata.normalize("NFKC", text)
-    return text.translate(INVISIBLE).translate(TO_DOT).lower()
+    return unicodedata.normalize("NFC", text.translate(INVISIBLE).translate(TO_DOT)).lower()
 
 
 # Defanged spellings and the character each stands for. The one table that
@@ -5133,6 +5136,18 @@ def no_report_tree():
                      pinned("p", None, NO_REPORT_TEXT), link_list_spec(NO_REPORT_LINKS))
 
 
+def what_to_do_tree(head):
+    """The tree what-to-do.html emits with its heading element head: h3 in
+    the answer section of the Home search (rule 16), h2 on a report page
+    (rule 17)."""
+    icon = pinned("span", {"class": "panel-icon"}, "",
+                  pinned("svg", WARNING_ICON_ATTRS, "",
+                         *(pinned("path", {"d": d}, "") for d in WARNING_ICON_PATHS)))
+    return pinned("section", {"class": "panel-warn", "aria-labelledby": "what-to-do"},
+                  None, pinned(head, {"id": "what-to-do"}, WHAT_TO_DO_HEADING, icon),
+                  pinned("p", None, WHAT_TO_DO_TEXT), link_list_spec(WHAT_TO_DO_LINKS))
+
+
 def search_region_tree():
     """The tree layouts/home.html emits for #search-results: every element,
     attribute and text, in order."""
@@ -5143,13 +5158,7 @@ def search_region_tree():
                          pinned("h2", {"id": f"{sid}-heading", "tabindex": "-1"}, heading),
                          *body)
     empty_list = pinned("ul", {"class": INDEX_LIST}, "")
-    icon = pinned("span", {"class": "panel-icon"}, "",
-                     pinned("svg", WARNING_ICON_ATTRS, "",
-                               *(pinned("path", {"d": d}, "")
-                                 for d in WARNING_ICON_PATHS)))
-    panel = pinned("section", {"class": "panel-warn", "aria-labelledby": "what-to-do"},
-                      None, pinned("h3", {"id": "what-to-do"}, WHAT_TO_DO_HEADING, icon),
-                      pinned("p", None, WHAT_TO_DO_TEXT), link_list_spec(WHAT_TO_DO_LINKS))
+    panel = what_to_do_tree("h3")
     (answer, answer_head), (partial, partial_head), (none, none_head) = SEARCH_SECTIONS
     return pinned(
         "div", {"id": SEARCH_RESULTS, "class": SEARCH_OUT, "hidden": ""}, None,
@@ -5200,6 +5209,40 @@ def search_results_problems(home):
     if region is None:
         return problems
     problems += chain_problems(region, HOME_CHAIN, f"rule 16: #{SEARCH_RESULTS} on Home")
+    # The children of Home's <main> up to the result box (M4 PR 4), tag and
+    # attributes as layouts/home.html emits them, so no element the template
+    # does not emit (a <dialog open> or any other layer) sits before or
+    # between the search form and its answers, where it could cover them.
+    mains = [el for el in home.root.walk() if el.tag == "main"]
+    if len(mains) != 1:
+        problems.append(f"rule 16: Home holds {len(mains)} <main> elements; layouts/home.html "
+                        "emits exactly one, and the pins read the page through it")
+    if region.parent is not None and region.parent.tag == "main":
+        got = []
+        for child in region.parent.children:
+            if isinstance(child, Element):
+                got.append((child.tag, child.attrs))
+                if child is region:
+                    break
+        want = [("h1", {"class": "home-title"}), ("p", {"class": "lead"}),
+                ("form", dict(search_form_tree()[1])),
+                ("div", {"id": SEARCH_RESULTS, "class": SEARCH_OUT, "hidden": ""})]
+        if got != want:
+            def shown(items):
+                return ", ".join("<" + t + "".join(f" {k}={show(v, 30)}" for k, v in a.items())
+                                 + ">" for t, a in items)
+            problems.append(f"rule 16: Home's <main> holds {shown(got)} up to #{SEARCH_RESULTS}; "
+                            f"layouts/home.html emits exactly {shown(want)}, so no other "
+                            "element sits before or between the search form and its answers")
+        else:
+            # Their text too (fix round 1): the title and the lead, exact
+            # trees with their whole text, from labels.toml pinned here.
+            kids = [c for c in region.parent.children if isinstance(c, Element)]
+            for el, spec in ((kids[0], pinned("h1", {"class": "home-title"}, HOME_TITLE)),
+                             (kids[1], pinned("p", {"class": "lead"}, HOME_LEAD))):
+                found = region_problems(el, spec, f"rule 16: the {el.tag} of Home's <main>",
+                                        "layouts/home.html")
+                problems += found[1] if found else []
     what = f"rule 16: #{SEARCH_RESULTS} on Home"
     found = region_problems(region, search_region_tree(), what, "layouts/home.html")
     if found and found[0] == "shape":
@@ -5273,6 +5316,260 @@ def chain_problems(el, want, what):
     return [f"{what} sits in {shown(got) or 'no element'}; its ancestors are exactly "
             f"{shown(want)}, as the templates emit them, so no wrapper or attribute can hide, "
             "cover or disable it"]
+
+
+# Rule 17 (M4 PR 4, the amendment of #5's plan at STOP 2 of M4 PR 3, item
+# 6): on every report page the regions that carry D6, D7 and D10 wording
+# are exact template trees, the mechanism of rule 16, not a list of
+# concealing constructs: each element, attribute and text as the templates
+# emit them, compared raw in count, order and nesting, and each region in
+# its exact ancestor chain. So a <s>, <del> or <bdo dir="rtl"> around the
+# state sentence (it then reads as retracted), an element added inside the
+# chip, the label or the panel, a panel deleted or reworded, or a link's
+# href changed is a finding, and case (9) proves in the browser that the
+# page parses into the tree read here.
+BREADCRUMB_LABEL = "Breadcrumb"
+BREADCRUMB_HOME = "Home"
+HOME_TITLE = "Check a name from your interview invite"
+HOME_LEAD = ("Got a meeting link or a coding test from a recruiter you do not know? Look up "
+             "the company, the app or the domain before you install or run anything.")
+HIDDEN_NOTICE = ("The person named on this page asked for the name to be hidden. It stays "
+                 "hidden while the request is reviewed.")
+CORRECTIONS_LINK = ("/corrections/", "Corrections and removal")
+ALSO_SEEN_AS = "Also seen as:"
+REPORT_CARD = ("div", {"class": "card"})
+BASIS_CARD = ("section", {"class": "card", "aria-labelledby": "what-was-checked"})
+
+
+def labelled(record):
+    """The persona-label span after a name of a visible persona, pinned."""
+    return [pinned("span", {"class": "persona-label"}, PERSONA_LABEL)] \
+        if is_persona(record) and not is_hidden(record) else []
+
+
+def campaign_line_tree(record):
+    """The tree campaign-line.html emits (shape only; rule 6 pins the
+    text), or None when the record's campaign cannot be read (rule 7's or
+    the schema's finding)."""
+    campaign = record.params.get("campaign")
+    if campaign is None:
+        return tree("p", {"class": "campaign-line"})
+    if not isinstance(campaign, dict):
+        return None
+    source = source_by_id(record, campaign.get("source"))
+    if source is None or not isinstance(source.get("url"), str):
+        return None
+    kids = [tree("a", {"href": f"/campaigns/{campaign.get('slug')}/"}),
+            tree("a", {"href": source["url"]})]
+    artifact = campaign.get("artifact")
+    if campaign.get("basis") == "artifact" and isinstance(artifact, str):
+        kids.append(tree("code"))
+        if is_persona(record) and not is_hidden(record) \
+                and not (artifact and all(c in BOX_CHARS for c in artifact)):
+            kids.append(tree("span", {"class": "persona-label"}))
+    return tree("p", {"class": "campaign-line"}, *kids)
+
+
+def report_regions(record):
+    """[(class or tag, chain, spec, whole)] of rule 17 in document order:
+    spec is a `pinned` tree compared with its texts (whole True) or a bare
+    tree compared by shape (whole False); a region whose spec is None must
+    not be on the page."""
+    state = record.params.get("state")
+    name_type = record.params.get("name_type")
+    if state not in STATE_CHIP or name_type not in NAME_TYPES:
+        return []  # the schema's finding
+    chip = STATE_CHIP[state]
+    persona = is_persona(record) and not is_hidden(record)
+    name = text_param(record, "name") or ""
+    # The whole text of an element joins its texts with a space, so a
+    # persona-label span leaves a space before the text after it.
+    title = f"{name} {PERSONA_LABEL} {REPORT_TITLE.format(name='')}" if persona \
+        else record_title(record)
+    crumb = squash(f"{name} {PERSONA_LABEL}") if persona else rendered_name(record)
+    regions = [("breadcrumb", HTML_CHAIN, pinned(
+        "nav", {"class": "breadcrumb", "aria-label": BREADCRUMB_LABEL}, None,
+        pinned("ol", None, None,
+               pinned("li", None, None, pinned("a", {"href": "/"}, BREADCRUMB_HOME)),
+               pinned("li", None, None, pinned("a", {"href": "/reports/"},
+                                               SECTION_TITLES["reports"])),
+               pinned("li", {"aria-current": "page"}, crumb, *labelled(record)))), True),
+               ("h1", HTML_CHAIN, pinned("h1", None, squash(title), *labelled(record)),
+                True)]
+    notice = pinned("p", {"class": "hidden-name-notice"},
+                    f"{HIDDEN_NOTICE} {CORRECTIONS_LINK[1]}",
+                    pinned("a", {"href": CORRECTIONS_LINK[0]}, CORRECTIONS_LINK[1]))
+    regions.append(("hidden-name-notice", HTML_CHAIN, notice if is_hidden(record) else None,
+                    True))
+    regions.append(("record-type", HTML_CHAIN,
+                    pinned("p", {"class": "record-type"}, f"{chip} {NAME_TYPES[name_type]}",
+                           pinned("span", {"class": "state-chip"}, chip)), True))
+    regions.append(("state-sentence", HTML_CHAIN,
+                    pinned("p", {"class": "state-sentence"}, STATE_SENTENCE[state]), True))
+    label = record_label(record)
+    if label is not None:
+        regions.append(("record-label", HTML_CHAIN,
+                        pinned("p", {"class": "record-label"}, label), True))
+    aliases = rendered_aliases(record)
+    raw = [a for a in record.params.get("aliases") or [] if isinstance(a, str)] \
+        if aliases else []
+    shown = f"{ALSO_SEEN_AS} " + (" , ".join(f"{a} {PERSONA_LABEL}" for a in raw) if persona
+                                  else ", ".join(raw))
+    regions.append(("aliases", HTML_CHAIN, pinned(
+        "p", {"class": "aliases"}, squash(shown), *(labelled(record) * len(aliases)))
+        if aliases else None, True))
+    summary = record.params.get("summary")
+    if isinstance(summary, str):
+        regions.append(("lead", HTML_CHAIN, pinned("p", {"class": "lead"}, squash(summary)),
+                        True))
+    regions.append(("panel-warn", HTML_CHAIN, what_to_do_tree("h2"), True))
+    line = campaign_line_tree(record)
+    if line is not None:
+        regions.append(("campaign-line", [REPORT_CARD] + HTML_CHAIN, line, False))
+    basis = record.params.get("state_basis")
+    if isinstance(basis, list) and all(isinstance(b, str) for b in basis):
+        regions.append(("state-basis", [BASIS_CARD] + HTML_CHAIN, pinned(
+            "ul", {"class": "state-basis"}, None,
+            *(pinned("li", None, squash(b)) for b in basis)), True))
+    return regions
+
+
+def report_page_problems(page, record):
+    """Rule 17 on a report's own page (see report_regions): each region
+    found once (h1 by tag, the others by their class), in its exact chain,
+    holding exactly its tree, the regions in the order the templates emit
+    them."""
+    problems, last, where = [], -1, {}
+    order = {id(el): i for i, el in enumerate(page.root.walk())}
+    for key, chain, spec, whole in report_regions(record):
+        found = [el for el in page.root.walk()
+                 if (el.tag == key if key == "h1" else key in el.classes)]
+        what = f"rule 17: the {'<h1>' if key == 'h1' else '.' + key} of the report page"
+        if spec is None:
+            if found:
+                problems.append(f"{what} is there, but the record shows none (no visible "
+                                "aliases, or a name not hidden); the templates emit it only "
+                                "for such a record")
+            continue
+        if len(found) != 1:
+            problems.append(f"{what}: the page holds {len(found)}; report pages hold exactly "
+                            "one, as the templates emit it (ADR-0004)")
+            continue
+        el = found[0]
+        problems += chain_problems(el, chain, what)
+        if whole:
+            result = region_problems(el, spec, what, "the report page templates")
+            problems += result[1] if result else []
+        else:
+            problems += shape_problems(el, what, "campaign-line.html", spec)
+        if order[id(el)] < last:
+            problems.append(f"{what} comes before the {where[last]}; the templates emit the "
+                            "h1, the hidden-name notice, the type line, the state sentence, the "
+                            "D7 label, the aliases, the panel, the campaign line and What was "
+                            "checked in this order")
+        last = max(last, order[id(el)])
+        where[order[id(el)]] = key
+    # The children of <main> up to the panel, exactly as the templates emit
+    # them (tag and attributes; their content is the business of the rules
+    # above and of rule 2's breadcrumb), so no element the templates do not
+    # emit, a <dialog open> or any other layer, sits among the D6, D7 and
+    # D10 lines or before the panel, where it could cover them.
+    mains = [el for el in page.root.walk() if el.tag == "main"]
+    if len(mains) != 1:
+        problems.append(f"rule 17: the report page holds {len(mains)} <main> elements; the "
+                        "templates emit exactly one, and the pins above read the page "
+                        "through it")
+    elif report_regions(record):
+        got = []
+        for child in mains[0].children:
+            if isinstance(child, Element):
+                got.append((child.tag, child.attrs))
+                if "panel-warn" in child.classes:
+                    break
+        want = report_main_prefix(record)
+        if got != want:
+            def shown(items):
+                return ", ".join("<" + t + "".join(f" {k}={show(v, 30)}" for k, v in a.items())
+                                 + ">" for t, a in items)
+            problems.append(f"rule 17: the report page's <main> holds {shown(got)} up to the "
+                            f"panel; the templates emit exactly {shown(want)}, so no other "
+                            "element sits among the state, the label and the panel")
+    return problems
+
+
+# Rule 17, the state sentences folded (fix round 2, delta review finding
+# 1): both sides compared the way the search folds a query (ADR-0005 part
+# 3: NFKC, the invisible characters removed, case folded), then on letters
+# and digits only, so a soft hyphen, a zero width character, a case change
+# (`| lower`), a compatibility form, punctuation, line breaks and markup
+# splits (`<b>com</b>pany,<br>person`) cannot hide a sentence; the
+# canonical form is NFD instead of the search's NFC, so the letters-and-
+# digits filter drops the combining marks and an accented copy ("Nó réal
+# company") cannot either (both sentences are basic Latin, so NFC could
+# only ever make a page's letter differ from a sentence's);
+# and with the Cyrillic and Greek lowercase letters that draw like a basic
+# Latin letter of the two sentences mapped to it (STATE_LOOKALIKES; a
+# look-alike of a letter neither sentence holds cannot hide one), so a
+# Cyrillic "о" in "No" cannot either.
+STATE_LOOKALIKES = str.maketrans({
+    "\u0430": "a", "\u0435": "e", "\u0455": "s", "\u0456": "i", "\u043e": "o",
+    "\u0440": "p", "\u0441": "c", "\u0443": "y", "\u04bb": "h", "\u0501": "d",
+    "\u051d": "w", "\u04cf": "l", "\u03b1": "a", "\u03bf": "o", "\u03c1": "p",
+    "\u03b9": "i", "\u03bd": "v", "\u03c5": "u", "\u03f2": "c",
+})
+
+
+def sentence_fold(text):
+    """text folded for the state sentence comparison (see STATE_LOOKALIKES):
+    NFKC, invisibles removed, NFD, case folded, look-alikes mapped, and
+    only its letters and digits kept (combining marks are not letters)."""
+    # The look-alikes before NFKC too: it turns some of them (U+03F2, the
+    # lunate sigma, which draws like "c") into letters that look like no
+    # Latin one.
+    text = unicodedata.normalize("NFKC", text.translate(STATE_LOOKALIKES)).translate(INVISIBLE)
+    text = unicodedata.normalize("NFD", text).casefold().translate(STATE_LOOKALIKES)
+    return "".join(ch for ch in text if unicodedata.category(ch)[0] in "LN")
+
+
+def state_text_problems(page, record):
+    """Rule 17, the complement of the trees (fix rounds 1 and 2): folded
+    (sentence_fold), the page's visible text holds its own state sentence
+    exactly once, and no text of the page, hidden content, JSON-LD strings
+    and attribute values included, holds the other state's sentence, so no
+    other element of the page (a lead, a body paragraph, a footer line)
+    states the other state, however it is spelt."""
+    state = record.params.get("state")
+    if state not in STATE_SENTENCE:
+        return []
+    shown = sentence_fold(page.root.text(" "))
+    own = sentence_fold(STATE_SENTENCE[state])
+    texts = [sentence_fold(page.root.text(" ", shown=False))]
+    texts += [sentence_fold(t) for t in page_texts(page)]
+    problems = []
+    if shown.count(own) != 1:
+        problems.append(f"rule 17: the report page shows its state sentence "
+                        f"{shown.count(own)} times (folded to letters and digits); the "
+                        "templates emit it exactly once (D6)")
+    for other, sentence in STATE_SENTENCE.items():
+        if other != state and any(sentence_fold(sentence) in t for t in texts):
+            problems.append(f"rule 17: the report page of a {state} record shows the "
+                            f"{other} sentence {show(sentence, 90)} (folded to letters and "
+                            "digits); a page states only its own state (D6)")
+    return problems
+
+
+def report_main_prefix(record):
+    """The children of <main> of a report page up to the panel (rule 17)."""
+    prefix = [("nav", {"class": "breadcrumb", "aria-label": "Breadcrumb"}), ("h1", {})]
+    if is_hidden(record):
+        prefix.append(("p", {"class": "hidden-name-notice"}))
+    prefix += [("p", {"class": "record-type"}), ("p", {"class": "state-sentence"})]
+    if record_label(record) is not None:
+        prefix.append(("p", {"class": "record-label"}))
+    if rendered_aliases(record):
+        prefix.append(("p", {"class": "aliases"}))
+    return prefix + [("p", {"class": "lead"}),
+                     ("section", {"class": "panel-warn", "aria-labelledby": "what-to-do"})]
 
 
 def search_problems(pages, records, campaigns):
@@ -5410,6 +5707,9 @@ def cmd_render(args):
                 if record.section == "reports":
                     problems += state_problems(page, record, chips)
                     problems += label_problems(page, record)
+                    if own is record and not args.no_report_pins:
+                        problems += report_page_problems(page, record)
+                        problems += state_text_problems(page, record)
                     problems += campaign_line_problems(page, record, campaigns, page_path)
                     problems += artifact_problems(page, record)
                 else:
@@ -9128,6 +9428,9 @@ SCRIPTS_BY_PAGE_KIND = {"home": ("copy", "search"), "other": ("copy",)}
 # the head on a record page and a section page (one each, as jsonld.html
 # emits it) and absent elsewhere. Exact positions, not a list of wrappers.
 HEAD_ONLY_TAGS = ("script", "link", "meta", "base")
+# Rule (m): the first bytes of every page (M4 PR 4), as the pinned Hugo's
+# minifier writes the doctype of baseof.html.
+PAGE_DOCTYPE = "<!doctype html>"
 # Fix round 8 (delta review 7 finding 1): the tree of parse_render_page
 # does not model the end of the head that the HTML parser implies, so
 # rule (m) fails closed on everything that makes a browser end the head
@@ -9224,6 +9527,89 @@ def skeleton_problems(tree, html, head):
     return problems
 
 
+# Rule (m), the body skeleton (M4 PR 4 fix round 1, review findings 1 and 2,
+# QA's dialog reproductions): with the built pins on, <body> holds exactly
+# the skip link, the header, the one <main> and the footer that baseof.html
+# emits, tag and attributes, no text; the skip link and the header are
+# exact trees with their whole text (labels.toml, pinned here; the nav pill
+# of the page itself carries aria-current), the footer its exact shape
+# (its texts are the operator's and the contact address, which `literals`
+# and render rule 14 read). So no <dialog>, popover or stray element sits
+# before, around or after <main>, where it could cover the pinned regions.
+SKIP_LINK_TEXT = "Skip to content"
+HEADER_BRAND = ("interviewscam", ".com")
+HEADER_CTA = ("/report-a-scam/", "Report a scam")
+HEADER_NAV_LABEL = "Main"
+HEADER_PILLS = [("/before-your-call/", "Before your call"), ("/methodology/", "Methodology"),
+                ("/about/", "About")]
+
+
+def header_tree(path):
+    """The tree of layouts/_partials/header.html on the page at path."""
+    icon = pinned("svg", SEARCH_ICON_ATTRS, "",
+                  pinned("circle", {"cx": "11", "cy": "11", "r": "6.5"}, ""),
+                  pinned("path", {"d": "m16 16 4.5 4.5"}, ""))
+    brand, tld = HEADER_BRAND
+    pills = [pinned("li", None, None, pinned(
+        "a", {"class": "pill", "href": href, **({"aria-current": "page"} if href == path else {})},
+        label)) for href, label in HEADER_PILLS]
+    return pinned("header", {"class": "site-header"}, None, pinned(
+        "div", {"class": "container"}, None,
+        pinned("div", {"class": "header-row"}, None,
+               pinned("a", {"class": "brand", "href": "/"}, None,
+                      pinned("span", {"class": "brand-tile"}, "", icon),
+                      pinned("span", None, f"{brand} {tld}",
+                             pinned("span", {"class": "brand-tld"}, tld))),
+               pinned("a", {"class": "cta", "href": HEADER_CTA[0]}, HEADER_CTA[1])),
+        pinned("nav", {"aria-label": HEADER_NAV_LABEL}, None,
+               pinned("ul", {"class": "nav"}, None, *pills))))
+
+
+def footer_shape():
+    """The element shape of the footer of baseof.html (tags and attributes)."""
+    return tree("footer", {"class": "site-footer"}, tree(
+        "div", {"class": "container"},
+        tree("p", None, tree("span", {"class": "address", "id": "contact"}),
+             tree("button", {"type": "button", "class": "copy", "hidden": "",
+                             "data-copy-target": "contact", "data-copy-done": "Copied",
+                             "data-copy-failed": "Copy failed, select the text instead"}),
+             tree("span", {"class": "copy-status", "role": "status", "aria-live": "polite"})),
+        tree("nav", {"aria-label": "Site"}, tree(
+            "ul", {"class": "footer-links"},
+            *(tree("li", None, tree("a", {"href": href}))
+              for href in ("/methodology/", "/corrections/", "/privacy/", "/data-feed/")))),
+        tree("p")))
+
+
+def body_skeleton_problems(tree_page, html, rel):
+    """Rule (m), the body skeleton (see SKIP_LINK_TEXT)."""
+    bodies = [el for el in html.children if isinstance(el, Element) and el.tag == "body"] \
+        if html is not None else []
+    if len(bodies) != 1:
+        return []  # skeleton_problems names it
+    body = bodies[0]
+    kids = [c for c in body.children if isinstance(c, Element)]
+    want = [("a", {"class": VISUALLY_HIDDEN, "href": "#main"}), ("header", {"class": "site-header"}),
+            ("main", {"id": "main", "class": "container", "tabindex": "-1"}),
+            ("footer", {"class": "site-footer"})]
+    got = [(c.tag, c.attrs) for c in kids]
+    problems = []
+    if got != want:
+        return [f"(m) <body> holds {show([t for t, _ in got], 200)}; baseof.html emits exactly "
+                "the skip link, the header, one <main> and the footer, so no other element "
+                "(a <dialog>, a popover, a stray element) sits around <main>"]
+    loose = [c for c in body.children if not isinstance(c, Element) and c.strip(ASCII_WHITESPACE)]
+    if loose:
+        problems.append(f"(m) <body> holds the text {show(loose[0], 60)} between its elements")
+    path = own_path(rel[len("public/"):]) if rel.startswith("public/") else rel
+    for el, spec, what in ((kids[0], pinned("a", want[0][1], SKIP_LINK_TEXT), "the skip link"),
+                           (kids[1], header_tree(path), "the header")):
+        found = region_problems(el, spec, f"(m) {what}", "baseof.html")
+        problems += found[1] if found else []
+    problems += shape_problems(kids[3], "(m) the footer", "baseof.html", footer_shape())
+    return problems
+
+
 def head_problems(text, rel, built):
     """Rule (m) on one HTML page (see HEAD_ONLY_TAGS). built: also the exact
     head of baseof.html (the built pins are on)."""
@@ -9233,6 +9619,15 @@ def head_problems(text, rel, built):
         if len(htmls) == 1 else []
     head = heads[0] if len(heads) == 1 else None
     problems = []
+    # The doctype (M4 PR 4, the plan amendment's item 8): every page starts
+    # with exactly the doctype the build emits. Without it Chrome renders
+    # the page in quirks mode (BackCompat), and until now only the Nu
+    # checker, which runs in CI only, read it. Reflow case (9) requires
+    # CSS1Compat in the browser, the outcome half.
+    if not text.startswith(PAGE_DOCTYPE):
+        problems.append(f"(m) the page starts with {show(text[:len(PAGE_DOCTYPE)], 60)}, not "
+                        f"with {PAGE_DOCTYPE}, the doctype the build emits; without it the "
+                        "browser renders the page in quirks mode")
     html = htmls[0] if len(htmls) == 1 else None
     for owner, what in ((tree.root, "before <html>"), (html, "in <html> before <body>"),
                         (head, "in <head>")):
@@ -9274,6 +9669,7 @@ def head_problems(text, rel, built):
                             "a CSP meta outside the head is ignored)")
     if head is None or not built:
         return problems
+    problems += body_skeleton_problems(tree, html, rel)
     got = [(el.tag, el.attrs) for el in head.children if isinstance(el, Element)]
     want = head_spec(rel)
 
@@ -9295,7 +9691,7 @@ BUILT_STYLESHEET_SHA256 = {
 }
 BUILT_SCRIPT_SHA384 = {
     "copy": "64df53ed5d62c8c5c8be3aee6bd39c1171a2bb88742b3424790354056657c3faf100ea7cc044affe06e76164b883b924",
-    "search": "2b9f7b42bbac16efb718132e221f2214be1478c3c99660e158b61c5c629d70fca54748d3055c7e96ca415ba59abe1483",
+    "search": "24d7130ce8ebb46802b4b528df7a396c9ab645d0824c498f487d4b3e743701a7ba64f82d6716560d8e4adfbb95a856d6",
 }
 
 
@@ -9308,7 +9704,7 @@ def built_style_path(stem, data):
 
 SCRIPT_SHA256 = {
     "assets/js/copy.js": "5cca51768d7caa004240fccdcfe84cd588f2686f3e4481da5561673d8592cc89",
-    "assets/js/search.js": "48915ad64fddd4044a734fa3ef938523e61f5476083b67d8a061e3e4e932332e",
+    "assets/js/search.js": "6e6a6e22f040d7dfa742fe4c1808ed1917f463eb05297056d6a21101e16b2b7f",
 }
 
 
@@ -9532,12 +9928,12 @@ REFLOW_HEIGHT = 640
 # attempt alone outlasts the longest stall seen, at most 70.3 s (PR 5 job
 # 20, image 20261101), so it is absorbed whether a killed Chrome keeps its
 # progress, the stall lies outside the VM, or only a fresh Chrome helps.
-# Upper bound: the 13-minute workflow cap (re-derived in M3 PR 10 fix
-# round 1, ADR-0004 Numbers) holds the slowest green run of that round
-# (370 s), a fully used window (2 x L) and one more 70 s stall, so L is at
-# most 170 s; 75 s leaves 190 s of the cap. Below 71 s job 20's shape
-# depends on a restart helping again; above 170 s an absorbed window plus
-# a second stall is cancelled at 13 minutes.
+# Upper bound: the 48-minute workflow cap (re-derived in M4 PR 4 fix round
+# 2, ADR-0004 Numbers) holds the slowest green run of that round (1427 s),
+# a fully used window (2 x L) and one more 70 s stall, so L is at most
+# 691 s; 75 s leaves 1233 s of the cap. Below 71 s job 20's shape depends
+# on a restart helping again; above 691 s an absorbed window plus a second
+# stall is cancelled at 48 minutes.
 REFLOW_LAUNCH_TIMEOUT = 75
 # The budget of every later answer (ADR-0003 Numbers). A 23-page call makes
 # about 70 page-level calls in 1.9 to 2.8 s on the runner, and no later call
@@ -9715,7 +10111,8 @@ REFLOW_HEAD_SCRIPT = r"""
       return [el.localName, attrs(el)];
     }) : null,
     stray: stray,
-    cspOutside: csp.filter(function (el) { return el.parentElement !== head; }).map(label)
+    cspOutside: csp.filter(function (el) { return el.parentElement !== head; }).map(label),
+    compatMode: document.compatMode
   };
 })()
 """
@@ -10621,6 +11018,38 @@ def png_rows(data):
     return width, height, channels, rows
 
 
+def pixel_difference(first, second, tolerance=REFLOW_PAINT_TOLERANCE):
+    """None when two screenshots (base64 PNG) are the same image, else the
+    count of differing pixels and their bounding box (the pinned regions'
+    pixel occlusion check, fix round 2). A pixel differs when a channel
+    differs by more than tolerance: CI's Chrome 156 renders one pixel of a
+    rounded chip corner 1 of 255 apart between two captures of the same
+    paint (runs on 1de2f6f and a15a6e9), the raster noise case (7)'s
+    REFLOW_PAINT_TOLERANCE was measured on; an overprint differs by far
+    more (the px-* rows: dozens of pixels by 100 and more)."""
+    a = png_rows(base64.b64decode(first))
+    b = png_rows(base64.b64decode(second))
+    if a[:3] != b[:3]:
+        return f"the images differ in size, {a[0]} x {a[1]} and {b[0]} x {b[1]}"
+    width, channels = a[0], a[2]
+    count, xs, ys, most = 0, [], [], 0
+    for y, (ra, rb) in enumerate(zip(a[3], b[3])):
+        if ra == rb:
+            continue
+        for x in range(width):
+            i = x * channels
+            delta = max(abs(p - q) for p, q in zip(ra[i:i + channels], rb[i:i + channels]))
+            if delta > tolerance:
+                count += 1
+                xs.append(x)
+                ys.append(y)
+                most = max(most, delta)
+    if not count:
+        return None
+    return (f"{count} pixel(s) differ, x {min(xs)} to {max(xs)}, y {min(ys)} to {max(ys)} "
+            f"of the slice, by up to {most} of 255")
+
+
 def png_difference(first, second):
     """The largest difference of one channel of one pixel between two
     screenshots (base64 PNG), 255 when their sizes differ."""
@@ -10687,6 +11116,1156 @@ def reflow_copy_buttons(tools, session):
     return buttons, shadows
 
 
+# ---------------------------------------------------------------------------
+# Reflow case (8), "search" (M4 PR 4, ADR-0005 parts 3, 4 and 6): the
+# outcome proof of the Home search. Once per tree, after the per-page loop,
+# Home is loaded at SEARCH_VIEWPORT with touch emulation, queries derived
+# from the tree's feed.json are typed and submitted, and every answer is
+# compared with search_expect, an independent Python implementation of
+# ADR-0005 part 3 written from the ADR's text and its amendments, with its
+# own copies of the tables the ADR lists (a self-test line proves them equal
+# to sitecheck's and to the script's, member by member).
+
+# Lighthouse's mobile emulation in the pinned version (ADR-0005 Numbers),
+# read from configSettings.screenEmulation of its reports and pinned by the
+# score gate (LIGHTHOUSE_PINNED_SETTINGS): #5's criterion is the answer in
+# the viewport Lighthouse measures. Another size proves the answer visible
+# on a screen Lighthouse never measures.
+SEARCH_VIEWPORT = (412, 823)
+# ADR-0005 Numbers: the partial match needs this many code points in each
+# form it tests (at 2, a short fragment lists most of the registry; at 4,
+# "mee" finds nothing), and shows at most SEARCH_PARTIAL_CAP entries (the
+# five "Meet..." apps of SPEC section 1; at 4 one is cut, at 10 the list
+# runs past one phone screen). Copied from the ADR, not from search.js.
+SEARCH_PARTIAL_MIN = 3
+SEARCH_PARTIAL_CAP = 5
+# ADR-0005 Numbers, STOP 1 decision 2: gzip (level 6) of feed.json plus
+# a-z/index.html, floor((360/181 - 0.15) x 209,715.2) bytes: what the
+# mobileSlow4G profile transfers while a median name is typed. Above it the
+# answer waits after the submit; below it CI fails before a visitor waits.
+SEARCH_FETCH_BUDGET = 385655
+SEARCH_GZIP_LEVEL = 6
+# Printable ASCII to its fullwidth form (U+FF01 to U+FF5E), which NFKC
+# folds back: a query that only NFKC can match.
+SEARCH_FULLWIDTH = {c: c + 0xFEE0 for c in range(0x21, 0x7F)}
+# Hidden characters a copy-paste carries between a letter and its accent
+# (zero width space, zero width joiner, soft hyphen), one per class of
+# DEFAULT_IGNORABLE that pasted text holds (fix round 1).
+SEARCH_COMPOSE_PROBES = ("\u200b", "\u200d", "\u00ad")
+SEARCH_FEED_REL = "feed.json"
+SEARCH_A_Z_REL = "a-z/index.html"
+# The query the oracle must prove matches nothing (letters only, so every
+# form of it is compared; a fixture or record that matches it turns the
+# guard below into a finding, never a silent pass).
+SEARCH_NO_MATCH = "qzxjv wkpfh"
+# PR 3's local probe, the short and empty forms (the amendment's item 1):
+# one query per normalisation step whose form falls under
+# SEARCH_PARTIAL_MIN (refang and bare: hxxp://ex is 9 code points as f and
+# 2 as r; www.e is 5 and 1; a bare scheme is 0), and the queries whose
+# forms hold no letter or digit (ADR-0005 part 3, fix rounds 3 and 4).
+SEARCH_FIXED_QUERIES = ("hxxp://ex", "www.e", "hxxps://", "https://", "www.", "@ab",
+                        "ex[.]", "/", "-", " - ", "?", "~", "\u2800", "\u3000",
+                        "\u200b")
+
+# The oracle's own tables, copied from ADR-0005 part 3 (and, where the ADR
+# names a sitecheck table, from Unicode's Default_Ignorable_Code_Point and
+# the dot look-alikes of UTS #46), never imported from DEFAULT_IGNORABLE,
+# DOT_CHARS or DEFANGS above: the self-test line search-oracle/tables
+# compares them with sitecheck's and with search.js, member by member.
+ORACLE_IGNORABLE = (
+    (0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160),
+    (0x17B4, 0x17B5), (0x180B, 0x180F), (0x200B, 0x200F), (0x202A, 0x202E),
+    (0x2060, 0x206F), (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+ORACLE_DOTS = ("\u3002", "\uff0e", "\uff61")
+ORACLE_DEFANGS = (("[.]", "."), ("[://]", "://"), ("[:]", ":"), ("[@]", "@"),
+                  ("hxxp", "http"))
+ORACLE_SCHEMES = ("http://", "https://")
+ORACLE_VALUE_LISTS = ("domains", "urls", "ips", "emails", "repositories", "file_names")
+ORACLE_OBJECT_FIELDS = (("handles", "value"), ("packages", "name"), ("sha256", "value"),
+                        ("sha256", "file_name"))
+
+
+def oracle_fold(text):
+    """ADR-0005 part 3, fold: NFKC; every Default_Ignorable code point
+    removed; every dot look-alike to "."; NFC (fix round 1: a removed
+    invisible between a base and a composing mark or Hangul jamo leaves
+    them to compose); default lowercase; runs of whitespace (str.isspace)
+    to one space; trimmed."""
+    kept = []
+    for ch in unicodedata.normalize("NFKC", text):
+        code = ord(ch)
+        if any(lo <= code <= hi for lo, hi in ORACLE_IGNORABLE):
+            continue
+        kept.append("." if ch in ORACLE_DOTS else ch)
+    return " ".join(unicodedata.normalize("NFC", "".join(kept)).lower().split())
+
+
+def oracle_refang(text):
+    """ADR-0005 part 3, refang: the defang table, then hxxp to http."""
+    for defanged, live in ORACLE_DEFANGS:
+        text = text.replace(defanged, live)
+    return text
+
+
+def oracle_bare(text):
+    """ADR-0005 part 3, bare: a leading scheme, then www., then a trailing /."""
+    for scheme in ORACLE_SCHEMES:
+        if text.startswith(scheme):
+            text = text[len(scheme):]
+            break
+    if text.startswith("www."):
+        text = text[4:]
+    return text[:-1] if text.endswith("/") else text
+
+
+def oracle_searchable(form):
+    """A form takes part in a comparison only with a letter or a digit
+    (Unicode general category L or N), ADR-0005 part 3, fix rounds 3, 4."""
+    return any(unicodedata.category(ch)[0] in "LN" for ch in form)
+
+
+def oracle_keys(entry):
+    """(name keys, value keys, domain keys) of one feed entry, every value
+    read through a type check (a missing, null or other-typed field gives
+    no key)."""
+    names, values, domains = set(), set(), set()
+
+    def add(target, form):
+        if oracle_searchable(form):
+            target.add(form)
+    if not isinstance(entry, dict):
+        return names, values, domains
+    if isinstance(entry.get("name"), str):
+        add(names, oracle_fold(entry["name"]))
+    aliases = entry.get("aliases")
+    for alias in aliases if isinstance(aliases, list) else []:
+        if isinstance(alias, str):
+            add(names, oracle_fold(alias))
+    artifacts = entry.get("artifacts")
+    artifacts = artifacts if isinstance(artifacts, dict) else {}
+
+    def value(raw, kind):
+        key = oracle_bare(oracle_refang(oracle_fold(raw)))
+        add(values, key)
+        if kind == "domains":
+            add(domains, key[:-1] if key.endswith(".") else key)
+        if kind == "handles" and key.startswith("@"):
+            add(values, key[1:])
+    for kind in ORACLE_VALUE_LISTS:
+        items = artifacts.get(kind)
+        for raw in items if isinstance(items, list) else []:
+            if isinstance(raw, str):
+                value(raw, kind)
+    for kind, field in ORACLE_OBJECT_FIELDS:
+        items = artifacts.get(kind)
+        for item in items if isinstance(items, list) else []:
+            if isinstance(item, dict) and isinstance(item.get(field), str):
+                value(item[field], kind)
+    return names, values, domains
+
+
+def oracle_index(feed, a_z_paths):
+    """[(path, keys)] in /a-z/ order and the keys of the feed entries /a-z/
+    does not show (orphans): an exact match on one hands over to /a-z/."""
+    by_path = {}
+    for kind in ("reports", "campaigns"):
+        items = feed.get(kind) if isinstance(feed, dict) else None
+        for item in items if isinstance(items, list) else []:
+            url = item.get("url") if isinstance(item, dict) else None
+            if isinstance(url, str):
+                by_path[urllib.parse.urlsplit(url).path] = oracle_keys(item)
+    empty = (set(), set(), set())
+    shown = [(path, by_path.get(path, empty)) for path in a_z_paths]
+    orphans = [keys for path, keys in by_path.items() if path not in set(a_z_paths)]
+    return shown, orphans
+
+
+def search_expect(index, query):
+    """ADR-0005 part 3 for one query: ("empty", []), ("handover", []), or
+    (tier, [path, ...]) with tier "exact", "partial" or "none", the paths in
+    /a-z/ order."""
+    shown, orphans = index
+    f = oracle_fold(query)
+    if f == "":
+        return "empty", []
+    r = oracle_bare(oracle_refang(f))
+    r0 = r
+    for i, ch in enumerate(r):
+        if ch in "?#":
+            r0 = r[:i]
+            break
+    r_at = r[1:] if r.startswith("@") else r
+    h = ""
+    if "." in r0 and " " not in r0:
+        h = r0.split("/", 1)[0]
+        h = h.rsplit("@", 1)[-1].split(":", 1)[0]
+        h = h[:-1] if h.endswith(".") else h
+    names = [f] if oracle_searchable(f) else []
+    values = [v for v in (r, r0, r_at) if oracle_searchable(v)]
+    hosts = [h] if oracle_searchable(h) else []
+
+    def exact(keys):
+        name_keys, value_keys, domain_keys = keys
+        return any(n in name_keys for n in names) or any(v in value_keys for v in values) \
+            or any(host == d or host.endswith("." + d) for host in hosts for d in domain_keys)
+    if any(exact(keys) for keys in orphans):
+        return "handover", []
+    hits = [path for path, keys in shown if exact(keys)]
+    if hits:
+        return "exact", hits
+    parts = [p for p in (f, r) if len(p) >= SEARCH_PARTIAL_MIN and oracle_searchable(p)]
+    close = [path for path, (name_keys, value_keys, _) in shown
+             if any(part in key for part in parts for key in name_keys | value_keys)]
+    if close:
+        return "partial", close[:SEARCH_PARTIAL_CAP]
+    return "none", []
+
+
+def search_queries(feed):
+    """The query set of case (8), from the feed (which render rule 12
+    proved equal to the records): every name and alias; every artifact value
+    in its live form (in memory only, never written or printed); for each
+    domain a URL with a path, www., upper case and a subdomain; handles with
+    and without @; URLs with a query; repositories with a scheme; one query
+    per DOT_CHARS member and per DEFAULT_IGNORABLE range (its first and its
+    last code point) on the first domain's live form; every name's prefixes
+    of SEARCH_PARTIAL_MIN and SEARCH_PARTIAL_MIN + 1 code points; the fixed
+    short and empty forms; the no-match query; the empty query. Ordered and
+    without repeats."""
+    out = []
+    names, domains = [], []
+    for kind in ("reports", "campaigns"):
+        items = feed.get(kind) if isinstance(feed, dict) else None
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            aliases = item.get("aliases") if isinstance(item.get("aliases"), list) else []
+            for name in [item.get("name")] + aliases:
+                if isinstance(name, str):
+                    names.append(name)
+                    out.append(name)
+            artifacts = item.get("artifacts") if isinstance(item.get("artifacts"), dict) else {}
+            for list_name in ORACLE_VALUE_LISTS:
+                values = artifacts.get(list_name)
+                for raw in values if isinstance(values, list) else []:
+                    if not isinstance(raw, str):
+                        continue
+                    live = refang(raw)
+                    out.append(live)
+                    if list_name == "domains":
+                        domains.append(live)
+                        out += [f"https://{live}/login?next=1", f"www.{live}", live.upper(),
+                                f"careers.{live}"]
+                    elif list_name == "urls":
+                        # The stored form and its other defanged spellings
+                        # ([://], [:]//): a visitor may paste a defanged URL.
+                        out += [f"{live}?utm_source=mail#join", raw,
+                                live.replace("://", "[://]", 1), live.replace("://", "[:]//", 1)]
+                    elif list_name == "emails":
+                        out.append(live.replace("@", "[@]", 1))
+                    elif list_name == "repositories":
+                        out.append(f"https://{live}")
+                    elif list_name == "file_names":
+                        # r0 and r_at decide these alone: no host, no scheme.
+                        out += [f"{live}?dl=1#top", f"@{live}"]
+            for list_name, field in ORACLE_OBJECT_FIELDS:
+                values = artifacts.get(list_name)
+                for obj in values if isinstance(values, list) else []:
+                    raw = obj.get(field) if isinstance(obj, dict) else None
+                    if not isinstance(raw, str):
+                        continue
+                    live = refang(raw)
+                    out.append(live)
+                    if list_name == "handles":
+                        out.append(live[1:] if live.startswith("@") else "@" + live)
+    # Variants in which one normalisation step decides the answer on its own
+    # (the implementer's mutation sweep: a domain query matches through its
+    # host whatever bare, the whitespace or NFKC rule does, so those steps
+    # need queries of their own): the first name in fullwidth letters
+    # (NFKC) and with runs of mixed whitespace; a 4-code-point stem of it
+    # behind www., each scheme and @, and before a / (bare and r_at, in the
+    # partial branch); the first domain with a trailing dot, a port and
+    # userinfo (the host form).
+    if names:
+        name = names[0]
+        out.append(name.translate(SEARCH_FULLWIDTH))
+        # A name of several words, so the runs fall between them as well.
+        spaced = next((n for n in names if len(n.split()) > 1), name)
+        out.append("\t " + "\u3000 \u00a0".join(spaced.split()) + "  ")
+        stem = "".join(oracle_fold(name).split())[:SEARCH_PARTIAL_MIN + 1]
+        out += [f"www.{stem}", f"http://{stem}", f"https://{stem}", f"{stem}/", f"@{stem}"]
+    if domains:
+        first = domains[0]
+        out += [f"{first}.", f"{first}:8443/join", f"https://user:pw@{first}/join"]
+        out += [first.replace(".", dot) for dot in DOT_CHARS]
+        for lo, hi in DEFAULT_IGNORABLE:
+            for code in sorted({lo, hi}):
+                out.append(first[:1] + chr(code) + first[1:])
+    # The fold order (fix round 1, QA's code-point probe): a hidden
+    # character between a letter and its accent, or between two Hangul
+    # jamo, must not hide the composed form. For every name, alias and
+    # artifact with a composed character, its first one decomposed with
+    # each of SEARCH_COMPOSE_PROBES between the base and the rest.
+    for text in list(out):
+        for i, ch in enumerate(text):
+            parts = unicodedata.normalize("NFD", ch)
+            if parts != ch:
+                for probe in SEARCH_COMPOSE_PROBES:
+                    out.append(text[:i] + parts[0] + probe + parts[1:] + text[i + 1:])
+                break
+    for name in names:
+        points = list(name)
+        for n in (SEARCH_PARTIAL_MIN, SEARCH_PARTIAL_MIN + 1):
+            if len(points) > n:
+                out.append("".join(points[:n]))
+    out += list(SEARCH_FIXED_QUERIES)
+    out += [SEARCH_NO_MATCH, ""]
+    return list(dict.fromkeys(out))
+
+
+def a_z_paths(text):
+    """The record paths of /a-z/ in its order, as search.js reads them: the
+    href of the first <a> of each <li> child of the first .index-list."""
+    page = parse_render_page(text)
+    lists = [el for el in page.root.walk() if INDEX_LIST in el.classes]
+    if not lists:
+        return None
+    paths = []
+    for li in lists[0].children:
+        if isinstance(li, Element) and li.tag == "li":
+            links = [el for el in li.walk() if el.tag == "a"]
+            if links and "href" in links[0].attrs:
+                paths.append(links[0].attrs["href"])
+    return paths
+
+
+# The page side of case (8). Setup: a marker on window (a navigation loses
+# it) and a capture listener that counts submits (the check waits for the
+# submit it caused, so a stale state is never read as the answer); the
+# heading trees of the three sections as parsed, before any query.
+SEARCH_SETUP_SCRIPT = "(function () {\n" + REFLOW_TREE_JS + r"""
+  window.__iscSearchMarker = %(marker)s;
+  window.__iscSubmits = 0;
+  var form = document.getElementById("q") && document.getElementById("q").form;
+  if (form) form.addEventListener("submit", function () { window.__iscSubmits++; }, true);
+  // What the script does between a submit and its answer (fix round 1,
+  // ADR-0005 part 4): aria-busy set on the result box, and every section
+  // revealed and hidden again (its hidden attribute added back).
+  window.__iscBusySets = 0;
+  window.__iscReveals = [];
+  var box = document.getElementById("search-results");
+  if (box) new MutationObserver(function (records) {
+    records.forEach(function (r) {
+      if (r.attributeName === "aria-busy" && r.oldValue === null) window.__iscBusySets++;
+      // A hidden attribute added (absent before) proves the element was
+      // revealed in between; the state script adds the ones still shown.
+      if (r.attributeName === "hidden" && r.oldValue === null && r.target.id)
+        window.__iscReveals.push(r.target.id);
+    });
+  }).observe(box, {attributes: true, attributeOldValue: true, subtree: true,
+                   attributeFilter: ["aria-busy", "hidden"]});
+  var out = {};
+  %(ids)s.forEach(function (id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var clone = el.cloneNode(true);
+    clone.removeAttribute("hidden");
+    out[id] = tree(clone);
+  });
+  return {form: !!form, sections: out};
+})()
+"""
+# Clears the input and focuses it (the first focus starts the fetch).
+SEARCH_FOCUS_SCRIPT = r"""
+(function () {
+  var q = document.getElementById("q");
+  window.__iscBusySets = 0;
+  window.__iscReveals = [];
+  q.value = "";
+  q.focus();
+  return document.activeElement === q;
+})()
+"""
+# The submit button's centre, after it is scrolled into view, and whether
+# the point hits it (a tap on an overlay would not reach the button).
+SEARCH_BUTTON_SCRIPT = r"""
+(function () {
+  var form = document.getElementById("q").form;
+  var b = form.querySelector("button");
+  b.scrollIntoView({block: "center"});
+  var r = b.getBoundingClientRect();
+  var x = r.left + r.width / 2, y = r.top + r.height / 2;
+  var hit = document.elementFromPoint(x, y);
+  return {x: x, y: y, hit: !!hit && b.contains(hit)};
+})()
+"""
+# The state after a submit: whether the answer has settled, and what it
+# shows. The shown section's tree is compared with its tree before any
+# query, its list emptied (rule 16's pins, the amendment's item 5); its
+# entries as trees, compared with the /a-z/ entries.
+SEARCH_STATE_SCRIPT = "(function () {\n" + REFLOW_TREE_JS + r"""
+  var ids = %(ids)s;
+  var results = document.getElementById("search-results");
+  var out = {marker: window.__iscSearchMarker === %(marker)s, path: location.pathname,
+             submits: window.__iscSubmits || 0, busySets: window.__iscBusySets || 0,
+             reveals: (window.__iscReveals || []).concat(ids.filter(function (id) {
+               var el = document.getElementById(id);
+               return el && !el.hasAttribute("hidden");
+             })),
+             busy: !!results && results.hasAttribute("aria-busy"),
+             results: results ? getComputedStyle(results).display : null,
+             shown: [], vh: innerHeight};
+  if (!out.marker || out.busy) return out;
+  var opts = {opacityProperty: true, visibilityProperty: true};
+  ids.forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el && getComputedStyle(el).display !== "none") out.shown.push(id);
+  });
+  out.visible = !!results && results.checkVisibility(opts);
+  var q = document.getElementById("q");
+  // The tap focuses the submit button in Chrome before the submit, so an
+  // empty query leaves focus in the form (the input or that button).
+  out.inInput = !!q && !!q.form && q.form.contains(document.activeElement);
+  var a = document.activeElement;
+  out.focused = a ? a.localName + (a.id ? "#" + a.id : "") : "nothing";
+  if (out.shown.length !== 1) return out;
+  var section = document.getElementById(out.shown[0]);
+  var list = section.getElementsByClassName("index-list")[0];
+  out.entries = list ? Array.prototype.map.call(list.children, tree) : [];
+  var clone = section.cloneNode(true);
+  Array.prototype.forEach.call(clone.getElementsByClassName("index-list"), function (l) {
+    while (l.firstChild) l.removeChild(l.firstChild);
+  });
+  clone.removeAttribute("hidden");
+  out.section = tree(clone);
+  out.hiddenText = [];
+  [section].concat(Array.from(section.querySelectorAll("*"))).forEach(function (el) {
+    var own = Array.from(el.childNodes).some(function (n) {
+      return n.nodeType === 3 && n.textContent.trim() !== "";
+    });
+    if (own && !el.checkVisibility(opts)) out.hiddenText.push(el.localName);
+  });
+  var heading = section.getElementsByTagName("h2")[0];
+  out.focus = !!heading && document.activeElement === heading;
+  function box(el) {
+    if (!el) return null;
+    var r = el.getBoundingClientRect();
+    return [r.top, r.bottom];
+  }
+  out.heading = box(heading);
+  out.first = list ? box(list.firstElementChild) : null;
+  out.height = section.getBoundingClientRect().height;
+  out.sectionTop = section.getBoundingClientRect().top;
+  out.atBottom = scrollY >= document.documentElement.scrollHeight - innerHeight - 1;
+  return out;
+})()
+"""
+# Two submits in one task (fix round 1, ADR-0005 part 4: the latest submit
+# wins): the first query, then the second, before either answer.
+SEARCH_DOUBLE_SCRIPT = r"""
+(function () {
+  var q = document.getElementById("q");
+  window.__iscBusySets = 0;
+  window.__iscReveals = [];
+  q.value = %(first)s;
+  HTMLFormElement.prototype.requestSubmit.call(q.form);
+  q.value = %(second)s;
+  HTMLFormElement.prototype.requestSubmit.call(q.form);
+  return {};
+})()
+"""
+# The /a-z/ entries as trees, in order (the display source of every answer).
+SEARCH_A_Z_SCRIPT = "(function () {\n" + REFLOW_TREE_JS + r"""
+  var list = document.getElementsByClassName("index-list")[0];
+  return {entries: list ? Array.prototype.map.call(list.children, tree) : null};
+})()
+"""
+
+# The hit test and the paint check of the pinned regions (the amendment's
+# items 3 and 7; PR 3's Known limit 6): in S0, on every page, each pinned
+# region that is shown (the Home search form; outside #search-results every
+# .index-list, every .no-report block and the What to do now panel; in case
+# (8) each revealed result section with its panel and blocks) is a region
+# kind. For every link, button and input in it, scrolled into view, the
+# element at its centre must be the control or inside it, so an overlay
+# (a <dialog open>, a positioned element, a pseudo-element) over it fails
+# whatever its cause. The paint check then scrolls the region's top to the
+# top of the viewport and captures each viewport-high slice of its box
+# three times, as case (7) does for the skip link: as is, with the region
+# at opacity 0, and restored. The first and third images must match and
+# the first and second must differ (REFLOW_PAINT_TOLERANCE), so a region
+# that paints nothing visible (covered by a layer that takes no pointer,
+# transparent, clipped) fails too.
+REFLOW_HIT_SCRIPT = r"""
+(function () {
+  var kinds = %(kinds)s, revealed = %(revealed)s;
+  function label(el) {
+    if (!el) return "nothing";
+    var s = el.localName;
+    if (el.id) s += "#" + el.id;
+    if (el.classList && el.classList.length) s += "." + Array.from(el.classList).join(".");
+    return s;
+  }
+  var results = document.getElementById("search-results");
+  var regions = [];
+  function add(kind, el) {
+    if (!el || el.getClientRects().length === 0) return;
+    regions.push([kind, el]);
+  }
+  if (revealed) {
+    add(kinds[4], document.getElementById(revealed));
+  } else {
+    var q = document.getElementById("q");
+    if (q && q.form) add(kinds[0], q.form);
+    Array.prototype.forEach.call(document.querySelectorAll(".index-list"), function (el) {
+      if (!results || !results.contains(el)) add(kinds[1], el);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".no-report"), function (el) {
+      if (!results || !results.contains(el)) add(kinds[2], el);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".panel-warn"), function (el) {
+      if (!results || !results.contains(el)) add(kinds[3], el);
+    });
+    // The pinned lines of a report page (render rule 17: the breadcrumb, the
+    // h1, the notice, the D6 and D7 lines, the aliases, the lead, the
+    // campaign line, What was checked) and of Home (rule 16: its title and
+    // lead), which a layer could cover without covering a control.
+    if (document.querySelector(".state-sentence") || results) {
+      Array.prototype.forEach.call(document.querySelectorAll(
+          "main > .breadcrumb, main > h1, main > .lead, .hidden-name-notice, .record-type, " +
+          ".state-sentence, .record-label, .aliases, .campaign-line, .state-basis"),
+          function (el) { if (!results || !results.contains(el)) add(kinds[5], el); });
+    }
+  }
+  window.__iscRegions = regions.map(function (r) { return r[1]; });
+  // The occlusion check (fix round 1): every element that shows, outside a
+  // region and its ancestors, whose box meets the region's box is a
+  // finding, whatever paints it there (a positioned or transformed layer,
+  // a negative margin, an inline-block or a flex item painted after the
+  // region's text) and whatever its pointer-events: elementFromPoint skips
+  // a layer with pointer-events none, and a slice that still paints on its
+  // uncovered part passes the paint check. The templates lay no element
+  // over another outside a region. A layered ::before or ::after anywhere
+  // is a finding too: its box cannot be read, and none is emitted.
+  var vis = {opacityProperty: true, visibilityProperty: true};
+  function layeredStyle(cs) {
+    return cs.position !== "static" || cs.transform !== "none" || cs.translate !== "none" ||
+      cs.rotate !== "none" || cs.scale !== "none" || parseFloat(cs.opacity) < 1 ||
+      cs.filter !== "none" || (cs.backdropFilter || "none") !== "none" ||
+      cs.clipPath !== "none" || (cs.maskImage || "none") !== "none" ||
+      cs.isolation === "isolate" || cs.mixBlendMode !== "normal" || cs.willChange !== "auto" ||
+      /paint|layout|strict|content/.test(cs.contain) || cs.zIndex !== "auto";
+  }
+  var layers = [], pseudo = [];
+  Array.prototype.forEach.call(document.body ? document.body.querySelectorAll("*") : [], function (el) {
+    ["::before", "::after"].forEach(function (p) {
+      var ps = getComputedStyle(el, p);
+      if (ps.content !== "none" && ps.content !== "normal" && layeredStyle(ps))
+        pseudo.push(label(el) + p);
+    });
+    if (el.getClientRects().length === 0 || !el.checkVisibility(vis)) return;
+    layers.push(el);
+  });
+  function meets(a, b) {
+    return a.left < b.right - 0.5 && b.left < a.right - 0.5 &&
+      a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5;
+  }
+  var out = [];
+  regions.forEach(function (pair, i) {
+    var region = pair[1], misses = [], controls = 0;
+    var own = region.getBoundingClientRect(), over = [];
+    layers.forEach(function (el) {
+      if (region.contains(el) || el.contains(region)) return;
+      var b = el.getBoundingClientRect();
+      if (meets(own, b)) over.push(label(el) + " (" + getComputedStyle(el).position + ") at x " +
+        Math.round(b.left) + " to " + Math.round(b.right) + ", y " + Math.round(b.top) + " to " +
+        Math.round(b.bottom));
+    });
+    Array.prototype.forEach.call(region.querySelectorAll("a, button, input"), function (c) {
+      if (c.getClientRects().length === 0) return;
+      controls++;
+      c.scrollIntoView({block: "center", inline: "nearest"});
+      // Every box of the control (an inline link that wraps has one per
+      // line, and the centre of its bounding box can lie on other text).
+      Array.prototype.some.call(c.getClientRects(), function (r) {
+        if (r.width < 1 || r.height < 1) return false;
+        var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        if (!hit || !c.contains(hit)) {
+          misses.push(label(c) + " hits " + label(hit));
+          return true;
+        }
+        return false;
+      });
+    });
+    window.scrollTo(0, 0);
+    var r = region.getBoundingClientRect();
+    out.push({kind: pair[0], label: label(region), index: i, controls: controls,
+              misses: misses, over: over, pseudo: i === 0 ? pseudo : [], top: r.top + scrollY, height: r.height, left: r.left,
+              width: r.width, content: controls > 0 || region.textContent.trim() !== ""});
+  });
+  return out;
+})()
+"""
+# Paint check helper: scroll so that y (document coordinates) is the top
+# of the viewport, or set region i's inline opacity to 0 (mode "hide") and
+# back (mode "restore"), returning the scroll position.
+REFLOW_REGION_PAINT_SCRIPT = r"""
+(function () {
+  var el = (window.__iscRegions || [])[%(index)d];
+  var mode = %(mode)s, saved = %(saved)s, old = null, extra = {};
+  function label(e) {
+    var s = e.localName;
+    if (e.id) s += "#" + e.id;
+    if (e.classList && e.classList.length) s += "." + Array.from(e.classList).join(".");
+    return s;
+  }
+  function box(e) {
+    var r = e.getBoundingClientRect();
+    return [r.left, r.top, r.width, r.height].join(",");
+  }
+  if (mode === "scroll") window.scrollTo(0, %(y)s);
+  // The pixel occlusion check (fix round 2): "isolate" hides every element
+  // outside the region and its ancestors (visibility, so the layout holds),
+  // with animations paused and the caret blurred; "unisolate" restores
+  // all of it. The ancestors must hold no text and no pseudo-element of
+  // their own, the only things of theirs that could paint over the region.
+  if (el && mode === "isolate") {
+    var anims = document.getAnimations().filter(function (a) { return a.playState === "running"; });
+    anims.forEach(function (a) { a.pause(); });
+    window.__iscAnims = anims;
+    window.__iscFocus = document.activeElement;
+    if (window.__iscFocus && window.__iscFocus.blur) window.__iscFocus.blur();
+    var anc = [];
+    for (var p = el.parentElement; p; p = p.parentElement) anc.push(p);
+    var before = box(el), hidden = [];
+    Array.prototype.forEach.call(document.querySelectorAll("body *"), function (e) {
+      if (el.contains(e) || anc.indexOf(e) >= 0 || !e.style) return;
+      hidden.push([e, e.style.getPropertyValue("visibility"),
+                   e.style.getPropertyPriority("visibility"), e.hasAttribute("style")]);
+      e.style.setProperty("visibility", "hidden", "important");
+    });
+    window.__iscHidden = hidden;
+    var own = [], leak = [];
+    anc.forEach(function (a) {
+      Array.prototype.forEach.call(a.childNodes, function (n) {
+        if (n.nodeType === 3 && n.data.trim()) own.push(label(a) + " (its text)");
+      });
+      ["::before", "::after"].forEach(function (ps) {
+        var c = getComputedStyle(a, ps).content;
+        if (c !== "none" && c !== "normal") own.push(label(a) + ps);
+      });
+    });
+    hidden.forEach(function (h) {
+      ["::before", "::after"].forEach(function (ps) {
+        var cs = getComputedStyle(h[0], ps);
+        if (cs.content !== "none" && cs.content !== "normal" && cs.visibility === "visible")
+          leak.push(label(h[0]) + ps);
+      });
+    });
+    extra = {moved: box(el) !== before, own: own, leak: leak, hidden: hidden.length};
+  } else if (mode === "unisolate") {
+    (window.__iscHidden || []).forEach(function (h) {
+      if (h[1]) h[0].style.setProperty("visibility", h[1], h[2]);
+      else h[0].style.removeProperty("visibility");
+      if (h[0].getAttribute("style") === "" && !h[3]) h[0].removeAttribute("style");
+    });
+    window.__iscHidden = [];
+    (window.__iscAnims || []).forEach(function (a) { a.play(); });
+    window.__iscAnims = [];
+    var f = window.__iscFocus;
+    if (f && f.focus && f !== document.body) f.focus({preventScroll: true});
+  }
+  if (el && el.style && mode === "hide") {
+    old = ["opacity", "transition"].map(function (p) {
+      return [el.style.getPropertyValue(p), el.style.getPropertyPriority(p)];
+    });
+    old.push(el.hasAttribute("style"));
+    el.style.setProperty("transition", "none", "important");
+    el.style.setProperty("opacity", "0", "important");
+  } else if (el && el.style && mode === "restore" && saved) {
+    ["opacity", "transition"].forEach(function (p, i) {
+      if (saved[i][0]) el.style.setProperty(p, saved[i][0], saved[i][1]);
+      else el.style.removeProperty(p);
+    });
+    // No trace: an empty style attribute the hide step created goes too.
+    if (el.getAttribute("style") === "" && !saved[2]) el.removeAttribute("style");
+    getComputedStyle(el).opacity;
+  }
+  return {x: scrollX, y: scrollY, vh: innerHeight, saved: old, extra: extra};
+})()
+"""
+# The Page events of a navigation of the page's own frame (case (8)).
+SEARCH_NAVIGATION_EVENTS = frozenset({"Page.frameRequestedNavigation",
+                                      "Page.frameStartedNavigating",
+                                      "Page.frameStartedLoading", "Page.frameNavigated"})
+REFLOW_HIT_KINDS = ("the search form", "/a-z/ entries (.index-list)", "a .no-report block",
+                    "the What to do now panel", "a revealed result section",
+                    "a pinned line of a report page or Home")
+
+
+def reflow_hits(tools, session, findings, where, revealed=None):
+    """The hit test and the paint check of the shown pinned regions (see
+    REFLOW_HIT_SCRIPT); revealed: the id of a revealed result section, which
+    is then the only region. Returns the number of regions checked."""
+    regions = reflow_value(tools, session, REFLOW_HIT_SCRIPT % {
+        "kinds": json.dumps(REFLOW_HIT_KINDS), "revealed": json.dumps(revealed)}, where) or []
+    for region in regions:
+        what = f"{region['kind']} ({show(region['label'], 80)})"
+        for layer in region.get("over", [])[:REFLOW_NAMED]:
+            findings.add(where, f"(occlusion) {show(layer, 160)} lies over {what}: an element "
+                         "outside the region meets its box (a layer, a negative margin, an "
+                         "inline-block or flex item), whatever its pointer-events or z-index, "
+                         "so it can cover the region's words")
+        for item in region.get("pseudo", []):
+            findings.add(where, f"(occlusion) the pseudo-element {show(item, 120)} paints in its "
+                         "own layer; its box cannot be read, so it could cover a pinned region "
+                         "unseen, and the templates emit none")
+        for miss in region["misses"][:REFLOW_NAMED]:
+            findings.add(where, f"(hit) in {what}, the centre of {show(miss, 160)}, not the "
+                         "control or inside it; an overlay, a positioned layer or a "
+                         "pseudo-element covers it, so a tap does not reach it")
+        if len(region["misses"]) > REFLOW_NAMED:
+            findings.add(where, f"(hit) in {what}, {len(region['misses']) - REFLOW_NAMED} "
+                         "more control(s) covered")
+        top, height = region["top"], region["height"]
+        if height <= 0 or region["width"] <= 0:
+            # An empty region (the production /a-z/ list before M5) has
+            # nothing to paint; one with text or controls must have a box.
+            if region.get("content"):
+                findings.add(where, f"(paint) {what} holds text or controls but has no "
+                             "box to paint them in")
+            continue
+        # Viewport-high slices from the region's top, the last one ending
+        # at its bottom, so no slice is a sliver of border or corner.
+        vh = reflow_value(tools, session, "(function () { return {vh: innerHeight}; })()",
+                          where).get("vh") or 1
+        size = min(height, vh)
+        starts = [top + k * vh for k in range(max(math.ceil(height / vh), 1))]
+        starts[-1] = top + height - size
+        problem = None
+        for y in starts:
+            if problem is not None:
+                break
+            state = reflow_value(tools, session, REFLOW_REGION_PAINT_SCRIPT % {
+                "index": region["index"], "mode": json.dumps("scroll"), "saved": "null",
+                "y": json.dumps(y)}, where)
+            scroll = (state.get("x"), state.get("y"))
+            clip = {"x": max(region["left"], 0) + state["x"], "y": y,
+                    "width": max(min(region["width"], 10000), 1), "height": size,
+                    "scale": 1}
+            # The pixel occlusion check (fix round 2): the slice as rendered
+            # and with everything outside the region hidden, both with the
+            # animations paused and no caret, must be the same image within
+            # the raster noise (pixel_difference), read on the pixels wholly
+            # inside the region's box (a pixel the box only partly covers
+            # also shows its neighbours' antialiased edges).
+            x0, x1 = math.ceil(clip["x"]), math.floor(clip["x"] + clip["width"])
+            y0, y1 = math.ceil(clip["y"]), math.floor(clip["y"] + clip["height"])
+            inner = {"x": x0, "y": y0, "width": max(x1 - x0, 1), "height": max(y1 - y0, 1),
+                     "scale": 1}
+            iso = []
+            for mode in ("isolate", "unisolate"):
+                iso.append(tools.send("Page.captureScreenshot",
+                                      {"format": "png", "clip": inner},
+                                      session=session).get("data"))
+                state = reflow_value(tools, session, REFLOW_REGION_PAINT_SCRIPT % {
+                    "index": region["index"], "mode": json.dumps(mode), "saved": "null",
+                    "y": "0"}, where)
+                extra = state.get("extra") or {}
+                if mode == "isolate":
+                    if extra.get("moved"):
+                        findings.add(where, f"(occlusion) {what} moved when everything outside "
+                                     "it was hidden, so its paint cannot be compared")
+                    for item in (extra.get("own") or [])[:REFLOW_NAMED]:
+                        findings.add(where, f"(occlusion) {show(item, 120)}, an ancestor of "
+                                     f"{what}, holds text or a pseudo-element of its own, which "
+                                     "could paint over the region; the templates give the "
+                                     "regions' ancestors none")
+                    for item in (extra.get("leak") or [])[:REFLOW_NAMED]:
+                        findings.add(where, f"(occlusion) the pseudo-element {show(item, 120)} "
+                                     "stays visible when its element is hidden, so the pixel "
+                                     f"check of {what} cannot read it")
+            diff = pixel_difference(iso[0], iso[1])
+            if diff:
+                findings.add(where, f"(occlusion) the pixels of {what} change when everything "
+                             f"outside it is hidden ({diff}): something outside the region "
+                             "paints over it (an element, overflowing text, a shadow, an "
+                             "outline, an indent or spacing, a pseudo-element), whatever its "
+                             "pointer-events")
+            shots, saved = [], None
+            for mode in ("hide", "restore", "read"):
+                shots.append(tools.send("Page.captureScreenshot",
+                                        {"format": "png", "clip": clip},
+                                        session=session).get("data"))
+                state = reflow_value(tools, session, REFLOW_REGION_PAINT_SCRIPT % {
+                    "index": region["index"], "mode": json.dumps(mode),
+                    "saved": json.dumps(saved), "y": "0"}, where)
+                if (state.get("x"), state.get("y")) != scroll:
+                    problem = (f"(paint) the page scrolled while the paint of {what} was "
+                               "compared; the region must hold still")
+                saved = state.get("saved") if mode == "hide" else saved
+            if problem is None:
+                if png_difference(shots[0], shots[2]) > REFLOW_PAINT_TOLERANCE:
+                    problem = (f"(paint) {what} changes by itself between two screenshots "
+                               "with the same style, so its paint cannot be compared")
+                elif (paint := png_difference(shots[0], shots[1])) <= REFLOW_PAINT_TOLERANCE:
+                    problem = (f"(paint) {what} paints no visible pixel in its box from "
+                               f"y {y - top:.0f} px (the slice looks the same at opacity 0, "
+                               f"largest difference {paint} of 255, tolerance "
+                               f"{REFLOW_PAINT_TOLERANCE}); a layer covers it, or it is "
+                               "transparent or clipped")
+        if problem:
+            findings.add(where, problem)
+    reflow_value(tools, session, "(function () { window.scrollTo(0, 0); return {}; })()", where)
+    return len(regions)
+
+
+def search_case(tools, session, findings, public, origin, load):
+    """Case (8) on one tree (see the comment above SEARCH_VIEWPORT).
+    Returns the summary text."""
+    where = "public/index.html (case (8), search)"
+    home = public / "index.html"
+    feed_path, a_z_path = public / SEARCH_FEED_REL, public / SEARCH_A_Z_REL
+    text = home.read_text(encoding="utf-8", errors="replace") if home.is_file() else ""
+    page = parse_render_page(text)
+    form = [el for el in page.root.walk() if el.tag == "form"
+            and "search" in ascii_lower(el.attrs.get("role", "")).split()]
+    missing = [what for what, ok in (
+        ("a form[role=search] on Home", bool(form)),
+        (f"#{SEARCH_RESULTS} on Home", any(el.attrs.get("id") == SEARCH_RESULTS
+                                           for el in page.root.walk())),
+        (SEARCH_FEED_REL, feed_path.is_file()), (SEARCH_A_Z_REL, a_z_path.is_file()))
+        if not ok]
+    if missing:
+        findings.add(where, f"(8) the tree lacks {', '.join(missing)}; the search cannot be "
+                     "run, so its outcome is unproven (fails closed, ADR-0005 part 6)")
+        return "; search: not run"
+    try:
+        feed = json.loads(feed_path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        findings.add(where, f"(8) {SEARCH_FEED_REL} does not parse ({exc}); fails closed")
+        return "; search: not run"
+    paths = a_z_paths(a_z_path.read_text(encoding="utf-8", errors="replace"))
+    if paths is None:
+        findings.add(where, f"(8) {SEARCH_A_Z_REL} has no .index-list; fails closed")
+        return "; search: not run"
+    index = oracle_index(feed, paths)
+    queries = search_queries(feed)
+    if search_expect(index, SEARCH_NO_MATCH)[0] != "none":
+        findings.add(where, f"(8) the no-match query {show(SEARCH_NO_MATCH)} matches a record "
+                     "by the oracle; the case needs one query that matches nothing")
+    sizes = [len(gzip.compress(p.read_bytes(), compresslevel=SEARCH_GZIP_LEVEL, mtime=0))
+             for p in (feed_path, a_z_path)]
+    fetch = sum(sizes)
+    n_records = sum(len(feed.get(k) or []) for k in ("reports", "campaigns")
+                    if isinstance(feed.get(k), list))
+    if fetch > SEARCH_FETCH_BUDGET:
+        findings.add(where, f"(8g) {SEARCH_FEED_REL} plus {SEARCH_A_Z_REL} take {fetch} bytes "
+                     f"after gzip, above SEARCH_FETCH_BUDGET {SEARCH_FETCH_BUDGET}: the fetch "
+                     "outlasts the typing of a median name on the profile Lighthouse "
+                     "measures, so the answer waits after the submit (ADR-0005 Numbers)")
+    ids = [sid for sid, _ in SEARCH_SECTIONS]
+    tiers = {"exact": ids[0], "partial": ids[1], "none": ids[2]}
+    marker = json.dumps(f"isc-{os.getpid()}-{time.monotonic_ns()}")
+    width, height = SEARCH_VIEWPORT
+
+    def emulate(w, h):
+        tools.send("Emulation.setDeviceMetricsOverride",
+                   {"width": w, "height": h, "screenWidth": w, "screenHeight": h,
+                    "deviceScaleFactor": 1, "mobile": True}, session=session)
+
+    requests = []
+
+    def harvest():
+        for event in list(tools.events):
+            if event.get("method") == "Network.requestWillBeSent" \
+                    and event.get("sessionId") == session:
+                tools.events.remove(event)
+                url = (event.get("params") or {}).get("request", {}).get("url")
+                requests.append(url if isinstance(url, str) else repr(url))
+
+    fresh = {"home": False}
+
+    def feed_requested(since):
+        return any(urllib.parse.urlsplit(u).path == "/" + SEARCH_FEED_REL
+                   for u in requests[since:])
+
+    def open_home():
+        harvest()
+        since = len(requests)
+        error = load(origin + "/")
+        harvest()
+        if error:
+            raise UsageError(f"reflow: case (8) could not load Home: {error}")
+        # Never on load (ADR-0005 part 4): the fetch waits for the visitor.
+        if feed_requested(since):
+            findings.add(where, f"(8) Home requested /{SEARCH_FEED_REL} on load, before any "
+                         "focus or submit; the search fetches on the first focus of #q or the "
+                         "first submit, never on load (ADR-0005 part 4)")
+        fresh["home"] = True
+        return reflow_value(tools, session, SEARCH_SETUP_SCRIPT % {
+            "marker": marker, "ids": json.dumps(ids)}, where)
+
+    def state():
+        """The page state, or None while no context answers (navigating)."""
+        tools._write("Runtime.evaluate", {"expression": SEARCH_STATE_SCRIPT % {
+            "ids": json.dumps(ids), "marker": marker}, "returnByValue": True}, session)
+        try:
+            reply = tools._answer("Runtime.evaluate", REFLOW_TIMEOUT)
+        except UsageError:
+            return None
+        if "exceptionDetails" in reply:
+            return None
+        return reply.get("result", {}).get("value") or None
+
+    tools.send("Emulation.setTouchEmulationEnabled", {"enabled": True, "maxTouchPoints": 1},
+               session=session)
+    emulate(width, height)
+    tools.send("Network.enable", session=session)
+    counts = {"exact": 0, "partial": 0, "none": 0, "empty": 0, "handover": 0}
+    a_z_trees = None
+    reflowed, partial_height, n_hits = set(), None, 0
+    try:
+        if load(origin + "/" + SEARCH_A_Z_REL.rsplit("index.html", 1)[0]) is None:
+            a_z_trees = (reflow_value(tools, session, SEARCH_A_Z_SCRIPT, where)
+                         or {}).get("entries")
+        setup = open_home()
+        if not setup.get("form"):
+            findings.add(where, "(8) Home has no input #q in a form the browser sees")
+            return "; search: not run"
+        before = setup.get("sections") or {}
+        submits = 0
+        for query in queries:
+            label = show(query, 80)
+            expected, want = search_expect(index, query)
+            counts[expected] += 1
+            harvest()
+            since = len(requests)
+            if not reflow_value(tools, session, SEARCH_FOCUS_SCRIPT, where):
+                findings.add(where, f"(8) query {label}: the input #q does not take focus")
+                continue
+            if fresh["home"]:
+                # The first focus after a load starts the fetch (ADR-0005
+                # part 4), before any submit.
+                fresh["home"] = False
+                deadline = time.monotonic() + REFLOW_TIMEOUT
+                while not feed_requested(since) and time.monotonic() < deadline:
+                    reflow_value(tools, session, "(function () { return {}; })()", where)
+                    harvest()
+                    time.sleep(0.02)
+                if not feed_requested(since):
+                    findings.add(where, f"(8) the first focus of #q requested no "
+                                 f"/{SEARCH_FEED_REL} within {REFLOW_TIMEOUT:g} s; the fetch "
+                                 "starts on the first focus, so it runs while the visitor "
+                                 "types (ADR-0005 part 4)")
+            if query:
+                tools.send("Input.insertText", {"text": query}, session=session)
+            for event in [e for e in tools.events if e.get("method") in SEARCH_NAVIGATION_EVENTS
+                          or e.get("method") == "Page.loadEventFired"]:
+                tools.events.remove(event)
+            tap = reflow_value(tools, session, SEARCH_BUTTON_SCRIPT, where)
+            if not tap.get("hit"):
+                findings.add(where, f"(8) query {label}: the centre of the submit button "
+                             "hits another element; a tap does not reach it")
+            for kind in ("mousePressed", "mouseReleased"):
+                tools.send("Input.dispatchMouseEvent",
+                           {"type": kind, "x": tap.get("x", 0), "y": tap.get("y", 0),
+                            "button": "left", "clickCount": 1}, session=session)
+            submits += 1
+            deadline = time.monotonic() + REFLOW_TIMEOUT
+            seen = None
+            while True:
+                seen = state()
+                if seen is not None and (not seen.get("marker") or (
+                        seen.get("submits", 0) >= submits and not seen.get("busy"))):
+                    break
+                if time.monotonic() > deadline:
+                    break
+                time.sleep(0.02)
+            # A hand-over clears aria-busy and calls form.submit() in the
+            # same task, so a settled state can precede the navigation it
+            # started: a navigation event of the page since the tap means
+            # the answer is the page it loads.
+            if seen is not None and seen.get("marker") and any(
+                    e.get("method") in SEARCH_NAVIGATION_EVENTS
+                    and e.get("sessionId") == session for e in tools.events):
+                harvest()
+                try:
+                    tools.wait_event("Page.loadEventFired", session)
+                except NoAnswerError:
+                    pass
+                seen = state() or seen
+            harvest()
+            navigated = seen is not None and not seen.get("marker")
+            if seen is None or (not navigated and seen.get("busy")) or (
+                    not navigated and seen.get("submits", 0) < submits):
+                findings.add(where, f"(8) query {label}: no answer within {REFLOW_TIMEOUT:g} s "
+                             f"({'no page answered' if seen is None else 'aria-busy stays on #' + SEARCH_RESULTS if seen.get('busy') else 'the submit never reached the form'}); "
+                             "the answer must settle after one submit (ADR-0005 part 4); "
+                             "the later queries are not run")
+                break
+            if expected == "handover":
+                if not navigated or seen.get("path") != A_Z_PATH:
+                    findings.add(where, f"(8) query {label} matches a feed entry /a-z/ does "
+                                 "not show; the script must hand it over to /a-z/ (ADR-0005 "
+                                 "part 3), but it did not")
+                before = open_home().get("sections") or {}
+                submits = 0
+                continue
+            if navigated:
+                findings.add(where, f"(8a) query {label} left Home (now on "
+                             f"{show(seen.get('path'))}); the answer shows on the same page "
+                             f"(ADR-0005 part 4), the {expected} answer by the oracle")
+                before = open_home().get("sections") or {}
+                submits = 0
+                continue
+            shown = seen.get("shown") or []
+            if expected == "empty":
+                if shown or seen.get("results") != "none" or not seen.get("inInput"):
+                    findings.add(where, f"(8c) the empty query {label} shows "
+                                 f"{show(shown)} (results display {show(seen.get('results'))}, "
+                                 f"focus on {show(seen.get('focused'))}); an empty query shows "
+                                 "no section and focus stays in the search form (ADR-0005 "
+                                 "part 3; the tap itself focuses the submit button)")
+                continue
+            if not seen.get("busySets"):
+                findings.add(where, f"(8) query {label}: aria-busy was never set on "
+                             f"#{SEARCH_RESULTS} between the submit and the answer; it tells a "
+                             "screen reader the answer is on its way (ADR-0005 part 4)")
+            sid = tiers[expected]
+            if shown == [sid] and seen.get("results") != "none" and not seen.get("visible"):
+                findings.add(where, f"(8c) query {label}: #{SEARCH_RESULTS} is not visible "
+                             "(checkVisibility with opacity and visibility), so the revealed "
+                             "answer does not show")
+                continue
+            if shown != [sid] or seen.get("results") == "none":
+                findings.add(where, f"(8c) query {label} shows {show(shown)} (results "
+                             f"display {show(seen.get('results'))}); the oracle expects "
+                             f"exactly #{sid} ({expected}), the others display none")
+                continue
+            got = seen.get("entries") or []
+            if a_z_trees is None:
+                findings.add(where, "(8c) /a-z/ did not load, so the answers cannot be "
+                             "compared with its entries")
+            else:
+                wanted = [a_z_trees[paths.index(p)] for p in want
+                          if paths.index(p) < len(a_z_trees)]
+                if got != wanted:
+                    hrefs = [e[3][0][2].get("href") if e[3] and e[3][0][0] == "a" else None
+                             for e in got]
+                    findings.add(where, f"(8c) query {label} lists {len(got)} entr"
+                                 f"{'y' if len(got) == 1 else 'ies'} {show(hrefs, 300)}; the "
+                                 f"oracle expects {len(wanted)} {show(want, 300)} in /a-z/ "
+                                 "order, each exactly as its /a-z/ entry (rules 3, 4 and 9 on "
+                                 "/a-z/ carry over to the answer)")
+            if seen.get("section") != before.get(sid):
+                findings.add(where, f"(8c) query {label}: the revealed #{sid}, its list "
+                             "emptied, differs from the section as parsed before any query "
+                             "(rule 16 pins it): "
+                             + str(tree_difference(seen.get("section"), before.get(sid),
+                                                   f"#{sid}"))
+                             + "; the script changed it")
+            for name in (seen.get("hiddenText") or [])[:REFLOW_NAMED]:
+                findings.add(where, f"(8c) query {label}: a <{name}> of #{sid} holds text "
+                             "but is not visible (checkVisibility with opacity and visibility)")
+            if not seen.get("focus"):
+                findings.add(where, f"(8d) query {label}: focus is on "
+                             f"{show(seen.get('focused'))}, not the heading of #{sid}; it "
+                             "tells a screen reader that the answer came (ADR-0005 part 4)")
+            vh = seen.get("vh") or height
+            for what, box in (("heading", seen.get("heading")),
+                              ("first entry", seen.get("first"))):
+                if box is None:
+                    continue
+                if box[0] < -REFLOW_EPSILON or box[1] > vh + REFLOW_EPSILON:
+                    findings.add(where, f"(8e) query {label}: the {what} of #{sid} lies at "
+                                 f"y {box[0]:.1f} to {box[1]:.1f}, not wholly inside the "
+                                 f"{width} x {vh} viewport; the answer shows on one phone "
+                                 "screen after one submit (SPEC section 8)")
+            top = seen.get("sectionTop")
+            if isinstance(top, (int, float)) and abs(top) > REFLOW_EPSILON \
+                    and not seen.get("atBottom"):
+                findings.add(where, f"(8e) query {label}: the top of #{sid} is at y {top:.1f}, "
+                             "not scrolled to the top of the viewport (and the page could "
+                             "scroll there); the script scrolls the answer's top into view "
+                             "(ADR-0005 part 4)")
+            if expected == "partial" and partial_height is None:
+                partial_height = seen.get("height")
+            if expected not in reflowed:
+                reflowed.add(expected)
+                n_hits += reflow_hits(tools, session, findings, f"{where}, #{sid} for {label}",
+                                      revealed=sid)
+                # (8f) cases (1) to (3) at 320 x 640 on the page as it stands.
+                emulate(REFLOW_WIDTH, REFLOW_HEIGHT)
+                result = tools.send("Runtime.evaluate", {
+                    "expression": REFLOW_SCRIPT % {
+                        "width": REFLOW_WIDTH, "limit": REFLOW_NAMED,
+                        "exempt": json.dumps(VISUALLY_HIDDEN), "eps": json.dumps(REFLOW_EPSILON)},
+                    "awaitPromise": True, "returnByValue": True},
+                    session=session).get("result", {}).get("value") or {}
+                emulate(width, height)
+                if result.get("page", 0) > REFLOW_WIDTH:
+                    findings.add(where, f"(8f) with #{sid} revealed for {label} the page is "
+                                 f"{result.get('page')} CSS px wide at {REFLOW_WIDTH} px; "
+                                 f"sticking out: {show(result.get('wide'), 200)}")
+                for item in (result.get("outside") or []) + (result.get("cut") or []):
+                    findings.add(where, f"(8f) with #{sid} revealed for {label}: "
+                                 f"{show(item, 200)} lies outside the {REFLOW_WIDTH} px "
+                                 "viewport or is cut by a clipping ancestor")
+        # The latest submit wins (fix round 1, ADR-0005 part 4): an exact
+        # query and then the no-match query, submitted in one task before
+        # either answer; the first answer must change nothing, so its
+        # section is never revealed and the none section shows.
+        first = next((q for q in queries if search_expect(index, q)[0] == "exact"), None)
+        if first is not None:
+            open_home()
+            reflow_value(tools, session, SEARCH_FOCUS_SCRIPT, where)
+            fresh["home"] = False
+            reflow_value(tools, session, SEARCH_DOUBLE_SCRIPT % {
+                "first": json.dumps(first), "second": json.dumps(SEARCH_NO_MATCH)}, where)
+            deadline = time.monotonic() + REFLOW_TIMEOUT
+            while True:
+                seen = state()
+                if seen is not None and (not seen.get("marker") or (
+                        seen.get("submits", 0) >= 2 and not seen.get("busy"))):
+                    break
+                if time.monotonic() > deadline:
+                    break
+                time.sleep(0.02)
+            label = show(first, 80)
+            if seen is None or not seen.get("marker") or seen.get("busy"):
+                findings.add(where, f"(8) two submits ({label}, then the no-match query) gave "
+                             "no settled answer on Home")
+            elif tiers["exact"] in (seen.get("reveals") or []) \
+                    or seen.get("shown") != [tiers["none"]]:
+                findings.add(where, f"(8) two submits in a row ({label}, then the no-match "
+                             f"query): the page revealed {show(seen.get('reveals'))} and shows "
+                             f"{show(seen.get('shown'))}; the latest submit wins, so the "
+                             "earlier answer changes nothing (ADR-0005 part 4)")
+        harvest()
+        own = url_origin(origin)
+        for url in dict.fromkeys(requests):
+            if url_origin(url) != own:
+                findings.add(where, f"(8b) the page requested {show(url, 160)}, outside the "
+                             "served origin (D9); the search fetches only /feed.json and "
+                             "/a-z/")
+    finally:
+        tools.send("Network.disable", session=session)
+        tools.send("Emulation.setTouchEmulationEnabled", {"enabled": False}, session=session)
+        emulate(REFLOW_WIDTH, REFLOW_HEIGHT)
+    per_record = f", {fetch // n_records} bytes per record" if n_records else ""
+    height_text = f"; partial section {partial_height:.0f} CSS px high" \
+        if isinstance(partial_height, (int, float)) else ""
+    return (f"; search: {len(queries)} queries (exact {counts['exact']}, partial "
+            f"{counts['partial']}, none {counts['none']}, empty {counts['empty']}"
+            + (f", handed over {counts['handover']}" if counts["handover"] else "")
+            + f"), fetch {fetch} of {SEARCH_FETCH_BUDGET} bytes{per_record}{height_text}, "
+            f"revealed regions hit-tested {n_hits}")
+
+
 def cmd_reflow(args):
     public = Path(args.public).resolve()
     chrome = args.chrome
@@ -10708,6 +12287,8 @@ def cmd_reflow(args):
     launched = False
     n_items = 0
     n_copy = n_search = n_reveals = n_revealed = n_heads = n_regions = n_documents = 0
+    n_hit_regions = 0
+    search_summary = "; search: not run (--no-search)"
     try:
         # The launch: start Chrome and wait for its first answer, within
         # args.launch_timeout (REFLOW_LAUNCH_TIMEOUT). Only the two launch
@@ -10925,6 +12506,12 @@ def cmd_reflow(args):
             for label in seen.get("cspOutside", []):
                 findings.add(where, f"(9) the browser has the CSP meta as a {show(label, 120)}; "
                              "outside document.head the policy is ignored")
+            # (9) the doctype in the browser (M4 PR 4, the amendment's item 8):
+            # without it Chrome renders the page in quirks mode.
+            if seen.get("compatMode") != "CSS1Compat":
+                findings.add(where, f"(9) the browser renders the page in "
+                             f"{show(seen.get('compatMode'))} mode, not CSS1Compat (no-quirks); "
+                             "the page lacks the doctype rule (m) pins")
             # (9) the pinned regions in the browser, S0, before any reveal
             # (fix round 9).
             # (reflow_value reads an empty list as {}: a page without regions.)
@@ -10974,6 +12561,9 @@ def cmd_reflow(args):
                                  "viewport; the revealed skip link must be on screen")
                 else:
                     reveal_paint(where, focus, box)
+            # The hit test and the paint check of the shown pinned regions
+            # (M4 PR 4, the amendment's items 3 and 7), S0.
+            n_hit_regions += reflow_hits(tools, session, findings, where)
             # (6) In S0, each search result section revealed must be
             # perceivable and operable (REFLOW_REVEAL_SCRIPT).
             if static_hidden["search-out"]:
@@ -11048,6 +12638,9 @@ def cmd_reflow(args):
                        session=session)
             n_copy += len(static_hidden["copy"])
             n_search += len(static_hidden["search-out"])
+        # (8) the search, once per tree (M4 PR 4, ADR-0005 part 6).
+        if not args.no_search:
+            search_summary = search_case(tools, session, findings, public, origin, load)
         for error in sorted(set(SiteHandler.errors)):
             findings.add("public", f"the local server answered {error}; a page was "
                          "measured without one of its files")
@@ -11081,7 +12674,8 @@ def cmd_reflow(args):
                            f"{n_revealed} sections revealed and reachable; "
                            f"skip-link reveals: {n_reveals}; heads as parsed: {n_heads}; "
                            f"pinned regions as parsed: {n_regions}; documents as parsed "
-                           f"(scripting off): {n_documents}")
+                           f"(scripting off): {n_documents}; regions hit-tested and painting: "
+                           f"{n_hit_regions}{search_summary}")
 
 
 # ---------------------------------------------------------------------------
@@ -11095,6 +12689,38 @@ LIGHTHOUSE_CATEGORIES = ("performance", "accessibility", "best-practices", "seo"
 # The smallest odd count that absorbs one outlier (ADR-0003 numbers table).
 LIGHTHOUSE_RUNS = 3
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
+# The emulation and throttling the gate pins (M4 PR 4, ADR-0005 part 6 and
+# Numbers): SEARCH_VIEWPORT is what reflow case (8) proves the answer
+# visible in, and the method and profile are the inputs of
+# SEARCH_FETCH_BUDGET. Read from the pinned Lighthouse's own reports; a
+# Lighthouse upgrade or a flag that moves any of them turns the gate red,
+# and the re-pin re-derives the constants (ADR-0005 Consequences).
+LIGHTHOUSE_PINNED_SETTINGS = (
+    (("screenEmulation", "mobile"), True),
+    (("screenEmulation", "disabled"), False),
+    (("screenEmulation", "width"), None),   # SEARCH_VIEWPORT[0], set below
+    (("screenEmulation", "height"), None),  # SEARCH_VIEWPORT[1], set below
+    (("throttlingMethod",), "simulate"),
+    (("throttling", "rttMs"), 150),
+    (("throttling", "throughputKbps"), 1638.4),
+)
+
+
+def same_setting(got, want):
+    """A report value equals the pinned one in value and JSON type (true is
+    not 1, 412 and 412.0 are the same number)."""
+    if isinstance(want, bool) or isinstance(got, bool):
+        return got is want
+    if isinstance(want, (int, float)):
+        return isinstance(got, (int, float)) and got == want
+    return got == want
+
+
+def lighthouse_settings():
+    """LIGHTHOUSE_PINNED_SETTINGS with the viewport of SEARCH_VIEWPORT."""
+    size = {"width": SEARCH_VIEWPORT[0], "height": SEARCH_VIEWPORT[1]}
+    return [(path, size[path[1]] if want is None else want)
+            for path, want in LIGHTHOUSE_PINNED_SETTINGS]
 
 
 def url_origin(url):
@@ -11142,6 +12768,7 @@ def cmd_lighthouse(args):
         findings.add(f"--reports {args.reports}", "no Lighthouse reports found; nothing "
                      "was measured")
     pages = {}  # page path -> [(report name, report, {category: score})]
+    seen_settings = set()  # the pinned settings as the reports hold them
     for path in paths:
         name = path.name
         try:
@@ -11165,6 +12792,16 @@ def cmd_lighthouse(args):
         if form != "mobile":
             findings.add(name, f"formFactor {json.dumps(form)}, the gate needs the "
                          "mobile profile (SPEC section 8)")
+        settings = []
+        for setting, want in lighthouse_settings():
+            got = dig(report, "configSettings", *setting)
+            settings.append(f"{'.'.join(setting)} {json.dumps(got)}")
+            if not same_setting(got, want):
+                findings.add(name, f"configSettings.{'.'.join(setting)} is {json.dumps(got)}, the "
+                             f"gate pins {json.dumps(want)}: the viewport case (8) proves the "
+                             "answer in and the inputs of SEARCH_FETCH_BUDGET (ADR-0005 "
+                             "Numbers); a re-pin re-derives them")
+        seen_settings.add("; ".join(settings))
         url = report.get("requestedUrl") or report.get("finalDisplayedUrl")
         origin = url_origin(url) if isinstance(url, str) else None
         if origin is None:
@@ -11221,6 +12858,10 @@ def cmd_lighthouse(args):
                 print(f"note: {page}: median {category} score {median}; audits "
                       f"below 1 in the median run: {audits}")
         rows.append(row)
+    # The settings as the reports hold them, printed so the run log shows
+    # the values the constants come from (ADR-0005 Numbers).
+    for line in sorted(seen_settings):
+        print(f"configSettings of the reports: {line}")
     header = ["page"] + list(LIGHTHOUSE_CATEGORIES)
     widths = [max(len(r[i]) for r in rows + [header]) for i in range(len(header))]
     print(f"median of {LIGHTHOUSE_RUNS} runs per page, threshold "
@@ -12056,6 +13697,9 @@ def build_parser():
     p.add_argument("--fixtures")
     p.add_argument("--no-feed", action="store_true")
     p.add_argument("--no-search", action="store_true")
+    # Self-test only (rule 17): the hand-made render fixtures predate the
+    # report page templates of today; check.sh never passes it.
+    p.add_argument("--no-report-pins", action="store_true")
     p.add_argument("public")
     p.set_defaults(func=cmd_render)
     p = sub.add_parser("tokens", allow_abbrev=False)
@@ -12070,6 +13714,9 @@ def build_parser():
     # REFLOW_LAUNCH_TIMEOUT.
     p.add_argument("--launch-timeout", type=positive_seconds,
                    default=REFLOW_LAUNCH_TIMEOUT)
+    # Self-test only (case (8)): a reflow fixture without a search.txt has
+    # no feed and no /a-z/; check.sh never passes it.
+    p.add_argument("--no-search", action="store_true")
     p.add_argument("public")
     p.set_defaults(func=cmd_reflow)
     p = sub.add_parser("guard", allow_abbrev=False)

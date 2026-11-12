@@ -2,7 +2,7 @@
 date = 2026-11-02
 [params]
 name = "Example Front Company"
-aliases = ["Example Front Co", "EFC Hiring"]
+aliases = ["Example Front Co", "EFC Hiring", "Frontco Café", "프런트코 Hiring"]
 name_type = "company"
 state = "front"
 state_basis = [

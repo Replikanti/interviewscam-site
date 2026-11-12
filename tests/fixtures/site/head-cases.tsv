@@ -37,7 +37,7 @@ head-content-model-span	public/index.html	<meta charset="utf-8">	<meta charset="
 head-content-model-math	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><math></math>	(m) <math> in <head> is outside the head content model
 pass-ascii-whitespace-in-head	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">\t\n 	PASS
 text-after-body	public/index.html	</body>	</body>.	(m) the text '[.]' after <body>
-nested-head-in-body	public/index.html	<p>text</p>	<p>text</p><head><meta name="x" content="y"></head>	(m) <meta
+nested-head-in-body	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head><meta name="x" content="y"></head>	(m) <meta
 second-html-elements	public/index.html	</html>	</html><html></html>	(m) <meta
 tag-swapped-same-attributes	public/index.html	<title>fixture</title>	<noscript></noscript>	(m) the head holds
 attribute-missing-any-value	public/index.html	<meta name="description" content="A fixture page.">	<meta name="description">	(m) the head holds
@@ -67,16 +67,16 @@ head-content-model-form	public/index.html	<meta charset="utf-8">	<meta charset="
 # body, in the head and before <html>; a second one with each attribute of
 # hidden, aria-hidden, inert, dir, lang, class and style; each of those on
 # the real <html>, <head> and <body>; an element and a text after <body>.
-skeleton-home-second-html-in-body	public/index.html	<p>text</p>	<p>text</p><html></html>	(m) a second <html>
+skeleton-home-second-html-in-body	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><html></html>	(m) a second <html>
 skeleton-home-second-html-in-head	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><html></html>	(m) a second <html>
 skeleton-home-second-html-before-html	public/index.html	<!doctype html><html lang="en">	<!doctype html><html></html><html lang="en">	(m) a second <html>
-skeleton-home-second-html-hidden	public/index.html	<p>text</p>	<p>text</p><html hidden></html>	(m) a second <html> "{'hidden': ''}" in <body>
-skeleton-home-second-html-aria-hidden	public/index.html	<p>text</p>	<p>text</p><html aria-hidden="true"></html>	(m) a second <html> "{'aria-hidden': 'true'}" in <body>
-skeleton-home-second-html-inert	public/index.html	<p>text</p>	<p>text</p><html inert></html>	(m) a second <html> "{'inert': ''}" in <body>
-skeleton-home-second-html-dir	public/index.html	<p>text</p>	<p>text</p><html dir="rtl"></html>	(m) a second <html> "{'dir': 'rtl'}" in <body>
-skeleton-home-second-html-lang	public/index.html	<p>text</p>	<p>text</p><html lang="de"></html>	(m) a second <html> "{'lang': 'de'}" in <body>
-skeleton-home-second-html-class	public/index.html	<p>text</p>	<p>text</p><html class="x"></html>	(m) a second <html> "{'class': 'x'}" in <body>
-skeleton-home-second-html-style	public/index.html	<p>text</p>	<p>text</p><html style="x"></html>	(m) a second <html> "{'style': 'x'}" in <body>
+skeleton-home-second-html-hidden	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><html hidden></html>	(m) a second <html> "{'hidden': ''}" in <main>
+skeleton-home-second-html-aria-hidden	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><html aria-hidden="true"></html>	(m) a second <html> "{'aria-hidden': 'true'}" in <main>
+skeleton-home-second-html-inert	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><html inert></html>	(m) a second <html> "{'inert': ''}" in <main>
+skeleton-home-second-html-dir	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><html dir="rtl"></html>	(m) a second <html> "{'dir': 'rtl'}" in <main>
+skeleton-home-second-html-lang	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><html lang="de"></html>	(m) a second <html> "{'lang': 'de'}" in <main>
+skeleton-home-second-html-class	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><html class="x"></html>	(m) a second <html> "{'class': 'x'}" in <main>
+skeleton-home-second-html-style	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><html style="x"></html>	(m) a second <html> "{'style': 'x'}" in <main>
 skeleton-home-html-attr-hidden	public/index.html	<html lang="en">	<html lang="en" hidden>	(m) <html> has the attributes "{'lang': 'en', 'hidden': ''}"
 skeleton-home-html-attr-aria-hidden	public/index.html	<html lang="en">	<html lang="en" aria-hidden="true">	(m) <html> has the attributes "{'lang': 'en', 'aria-hidden': 'true'}"
 skeleton-home-html-attr-inert	public/index.html	<html lang="en">	<html lang="en" inert>	(m) <html> has the attributes "{'lang': 'en', 'inert': ''}"
@@ -84,16 +84,16 @@ skeleton-home-html-attr-dir	public/index.html	<html lang="en">	<html lang="en" d
 skeleton-home-html-attr-lang	public/index.html	<html lang="en">	<html lang="de">	(m) <html> has the attributes "{'lang': 'de'}"
 skeleton-home-html-attr-class	public/index.html	<html lang="en">	<html lang="en" class="x">	(m) <html> has the attributes "{'lang': 'en', 'class': 'x'}"
 skeleton-home-html-attr-style	public/index.html	<html lang="en">	<html lang="en" style="x">	(m) <html> has the attributes "{'lang': 'en', 'style': 'x'}"
-skeleton-home-second-head-in-body	public/index.html	<p>text</p>	<p>text</p><head></head>	(m) a second <head>
+skeleton-home-second-head-in-body	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head></head>	(m) a second <head>
 skeleton-home-second-head-in-head	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><head></head>	(m) a second <head>
 skeleton-home-second-head-before-html	public/index.html	<!doctype html><html lang="en">	<!doctype html><head></head><html lang="en">	(m) a second <head>
-skeleton-home-second-head-hidden	public/index.html	<p>text</p>	<p>text</p><head hidden></head>	(m) a second <head> "{'hidden': ''}" in <body>
-skeleton-home-second-head-aria-hidden	public/index.html	<p>text</p>	<p>text</p><head aria-hidden="true"></head>	(m) a second <head> "{'aria-hidden': 'true'}" in <body>
-skeleton-home-second-head-inert	public/index.html	<p>text</p>	<p>text</p><head inert></head>	(m) a second <head> "{'inert': ''}" in <body>
-skeleton-home-second-head-dir	public/index.html	<p>text</p>	<p>text</p><head dir="rtl"></head>	(m) a second <head> "{'dir': 'rtl'}" in <body>
-skeleton-home-second-head-lang	public/index.html	<p>text</p>	<p>text</p><head lang="de"></head>	(m) a second <head> "{'lang': 'de'}" in <body>
-skeleton-home-second-head-class	public/index.html	<p>text</p>	<p>text</p><head class="x"></head>	(m) a second <head> "{'class': 'x'}" in <body>
-skeleton-home-second-head-style	public/index.html	<p>text</p>	<p>text</p><head style="x"></head>	(m) a second <head> "{'style': 'x'}" in <body>
+skeleton-home-second-head-hidden	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head hidden></head>	(m) a second <head> "{'hidden': ''}" in <main>
+skeleton-home-second-head-aria-hidden	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head aria-hidden="true"></head>	(m) a second <head> "{'aria-hidden': 'true'}" in <main>
+skeleton-home-second-head-inert	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head inert></head>	(m) a second <head> "{'inert': ''}" in <main>
+skeleton-home-second-head-dir	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head dir="rtl"></head>	(m) a second <head> "{'dir': 'rtl'}" in <main>
+skeleton-home-second-head-lang	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head lang="de"></head>	(m) a second <head> "{'lang': 'de'}" in <main>
+skeleton-home-second-head-class	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head class="x"></head>	(m) a second <head> "{'class': 'x'}" in <main>
+skeleton-home-second-head-style	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head style="x"></head>	(m) a second <head> "{'style': 'x'}" in <main>
 skeleton-home-head-attr-hidden	public/index.html	<head>	<head hidden>	(m) <head> has the attributes "{'hidden': ''}"
 skeleton-home-head-attr-aria-hidden	public/index.html	<head>	<head aria-hidden="true">	(m) <head> has the attributes "{'aria-hidden': 'true'}"
 skeleton-home-head-attr-inert	public/index.html	<head>	<head inert>	(m) <head> has the attributes "{'inert': ''}"
@@ -101,16 +101,16 @@ skeleton-home-head-attr-dir	public/index.html	<head>	<head dir="rtl">	(m) <head>
 skeleton-home-head-attr-lang	public/index.html	<head>	<head lang="de">	(m) <head> has the attributes "{'lang': 'de'}"
 skeleton-home-head-attr-class	public/index.html	<head>	<head class="x">	(m) <head> has the attributes "{'class': 'x'}"
 skeleton-home-head-attr-style	public/index.html	<head>	<head style="x">	(m) <head> has the attributes "{'style': 'x'}"
-skeleton-home-second-body-in-body	public/index.html	<p>text</p>	<p>text</p><body></body>	(m) a second <body>
+skeleton-home-second-body-in-body	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><body></body>	(m) a second <body>
 skeleton-home-second-body-in-head	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"><body></body>	(m) a second <body>
 skeleton-home-second-body-before-html	public/index.html	<!doctype html><html lang="en">	<!doctype html><body></body><html lang="en">	(m) a second <body>
-skeleton-home-second-body-hidden	public/index.html	<p>text</p>	<p>text</p><body hidden></body>	(m) a second <body> "{'hidden': ''}" in <body>
-skeleton-home-second-body-aria-hidden	public/index.html	<p>text</p>	<p>text</p><body aria-hidden="true"></body>	(m) a second <body> "{'aria-hidden': 'true'}" in <body>
-skeleton-home-second-body-inert	public/index.html	<p>text</p>	<p>text</p><body inert></body>	(m) a second <body> "{'inert': ''}" in <body>
-skeleton-home-second-body-dir	public/index.html	<p>text</p>	<p>text</p><body dir="rtl"></body>	(m) a second <body> "{'dir': 'rtl'}" in <body>
-skeleton-home-second-body-lang	public/index.html	<p>text</p>	<p>text</p><body lang="de"></body>	(m) a second <body> "{'lang': 'de'}" in <body>
-skeleton-home-second-body-class	public/index.html	<p>text</p>	<p>text</p><body class="x"></body>	(m) a second <body> "{'class': 'x'}" in <body>
-skeleton-home-second-body-style	public/index.html	<p>text</p>	<p>text</p><body style="x"></body>	(m) a second <body> "{'style': 'x'}" in <body>
+skeleton-home-second-body-hidden	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><body hidden></body>	(m) a second <body> "{'hidden': ''}" in <main>
+skeleton-home-second-body-aria-hidden	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><body aria-hidden="true"></body>	(m) a second <body> "{'aria-hidden': 'true'}" in <main>
+skeleton-home-second-body-inert	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><body inert></body>	(m) a second <body> "{'inert': ''}" in <main>
+skeleton-home-second-body-dir	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><body dir="rtl"></body>	(m) a second <body> "{'dir': 'rtl'}" in <main>
+skeleton-home-second-body-lang	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><body lang="de"></body>	(m) a second <body> "{'lang': 'de'}" in <main>
+skeleton-home-second-body-class	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><body class="x"></body>	(m) a second <body> "{'class': 'x'}" in <main>
+skeleton-home-second-body-style	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><body style="x"></body>	(m) a second <body> "{'style': 'x'}" in <main>
 skeleton-home-body-attr-hidden	public/index.html	<body>	<body hidden>	(m) <body> has the attributes "{'hidden': ''}"
 skeleton-home-body-attr-aria-hidden	public/index.html	<body>	<body aria-hidden="true">	(m) <body> has the attributes "{'aria-hidden': 'true'}"
 skeleton-home-body-attr-inert	public/index.html	<body>	<body inert>	(m) <body> has the attributes "{'inert': ''}"
@@ -120,16 +120,16 @@ skeleton-home-body-attr-class	public/index.html	<body>	<body class="x">	(m) <bod
 skeleton-home-body-attr-style	public/index.html	<body>	<body style="x">	(m) <body> has the attributes "{'style': 'x'}"
 skeleton-home-element-after-body	public/index.html	</body></html>	</body><p>x</p></html>	(m) <p> after <body>
 skeleton-home-text-after-html	public/index.html	</body></html>	</body></html>x	(m) the text 'x
-skeleton-section-second-html-in-body	public/reports/index.html	<p>text</p>	<p>text</p><html></html>	(m) a second <html>
+skeleton-section-second-html-in-body	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><html></html>	(m) a second <html>
 skeleton-section-second-html-in-head	public/reports/index.html	<meta charset="utf-8">	<meta charset="utf-8"><html></html>	(m) a second <html>
 skeleton-section-second-html-before-html	public/reports/index.html	<!doctype html><html lang="en">	<!doctype html><html></html><html lang="en">	(m) a second <html>
-skeleton-section-second-html-hidden	public/reports/index.html	<p>text</p>	<p>text</p><html hidden></html>	(m) a second <html> "{'hidden': ''}" in <body>
-skeleton-section-second-html-aria-hidden	public/reports/index.html	<p>text</p>	<p>text</p><html aria-hidden="true"></html>	(m) a second <html> "{'aria-hidden': 'true'}" in <body>
-skeleton-section-second-html-inert	public/reports/index.html	<p>text</p>	<p>text</p><html inert></html>	(m) a second <html> "{'inert': ''}" in <body>
-skeleton-section-second-html-dir	public/reports/index.html	<p>text</p>	<p>text</p><html dir="rtl"></html>	(m) a second <html> "{'dir': 'rtl'}" in <body>
-skeleton-section-second-html-lang	public/reports/index.html	<p>text</p>	<p>text</p><html lang="de"></html>	(m) a second <html> "{'lang': 'de'}" in <body>
-skeleton-section-second-html-class	public/reports/index.html	<p>text</p>	<p>text</p><html class="x"></html>	(m) a second <html> "{'class': 'x'}" in <body>
-skeleton-section-second-html-style	public/reports/index.html	<p>text</p>	<p>text</p><html style="x"></html>	(m) a second <html> "{'style': 'x'}" in <body>
+skeleton-section-second-html-hidden	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><html hidden></html>	(m) a second <html> "{'hidden': ''}" in <main>
+skeleton-section-second-html-aria-hidden	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><html aria-hidden="true"></html>	(m) a second <html> "{'aria-hidden': 'true'}" in <main>
+skeleton-section-second-html-inert	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><html inert></html>	(m) a second <html> "{'inert': ''}" in <main>
+skeleton-section-second-html-dir	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><html dir="rtl"></html>	(m) a second <html> "{'dir': 'rtl'}" in <main>
+skeleton-section-second-html-lang	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><html lang="de"></html>	(m) a second <html> "{'lang': 'de'}" in <main>
+skeleton-section-second-html-class	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><html class="x"></html>	(m) a second <html> "{'class': 'x'}" in <main>
+skeleton-section-second-html-style	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><html style="x"></html>	(m) a second <html> "{'style': 'x'}" in <main>
 skeleton-section-html-attr-hidden	public/reports/index.html	<html lang="en">	<html lang="en" hidden>	(m) <html> has the attributes "{'lang': 'en', 'hidden': ''}"
 skeleton-section-html-attr-aria-hidden	public/reports/index.html	<html lang="en">	<html lang="en" aria-hidden="true">	(m) <html> has the attributes "{'lang': 'en', 'aria-hidden': 'true'}"
 skeleton-section-html-attr-inert	public/reports/index.html	<html lang="en">	<html lang="en" inert>	(m) <html> has the attributes "{'lang': 'en', 'inert': ''}"
@@ -137,16 +137,16 @@ skeleton-section-html-attr-dir	public/reports/index.html	<html lang="en">	<html 
 skeleton-section-html-attr-lang	public/reports/index.html	<html lang="en">	<html lang="de">	(m) <html> has the attributes "{'lang': 'de'}"
 skeleton-section-html-attr-class	public/reports/index.html	<html lang="en">	<html lang="en" class="x">	(m) <html> has the attributes "{'lang': 'en', 'class': 'x'}"
 skeleton-section-html-attr-style	public/reports/index.html	<html lang="en">	<html lang="en" style="x">	(m) <html> has the attributes "{'lang': 'en', 'style': 'x'}"
-skeleton-section-second-head-in-body	public/reports/index.html	<p>text</p>	<p>text</p><head></head>	(m) a second <head>
+skeleton-section-second-head-in-body	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head></head>	(m) a second <head>
 skeleton-section-second-head-in-head	public/reports/index.html	<meta charset="utf-8">	<meta charset="utf-8"><head></head>	(m) a second <head>
 skeleton-section-second-head-before-html	public/reports/index.html	<!doctype html><html lang="en">	<!doctype html><head></head><html lang="en">	(m) a second <head>
-skeleton-section-second-head-hidden	public/reports/index.html	<p>text</p>	<p>text</p><head hidden></head>	(m) a second <head> "{'hidden': ''}" in <body>
-skeleton-section-second-head-aria-hidden	public/reports/index.html	<p>text</p>	<p>text</p><head aria-hidden="true"></head>	(m) a second <head> "{'aria-hidden': 'true'}" in <body>
-skeleton-section-second-head-inert	public/reports/index.html	<p>text</p>	<p>text</p><head inert></head>	(m) a second <head> "{'inert': ''}" in <body>
-skeleton-section-second-head-dir	public/reports/index.html	<p>text</p>	<p>text</p><head dir="rtl"></head>	(m) a second <head> "{'dir': 'rtl'}" in <body>
-skeleton-section-second-head-lang	public/reports/index.html	<p>text</p>	<p>text</p><head lang="de"></head>	(m) a second <head> "{'lang': 'de'}" in <body>
-skeleton-section-second-head-class	public/reports/index.html	<p>text</p>	<p>text</p><head class="x"></head>	(m) a second <head> "{'class': 'x'}" in <body>
-skeleton-section-second-head-style	public/reports/index.html	<p>text</p>	<p>text</p><head style="x"></head>	(m) a second <head> "{'style': 'x'}" in <body>
+skeleton-section-second-head-hidden	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head hidden></head>	(m) a second <head> "{'hidden': ''}" in <main>
+skeleton-section-second-head-aria-hidden	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head aria-hidden="true"></head>	(m) a second <head> "{'aria-hidden': 'true'}" in <main>
+skeleton-section-second-head-inert	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head inert></head>	(m) a second <head> "{'inert': ''}" in <main>
+skeleton-section-second-head-dir	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head dir="rtl"></head>	(m) a second <head> "{'dir': 'rtl'}" in <main>
+skeleton-section-second-head-lang	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head lang="de"></head>	(m) a second <head> "{'lang': 'de'}" in <main>
+skeleton-section-second-head-class	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head class="x"></head>	(m) a second <head> "{'class': 'x'}" in <main>
+skeleton-section-second-head-style	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head style="x"></head>	(m) a second <head> "{'style': 'x'}" in <main>
 skeleton-section-head-attr-hidden	public/reports/index.html	<head>	<head hidden>	(m) <head> has the attributes "{'hidden': ''}"
 skeleton-section-head-attr-aria-hidden	public/reports/index.html	<head>	<head aria-hidden="true">	(m) <head> has the attributes "{'aria-hidden': 'true'}"
 skeleton-section-head-attr-inert	public/reports/index.html	<head>	<head inert>	(m) <head> has the attributes "{'inert': ''}"
@@ -154,16 +154,16 @@ skeleton-section-head-attr-dir	public/reports/index.html	<head>	<head dir="rtl">
 skeleton-section-head-attr-lang	public/reports/index.html	<head>	<head lang="de">	(m) <head> has the attributes "{'lang': 'de'}"
 skeleton-section-head-attr-class	public/reports/index.html	<head>	<head class="x">	(m) <head> has the attributes "{'class': 'x'}"
 skeleton-section-head-attr-style	public/reports/index.html	<head>	<head style="x">	(m) <head> has the attributes "{'style': 'x'}"
-skeleton-section-second-body-in-body	public/reports/index.html	<p>text</p>	<p>text</p><body></body>	(m) a second <body>
+skeleton-section-second-body-in-body	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><body></body>	(m) a second <body>
 skeleton-section-second-body-in-head	public/reports/index.html	<meta charset="utf-8">	<meta charset="utf-8"><body></body>	(m) a second <body>
 skeleton-section-second-body-before-html	public/reports/index.html	<!doctype html><html lang="en">	<!doctype html><body></body><html lang="en">	(m) a second <body>
-skeleton-section-second-body-hidden	public/reports/index.html	<p>text</p>	<p>text</p><body hidden></body>	(m) a second <body> "{'hidden': ''}" in <body>
-skeleton-section-second-body-aria-hidden	public/reports/index.html	<p>text</p>	<p>text</p><body aria-hidden="true"></body>	(m) a second <body> "{'aria-hidden': 'true'}" in <body>
-skeleton-section-second-body-inert	public/reports/index.html	<p>text</p>	<p>text</p><body inert></body>	(m) a second <body> "{'inert': ''}" in <body>
-skeleton-section-second-body-dir	public/reports/index.html	<p>text</p>	<p>text</p><body dir="rtl"></body>	(m) a second <body> "{'dir': 'rtl'}" in <body>
-skeleton-section-second-body-lang	public/reports/index.html	<p>text</p>	<p>text</p><body lang="de"></body>	(m) a second <body> "{'lang': 'de'}" in <body>
-skeleton-section-second-body-class	public/reports/index.html	<p>text</p>	<p>text</p><body class="x"></body>	(m) a second <body> "{'class': 'x'}" in <body>
-skeleton-section-second-body-style	public/reports/index.html	<p>text</p>	<p>text</p><body style="x"></body>	(m) a second <body> "{'style': 'x'}" in <body>
+skeleton-section-second-body-hidden	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><body hidden></body>	(m) a second <body> "{'hidden': ''}" in <main>
+skeleton-section-second-body-aria-hidden	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><body aria-hidden="true"></body>	(m) a second <body> "{'aria-hidden': 'true'}" in <main>
+skeleton-section-second-body-inert	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><body inert></body>	(m) a second <body> "{'inert': ''}" in <main>
+skeleton-section-second-body-dir	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><body dir="rtl"></body>	(m) a second <body> "{'dir': 'rtl'}" in <main>
+skeleton-section-second-body-lang	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><body lang="de"></body>	(m) a second <body> "{'lang': 'de'}" in <main>
+skeleton-section-second-body-class	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><body class="x"></body>	(m) a second <body> "{'class': 'x'}" in <main>
+skeleton-section-second-body-style	public/reports/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><body style="x"></body>	(m) a second <body> "{'style': 'x'}" in <main>
 skeleton-section-body-attr-hidden	public/reports/index.html	<body>	<body hidden>	(m) <body> has the attributes "{'hidden': ''}"
 skeleton-section-body-attr-aria-hidden	public/reports/index.html	<body>	<body aria-hidden="true">	(m) <body> has the attributes "{'aria-hidden': 'true'}"
 skeleton-section-body-attr-inert	public/reports/index.html	<body>	<body inert>	(m) <body> has the attributes "{'inert': ''}"
@@ -173,7 +173,32 @@ skeleton-section-body-attr-class	public/reports/index.html	<body>	<body class="x
 skeleton-section-body-attr-style	public/reports/index.html	<body>	<body style="x">	(m) <body> has the attributes "{'style': 'x'}"
 skeleton-section-element-after-body	public/reports/index.html	</body></html>	</body><p>x</p></html>	(m) <p> after <body>
 skeleton-section-text-after-html	public/reports/index.html	</body></html>	</body></html>x	(m) the text 'x
-skeleton-home-no-body	public/index.html	<body><p>text</p></body>	<p>text</p>	(m) the page has no <body> right inside its <html>
+skeleton-home-no-body	public/index.html	<body>		(m) the page has no <body> right inside its <html>
 skeleton-home-nbsp-after-body	public/index.html	</body></html>	</body>&nbsp;</html>	(m) the text ' ' after <body>
-skeleton-section-no-body	public/reports/index.html	<body><p>text</p></body>	<p>text</p>	(m) the page has no <body> right inside its <html>
+skeleton-section-no-body	public/reports/index.html	<body>		(m) the page has no <body> right inside its <html>
 skeleton-section-nbsp-after-body	public/reports/index.html	</body></html>	</body>&nbsp;</html>	(m) the text ' ' after <body>
+doctype-missing	public/index.html	<!doctype html>		(m) the page starts with
+doctype-quirks	public/index.html	<!doctype html>	<!doctype html public "-//W3C//DTD HTML 4.0 Transitional//EN">	(m) the page starts with
+body-dialog-before-main	public/index.html	</header><main id=main	</header><dialog open><p>x</p></dialog><main id=main	(m) <body> holds
+body-dialog-before-main-section	public/reports/index.html	</header><main id=main	</header><dialog open><p>x</p></dialog><main id=main	(m) <body> holds
+body-second-main	public/index.html	</footer></body>	</footer><main></main></body>	(m) <body> holds
+body-popover-after-footer	public/index.html	</footer></body>	</footer><div popover>x</div></body>	(m) <body> holds
+body-loose-text	public/index.html	</header><main id=main	</header>x<main id=main	(m) <body> holds the text
+header-cta-text	public/index.html	>Report a scam</a></div><nav aria-label=Main>	>Report it</a></div><nav aria-label=Main>	(m) the header: <a class=cta> reads
+header-extra-element	public/index.html	<div class=header-row>	<div class=header-row><dialog open></dialog>	(m) the header holds <dialog
+header-aria-current-wrong	public/index.html	<a class=pill href=/about/>	<a class=pill href=/about/ aria-current=page>	(m) the header holds <a
+skip-link-text	public/index.html	Skip to content	Skip	(m) the skip link: <a class=visually-hidden> reads
+footer-extra-element	public/index.html	<nav aria-label=Site>	<div></div><nav aria-label=Site>	(m) the footer holds <div>
+doctype-late	public/index.html	<!doctype html><html lang="en">	<html lang="en"><!doctype html>	(m) the page starts with
+body-skip-link-deleted	public/index.html	<a class=visually-hidden href=#main>Skip to content</a>		(m) <body> holds
+body-header-not-a-header	public/index.html	<header class=site-header>	<div class=site-header>	(m) <body> holds
+body-main-not-a-main	public/index.html	<main id=main class=container tabindex=-1>	<div id=main class=container tabindex=-1>	(m) <body> holds
+body-footer-not-a-footer	public/index.html	<footer class=site-footer>	<div class=site-footer>	(m) <body> holds
+body-main-hidden	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1 hidden>	(m) <body> holds
+body-header-deleted	public/index.html	<header class=site-header><div class=container><div class=header-row><a class=brand href=/><span class=brand-tile><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg></span><span>interviewscam<span class=brand-tld>.com</span></span></a>\n<a class=cta href=/report-a-scam/>Report a scam</a></div><nav aria-label=Main><ul class=nav><li><a class=pill href=/before-your-call/>Before your call</a></li><li><a class=pill href=/methodology/>Methodology</a></li><li><a class=pill href=/about/>About</a></li></ul></nav></div></header>		(m) <body> holds
+body-main-deleted	public/index.html	<main id=main class=container tabindex=-1><h1 class=home-title>Check a name from your interview invite</h1><p class=lead>Got a meeting link or a coding test from a recruiter you do not know? Look up the company, the app or the domain before you install or run anything.</p><form class="card search" role=search method=get action=/a-z/><label for=q>Company, app, domain or recruiter</label><div class=search-row><div class=search-field><span class=search-icon><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg></span><input id=q type=search name=q autocomplete=off spellcheck=false></div><button class=button-primary type=submit>Check</button></div><ul class=link-list><li><a href=/a-z/>Browse every report A to Z</a></li></ul></form><div id=search-results class=search-out hidden><section id=search-answer class="card search-out" aria-labelledby=search-answer-heading hidden><h2 id=search-answer-heading tabindex=-1>Found in the registry</h2><ul class=index-list></ul><section class=panel-warn aria-labelledby=what-to-do><h3 id=what-to-do><span class=panel-icon><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5 2.5 20h19L12 3.5z"/><path d="M12 10v4.5"/><path d="M12 17.5h.01"/></svg></span>What to do now</h3><p>If you were sent code, a repository or an app to run as part of an interview like this, do not install or run it.</p><ul class=link-list><li><a href=/before-your-call/>What to do before your call</a></li><li><a href=/before-your-call/#already-ran>Already ran it? What to do now</a></li></ul></section></section><section id=search-partial class="card search-out" aria-labelledby=search-partial-heading hidden><h2 id=search-partial-heading tabindex=-1>No exact match, but these come close</h2><ul class=index-list></ul><ul class=link-list><li><a href=/a-z/>Browse every report A to Z</a></li></ul><div class=no-report><p>Not finding a report here does not mean it is safe. The search looks at the names, other names, addresses, handles and files listed in each report, but not at names hidden on request. New fake interviews also use names nobody has reported yet.</p><ul class=link-list><li><a href=/before-your-call/>Before your call</a></li><li><a href=/report-a-scam/>Report a scam</a></li></ul></div></section><section id=search-none class="card search-out" aria-labelledby=search-none-heading hidden><h2 id=search-none-heading tabindex=-1>No report matches your search</h2><div class=no-report><p>Not finding a report here does not mean it is safe. The search looks at the names, other names, addresses, handles and files listed in each report, but not at names hidden on request. New fake interviews also use names nobody has reported yet.</p><ul class=link-list><li><a href=/before-your-call/>Before your call</a></li><li><a href=/report-a-scam/>Report a scam</a></li></ul></div></section></div><section class=card aria-labelledby=before-your-call><h2 id=before-your-call>Before your call</h2><div class=columns><section class=column aria-labelledby=warning-signs><h3 id=warning-signs>Warning signs</h3><ul class=checklist><li><span class="tile tile-warn"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5 2.5 20h19L12 3.5z"/><path d="M12 10v4.5"/><path d="M12 17.5h.01"/></svg></span><div>The meeting link arrives minutes before the call</div></li><li><span class="tile tile-warn"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5 2.5 20h19L12 3.5z"/><path d="M12 10v4.5"/><path d="M12 17.5h.01"/></svg></span><div>The call needs a meeting app you have never heard of</div></li><li><span class="tile tile-warn"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5 2.5 20h19L12 3.5z"/><path d="M12 10v4.5"/><path d="M12 17.5h.01"/></svg></span><div>You are asked to run a repo or a command</div></li><li><span class="tile tile-warn"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5 2.5 20h19L12 3.5z"/><path d="M12 10v4.5"/><path d="M12 17.5h.01"/></svg></span><div>There are installers only for Windows and macOS</div></li></ul></section><section class=column aria-labelledby=do-this-instead><h3 id=do-this-instead>Do this instead</h3><ul class=checklist><li><span class="tile tile-ok"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5L9.5 17 19 7.5"/></svg></span><div>Ask to move the call to a tool you already use</div></li><li><span class="tile tile-ok"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5L9.5 17 19 7.5"/></svg></span><div>Search the company, the app and the domain first</div></li><li><span class="tile tile-ok"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5L9.5 17 19 7.5"/></svg></span><div>Run test code only in a throwaway virtual machine</div></li><li><span class="tile tile-ok"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5L9.5 17 19 7.5"/></svg></span><div>Take your time</div></li></ul></section></div><ul class=link-list><li><a href=/before-your-call/>The full checklist</a></li><li><a href=/before-your-call/#already-ran>Already ran it? What to do now</a></li></ul></section><section class=card aria-labelledby=latest><h2 id=latest>Latest reports</h2><ul class=record-list><li><a href=/reports/example-front-company-2/>Example Front Company</a> <span class=state-chip>Front</span> <time class=record-date datetime=2026-11-03>2026-11-03</time></li><li><a href=/reports/example-front-company/>Example Front Company</a> <span class=state-chip>Front</span> <time class=record-date datetime=2026-11-02>2026-11-02</time></li><li><a href=/reports/persona-2/>Name hidden on request</a> <span class=state-chip>Name abused</span> <time class=record-date datetime=2026-11-01>2026-11-01</time></li><li><a href=/reports/persona-1/>Avery Exampleton <span class=persona-label>(name used by the campaign, possibly a stolen identity)</span></a> <span class=state-chip>Front</span> <time class=record-date datetime=2026-11-01>2026-11-01</time></li><li><a href=/reports/example-source-only-app/>Example Source Only App</a> <span class=state-chip>Front</span> <time class=record-date datetime=2026-10-31>2026-10-31</time></li></ul><ul class=link-list><li><a href=/reports/>All names</a></li></ul></section><section class=card aria-labelledby=families><h2 id=families>Campaign families</h2><ul class=record-list><li><a href=/campaigns/example-campaign-family/>Example Campaign Family</a> <time class=record-date datetime=2026-11-02>2026-11-02</time></li><li><a href=/campaigns/example-unattributed-family/>Example Unattributed Family</a> <time class=record-date datetime=2026-10-30>2026-10-30</time></li></ul><ul class=link-list><li><a href=/campaigns/>All campaign families</a></li></ul></section></main>		(m) <body> holds
+body-footer-deleted	public/index.html	<footer class=site-footer><div class=container><p>Run by Martin Holý (Replikanti) · <span class=address id=contact>report@interviewscam.com</span><button type=button class=copy hidden data-copy-target=contact data-copy-done=Copied data-copy-failed="Copy failed, select the text instead">Copy</button><span class=copy-status role=status aria-live=polite></span></p><nav aria-label=Site><ul class=footer-links><li><a href=/methodology/>Methodology</a></li><li><a href=/corrections/>Corrections and removal</a></li><li><a href=/privacy/>Privacy</a></li><li><a href=/data-feed/>Data feed</a></li></ul></nav><p>No trackers, no cookies, no third-party scripts.</p></div></footer>		(m) <body> holds
+body-skip-link-attribute-changed	public/index.html	<a class=visually-hidden href=#main>	<a class=visually-hidden href=#main title=x>	(m) <body> holds
+body-header-attribute-changed	public/index.html	<header class=site-header>	<header class="site-header x">	(m) <body> holds
+body-main-attribute-changed	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=0>	(m) <body> holds
+body-footer-attribute-changed	public/index.html	<footer class=site-footer>	<footer class="site-footer x">	(m) <body> holds
