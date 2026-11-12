@@ -13081,7 +13081,7 @@ INTAKE_RESULT_IDS = ("too-large", "too-many-files", "not-an-image", "missing-fie
 # tools/intake.py refuses to deploy a source that differs from this pin.
 INTAKE_WORKER_DIR = "worker"
 INTAKE_WORKER_SHA256 = {
-    "worker/intake.js": "720da58f55482563d9735f8450a6f123d64593ca1e1353cac99db0609cb2b97c",
+    "worker/intake.js": "4935db4f0388a874d2870d9afa37015cf0b63eea916bb45d787bd717ff0b6294",
 }
 
 

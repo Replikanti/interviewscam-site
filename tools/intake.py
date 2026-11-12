@@ -498,6 +498,19 @@ def verify_deployed(api, sc, pins, account, zone, destination, without_rate_limi
     if [d.get("service") for d in mapped] != [sc.INTAKE_SCRIPT_NAME]:
         problems.append(f"{sc.INTAKE_HOSTNAME} maps to {[d.get('service') for d in mapped]!r}, "
                         f"expected exactly [{sc.INTAKE_SCRIPT_NAME!r}]")
+    # Fix round 4 of PR 2: every custom domain of the script, so a second
+    # hostname (on another zone, outside its WAF rule) fails, and the one
+    # domain must be routed with previews off (Workers Domains list: the
+    # service filter, enabled, previews_enabled).
+    query = urllib.parse.urlencode({"service": sc.INTAKE_SCRIPT_NAME})
+    own = api.call("GET", f"/accounts/{account}/workers/domains?{query}") or []
+    own = [d for d in own if not (isinstance(d, dict) and d.get("service") not in (None, sc.INTAKE_SCRIPT_NAME))]
+    hosts = [d.get("hostname") if isinstance(d, dict) else d for d in own]
+    if hosts != [sc.INTAKE_HOSTNAME]:
+        problems.append(f"the script's custom domains are {hosts!r}, expected exactly [{sc.INTAKE_HOSTNAME!r}]")
+    elif own[0].get("enabled") is not True or own[0].get("previews_enabled") is not False:
+        problems.append(f"{sc.INTAKE_HOSTNAME} is not routed with previews off: enabled "
+                        f"{own[0].get('enabled')!r}, previews_enabled {own[0].get('previews_enabled')!r}")
     for problem in problems:
         OUT.say(f"verify: MISMATCH: {problem}")
     if not problems:
@@ -542,8 +555,10 @@ def cmd_deploy(sc, without_rate_limiter):
     OUT.say(f"deploy: uploading {WORKER_FILE} as {sc.INTAKE_SCRIPT_NAME}"
             f"{' (first deploy: Durable Object migration, new LIMITER_KEY)' if first else ''}")
     api.call("PUT", script_path(sc, account), body, ctype)
+    # Routed, and no previews under it (Workers Domains: enabled,
+    # previews_enabled; fix round 4 of PR 2).
     domain = {"environment": "production", "hostname": sc.INTAKE_HOSTNAME,
-              "service": sc.INTAKE_SCRIPT_NAME, "zone_id": zone}
+              "service": sc.INTAKE_SCRIPT_NAME, "zone_id": zone, "enabled": True, "previews_enabled": False}
     api.call("PUT", f"/accounts/{account}/workers/domains", json.dumps(domain).encode(), "application/json")
     OUT.say(f"deploy: {sc.INTAKE_HOSTNAME} mapped to {sc.INTAKE_SCRIPT_NAME}")
     # Off the workers.dev route and the Version URLs (fix round 3 of PR 2;

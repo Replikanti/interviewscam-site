@@ -427,7 +427,26 @@ function redirect(id, code) {
   return empty(303, { Location: location });
 }
 
-async function handle(request, env) {
+// Send the pause notice and report the outcome of this try to the limiter;
+// true when the notice went out.
+async function noticeTask(env, limiter, slot) {
+  if (!(await sendNotice(env, slot.day))) {
+    try {
+      await limiter.noticeFailed(slot.day, slot.noticeTry);
+    } catch {
+      log("paused", "E_NOTICE_REOPEN");
+    }
+    return false;
+  }
+  try {
+    await limiter.noticeSent(slot.day);
+  } catch {
+    log("paused", "E_NOTICE_SENT");
+  }
+  return true;
+}
+
+async function handle(request, env, ctx) {
   if (request.method !== "POST") return empty(405, { Allow: "POST" });
   if (new URL(request.url).pathname !== PATH) return empty(404);
 
@@ -495,21 +514,16 @@ async function handle(request, env) {
     if (slot && slot.reason === "paused") {
       // A notice that fails to send is reopened, so the next refusal of the
       // day tries again; the code E_NOTICE marks the log line. One that went
-      // out is recorded, so no later refusal tries again.
+      // out is recorded, so no later refusal tries again. Each report names
+      // its own try (slot.noticeTry), so a late report of a try that went
+      // stale cannot move a newer one (fix round 4 of PR 2). The send and
+      // its report run under ctx.waitUntil, so a client that goes away does
+      // not cancel them (Workers limits docs: "outstanding work may be
+      // canceled unless it is passed to ctx.waitUntil()").
       if (slot.notice === true) {
-        if (!(await sendNotice(env, slot.day))) {
-          try {
-            await limiter.noticeFailed(slot.day);
-          } catch {
-            log("paused", "E_NOTICE_REOPEN");
-          }
-          return redirect("paused", "E_NOTICE");
-        }
-        try {
-          await limiter.noticeSent(slot.day);
-        } catch {
-          log("paused", "E_NOTICE_SENT");
-        }
+        const task = noticeTask(env, limiter, slot);
+        if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(task);
+        if (!(await task)) return redirect("paused", "E_NOTICE");
       }
       return redirect("paused", "E_DAILY_CAP");
     }
@@ -529,9 +543,9 @@ async function handle(request, env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
-      return await handle(request, env);
+      return await handle(request, env, ctx);
     } catch {
       return redirect("error", "E_UNCAUGHT");
     }
@@ -636,8 +650,9 @@ export class IntakeLimiter extends DurableObject {
       let step = total - INTAKE.DAILY_CAP;
       if (step % 2 === 1 && step < 2 * NOTICE_TRIES && effective - row.at > NOTICE_STALE_MS) step += 1;
       if (step % 2 === 0 && step < 2 * NOTICE_TRIES) {
-        this.sql.exec("UPDATE days SET n = ?, at = ? WHERE day = ?", INTAKE.DAILY_CAP + step + 1, effective, day);
-        return { ok: false, reason: "paused", notice: true, day };
+        const noticeTry = INTAKE.DAILY_CAP + step + 1;
+        this.sql.exec("UPDATE days SET n = ?, at = ? WHERE day = ?", noticeTry, effective, day);
+        return { ok: false, reason: "paused", notice: true, day, noticeTry };
       }
       if (step !== total - INTAKE.DAILY_CAP) {
         this.sql.exec("UPDATE days SET n = ? WHERE day = ?", INTAKE.DAILY_CAP + step, day);
@@ -651,20 +666,26 @@ export class IntakeLimiter extends DurableObject {
     return { ok: true, day };
   }
 
-  // A notice that went out: no later refusal of the day tries again.
+  // A notice that went out, from any try, even a stale one: no later
+  // refusal of the day tries again (fix round 4 of PR 2: whatever the
+  // parity, so a late success also ends a newer try's turn).
   noticeSent(day) {
     checkDay(day);
-    this.sql.exec("UPDATE days SET n = ? WHERE day = ? AND n > ? AND (n - ?) % 2 = 1",
-      INTAKE.DAILY_CAP + 2 * NOTICE_TRIES, day, INTAKE.DAILY_CAP, INTAKE.DAILY_CAP);
+    this.sql.exec("UPDATE days SET n = ? WHERE day = ? AND n > ? AND n < ?",
+      INTAKE.DAILY_CAP + 2 * NOTICE_TRIES, day, INTAKE.DAILY_CAP, INTAKE.DAILY_CAP + 2 * NOTICE_TRIES);
     return { ok: true };
   }
 
-  // A notice that failed to send: the next refusal of the day tries again,
-  // until NOTICE_TRIES tries are used up.
-  noticeFailed(day) {
+  // A notice try that failed: the next refusal of the day tries again,
+  // until NOTICE_TRIES tries are used up. Only while that try is still the
+  // current one (n equals its noticeTry): a late failure of a try that went
+  // stale must not reopen a newer try still in flight (fix round 4 of PR 2).
+  noticeFailed(day, noticeTry) {
     checkDay(day);
-    this.sql.exec("UPDATE days SET n = n + 1 WHERE day = ? AND n > ? AND (n - ?) % 2 = 1",
-      day, INTAKE.DAILY_CAP, INTAKE.DAILY_CAP);
+    if (!Number.isSafeInteger(noticeTry) || noticeTry <= INTAKE.DAILY_CAP || (noticeTry - INTAKE.DAILY_CAP) % 2 !== 1) {
+      throw new TypeError("limiter: bad notice try");
+    }
+    this.sql.exec("UPDATE days SET n = n + 1 WHERE day = ? AND n = ?", day, noticeTry);
     return { ok: true };
   }
 

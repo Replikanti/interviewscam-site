@@ -171,12 +171,15 @@ class Stub:
             d = json.loads(body)
             self.domains = [x for x in self.domains if x["hostname"] != d["hostname"]] + [
                 {"hostname": d["hostname"], "service": d["service"], "zone_id": d["zone_id"],
-                 "environment": d.get("environment")}]
+                 "environment": d.get("environment"), "enabled": d.get("enabled", True),
+                 "previews_enabled": d.get("previews_enabled", True)}]
             return 200, {"success": True, "errors": [], "result": self.domains[-1]}
         if method == "GET" and path == f"{base}/domains":
             want = query.get("hostname", [None])[0]
+            service = query.get("service", [None])[0]
             return 200, {"success": True, "errors": [],
-                         "result": [d for d in self.domains if want is None or d["hostname"] == want]}
+                         "result": [d for d in self.domains if (want is None or d["hostname"] == want)
+                                    and (service is None or d["service"] == service)]}
         return 404, {"success": False, "errors": [{"code": 7003, "message": "no route"}], "result": None}
 
 
@@ -371,7 +374,8 @@ class Tool(ToolCase):
         self.assertEqual(self.stub.content, (self.repo / "worker/intake.js").read_bytes())
         self.assertEqual(self.stub.module_type, "application/javascript+module")
         self.assertEqual(self.stub.domains, [{"hostname": "intake.interviewscam.com", "service": SCRIPT,
-                                              "zone_id": ZONE, "environment": "production"}])
+                                              "zone_id": ZONE, "environment": "production", "enabled": True,
+                                              "previews_enabled": False}])
         self.assertIn("revoke", out.lower())
         first_secret = next(b for b in self.stub.metadata["bindings"] if b["name"] == "LIMITER_KEY")["text"]
         self.assertNotIn(first_secret, out, "the limiter key was printed")
@@ -479,6 +483,14 @@ class Tool(ToolCase):
                 bindings=[dict(b, destination_address="other@example.com") if b["name"] == "EMAIL" else b
                           for b in self.stub.settings()["bindings"]]),
             "malformed route": lambda: setattr(self.stub, "routes", ["intake.interviewscam.com/*"]),
+            # Fix round 4: the script's custom domains.
+            "domain disabled": lambda: self.stub.domains[0].update(enabled=False),
+            "domain previews on": lambda: self.stub.domains[0].update(previews_enabled=True),
+            "domain flags missing": lambda: setattr(self.stub, "domains", [
+                {k: v for k, v in self.stub.domains[0].items() if k not in ("enabled", "previews_enabled")}]),
+            "second hostname": lambda: self.stub.domains.append(
+                {"hostname": "x.other.example", "service": SCRIPT, "zone_id": "z", "environment": "production",
+                 "enabled": True, "previews_enabled": False}),
             # Fix round 3.
             "workers.dev on": lambda: self.stub.subdomain.update(enabled=True),
             "Version URLs on": lambda: self.stub.subdomain.update(previews_enabled=True),
@@ -753,6 +765,51 @@ class ToolFixRound3(ToolCase):
         self.stub.deployments[0]["strategy"] = "other"
         rc, out = self.run_tool("verify")
         self.assertEqual(rc, 1, out)
+
+
+class ToolQARound4(ToolCase):
+    """QA recheck 3 of PR 2: the survivors of the round-3 sweep that a case kills."""
+
+    def verify_rc(self):
+        return self.run_tool("verify")[0]
+
+    def test_route_glob_rows(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        for pattern, covers in (("int.ke.interviewscam.com/*", False),       # a dot is not a wildcard
+                                ("int*ke.interviewscam.com/submit", True),   # the path part is read too
+                                ("int*ke.interviewscam.com/sub", False),     # the whole path, not a prefix
+                                ("interviewscam.com/*", False),              # the whole host, not a suffix
+                                ("INT*KE.interviewscam.com/*", True),        # capitals before a star
+                                ("https://int*ke.interviewscam.com/*", True),  # a scheme before a star
+                                ("INTAKE.INTERVIEWSCAM.COM", True),          # no path, capitals
+                                ("*.interviewscam.com", True)):              # no path, leading star
+            with self.subTest(pattern=pattern):
+                self.stub.routes = [{"pattern": pattern, "script": "o"}]
+                self.assertEqual(self.verify_rc(), 1 if covers else 0, pattern)
+
+    def test_code_update_strategy_rows(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        for update, ok in (({}, False), ({"mode": "immediate", "max_delay": 5}, False), ({"mode": "immediate"}, True)):
+            with self.subTest(update=update):
+                self.stub.deployments[0]["code_update_strategy"] = update
+                self.assertEqual(self.verify_rc(), 0 if ok else 1, update)
+
+    def test_subdomain_answer_needs_both_keys(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        for answer in ({"enabled": False}, {"previews_enabled": False}, {"enabled": None, "previews_enabled": False}):
+            with self.subTest(answer=answer):
+                self.stub.subdomain = answer
+                self.assertEqual(self.verify_rc(), 1, answer)
+
+    def test_deployment_without_strategy_is_percentage(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        self.stub.deployments[0].pop("strategy", None)
+        self.assertEqual(self.verify_rc(), 0)
+
+    def test_subdomain_post_is_json(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        (post,) = [r for r in self.stub.requests if r["method"] == "POST" and r["path"].endswith("/subdomain")]
+        self.assertEqual(post["headers"].get("content-type"), "application/json")
 
 
 if __name__ == "__main__":

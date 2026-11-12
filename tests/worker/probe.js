@@ -53,7 +53,7 @@ export class RecordingLimiter extends DurableObject {
 
   reserve(key, now) {
     recorded.push(["reserve", now]);
-    if (recordMode.paused) return { ok: false, reason: "paused", notice: true, day: "2000-01-01" };
+    if (recordMode.paused) return { ok: false, reason: "paused", notice: true, day: "2000-01-01", noticeTry: 51 };
     return { ok: true, day: "2000-01-01" };
   }
 
@@ -71,6 +71,7 @@ export class RecordingLimiter extends DurableObject {
 
   noticeSent(day) {
     recorded.push(["noticeSent", day]);
+    if (recordMode.refundThrows) throw new Error("sent down");
     return { ok: true };
   }
 
