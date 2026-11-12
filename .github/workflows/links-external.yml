@@ -14,12 +14,11 @@ permissions:
 jobs:
   links-external:
     runs-on: ubuntu-24.04
-    # ADR-0004 Numbers, "check.sh workflow timeouts": re-derived in M4 PR 4
-    # fix round 1 (Replikanti/interviewscam#5) from its own green runs of
-    # check.sh (fix round 2: the pixel occlusion check, 83 reflow-search
-    # rows, 114 render-report rows); the slowest, 1427 s (ci.yml check, run
-    # 43047496592, stall-free), sets both terms. Cap >= max(2 x 1427 s =
-    # 2854 s, 1427 s + 2 x 75 s (REFLOW_LAUNCH_TIMEOUT) + 70 s = 1647 s),
+    # ADR-0004 Numbers, "check.sh workflow timeouts": re-checked in M5b PR 2
+    # (Replikanti/interviewscam#13) from its own green runs of check.sh (the
+    # worker step); the slowest, 1435 s (lighthouse.yml build, run
+    # 43209672913, stall-free), sets both terms. Cap >= max(2 x 1435 s =
+    # 2870 s, 1435 s + 2 x 75 s (REFLOW_LAUNCH_TIMEOUT) + 70 s = 1655 s),
     # rounded up to 48 min.
     # Re-derive in the next PR that changes check.sh.
     # M3 has no external links to fetch yet (the fixture build's links stay
