@@ -3,6 +3,7 @@
 #
 # Every archive is checked with sha256sum against tools/pins.env BEFORE it is
 # extracted; on a mismatch the download is deleted and the script fails.
+# workerd ships as one gzip-compressed binary, not a tarball (fetch_gz).
 # Binaries land in .tools/<name>-<version>/<name> and are re-extracted from
 # the verified archive on every run, so a binary that did not come from the
 # pinned archive never survives a run. The Nu Html Checker image
@@ -34,7 +35,8 @@ load_pins() {
   done < "$PINS_FILE"
   local required
   for required in HUGO_VERSION HUGO_URL HUGO_SHA256 \
-                  LYCHEE_VERSION LYCHEE_URL LYCHEE_SHA256 VNU_IMAGE; do
+                  LYCHEE_VERSION LYCHEE_URL LYCHEE_SHA256 VNU_IMAGE \
+                  WORKERD_VERSION WORKERD_URL WORKERD_SHA256 WORKERD_COMPAT_DATE; do
     local var="PIN_$required"
     if [[ -z "${!var:-}" ]]; then
       echo "fetch-tools: $PINS_FILE: missing pin $required" >&2
@@ -45,7 +47,9 @@ load_pins() {
   HUGO_BIN="$TOOLS_DIR/hugo-$PIN_HUGO_VERSION/hugo"
   LYCHEE_BIN="$TOOLS_DIR/lychee-$PIN_LYCHEE_VERSION/lychee"
   VNU_IMAGE="$PIN_VNU_IMAGE"
-  export HUGO_BIN LYCHEE_BIN VNU_IMAGE
+  WORKERD_BIN="$TOOLS_DIR/workerd-$PIN_WORKERD_VERSION/workerd"
+  WORKERD_COMPAT_DATE="$PIN_WORKERD_COMPAT_DATE"
+  export HUGO_BIN LYCHEE_BIN VNU_IMAGE WORKERD_BIN WORKERD_COMPAT_DATE
 }
 
 require_platform() {
@@ -58,24 +62,23 @@ require_platform() {
   fi
 }
 
-# fetch_one <name> <version> <url> <sha256> <member inside the archive>
-fetch_one() {
-  local name="$1" version="$2" url="$3" sha="$4" member="$5"
-  local dest="$TOOLS_DIR/$name-$version"
-  # The cache key carries the pinned hash, so a pin bump downloads a new file
-  # instead of reporting a false mismatch against the previous version's.
-  local archive="$TOOLS_DIR/cache/$sha-${url##*/}"
+# cache_path <url> <sha256>: the cache file of a pinned download. The key
+# carries the pinned hash, so a pin bump downloads a new file instead of
+# reporting a false mismatch against the previous version's.
+cache_path() { printf '%s\n' "$TOOLS_DIR/cache/$2-${1##*/}"; }
 
-  # Whatever binary an earlier run (or anyone else) left here is discarded:
-  # the binary used by the checks is always the one extracted below from the
-  # archive verified in this run.
-  rm -rf "$dest"
-  mkdir -p "$TOOLS_DIR/cache"
+# fetch_verified <name> <version> <url> <sha256>: download the pinned file
+# into the cache unless it is there, then verify it against the pin. Shared
+# by fetch_one (tarballs) and fetch_gz (one gzip-compressed binary).
+fetch_verified() {
+  local name="$1" version="$2" url="$3" sha="$4" archive
+  archive="$(cache_path "$url" "$sha")"
+  mkdir -p "$TOOLS_DIR/cache" || return 1
   if [[ ! -f "$archive" ]]; then
     echo "fetch-tools: downloading $name $version"
     curl --fail --silent --show-error --location --retry 3 \
-      --proto '=https' --tlsv1.2 --output "$archive.part" "$url"
-    mv "$archive.part" "$archive"
+      --proto '=https' --tlsv1.2 --output "$archive.part" "$url" || return 1
+    mv "$archive.part" "$archive" || return 1
   fi
 
   # Verified on every run, cached or not, before anything is extracted.
@@ -87,12 +90,46 @@ fetch_one() {
     return 1
   fi
   echo "fetch-tools: $name $version SHA-256 OK"
+}
+
+# fetch_one <name> <version> <url> <sha256> <member inside the archive>
+fetch_one() {
+  local name="$1" version="$2" url="$3" sha="$4" member="$5"
+  local dest="$TOOLS_DIR/$name-$version" archive
+  archive="$(cache_path "$url" "$sha")"
+
+  # Whatever binary an earlier run (or anyone else) left here is discarded:
+  # the binary used by the checks is always the one extracted below from the
+  # archive verified in this run.
+  rm -rf "$dest"
+  fetch_verified "$name" "$version" "$url" "$sha" || return 1
 
   local tmp
   tmp="$(mktemp -d "$TOOLS_DIR/.extract.XXXXXX")"
   tar -xzf "$archive" -C "$tmp" "$member"
   mkdir -p "$dest"
   mv "$tmp/$member" "$dest/$name"
+  chmod 0755 "$dest/$name"
+  rm -rf "$tmp"
+}
+
+# fetch_gz <name> <version> <url> <sha256>: like fetch_one for a release
+# asset that is one gzip-compressed binary (workerd-linux-64.gz). The
+# verified file is decompressed with Python's gzip module in isolated mode
+# (no gunzip flag set differs between distributions), into a temp file that
+# is renamed into place only when it is complete.
+fetch_gz() {
+  local name="$1" version="$2" url="$3" sha="$4"
+  local dest="$TOOLS_DIR/$name-$version" archive tmp
+  archive="$(cache_path "$url" "$sha")"
+  rm -rf "$dest"
+  fetch_verified "$name" "$version" "$url" "$sha" || return 1
+  tmp="$(mktemp -d "$TOOLS_DIR/.extract.XXXXXX")"
+  python3 -I -c 'import gzip, shutil, sys
+with gzip.open(sys.argv[1], "rb") as src, open(sys.argv[2], "wb") as out:
+    shutil.copyfileobj(src, out)' "$archive" "$tmp/$name" || { rm -rf "$tmp"; return 1; }
+  mkdir -p "$dest"
+  mv "$tmp/$name" "$dest/$name"
   chmod 0755 "$dest/$name"
   rm -rf "$tmp"
 }
@@ -121,6 +158,7 @@ fetch_main() {
   fetch_one hugo "$PIN_HUGO_VERSION" "$PIN_HUGO_URL" "$PIN_HUGO_SHA256" hugo
   fetch_one lychee "$PIN_LYCHEE_VERSION" "$PIN_LYCHEE_URL" "$PIN_LYCHEE_SHA256" \
     lychee-x86_64-unknown-linux-gnu/lychee
+  fetch_gz workerd "$PIN_WORKERD_VERSION" "$PIN_WORKERD_URL" "$PIN_WORKERD_SHA256"
   fetch_vnu
 }
 

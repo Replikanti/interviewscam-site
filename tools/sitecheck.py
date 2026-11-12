@@ -12983,6 +12983,95 @@ def cmd_tree_digest(args):
 
 
 # ---------------------------------------------------------------------------
+# The intake Worker (ADR-0006, M5b PR 2)
+
+# The single source of the intake's rules and numbers: worker/intake.js
+# repeats them (one file, no imports, ADR-0006 part 2), and
+# tests/worker/test_intake.py proves the two equal row by row
+# (test_constants_match_worker) and every rule at its bounds. tools/intake.py
+# reads the deploy values (script name, tag, host, the Rate Limiting binding)
+# from here, and PR 3's site and render rules read the form contract. Every
+# number is derived in ADR-0006 Numbers; a change here changes the Worker,
+# its pin and the ADR row in one PR.
+INTAKE_ORIGIN = "https://intake.interviewscam.com"
+INTAKE_HOSTNAME = "intake.interviewscam.com"
+INTAKE_ACTION = INTAKE_ORIGIN + "/submit"
+INTAKE_SENDER = "intake@interviewscam.com"
+INTAKE_SENT_URL = SITE_ORIGIN + "/sent/"
+INTAKE_NOT_SENT_URL = SITE_ORIGIN + "/not-sent/"
+# ADR-0006 part 10: the one script the deploy tool can address, and the tag
+# it requires on an existing script of that name before it uploads.
+INTAKE_SCRIPT_NAME = "interviewscam-intake"
+INTAKE_SCRIPT_TAG = "interviewscam-intake"
+# ADR-0006 part 5, the closed field set per channel, in form order. type is
+# the form control (PR 3 renders it); cap is the length bound in UTF-16 code
+# units after CRLF and CR become LF (None: no text bound); autocomplete is the
+# form attribute PR 3 sets (None: the control takes none). `channel` is the
+# hidden field naming the channel, `website` the honeypot (part 3 step 5,
+# present and empty), `files` the one multi-value field (part 4), `own_name`
+# a checkbox whose only value is "yes". `headers` 32,000 is provisional: the
+# operator measures real header blocks before this PR merges (Numbers).
+INTAKE_FIELDS = {
+    "report": (
+        {"name": "channel", "type": "hidden", "required": True, "cap": None, "autocomplete": None},
+        {"name": "name", "type": "text", "required": True, "cap": 200, "autocomplete": "off"},
+        {"name": "contact_start", "type": "text", "required": False, "cap": 200, "autocomplete": "off"},
+        {"name": "details", "type": "textarea", "required": True, "cap": 10000, "autocomplete": "off"},
+        {"name": "headers", "type": "textarea", "required": False, "cap": 32000, "autocomplete": "off"},
+        {"name": "email", "type": "email", "required": True, "cap": 254, "autocomplete": "email"},
+        {"name": "files", "type": "file", "required": False, "cap": None, "autocomplete": None},
+        {"name": "website", "type": "honeypot", "required": False, "cap": None, "autocomplete": "off"},
+    ),
+    "correction": (
+        {"name": "channel", "type": "hidden", "required": True, "cap": None, "autocomplete": None},
+        {"name": "page_url", "type": "url", "required": True, "cap": 976, "autocomplete": "off"},
+        {"name": "request", "type": "textarea", "required": True, "cap": 10000, "autocomplete": "off"},
+        {"name": "own_name", "type": "checkbox", "required": False, "cap": None, "autocomplete": None},
+        {"name": "email", "type": "email", "required": True, "cap": 254, "autocomplete": "email"},
+        {"name": "files", "type": "file", "required": False, "cap": None, "autocomplete": None},
+        {"name": "website", "type": "honeypot", "required": False, "cap": None, "autocomplete": "off"},
+    ),
+}
+# ADR-0006 part 4: (MIME type, extension, signature), the signature as
+# (offset, hex bytes) pairs that must all match; GIF has two entries.
+INTAKE_IMAGE_TYPES = (
+    ("image/png", "png", ((0, "89504e470d0a1a0a"),)),
+    ("image/jpeg", "jpg", ((0, "ffd8ff"),)),
+    ("image/gif", "gif", ((0, "474946383761"),)),
+    ("image/gif", "gif", ((0, "474946383961"),)),
+    ("image/webp", "webp", ((0, "52494646"), (8, "57454250"))),
+)
+INTAKE_MAX_FILES = 10
+INTAKE_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+INTAKE_MAX_BODY = INTAKE_MAX_UPLOAD_BYTES + 327_680
+INTAKE_FILE_NAME_CAP = 100
+INTAKE_CLIENT_LIMIT = 6
+INTAKE_CLIENT_WINDOW_MS = 3_600_000
+INTAKE_CLIENT_DAILY_MAILS = 3
+INTAKE_DAILY_CAP = 50
+INTAKE_LIMITER_KEY_BYTES = 32
+# The Rate Limiting binding (ADR-0006 part 3 step 3, Numbers): 6 per 60 s
+# per key and location. The namespace_id was drawn in PR 2 with
+# secrets.randbelow(2**31), so it collides with an unrelated Worker's id of
+# the shared account only with probability k / 2^31.
+INTAKE_BURST_LIMIT = 6
+INTAKE_BURST_PERIOD_S = 60
+INTAKE_RATELIMIT_NAMESPACE_ID = 279040673
+# ADR-0006 part 6: the fragment ids of /not-sent/, a closed set.
+INTAKE_RESULT_IDS = ("too-large", "too-many-files", "not-an-image", "missing-field", "too-long",
+                     "bad-address", "bad-page-url", "too-many-attempts", "paused", "not-accepted",
+                     "error")
+# ADR-0006 part 10: the Worker source, pinned by the SHA-256 of its bytes, so
+# every Worker change is a tools/ change with the safety-net review. The
+# guard reads every file under worker/ from the disk (guard_worker_pins), and
+# tools/intake.py refuses to deploy a source that differs from this pin.
+INTAKE_WORKER_DIR = "worker"
+INTAKE_WORKER_SHA256 = {
+    "worker/intake.js": "bd771a595e4bad837ebdf6ba8d2750c5cfc91d9f7d67fad965f4e41d05a59ef2",
+}
+
+
+# ---------------------------------------------------------------------------
 # Guard
 
 # The pattern tables. The tool scan skips exactly these lines of this file
@@ -13641,6 +13730,51 @@ def guard_stylesheet_pins(root, findings):
                          "safety-net review (CSS is a reviewed surface, M4 PR 3)")
 
 
+def guard_worker_pins(root, findings):
+    """The Worker source pin (ADR-0006 part 10): every file under worker/,
+    read from the disk, is a key of INTAKE_WORKER_SHA256 with the SHA-256 of
+    its bytes, and a regular file, not a symlink (a link could point the
+    deploy and the tests at a file the pin does not name). When worker/
+    exists, every pinned source must be in it; a root without worker/ (the
+    guard fixtures of the other rules) leaves that to the worker step of
+    check.sh, whose tests load worker/intake.js."""
+    base = root / INTAKE_WORKER_DIR
+    if base.is_symlink():
+        findings.add(INTAKE_WORKER_DIR, "the worker directory must be a directory, not a symlink "
+                     "(ADR-0006 part 10)")
+        return
+    if not base.is_dir():
+        return
+    for path in sorted(base.rglob("*")):
+        rel = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            findings.add(rel, "a worker source must be a regular file, not a symlink "
+                         "(INTAKE_WORKER_SHA256, ADR-0006 part 10)")
+            continue
+        if path.is_dir():
+            continue
+        pinned = INTAKE_WORKER_SHA256.get(rel)
+        if pinned is None:
+            findings.add(rel, "a worker source that is not pinned: every file under worker/ is "
+                         "pinned by its SHA-256 in tools/sitecheck.py (INTAKE_WORKER_SHA256), so "
+                         "adding one is a tools/ change with the safety-net review (ADR-0006 part 10)")
+            continue
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            findings.add(rel, f"cannot read a worker source: {exc}")
+            continue
+        if digest != pinned:
+            findings.add(rel, f"the worker source's SHA-256 is {digest}, not the one pinned in "
+                         "tools/sitecheck.py (INTAKE_WORKER_SHA256); a Worker change updates the pin "
+                         "there, so it is a tools/ change with the safety-net review, and the "
+                         "operator redeploys it (ADR-0006 part 10)")
+    for rel in INTAKE_WORKER_SHA256:
+        if not (root / rel).exists() and not (root / rel).is_symlink():
+            findings.add(rel, "a pinned worker source is missing (INTAKE_WORKER_SHA256, "
+                         "ADR-0006 part 10)")
+
+
 def cmd_guard(args):
     root = Path(args.root).resolve()
     if not root.is_dir():
@@ -13655,6 +13789,7 @@ def cmd_guard(args):
     guard_workflows(root, files, findings)
     guard_lighthouse_workflow(root, files, findings)
     guard_stylesheet_pins(root, findings)
+    guard_worker_pins(root, findings)
     n_workflows = sum(f.startswith(".github/workflows/") for f in files)
     return findings.report(f"guard checked: {len(files)} files, "
                            f"{n_workflows} workflows")

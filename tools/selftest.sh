@@ -1326,6 +1326,46 @@ PY
     n_failed=$((n_failed + 1))
   fi
 
+  # Wiring: check_main runs the worker step (ADR-0006 part 2) on the repo
+  # root, which no fixture directory can prove, and worker_check fails on a
+  # failed, an erroring and a skipped case and on a run of none: each branch
+  # runs on a temporary root holding one tests/worker/test_x.py.
+  # shellcheck disable=SC2016 # the patterns match a literal $CHECK_ROOT
+  if grep -qE '^ *run_step "worker \(intake Worker and deploy tool\)" step_worker;?$' <<<"$(declare -f check_main)" \
+      && grep -qE '^ *worker_check "\$CHECK_ROOT";?$' <<<"$(declare -f step_worker)"; then
+    echo "ok   wiring/worker-step (check_main runs step_worker on the repo root)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL wiring/worker-step: check_main in tools/check.sh does not run" \
+      "step_worker, or step_worker does not check \"\$CHECK_ROOT\""
+    n_failed=$((n_failed + 1))
+  fi
+  local wk_root wk_case wk_body wk_out wk_rc wk_line
+  for wk_case in pass fail error skip none; do
+    wk_root="$(mktemp -d)"
+    mkdir -p "$wk_root/tests/worker"
+    case "$wk_case" in
+      pass) wk_body='    def test_a(self): pass' ;;
+      fail) wk_body='    def test_a(self): self.fail("x")' ;;
+      error) wk_body='    def test_a(self): raise RuntimeError("x")' ;;
+      skip) wk_body=$'    def test_a(self): pass\n    def test_b(self): self.skipTest("x")' ;;
+      none) wk_body='    pass' ;;
+    esac
+    printf 'import unittest\nclass T(unittest.TestCase):\n%s\n' "$wk_body" >"$wk_root/tests/worker/test_x.py"
+    wk_out="$(worker_check "$wk_root" 2>&1)"
+    wk_rc=$?
+    rm -rf "$wk_root"
+    if [[ "$wk_case" == pass && $wk_rc -eq 0 && "$wk_out" == *"worker checked: 1 cases"* ]] \
+        || [[ "$wk_case" != pass && $wk_rc -ne 0 && "$wk_out" != *"worker checked:"* ]]; then
+      echo "ok   worker-check/$wk_case (exit $wk_rc)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL worker-check/$wk_case: exit $wk_rc; output:"
+      while IFS= read -r wk_line; do echo "     | $wk_line"; done <<<"$wk_out"
+      n_failed=$((n_failed + 1))
+    fi
+  done
+
   # Wiring: check_main must run the literals step (ADR-0004 part 13), which
   # the fixtures above prove only through literals_check.
   # shellcheck disable=SC2016 # the patterns match a literal $CHECK_ROOT
