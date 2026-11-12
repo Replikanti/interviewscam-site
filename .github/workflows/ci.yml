@@ -15,12 +15,12 @@ jobs:
   # `check`. A rename must update the protection in the same session.
   check:
     runs-on: ubuntu-24.04
-    # ADR-0004 Numbers, "check.sh workflow timeouts": re-derived in M5b PR 2
-    # fix round 2 (Replikanti/interviewscam#13) from the job duration, which
-    # timeout-minutes counts: the slowest green job, 1503 s (ci.yml check,
-    # run 43237837506, stall-free), sets both terms. Cap >= max(2 x 1503 s =
-    # 3006 s, 1503 s + 2 x 75 s (REFLOW_LAUNCH_TIMEOUT) + 70 s = 1723 s),
-    # rounded up to 51 min.
+    # ADR-0004 Numbers, "check.sh workflow timeouts": derived in M5b PR 2
+    # fix round 2 from the job duration, which timeout-minutes counts, and
+    # re-checked in fix round 4 (Replikanti/interviewscam#13): the slowest
+    # green job, 1527 s (ci.yml check, run 43320583031), sets both terms.
+    # Cap >= max(2 x 1527 s = 3054 s, 1527 s + 2 x 75 s
+    # (REFLOW_LAUNCH_TIMEOUT) + 70 s = 1747 s), rounded up to 51 min.
     # Re-derive in the next PR that changes check.sh.
     # The 360-minute default would let a hung run block merges for hours.
     timeout-minutes: 51
