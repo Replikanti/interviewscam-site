@@ -26,6 +26,10 @@ const LIMITER_NAME = "intake";
 // cap"): a send() that throws after the message went out must not mail the
 // operator on every paused refusal.
 const NOTICE_TRIES = 3;
+// A notice try still in flight after this long counts as failed (fix round 3
+// of PR 2): a request cancelled during send() (the client went away) never
+// reports back, and without a bound its try would block the day's others.
+const NOTICE_STALE_MS = 60000;
 
 const FIELD = (name, type, required, cap, autocomplete) => Object.freeze({ name, type, required, cap, autocomplete });
 
@@ -75,6 +79,7 @@ export const INTAKE = Object.freeze({
   CLIENT_DAILY_MAILS: 3,
   DAILY_CAP: 50,
   NOTICE_TRIES,
+  NOTICE_STALE_MS,
   LIMITER_KEY_BYTES: 32,
   BURST_ABSENT_BINDING: "RATE_LIMITER_ABSENT",
   BURST_ABSENT_VALUE: "refused-by-cloudflare",
@@ -390,8 +395,9 @@ function buildMail(checked) {
   return mail;
 }
 
-// Numbers, "Global cap": one notice to the operator on the first refusal
-// of the UTC day. It never names a reporter and has no reply address.
+// Numbers, "Global cap": a notice to the operator on the first refusal of
+// the UTC day, tried at most NOTICE_TRIES times. It never names a reporter
+// and has no reply address.
 async function sendNotice(env, day) {
   try {
     await env.EMAIL.send({
@@ -488,14 +494,22 @@ async function handle(request, env) {
   if (!slot || slot.ok !== true) {
     if (slot && slot.reason === "paused") {
       // A notice that fails to send is reopened, so the next refusal of the
-      // day tries again; the code E_NOTICE marks the log line.
-      if (slot.notice === true && !(await sendNotice(env, slot.day))) {
-        try {
-          await limiter.noticeFailed(slot.day);
-        } catch {
-          log("paused", "E_NOTICE_REOPEN");
+      // day tries again; the code E_NOTICE marks the log line. One that went
+      // out is recorded, so no later refusal tries again.
+      if (slot.notice === true) {
+        if (!(await sendNotice(env, slot.day))) {
+          try {
+            await limiter.noticeFailed(slot.day);
+          } catch {
+            log("paused", "E_NOTICE_REOPEN");
+          }
+          return redirect("paused", "E_NOTICE");
         }
-        return redirect("paused", "E_NOTICE");
+        try {
+          await limiter.noticeSent(slot.day);
+        } catch {
+          log("paused", "E_NOTICE_SENT");
+        }
       }
       return redirect("paused", "E_DAILY_CAP");
     }
@@ -529,9 +543,10 @@ export default {
 // One instance (LIMITER_NAME) holds three WITHOUT ROWID tables, so each
 // insert, update or delete writes one row: attempts(key, at, seq), one row
 // per counted attempt (seq tells apart attempts of one key in the same ms);
-// mails(day, key, n), a key's mailed submissions per UTC day; days(day, n),
-// the day's mailed submissions, where n = DAILY_CAP + 1 records that the
-// notice went out. A refused attempt is answered after a read, with no
+// mails(day, key, n), a key's mailed submissions per UTC day; days(day, n,
+// at), the day's mailed submissions, where n above DAILY_CAP holds the
+// pause notice's state (reserve(), below) and at the start of its latest
+// try. A refused attempt is answered after a read, with no
 // write. One alarm, at the earliest expiry: an attempt row 3,600 s after
 // it, a day row at the next 00:00 UTC. now comes from the caller (the
 // Worker's Date.now(), or the probe's injected time), the alarm uses its
@@ -559,7 +574,7 @@ export class IntakeLimiter extends DurableObject {
     this.sql.exec("CREATE TABLE IF NOT EXISTS mails (day TEXT NOT NULL, key TEXT NOT NULL, "
       + "n INTEGER NOT NULL, PRIMARY KEY (day, key)) WITHOUT ROWID");
     this.sql.exec("CREATE TABLE IF NOT EXISTS days (day TEXT NOT NULL, n INTEGER NOT NULL, "
-      + "PRIMARY KEY (day)) WITHOUT ROWID");
+      + "at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day)) WITHOUT ROWID");
   }
 
   // The newest time this instance has seen (fix round 1 of PR 2): a request
@@ -604,20 +619,28 @@ export class IntakeLimiter extends DurableObject {
 
   async reserve(key, now) {
     checkArgs(key, now);
-    const day = dayKey(this.latest(now));
+    const effective = this.latest(now);
+    const day = dayKey(effective);
     if (this.mailCount(day, key) >= INTAKE.CLIENT_DAILY_MAILS) return { ok: false, reason: "client-mails", day };
-    const row = this.sql.exec("SELECT n FROM days WHERE day = ?", day).toArray()[0];
+    const row = this.sql.exec("SELECT n, at FROM days WHERE day = ?", day).toArray()[0];
     const total = row ? row.n : 0;
     if (total >= INTAKE.DAILY_CAP) {
-      // The notice state lives in days.n above the cap (fix round 2 of PR 2):
-      // an even step (0, 2, 4) means "send a notice" (none yet, or the last
-      // try failed), an odd one (1, 3, 5) a try in flight or sent, and
-      // 2 * NOTICE_TRIES the tries used up. So at most NOTICE_TRIES notices
-      // per UTC day, even when send() fails after the message went out.
-      const step = total - INTAKE.DAILY_CAP;
+      // The pause notice's state lives in days.n above the cap (fix rounds 2
+      // and 3 of PR 2): an even step (0, 2, 4) means a notice is due (none
+      // yet, or the last try failed); an odd one (1, 3, 5) a try in flight,
+      // which counts as failed once it is older than NOTICE_STALE_MS (the
+      // request may have been cancelled); 2 * NOTICE_TRIES means done (a
+      // notice went out, or the tries are used up). So at most NOTICE_TRIES
+      // notices per UTC day, even when send() fails after the message went
+      // out, and a cancelled try does not end the day's tries.
+      let step = total - INTAKE.DAILY_CAP;
+      if (step % 2 === 1 && step < 2 * NOTICE_TRIES && effective - row.at > NOTICE_STALE_MS) step += 1;
       if (step % 2 === 0 && step < 2 * NOTICE_TRIES) {
-        this.sql.exec("UPDATE days SET n = ? WHERE day = ?", total + 1, day);
+        this.sql.exec("UPDATE days SET n = ?, at = ? WHERE day = ?", INTAKE.DAILY_CAP + step + 1, effective, day);
         return { ok: false, reason: "paused", notice: true, day };
+      }
+      if (step !== total - INTAKE.DAILY_CAP) {
+        this.sql.exec("UPDATE days SET n = ? WHERE day = ?", INTAKE.DAILY_CAP + step, day);
       }
       return { ok: false, reason: "paused", notice: false, day };
     }
@@ -626,6 +649,14 @@ export class IntakeLimiter extends DurableObject {
     this.sql.exec("INSERT INTO days (day, n) VALUES (?, 1) ON CONFLICT (day) DO UPDATE SET n = n + 1", day);
     await this.schedule((dayStart(day) + DAY_MS));
     return { ok: true, day };
+  }
+
+  // A notice that went out: no later refusal of the day tries again.
+  noticeSent(day) {
+    checkDay(day);
+    this.sql.exec("UPDATE days SET n = ? WHERE day = ? AND n > ? AND (n - ?) % 2 = 1",
+      INTAKE.DAILY_CAP + 2 * NOTICE_TRIES, day, INTAKE.DAILY_CAP, INTAKE.DAILY_CAP);
+    return { ok: true };
   }
 
   // A notice that failed to send: the next refusal of the day tries again,
@@ -637,8 +668,8 @@ export class IntakeLimiter extends DurableObject {
     return { ok: true };
   }
 
-  // A failed send() gives the slot back; once the notice went out
-  // (n = DAILY_CAP + 1) the day stays paused.
+  // A failed send() gives the slot back; once the day is paused (n above
+  // DAILY_CAP, the notice's state) it stays paused.
   refund(key, day) {
     checkArgs(key, 0);
     checkDay(day);
@@ -675,6 +706,7 @@ export class IntakeLimiter extends DurableObject {
       attempts: this.sql.exec("SELECT key, at, seq FROM attempts ORDER BY key, at, seq").toArray(),
       mails: this.sql.exec("SELECT day, key, n FROM mails ORDER BY day, key").toArray(),
       days: this.sql.exec("SELECT day, n FROM days ORDER BY day").toArray(),
+      notices: this.sql.exec("SELECT day, at FROM days ORDER BY day").toArray(),
       alarm: await this.ctx.storage.getAlarm(),
     };
   }

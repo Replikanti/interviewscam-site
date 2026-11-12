@@ -61,6 +61,10 @@ class Stub:
         self.versions = []         # uploaded version ids, newest first
         self.deployments = []      # newest first, each {strategy, versions: [{version_id, percentage}]}
         self.version_override = {} # replaces keys of a version's resources
+        # workers.dev and Version URLs; on until the tool turns them off (the
+        # default for an API upload is not documented, so the stub assumes
+        # the worse one).
+        self.subdomain = {"enabled": True, "previews_enabled": True}
 
     def settings(self):
         bindings = []
@@ -143,6 +147,10 @@ class Stub:
                     headers["CF-Entrypoint"] = "intake.js"
                 return 200, (data, headers)
             return 200, self.content
+        if path == f"{base}/scripts/{SCRIPT}/subdomain":
+            if method == "POST":
+                self.subdomain = json.loads(body)
+            return 200, {"success": True, "errors": [], "result": dict(self.subdomain)}
         if method == "GET" and path == f"{base}/scripts/{SCRIPT}/deployments":
             return 200, {"success": True, "errors": [], "result": {"deployments": self.deployments}}
         if method == "GET" and path == f"{base}/scripts/{SCRIPT}/versions":
@@ -471,6 +479,23 @@ class Tool(ToolCase):
                 bindings=[dict(b, destination_address="other@example.com") if b["name"] == "EMAIL" else b
                           for b in self.stub.settings()["bindings"]]),
             "malformed route": lambda: setattr(self.stub, "routes", ["intake.interviewscam.com/*"]),
+            # Fix round 3.
+            "workers.dev on": lambda: self.stub.subdomain.update(enabled=True),
+            "Version URLs on": lambda: self.stub.subdomain.update(previews_enabled=True),
+            "subdomain answer empty": lambda: setattr(self.stub, "subdomain", {}),
+            "deferred code update": lambda: self.stub.deployments[0].update(
+                code_update_strategy={"mode": "deferred", "max_delay": 86400}),
+            "unknown code update": lambda: self.stub.deployments[0].update(code_update_strategy="later"),
+            "host-star route": lambda: setattr(self.stub, "routes", [{"pattern": "intake.interviewscam.com*",
+                                                                       "script": "other"}]),
+            "star-host-star route": lambda: setattr(self.stub, "routes", [{"pattern": "*intake.interviewscam.com*",
+                                                                            "script": "other"}]),
+            "inner-star route": lambda: setattr(self.stub, "routes", [{"pattern": "int*ke.interviewscam.com/*",
+                                                                       "script": "other"}]),
+            "settings date malformed": lambda: self.stub.settings_override.update(
+                compatibility_date="2026-11-10T01:00:00Z"),
+            "version date malformed": lambda: self.stub.version_override.update(
+                script_runtime={"compatibility_date": "2026-11-10 00:00"}),
             "deployed version date": lambda: self.stub.version_override.update(
                 script_runtime={"compatibility_date": "2020-01-01"}),
         })
@@ -478,6 +503,7 @@ class Tool(ToolCase):
             with self.subTest(drift=name):
                 self.stub.content_mode, self.stub.routes, self.stub.version_override = "raw", [], {}
                 self.stub.versions = list(good_versions)
+                self.stub.subdomain = {"enabled": False, "previews_enabled": False}
                 self.stub.deployments = [{"strategy": "percentage",
                                           "versions": [{"version_id": good_versions[0], "percentage": 100}]}]
                 self.stub.metadata, self.stub.content, self.stub.domains = copy.deepcopy(good[0]), good[1], \
@@ -658,6 +684,28 @@ class ToolFixRound2(ToolCase):
                 rc, out = self.run_tool("verify")
                 self.assertEqual(rc, 1 if covers else 0, out)
 
+    def test_null_routes_answer_means_no_routes(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        self.stub.routes = None
+        rc, out = self.run_tool("verify")
+        self.assertEqual(rc, 0, out)
+
+    def test_settings_compat_date_checked_on_its_own(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        self.stub.settings_override.update(compatibility_date="2020-01-01")
+        self.stub.version_override.update(script_runtime={"compatibility_date": "2026-11-10"})
+        rc, out = self.run_tool("verify")
+        self.assertEqual(rc, 1, out)
+
+    def test_route_pattern_edge_rows(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        for pattern, covers in (("intake.interviewscam.com/http://x", True), (" intake.interviewscam.com/*", True),
+                                ("*.interviewscam/*", False)):
+            with self.subTest(pattern=pattern):
+                self.stub.routes = [{"pattern": pattern, "script": "o"}]
+                rc, out = self.run_tool("verify")
+                self.assertEqual(rc, 1 if covers else 0, out)
+
     def test_deployment_endpoints_read(self):
         self.assertEqual(self.run_tool("deploy")[0], 0)
         self.stub.requests.clear()
@@ -666,6 +714,45 @@ class ToolFixRound2(ToolCase):
         base = f"/client/v4/accounts/{ACCOUNT}/workers/scripts/{SCRIPT}"
         for want in (f"{base}/deployments", f"{base}/versions", f"{base}/versions/v1"):
             self.assertIn(want, paths)
+
+
+
+class ToolFixRound3(ToolCase):
+    """Fix round 3 of PR 2: delta review 2 (R1, R2, R3, R6)."""
+
+    def test_deploy_turns_workers_dev_and_previews_off(self):
+        self.assertTrue(self.stub.subdomain["enabled"])
+        rc, out = self.run_tool("deploy")
+        self.assertEqual(rc, 0, out)
+        posts = [r for r in self.stub.requests if r["method"] == "POST" and r["path"].endswith("/subdomain")]
+        self.assertEqual([json.loads(r["body"]) for r in posts], [{"enabled": False, "previews_enabled": False}])
+        self.assertEqual(self.stub.subdomain, {"enabled": False, "previews_enabled": False})
+
+    def test_compat_date_forms(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        for settings_date, version_date, ok in (("2026-11-10", "2026-11-10T00:00:00Z", True),
+                                                ("2026-11-10T00:00:00Z", "2026-11-10", True),
+                                                ("2026-11-10T00:00:00Z", "2026-11-10T00:00:00Z", True),
+                                                ("2026-11-10", "2026-11-11T00:00:00Z", False),
+                                                ("2026-11-10", "x2026-11-10", False),
+                                                (None, "2026-11-10", False)):
+            with self.subTest(settings=settings_date, version=version_date):
+                self.stub.settings_override = {"compatibility_date": settings_date}
+                self.stub.version_override = {"script_runtime": {"compatibility_date": version_date}}
+                rc, out = self.run_tool("verify")
+                self.assertEqual(rc, 0 if ok else 1, out)
+
+    def test_immediate_code_update_passes(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        self.stub.deployments[0]["code_update_strategy"] = {"mode": "immediate"}
+        rc, out = self.run_tool("verify")
+        self.assertEqual(rc, 0, out)
+
+    def test_non_percentage_strategy_fails(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        self.stub.deployments[0]["strategy"] = "other"
+        rc, out = self.run_tool("verify")
+        self.assertEqual(rc, 1, out)
 
 
 if __name__ == "__main__":

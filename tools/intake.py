@@ -352,6 +352,17 @@ def binding_problems(sc, actual, destination, without_rate_limiter=False):
     return problems
 
 
+COMPAT_DATE_FORM = re.compile(r"([0-9]{4}-[0-9]{2}-[0-9]{2})(T00:00:00Z)?")
+
+
+def date_part(value):
+    """The date of a compatibility_date as the API reports it: the upload
+    form YYYY-MM-DD, or the date-time form YYYY-MM-DDT00:00:00Z of the Get
+    Version example (fix round 3 of PR 2); anything else is None."""
+    m = COMPAT_DATE_FORM.fullmatch(value) if isinstance(value, str) else None
+    return m.group(1) if m else None
+
+
 def settings_problems(sc, pins, settings, destination, without_rate_limiter=False):
     problems = binding_problems(sc, settings.get("bindings"), destination, without_rate_limiter)
     if sc.INTAKE_SCRIPT_TAG not in (settings.get("tags") or []):
@@ -368,7 +379,7 @@ def settings_problems(sc, pins, settings, destination, without_rate_limiter=Fals
         dests = (obs.get(area) or {}).get("destinations") or []
         if any(d != "cloudflare" for d in dests):
             problems.append(f"observability {area} export to {dests!r}")
-    if settings.get("compatibility_date") != pins["WORKERD_COMPAT_DATE"]:
+    if date_part(settings.get("compatibility_date")) != pins["WORKERD_COMPAT_DATE"]:
         problems.append(f"compatibility_date is {settings.get('compatibility_date')!r}, "
                         f"expected {pins['WORKERD_COMPAT_DATE']}")
     return problems
@@ -387,9 +398,15 @@ def route_matches(pattern, host):
     scheme = ROUTE_SCHEME.match(text)
     rest = text[scheme.end():] if scheme else text
     route_host = rest.split("/", 1)[0].lower()
-    if route_host.startswith("*"):
-        return host.endswith(route_host[1:])
-    return route_host == host
+    if route_host.startswith("*") and host.endswith(route_host[1:]):
+        return True
+    if route_host == host:
+        return True
+    # The docs: a route * "matches zero or more of any character", so a *
+    # elsewhere (intake.interviewscam.com* , *intake.interviewscam.com*) can
+    # cover the intake path too (fix round 3 of PR 2).
+    glob = "".join(".*" if c == "*" else re.escape(c) for c in rest.lower())
+    return re.fullmatch(glob, host + "/submit") is not None
 
 
 def deployment_problems(api, sc, pins, account, destination, without_rate_limiter):
@@ -410,7 +427,17 @@ def deployment_problems(api, sc, pins, account, destination, without_rate_limite
     if not deployments:
         return ["no active deployment"]
     active = deployments[0]
-    versions = active.get("versions") if isinstance(active, dict) else None
+    if not isinstance(active, dict):
+        return ["the active deployment cannot be read"]
+    # A deferred code update lets a busy Durable Object keep an earlier
+    # version's class code for up to max_delay seconds (List Worker
+    # deployments: code_update_strategy "deferred", "Allow active Durable
+    # Objects to hibernate before updating their code"), so only an
+    # immediate update, or none stated, passes (fix round 3 of PR 2).
+    update = active.get("code_update_strategy")
+    if update is not None and update != {"mode": "immediate"}:
+        return [f"the active deployment updates Durable Object code with {update!r}, not immediately"]
+    versions = active.get("versions")
     if (not isinstance(versions, list) or len(versions) != 1 or not isinstance(versions[0], dict)
             or versions[0].get("percentage") != 100 or active.get("strategy", "percentage") != "percentage"):
         shares = [(v.get("version_id"), v.get("percentage")) for v in versions or [] if isinstance(v, dict)]
@@ -427,7 +454,7 @@ def deployment_problems(api, sc, pins, account, destination, without_rate_limite
     problems += [f"deployed version: {p}" for p in
                  binding_problems(sc, resources.get("bindings"), destination, without_rate_limiter)]
     runtime = resources.get("script_runtime") if isinstance(resources.get("script_runtime"), dict) else {}
-    if runtime.get("compatibility_date") != pins["WORKERD_COMPAT_DATE"]:
+    if date_part(runtime.get("compatibility_date")) != pins["WORKERD_COMPAT_DATE"]:
         problems.append(f"deployed version: compatibility_date is {runtime.get('compatibility_date')!r}")
     return problems
 
@@ -448,6 +475,14 @@ def verify_deployed(api, sc, pins, account, zone, destination, without_rate_limi
     else:
         problems += settings_problems(sc, pins, settings, destination, without_rate_limiter)
         problems += deployment_problems(api, sc, pins, account, destination, without_rate_limiter)
+    # Fix round 3 of PR 2: the script must not answer on workers.dev or on
+    # Version (preview) URLs, hosts outside the zone, where the zone's WAF
+    # rule does not apply (Get Worker Script Subdomain: enabled,
+    # previews_enabled).
+    subdomain = api.call("GET", script_path(sc, account, "/subdomain")) or {}
+    if not isinstance(subdomain, dict) or subdomain.get("enabled") is not False \
+            or subdomain.get("previews_enabled") is not False:
+        problems.append(f"workers.dev or Version URLs are not off: {subdomain!r}")
     # Fix round 1 of PR 2: a zone Worker route on the intake host could send
     # its requests to another script whatever the custom domain says.
     routes = api.call("GET", f"/zones/{zone}/workers/routes") or []
@@ -511,6 +546,11 @@ def cmd_deploy(sc, without_rate_limiter):
               "service": sc.INTAKE_SCRIPT_NAME, "zone_id": zone}
     api.call("PUT", f"/accounts/{account}/workers/domains", json.dumps(domain).encode(), "application/json")
     OUT.say(f"deploy: {sc.INTAKE_HOSTNAME} mapped to {sc.INTAKE_SCRIPT_NAME}")
+    # Off the workers.dev route and the Version URLs (fix round 3 of PR 2;
+    # API reference: Post Worker Script Subdomain).
+    api.call("POST", script_path(sc, account, "/subdomain"),
+             json.dumps({"enabled": False, "previews_enabled": False}).encode(), "application/json")
+    OUT.say("deploy: workers.dev route and Version URLs off")
     ok = verify_deployed(api, sc, pins, account, zone, destination, without_rate_limiter)
     OUT.say("deploy: revoke the deploy token in the dashboard now (ADR-0006 part 10)")
     return 0 if ok else 1

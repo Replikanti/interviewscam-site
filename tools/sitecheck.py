@@ -13052,6 +13052,9 @@ INTAKE_DAILY_CAP = 50
 # ADR-0006 Numbers, "Global cap": the pause notice is tried at most 3 times
 # per UTC day (fix round 2 of PR 2).
 INTAKE_NOTICE_TRIES = 3
+# A notice try still in flight after 60 s counts as failed (fix round 3 of
+# PR 2; ADR-0006 Numbers, "Global cap").
+INTAKE_NOTICE_STALE_MS = 60_000
 INTAKE_LIMITER_KEY_BYTES = 32
 # The Rate Limiting binding (ADR-0006 part 3 step 3, Numbers): 6 per 60 s
 # per key and location. The namespace_id was drawn in PR 2 with
@@ -13078,7 +13081,7 @@ INTAKE_RESULT_IDS = ("too-large", "too-many-files", "not-an-image", "missing-fie
 # tools/intake.py refuses to deploy a source that differs from this pin.
 INTAKE_WORKER_DIR = "worker"
 INTAKE_WORKER_SHA256 = {
-    "worker/intake.js": "b9897d0a5ad314e48e1cd5ff5104f8177d66bd1b508c418693482e9df8898cbf",
+    "worker/intake.js": "720da58f55482563d9735f8450a6f123d64593ca1e1353cac99db0609cb2b97c",
 }
 
 

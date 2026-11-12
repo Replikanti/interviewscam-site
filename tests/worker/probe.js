@@ -13,7 +13,7 @@ const HELPERS = new Set([
   "clientKeyMaterial", "detectImageType", "normalizeText", "isBlank", "defangSchemes",
   "subjectFor", "limiterDecide", "dayKey", "cleanSubject", "isValidEmail", "pageUrlOk",
 ]);
-const LIMITER_METHODS = new Set(["attempt", "reserve", "refund", "purge", "rows", "noticeFailed"]);
+const LIMITER_METHODS = new Set(["attempt", "reserve", "refund", "purge", "rows", "noticeFailed", "noticeSent"]);
 const CAPTURE_METHODS = new Set(["list", "clear", "setFail", "send"]);
 const BURST_METHODS = new Set(["reset", "keys"]);
 // The name of the one IntakeLimiter instance (LIMITER_NAME in intake.js,
@@ -66,6 +66,11 @@ export class RecordingLimiter extends DurableObject {
   noticeFailed(day) {
     recorded.push(["noticeFailed", day]);
     if (recordMode.refundThrows) throw new Error("reopen down");
+    return { ok: true };
+  }
+
+  noticeSent(day) {
+    recorded.push(["noticeSent", day]);
     return { ok: true };
   }
 

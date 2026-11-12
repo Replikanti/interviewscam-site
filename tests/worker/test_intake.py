@@ -964,6 +964,7 @@ class ResponsesAndMail(WorkerCase):
             "CLIENT_WINDOW_MS": SC.INTAKE_CLIENT_WINDOW_MS, "CLIENT_DAILY_MAILS": SC.INTAKE_CLIENT_DAILY_MAILS,
             "DAILY_CAP": SC.INTAKE_DAILY_CAP, "FILE_NAME_CAP": SC.INTAKE_FILE_NAME_CAP,
             "NOTICE_TRIES": SC.INTAKE_NOTICE_TRIES,
+            "NOTICE_STALE_MS": SC.INTAKE_NOTICE_STALE_MS,
             "RESULT_IDS": list(SC.INTAKE_RESULT_IDS), "LIMITER_KEY_BYTES": SC.INTAKE_LIMITER_KEY_BYTES,
             "BURST_ABSENT_BINDING": SC.INTAKE_BURST_ABSENT_BINDING,
             "BURST_ABSENT_VALUE": SC.INTAKE_BURST_ABSENT_VALUE,
@@ -1430,6 +1431,67 @@ class FixRound2(WorkerCase):
         probe("capture", "setFail", "notice")
         lines = logged(lambda: self.assertIn(b"#paused", self.raw_submit("intake-record")))
         self.assertEqual(lines, ["intake event=paused code=E_NOTICE_REOPEN", "intake event=paused code=E_NOTICE"])
+        self.assertIn(["noticeFailed", "2000-01-01"], probe("record"))  # the reserved day, not today
+
+    def test_notice_reopen_touches_only_its_own_day(self):
+        day = 86_400_000
+        first = base_now()
+        for t in (first, first + day):
+            for i in range(SC.INTAKE_DAILY_CAP):
+                self.assertTrue(probe("limiter", "reserve", f"{i:064x}", t)["ok"])
+            self.assertTrue(probe("limiter", "reserve", "c" * 64, t)["notice"])
+        days = {r["day"]: r["n"] for r in probe("limiter", "rows")["days"]}
+        self.assertEqual(sorted(days.values()), [SC.INTAKE_DAILY_CAP + 1] * 2, days)
+        probe("limiter", "noticeFailed", sorted(days)[-1])
+        days = {r["day"]: r["n"] for r in probe("limiter", "rows")["days"]}
+        self.assertEqual(sorted(days.values()), [SC.INTAKE_DAILY_CAP + 1, SC.INTAKE_DAILY_CAP + 2], days)
+
+    def test_reserve_alarm_is_end_of_counted_day(self):
+        day = 86_400_000
+        older = base_now()
+        newer = older + day
+        self.assertTrue(probe("limiter", "reserve", "a" * 64, newer)["ok"])
+        self.assertTrue(probe("limiter", "reserve", "b" * 64, older)["ok"])  # counted on the newer day
+        self.assertEqual(probe("limiter", "rows")["alarm"], (newer // day + 1) * day)
+
+    # --- fix round 3, R4: a try in flight does not block the day forever
+    def test_stale_notice_try_counts_as_failed(self):
+        now = base_now()
+        stale = SC.INTAKE_NOTICE_STALE_MS
+        for i in range(SC.INTAKE_DAILY_CAP):
+            self.assertTrue(probe("limiter", "reserve", f"{i:064x}", now)["ok"])
+        self.assertTrue(probe("limiter", "reserve", "c" * 64, now)["notice"])  # try 1, then cancelled
+        self.assertFalse(probe("limiter", "reserve", "c" * 64, now + stale)["notice"], "a try in flight 60 s")
+        self.assertTrue(probe("limiter", "reserve", "c" * 64, now + stale + 1)["notice"], "a stale try blocked the day")
+        days = probe("limiter", "rows")
+        self.assertEqual(days["days"][0]["n"], SC.INTAKE_DAILY_CAP + 3)
+        self.assertEqual(days["notices"][0]["at"], now + stale + 1)
+        later = now + 2 * stale + 2
+        self.assertTrue(probe("limiter", "reserve", "c" * 64, later)["notice"])  # try 3
+        last = later + stale + 1
+        self.assertFalse(probe("limiter", "reserve", "c" * 64, last)["notice"], "a fourth try")
+        self.assertEqual(probe("limiter", "rows")["days"][0]["n"], SC.INTAKE_DAILY_CAP + 2 * SC.INTAKE_NOTICE_TRIES)
+
+    def test_sent_notice_is_final(self):
+        now = int(time.time() * 1000)
+        for i in range(SC.INTAKE_DAILY_CAP):
+            self.assertTrue(probe("limiter", "reserve", f"{i:064x}", now)["ok"])
+        self.assertOutcome(send(self, report()), "paused")
+        self.assertEqual(len(mails()), 1)
+        self.assertEqual(probe("limiter", "rows")["days"][0]["n"], SC.INTAKE_DAILY_CAP + 2 * SC.INTAKE_NOTICE_TRIES)
+        late = probe("limiter", "reserve", "d" * 64, now + 10 * SC.INTAKE_NOTICE_STALE_MS)
+        self.assertFalse(late["notice"], "a sent notice was tried again")
+
+    def test_notice_sent_recorded_with_reserved_day(self):
+        probe("record", "setup", True, False, False)
+        self.assertIn(b"#paused", self.raw_submit("intake-record"))
+        self.assertIn(["noticeSent", "2000-01-01"], probe("record"))
+
+    def test_notice_sent_only_from_flight(self):
+        now = base_now()
+        slots = [probe("limiter", "reserve", f"{i:064x}", now) for i in range(10)]
+        probe("limiter", "noticeSent", slots[0]["day"])
+        self.assertEqual(probe("limiter", "rows")["days"][0]["n"], 10)
 
     # --- QA: the limiter's own rows
     def test_access_expiry_is_own_key_only(self):
