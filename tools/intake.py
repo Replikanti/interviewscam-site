@@ -9,8 +9,11 @@ deploy uploads worker/intake.js as the one script interviewscam-intake,
 with its bindings, and maps intake.interviewscam.com to it, then runs
 verify. verify reads back what decides where submissions go: the deployed
 script bytes against INTAKE_WORKER_SHA256, the bindings (the send_email
-destination among them), tail consumers, Logpush, observability and the
-custom domain. live-test runs the live suite of ADR-0006 Consequences
+destination among them), tail consumers, Logpush, observability, the
+custom domain, and that no zone Worker route covers the intake host.
+--without-rate-limiter (deploy and verify) is the explicit no-binding mode
+of ADR-0006 part 3 step 3, only for an account whose plan refuses the Rate
+Limiting binding. live-test runs the live suite of ADR-0006 Consequences
 against the endpoint; tests/worker/test_intake.py runs the same code
 against workerd.
 
@@ -19,8 +22,9 @@ uncommitted or untracked changes, on a HEAD other than site/main, and when
 worker/intake.js is a symlink or differs from its pin. The API token comes
 from CLOUDFLARE_API_TOKEN or a hidden prompt; the account ID, the zone ID
 and the destination address are prompted. None of them is written, logged
-or printed, and every line the tool prints passes through a redaction of
-the token and the generated limiter key. The tool never creates a token.
+or printed: every line the tool prints passes through a redaction of the
+token, the generated limiter key, the account ID, the zone ID and the
+destination address. The tool never creates a token.
 
 Python standard library only (urllib, ssl, json), always run as python3 -I.
 Exit 0 on success, 1 on an API error, a mismatch or a failed live case, 2
@@ -77,19 +81,23 @@ class Failure(Exception):
 
 
 class Out:
-    """Every printed line, with the token and the limiter key redacted."""
+    """Every printed line, with the token, the limiter key, the account ID,
+    the zone ID and the destination address replaced by a placeholder
+    (fix round 1 of PR 2: tool output may be pasted into the public PR 4
+    body)."""
 
     def __init__(self):
         self.secrets = []
 
-    def add_secret(self, value):
+    def add_secret(self, value, placeholder):
         if value:
-            self.secrets.append(value)
+            self.secrets.append((value, placeholder))
+            self.secrets.sort(key=lambda item: -len(item[0]))
 
     def redact(self, text):
         text = str(text)
-        for value in self.secrets:
-            text = text.replace(value, "[token]" if value is self.secrets[0] else "[secret]")
+        for value, placeholder in self.secrets:
+            text = text.replace(value, placeholder)
         return text
 
     def say(self, text="", stream=None):
@@ -174,13 +182,14 @@ def check_tree(root, sc):
     return data, main
 
 
-def prompt(label, form, what):
+def prompt(label, form, what, placeholder):
     try:
         value = input(f"{label}: ").strip()
     except EOFError:
         raise Refusal(f"no {what} given") from None
     if not form(value):
         raise Refusal(f"that is not a {what}")
+    OUT.add_secret(value, placeholder)
     return value
 
 
@@ -192,7 +201,7 @@ def read_token():
         except EOFError:
             token = ""
     token = token.strip()
-    OUT.add_secret(token)
+    OUT.add_secret(token, "[token]")
     if not TOKEN_FORM.fullmatch(token):
         raise Refusal("no usable API token (CLOUDFLARE_API_TOKEN or the prompt)")
     return token
@@ -225,7 +234,7 @@ class Api:
                 status, headers, data = resp.status, resp.headers, resp.read()
         except urllib.error.HTTPError as exc:
             status, headers, data = exc.code, exc.headers, exc.read()
-        label = f"{method} {urllib.parse.urlsplit(path).path}"
+        label = f"{method} {OUT.redact(urllib.parse.urlsplit(path).path)}"
         if raw and 200 <= status < 300:
             return headers, data
         try:
@@ -244,18 +253,24 @@ def script_path(sc, account, suffix=""):
     return f"/accounts/{account}/workers/scripts/{sc.INTAKE_SCRIPT_NAME}{suffix}"
 
 
-def expected_bindings(sc, destination):
+def expected_bindings(sc, destination, without_rate_limiter=False):
+    """The bindings of ADR-0006 part 10. --without-rate-limiter is the
+    explicit no-binding mode of part 3 step 3: a plain_text marker instead of
+    the Rate Limiting binding, which the Worker then requires."""
+    burst = ({"type": "plain_text", "name": sc.INTAKE_BURST_ABSENT_BINDING, "text": sc.INTAKE_BURST_ABSENT_VALUE}
+             if without_rate_limiter else
+             {"type": "ratelimit", "name": "RATE_LIMITER", "namespace_id": str(sc.INTAKE_RATELIMIT_NAMESPACE_ID),
+              "simple": {"limit": sc.INTAKE_BURST_LIMIT, "period": sc.INTAKE_BURST_PERIOD_S}})
     return [
         {"type": "send_email", "name": "EMAIL", "destination_address": destination},
         {"type": "durable_object_namespace", "name": "LIMITER", "class_name": "IntakeLimiter"},
-        {"type": "ratelimit", "name": "RATE_LIMITER", "namespace_id": str(sc.INTAKE_RATELIMIT_NAMESPACE_ID),
-         "simple": {"limit": sc.INTAKE_BURST_LIMIT, "period": sc.INTAKE_BURST_PERIOD_S}},
+        burst,
         {"type": "secret_text", "name": "LIMITER_KEY"},
     ]
 
 
-def build_metadata(sc, pins, destination, first, limiter_key):
-    bindings = expected_bindings(sc, destination)
+def build_metadata(sc, pins, destination, first, limiter_key, without_rate_limiter=False):
+    bindings = expected_bindings(sc, destination, without_rate_limiter)
     bindings[-1] = ({"type": "secret_text", "name": "LIMITER_KEY", "text": limiter_key} if limiter_key
                     else {"type": "inherit", "name": "LIMITER_KEY"})
     meta = {"main_module": MODULE_NAME, "compatibility_date": pins["WORKERD_COMPAT_DATE"],
@@ -284,20 +299,28 @@ def multipart(parts):
 # verify
 
 def deployed_module(headers, data):
+    """The deployed main module, or (None, why). A multipart answer must hold
+    exactly one part, named intake.js, and an entrypoint header, when the
+    answer carries one, must name it (fix round 1 of PR 2: a foreign main
+    module next to the pinned intake.js passed)."""
     ctype = headers.get("Content-Type", "") if headers else ""
+    entry = headers.get("CF-Entrypoint") if headers else None
+    if entry is not None and entry != MODULE_NAME:
+        return None, f"the entrypoint is {entry!r}, not {MODULE_NAME}"
     if ctype.lower().startswith("multipart/"):
         msg = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(
             f"Content-Type: {ctype}\r\n\r\n".encode() + data)
-        for part in msg.iter_parts():
-            if part.get_param("name", header="content-disposition") == MODULE_NAME:
-                return part.get_payload(decode=True)
-        return None
-    return data
+        parts = list(msg.iter_parts()) if msg.is_multipart() else []
+        names = [p.get_param("name", header="content-disposition") for p in parts]
+        if names != [MODULE_NAME]:
+            return None, f"the script holds the modules {names!r}, expected exactly [{MODULE_NAME!r}]"
+        return parts[0].get_payload(decode=True), None
+    return data, None
 
 
-def binding_problems(sc, actual, destination):
+def binding_problems(sc, actual, destination, without_rate_limiter=False):
     problems = []
-    want = {b["name"]: b for b in expected_bindings(sc, destination)}
+    want = {b["name"]: b for b in expected_bindings(sc, destination, without_rate_limiter)}
     have = {}
     for b in actual or []:
         if not isinstance(b, dict) or b.get("name") in have:
@@ -316,7 +339,10 @@ def binding_problems(sc, actual, destination):
                 if (simple.get("limit"), simple.get("period")) != (value["limit"], value["period"]):
                     problems.append(f"{name}: simple is {simple!r}, expected {value!r}")
             elif str(b.get(key)) != str(value):
-                problems.append(f"{name}: {key} is {b.get(key)!r}, expected {value!r}")
+                if key == "destination_address":
+                    problems.append(f"{name}: destination_address differs from the prompted address")
+                else:
+                    problems.append(f"{name}: {key} is {b.get(key)!r}, expected {value!r}")
         if w["type"] == "send_email":
             extra = sorted(set(b) - {"name", "type", "destination_address"})
             if extra:
@@ -326,8 +352,8 @@ def binding_problems(sc, actual, destination):
     return problems
 
 
-def settings_problems(sc, pins, settings, destination):
-    problems = binding_problems(sc, settings.get("bindings"), destination)
+def settings_problems(sc, pins, settings, destination, without_rate_limiter=False):
+    problems = binding_problems(sc, settings.get("bindings"), destination, without_rate_limiter)
     if sc.INTAKE_SCRIPT_TAG not in (settings.get("tags") or []):
         problems.append(f"the tag {sc.INTAKE_SCRIPT_TAG} is missing")
     if settings.get("tail_consumers"):
@@ -348,19 +374,37 @@ def settings_problems(sc, pins, settings, destination):
     return problems
 
 
-def verify_deployed(api, sc, pins, account, destination):
+def route_matches(pattern, host):
+    """A zone Worker route pattern (host part up to the first /, an optional
+    leading * wildcard) that covers host."""
+    route_host = str(pattern).split("/", 1)[0].lower()
+    if route_host.startswith("*"):
+        return host.endswith(route_host[1:])
+    return route_host == host
+
+
+def verify_deployed(api, sc, pins, account, zone, destination, without_rate_limiter=False):
     problems = []
     headers, data = api.call("GET", script_path(sc, account, "/content/v2"), raw=True)
-    module = deployed_module(headers, data)
+    module, why = deployed_module(headers, data)
     pinned = sc.INTAKE_WORKER_SHA256[WORKER_FILE]
+    if why:
+        problems.append(why)
     digest = hashlib.sha256(module).hexdigest() if module is not None else None
-    if digest != pinned:
+    if module is not None and digest != pinned:
         problems.append(f"deployed script SHA-256 is {digest}, the pin is {pinned}")
     settings = api.call("GET", script_path(sc, account, "/settings"), ok_404=True)
     if settings is None:
         problems.append(f"no script {sc.INTAKE_SCRIPT_NAME} is deployed")
     else:
-        problems += settings_problems(sc, pins, settings, destination)
+        problems += settings_problems(sc, pins, settings, destination, without_rate_limiter)
+    # Fix round 1 of PR 2: a zone Worker route on the intake host could send
+    # its requests to another script whatever the custom domain says.
+    routes = api.call("GET", f"/zones/{zone}/workers/routes") or []
+    for route in routes:
+        if isinstance(route, dict) and route_matches(route.get("pattern", ""), sc.INTAKE_HOSTNAME):
+            problems.append(f"the zone route {route.get('pattern')!r} (script {route.get('script')!r}) "
+                            f"covers {sc.INTAKE_HOSTNAME}; no route may")
     query = urllib.parse.urlencode({"hostname": sc.INTAKE_HOSTNAME})
     domains = api.call("GET", f"/accounts/{account}/workers/domains?{query}") or []
     mapped = [d for d in domains if isinstance(d, dict) and d.get("hostname") == sc.INTAKE_HOSTNAME]
@@ -380,21 +424,21 @@ def verify_deployed(api, sc, pins, account, destination):
 # ---------------------------------------------------------------------------
 # Commands
 
-def session(sc, need_zone):
+def session(sc):
     refuse_ci()
     base = api_base()
     pins = read_pins(ROOT / "tools" / "pins.env")
     check_tree(ROOT, sc)
     token = read_token()
-    account = prompt("Cloudflare account ID", HEX32.fullmatch, "32-hex account ID")
-    zone = prompt("Zone ID of interviewscam.com", HEX32.fullmatch, "32-hex zone ID") if need_zone else None
+    account = prompt("Cloudflare account ID", HEX32.fullmatch, "32-hex account ID", "[account]")
+    zone = prompt("Zone ID of interviewscam.com", HEX32.fullmatch, "32-hex zone ID", "[zone]")
     destination = prompt("Destination address (verified in Email Routing)",
-                         lambda v: len(v) <= 254 and EMAIL_RE.fullmatch(v), "mail address")
+                         lambda v: len(v) <= 254 and EMAIL_RE.fullmatch(v), "mail address", "[destination]")
     return Api(base, token), pins, account, zone, destination
 
 
-def cmd_deploy(sc):
-    api, pins, account, zone, destination = session(sc, need_zone=True)
+def cmd_deploy(sc, without_rate_limiter):
+    api, pins, account, zone, destination = session(sc)
     source = (ROOT / WORKER_FILE).read_bytes()
     settings = api.call("GET", script_path(sc, account, "/settings"), ok_404=True)
     if settings is not None and sc.INTAKE_SCRIPT_TAG not in (settings.get("tags") or []):
@@ -404,8 +448,8 @@ def cmd_deploy(sc):
     has_key = settings is not None and any(isinstance(b, dict) and b.get("name") == "LIMITER_KEY"
                                            for b in settings.get("bindings") or [])
     limiter_key = None if has_key else secrets.token_hex(sc.INTAKE_LIMITER_KEY_BYTES)
-    OUT.add_secret(limiter_key)
-    metadata = build_metadata(sc, pins, destination, first, limiter_key)
+    OUT.add_secret(limiter_key, "[limiter key]")
+    metadata = build_metadata(sc, pins, destination, first, limiter_key, without_rate_limiter)
     body, ctype = multipart([("metadata", None, "application/json", json.dumps(metadata).encode()),
                              (MODULE_NAME, MODULE_NAME, "application/javascript+module", source)])
     OUT.say(f"deploy: uploading {WORKER_FILE} as {sc.INTAKE_SCRIPT_NAME}"
@@ -415,14 +459,14 @@ def cmd_deploy(sc):
               "service": sc.INTAKE_SCRIPT_NAME, "zone_id": zone}
     api.call("PUT", f"/accounts/{account}/workers/domains", json.dumps(domain).encode(), "application/json")
     OUT.say(f"deploy: {sc.INTAKE_HOSTNAME} mapped to {sc.INTAKE_SCRIPT_NAME}")
-    ok = verify_deployed(api, sc, pins, account, destination)
+    ok = verify_deployed(api, sc, pins, account, zone, destination, without_rate_limiter)
     OUT.say("deploy: revoke the deploy token in the dashboard now (ADR-0006 part 10)")
     return 0 if ok else 1
 
 
-def cmd_verify(sc):
-    api, pins, account, _zone, destination = session(sc, need_zone=False)
-    return 0 if verify_deployed(api, sc, pins, account, destination) else 1
+def cmd_verify(sc, without_rate_limiter):
+    api, pins, account, zone, destination = session(sc)
+    return 0 if verify_deployed(api, sc, pins, account, zone, destination, without_rate_limiter) else 1
 
 
 # ---------------------------------------------------------------------------
@@ -549,8 +593,10 @@ def cmd_live_test(sc, target):
 def build_parser():
     parser = argparse.ArgumentParser(prog="intake", description=__doc__.split("\n")[0], allow_abbrev=False)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("deploy", allow_abbrev=False)
-    sub.add_parser("verify", allow_abbrev=False)
+    for name in ("deploy", "verify"):
+        p = sub.add_parser(name, allow_abbrev=False)
+        # ADR-0006 part 3 step 3: only when Cloudflare refused the binding.
+        p.add_argument("--without-rate-limiter", action="store_true")
     p = sub.add_parser("live-test", allow_abbrev=False)
     p.add_argument("--target", required=True)
     return parser
@@ -564,9 +610,9 @@ def main(argv):
     try:
         sc = load_sitecheck(ROOT)
         if args.command == "deploy":
-            return cmd_deploy(sc)
+            return cmd_deploy(sc, args.without_rate_limiter)
         if args.command == "verify":
-            return cmd_verify(sc)
+            return cmd_verify(sc, args.without_rate_limiter)
         return cmd_live_test(sc, args.target)
     except Refusal as exc:
         OUT.say(f"intake: REFUSED: {exc}", sys.stderr)

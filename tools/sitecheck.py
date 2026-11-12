@@ -13057,6 +13057,14 @@ INTAKE_LIMITER_KEY_BYTES = 32
 INTAKE_BURST_LIMIT = 6
 INTAKE_BURST_PERIOD_S = 60
 INTAKE_RATELIMIT_NAMESPACE_ID = 279040673
+# The explicit no-binding mode (ADR-0006 part 3 step 3, fix round 1 of PR 2):
+# if Cloudflare refuses the Rate Limiting binding on the account's plan,
+# `tools/intake.py deploy --without-rate-limiter` deploys a plain_text
+# binding of this name and value instead, verify checks it, and the Worker
+# then relies on the Durable Object alone. Without either, every submission
+# ends as #error (E_BURST_MISSING), which the live test and verify catch.
+INTAKE_BURST_ABSENT_BINDING = "RATE_LIMITER_ABSENT"
+INTAKE_BURST_ABSENT_VALUE = "refused-by-cloudflare"
 # ADR-0006 part 6: the fragment ids of /not-sent/, a closed set.
 INTAKE_RESULT_IDS = ("too-large", "too-many-files", "not-an-image", "missing-field", "too-long",
                      "bad-address", "bad-page-url", "too-many-attempts", "paused", "not-accepted",
@@ -13067,7 +13075,7 @@ INTAKE_RESULT_IDS = ("too-large", "too-many-files", "not-an-image", "missing-fie
 # tools/intake.py refuses to deploy a source that differs from this pin.
 INTAKE_WORKER_DIR = "worker"
 INTAKE_WORKER_SHA256 = {
-    "worker/intake.js": "bd771a595e4bad837ebdf6ba8d2750c5cfc91d9f7d67fad965f4e41d05a59ef2",
+    "worker/intake.js": "01c462e68ffe2b06179437948b6632113a53a59a06dcd5deb94cb160273c5e25",
 }
 
 

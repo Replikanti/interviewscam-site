@@ -70,6 +70,8 @@ export const INTAKE = Object.freeze({
   CLIENT_DAILY_MAILS: 3,
   DAILY_CAP: 50,
   LIMITER_KEY_BYTES: 32,
+  BURST_ABSENT_BINDING: "RATE_LIMITER_ABSENT",
+  BURST_ABSENT_VALUE: "refused-by-cloudflare",
   RESULT_IDS: Object.freeze(["too-large", "too-many-files", "not-an-image", "missing-field", "too-long",
     "bad-address", "bad-page-url", "too-many-attempts", "paused", "not-accepted", "error"]),
 });
@@ -90,7 +92,7 @@ export function normalizeText(value) {
 // Empty after trimming Unicode White_Space and U+200B, U+2060, U+FEFF
 // (part 5): what HTML required lets through and the Worker refuses.
 export function isBlank(value) {
-  return /^[\p{White_Space}​⁠﻿]*$/u.test(value);
+  return /^[\p{White_Space}\u200B\u2060\uFEFF]*$/u.test(value);
 }
 
 // The HTML "valid e-mail address" grammar, which type="email" applies.
@@ -100,8 +102,12 @@ export function isValidEmail(value) {
   return EMAIL_RE.test(value);
 }
 
-// page_url must parse with the WHATWG URL parser to the site's origin.
+// page_url must parse with the WHATWG URL parser to the site's origin, and
+// hold no White_Space at all: a copied page URL has none, while the parser
+// would percent-encode an inner space and let a second URL ride along
+// ("https://interviewscam.com/x https://evil.example/") into the subject.
 export function pageUrlOk(value) {
+  if (/\p{White_Space}/u.test(value)) return false;
   try {
     return new URL(value).origin === SITE_ORIGIN;
   } catch {
@@ -120,7 +126,7 @@ export function defangSchemes(value) {
 // whitespace collapsed, every other C0 or C1 control removed.
 export function cleanSubject(value) {
   return String(value)
-    .replace(/[​-‏⁠﻿‪-‮⁦-⁩]/g, "")
+    .replace(/[\u200B-\u200F\u2060\uFEFF\u202A-\u202E\u2066-\u2069]/g, "")
     .replace(/\p{White_Space}+/gu, " ")
     .replace(/[\u0000-\u001F\u007F-\u009F]/g, "")
     .replace(/ {2,}/g, " ")
@@ -128,11 +134,13 @@ export function cleanSubject(value) {
 }
 
 // Part 7: the subject uses the raw value after the stripping above, never
-// the URL serialization (percent-encoding could pass 998 characters).
+// the URL serialization (percent-encoding could pass 998 characters), with
+// the body's scheme rewrite, which keeps the length (fix round 1 of PR 2:
+// a live URL in a report name reached the subject line).
 export function subjectFor(channel, fields) {
-  if (channel === "report") return "Report: " + cleanSubject(fields.name);
+  if (channel === "report") return "Report: " + defangSchemes(cleanSubject(fields.name));
   const prefix = fields.own_name === "yes" ? "Correction, own name: " : "Correction: ";
-  return prefix + cleanSubject(fields.page_url);
+  return prefix + defangSchemes(cleanSubject(fields.page_url));
 }
 
 // Part 7, the body: C0 controls other than TAB and LF removed, then the
@@ -347,8 +355,11 @@ function buildMail(checked) {
     if (field.type === "checkbox") lines.push(`Own name: ${checked.ownName ? "yes" : "no"}`);
     if (!Object.hasOwn(LABELS, field.name)) continue;
     const value = bodyText(checked.text[field.name]);
+    // A single-line field stays on its line: a browser strips line breaks
+    // from text, email and url inputs, so only a hand-made request sends
+    // one, and it could forge a label line ("Own name: yes") below.
     if (BLOCK_FIELDS.has(field.name)) lines.push("", `${LABELS[field.name]}:`, value, "");
-    else lines.push(`${LABELS[field.name]}: ${value}`);
+    else lines.push(`${LABELS[field.name]}: ${value.replace(/[\t\n]/g, " ")}`);
   }
   if (checked.attachments.length) {
     lines.push("", "Files (attachment: original name, cut to 100 characters):");
@@ -367,8 +378,7 @@ function buildMail(checked) {
 
 // Numbers, "Global cap": one notice to the operator on the first refusal
 // of the UTC day. It never names a reporter and has no reply address.
-async function sendNotice(env, now) {
-  const day = dayKey(now);
+async function sendNotice(env, day) {
   try {
     await env.EMAIL.send({
       from: INTAKE.SENDER,
@@ -376,8 +386,9 @@ async function sendNotice(env, now) {
       text: `The daily cap of ${INTAKE.DAILY_CAP} mailed submissions was reached on ${day} (UTC). `
         + "Until 00:00 UTC the form answers /not-sent/#paused, which points reporters to the email address.\n",
     });
+    return true;
   } catch {
-    log("paused", "E_NOTICE");
+    return false;
   }
 }
 
@@ -404,13 +415,20 @@ async function handle(request, env) {
   if (origin !== null && origin !== SITE_ORIGIN) return redirect("not-accepted", "E_ORIGIN");
 
   const key = await limiterKey(env.LIMITER_KEY, clientKeyMaterial(request.headers.get("CF-Connecting-IP")));
-  let burst;
-  try {
-    burst = await env.RATE_LIMITER.limit({ key });
-  } catch {
-    return redirect("error", "E_BURST");
+  // The Rate Limiting binding, or the explicit no-binding mode of ADR-0006
+  // part 3 step 3 (deployed with `tools/intake.py deploy
+  // --without-rate-limiter`, checked by verify). Neither is #error.
+  if (env.RATE_LIMITER !== undefined) {
+    let burst;
+    try {
+      burst = await env.RATE_LIMITER.limit({ key });
+    } catch {
+      return redirect("error", "E_BURST");
+    }
+    if (!burst || burst.success !== true) return redirect("too-many-attempts", "E_BURST_LIMIT");
+  } else if (env[INTAKE.BURST_ABSENT_BINDING] !== INTAKE.BURST_ABSENT_VALUE) {
+    return redirect("error", "E_BURST_MISSING");
   }
-  if (!burst || burst.success !== true) return redirect("too-many-attempts", "E_BURST_LIMIT");
 
   const limiter = env.LIMITER.get(env.LIMITER.idFromName(LIMITER_NAME));
   const now = Date.now();
@@ -442,15 +460,29 @@ async function handle(request, env) {
   const checked = await validate(form);
   if (checked.id) return redirect(checked.id, checked.code);
 
+  // A fresh time for the daily caps: the body upload may have run past
+  // 00:00 UTC since `now` (fix round 1 of PR 2), and the mail goes out on
+  // the day it is sent. The limiter also never counts on a day older than
+  // the newest time it has seen, and names the day it counted on.
+  const sendNow = Date.now();
   let slot;
   try {
-    slot = await limiter.reserve(key, now);
+    slot = await limiter.reserve(key, sendNow);
   } catch {
     return redirect("error", "E_LIMITER");
   }
   if (!slot || slot.ok !== true) {
     if (slot && slot.reason === "paused") {
-      if (slot.notice === true) await sendNotice(env, now);
+      // A notice that fails to send is reopened, so the next refusal of the
+      // day tries again; the code E_NOTICE marks the log line.
+      if (slot.notice === true && !(await sendNotice(env, slot.day))) {
+        try {
+          await limiter.noticeFailed(slot.day);
+        } catch {
+          log("paused", "E_NOTICE_REOPEN");
+        }
+        return redirect("paused", "E_NOTICE");
+      }
       return redirect("paused", "E_DAILY_CAP");
     }
     return redirect("too-many-attempts", "E_CLIENT_MAILS");
@@ -459,7 +491,7 @@ async function handle(request, env) {
     await env.EMAIL.send(buildMail(checked));
   } catch {
     try {
-      await limiter.refund(key, now);
+      await limiter.refund(key, slot.day);
     } catch {
       log("error", "E_REFUND");
     }
@@ -496,6 +528,14 @@ function checkArgs(key, now) {
   if (!Number.isSafeInteger(now) || now < 0) throw new TypeError("limiter: bad time");
 }
 
+function checkDay(day) {
+  if (typeof day !== "string" || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(day)) throw new TypeError("limiter: bad day");
+}
+
+function dayStart(day) {
+  return Date.parse(`${day}T00:00:00.000Z`);
+}
+
 export class IntakeLimiter extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -508,8 +548,18 @@ export class IntakeLimiter extends DurableObject {
       + "PRIMARY KEY (day)) WITHOUT ROWID");
   }
 
-  expire(now) {
-    this.sql.exec("DELETE FROM attempts WHERE at <= ?", now - INTAKE.CLIENT_WINDOW_MS);
+  // The newest time this instance has seen (fix round 1 of PR 2): a request
+  // whose body upload ran past 00:00 UTC must not count on a day whose rows
+  // a later request has already deleted.
+  latest(now) {
+    this.newest = Math.max(this.newest || 0, now);
+    return this.newest;
+  }
+
+  // On access, only the key's own expired attempt rows (a range of the
+  // primary key) and the rows of past days; the alarm deletes the rest.
+  expire(key, now) {
+    this.sql.exec("DELETE FROM attempts WHERE key = ? AND at <= ?", key, now - INTAKE.CLIENT_WINDOW_MS);
     const today = dayKey(now);
     this.sql.exec("DELETE FROM mails WHERE day < ?", today);
     this.sql.exec("DELETE FROM days WHERE day < ?", today);
@@ -527,7 +577,8 @@ export class IntakeLimiter extends DurableObject {
 
   async attempt(key, now) {
     checkArgs(key, now);
-    this.expire(now);
+    this.latest(now);
+    this.expire(key, now);
     const rows = this.sql.exec("SELECT at FROM attempts WHERE key = ?", key).toArray().map((r) => r.at);
     if (!limiterDecide(rows, now).allowed) return { ok: false, reason: "client-limit" };
     if (this.mailCount(dayKey(now), key) >= INTAKE.CLIENT_DAILY_MAILS) return { ok: false, reason: "client-mails" };
@@ -539,29 +590,36 @@ export class IntakeLimiter extends DurableObject {
 
   async reserve(key, now) {
     checkArgs(key, now);
-    const day = dayKey(now);
-    if (this.mailCount(day, key) >= INTAKE.CLIENT_DAILY_MAILS) return { ok: false, reason: "client-mails" };
+    const day = dayKey(this.latest(now));
+    if (this.mailCount(day, key) >= INTAKE.CLIENT_DAILY_MAILS) return { ok: false, reason: "client-mails", day };
     const row = this.sql.exec("SELECT n FROM days WHERE day = ?", day).toArray()[0];
     const total = row ? row.n : 0;
     if (total >= INTAKE.DAILY_CAP) {
       if (total === INTAKE.DAILY_CAP) {
         this.sql.exec("UPDATE days SET n = ? WHERE day = ?", INTAKE.DAILY_CAP + 1, day);
-        return { ok: false, reason: "paused", notice: true };
+        return { ok: false, reason: "paused", notice: true, day };
       }
-      return { ok: false, reason: "paused", notice: false };
+      return { ok: false, reason: "paused", notice: false, day };
     }
     this.sql.exec("INSERT INTO mails (day, key, n) VALUES (?, ?, 1) ON CONFLICT (day, key) DO UPDATE SET n = n + 1",
       day, key);
     this.sql.exec("INSERT INTO days (day, n) VALUES (?, 1) ON CONFLICT (day) DO UPDATE SET n = n + 1", day);
-    await this.schedule(nextMidnight(now));
+    await this.schedule((dayStart(day) + DAY_MS));
+    return { ok: true, day };
+  }
+
+  // A notice that failed to send: the next refusal of the day sends it.
+  noticeFailed(day) {
+    checkDay(day);
+    this.sql.exec("UPDATE days SET n = ? WHERE day = ? AND n = ?", INTAKE.DAILY_CAP, day, INTAKE.DAILY_CAP + 1);
     return { ok: true };
   }
 
   // A failed send() gives the slot back; once the notice went out
   // (n = DAILY_CAP + 1) the day stays paused.
-  refund(key, now) {
-    checkArgs(key, now);
-    const day = dayKey(now);
+  refund(key, day) {
+    checkArgs(key, 0);
+    checkDay(day);
     this.sql.exec("UPDATE mails SET n = n - 1 WHERE day = ? AND key = ? AND n > 0", day, key);
     this.sql.exec("UPDATE days SET n = n - 1 WHERE day = ? AND n > 0 AND n <= ?", day, INTAKE.DAILY_CAP);
     return { ok: true };
@@ -569,13 +627,20 @@ export class IntakeLimiter extends DurableObject {
 
   async purge(now) {
     if (!Number.isSafeInteger(now) || now < 0) throw new TypeError("limiter: bad time");
-    this.expire(now);
+    this.sql.exec("DELETE FROM attempts WHERE at <= ?", now - INTAKE.CLIENT_WINDOW_MS);
+    this.sql.exec("DELETE FROM mails WHERE day < ?", dayKey(now));
+    this.sql.exec("DELETE FROM days WHERE day < ?", dayKey(now));
     const first = this.sql.exec("SELECT min(at) AS at FROM attempts").one().at;
     const daily = this.sql.exec("SELECT (SELECT count(*) FROM mails) + (SELECT count(*) FROM days) AS n").one().n;
     let next = first === null ? null : first + INTAKE.CLIENT_WINDOW_MS;
     if (daily > 0) next = next === null ? nextMidnight(now) : Math.min(next, nextMidnight(now));
-    if (next === null) await this.ctx.storage.deleteAlarm();
-    else await this.ctx.storage.setAlarm(next);
+    if (next === null) {
+      // Nothing left to count: no later request can need the newest time.
+      this.newest = 0;
+      await this.ctx.storage.deleteAlarm();
+    } else {
+      await this.ctx.storage.setAlarm(next);
+    }
     return { ok: true };
   }
 

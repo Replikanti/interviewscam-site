@@ -55,6 +55,9 @@ class Stub:
         self.domains = []
         self.settings_override = {}
         self.uploaded = []         # each upload's metadata, as sent
+        self.content_mode = "raw"  # raw | multipart | multipart-extra | entrypoint-foreign | corrupt
+        self.routes = []           # zone Worker routes
+        self.redirect = False      # every settings GET answers 302 elsewhere
 
     def settings(self):
         bindings = []
@@ -77,8 +80,13 @@ class Stub:
                               "body": body})
         token = headers.get("authorization", "")
         if self.error_mode:
-            return 400, {"success": False, "errors": [{"code": 9109, "message": f"Invalid token {token}"}],
-                         "messages": [token], "result": None}
+            # Echoes everything the tool sent: the token, the path (account,
+            # zone) and the body (destination address).
+            return 400, {"success": False, "errors": [{"code": 9109, "message": f"Invalid token {token} for {path} "
+                                                       f"{body[:4000].decode(errors='replace')}"}],
+                         "messages": [token, path], "result": None}
+        if self.redirect and path.endswith("/settings"):
+            return 302, {"location": "/client/v4/redirected"}
         base = f"/client/v4/accounts/{ACCOUNT}/workers"
         if method == "GET" and path == f"{base}/scripts/{SCRIPT}/settings":
             if self.state == "absent":
@@ -106,7 +114,28 @@ class Stub:
             self.state = "deployed"
             return 200, {"success": True, "errors": [], "result": {"id": SCRIPT}}
         if method == "GET" and path == f"{base}/scripts/{SCRIPT}/content/v2":
+            mode = self.content_mode
+            if mode == "corrupt":
+                return 200, self.content + b"\n"
+            if mode == "entrypoint-foreign":
+                return 200, (self.content, {"CF-Entrypoint": "evil.js"})
+            if mode.startswith("multipart"):
+                parts = [("intake.js", self.content)]
+                if mode == "multipart-extra":
+                    parts = [("evil.js", b"export default {};")] + parts
+                if mode == "multipart-extra-last":
+                    parts = parts + [("evil.js", b"export default {};")]
+                boundary = "stubboundary"
+                data = b"".join(f'--{boundary}\r\nContent-Disposition: form-data; name="{n}"; filename="{n}"\r\n'
+                                f"Content-Type: application/javascript+module\r\n\r\n".encode() + c + b"\r\n"
+                                for n, c in parts) + f"--{boundary}--\r\n".encode()
+                headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+                if mode != "multipart-extra-last":
+                    headers["CF-Entrypoint"] = "intake.js"
+                return 200, (data, headers)
             return 200, self.content
+        if method == "GET" and path == f"/client/v4/zones/{ZONE}/workers/routes":
+            return 200, {"success": True, "errors": [], "result": self.routes}
         if method == "PUT" and path == f"{base}/domains":
             d = json.loads(body)
             self.domains = [x for x in self.domains if x["hostname"] != d["hostname"]] + [
@@ -135,10 +164,18 @@ class StubServer:
                 body = self.rfile.read(length) if length else b""
                 status, payload = stub.handle(self.command, split.path, parse_qs(split.query),
                                               {k.lower(): v for k, v in self.headers.items()}, body)
+                extra = {}
+                if isinstance(payload, tuple):
+                    payload, extra = payload
+                if status == 302:
+                    extra = {"Location": payload["location"]}
                 data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
                 self.send_response(status)
-                self.send_header("Content-Type", "application/octet-stream" if isinstance(payload, bytes)
-                                 else "application/json")
+                if "Content-Type" not in extra:
+                    self.send_header("Content-Type", "application/octet-stream" if isinstance(payload, bytes)
+                                     else "application/json")
+                for k, v in extra.items():
+                    self.send_header(k, v)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
@@ -192,11 +229,13 @@ class ToolCase(unittest.TestCase):
         e.update({"CLOUDFLARE_API_TOKEN": SENTINEL, "INTAKE_API_BASE": base or self.server.base})
         e.update(env or {})
         if stdin is None:
-            stdin = f"{ACCOUNT}\n{ZONE}\n{DEST}\n" if args[:1] == ("deploy",) else f"{ACCOUNT}\n{DEST}\n"
+            stdin = f"{ACCOUNT}\n{ZONE}\n{DEST}\n"
         proc = subprocess.run([sys.executable, "-I", "-B", str(self.repo / "tools" / "intake.py"), *args],
                               input=stdin, capture_output=True, text=True, env=e, timeout=120)
         output = proc.stdout + proc.stderr
         self.assertNotIn(SENTINEL, output, "the token was printed")
+        for secret in (ACCOUNT, ZONE, DEST):
+            self.assertNotIn(secret, output, "an account ID, zone ID or destination address was printed")
         return proc.returncode, output
 
     def commit_and_push(self, message):
@@ -205,12 +244,14 @@ class ToolCase(unittest.TestCase):
         git(self.repo, "push", "-q", "site", "main")
         git(self.repo, "fetch", "-q", "site")
 
-    def expected_metadata(self, first):
+    def expected_metadata(self, first, without_rate_limiter=False):
         pins = dict(line.split("=", 1) for line in (self.repo / "tools/pins.env").read_text().splitlines()
                     if line and not line.startswith("#"))
         bindings = [
             {"type": "send_email", "name": "EMAIL", "destination_address": DEST},
             {"type": "durable_object_namespace", "name": "LIMITER", "class_name": "IntakeLimiter"},
+            {"type": "plain_text", "name": "RATE_LIMITER_ABSENT", "text": "refused-by-cloudflare"}
+            if without_rate_limiter else
             {"type": "ratelimit", "name": "RATE_LIMITER", "namespace_id": str(self.sc.INTAKE_RATELIMIT_NAMESPACE_ID),
              "simple": {"limit": self.sc.INTAKE_BURST_LIMIT, "period": self.sc.INTAKE_BURST_PERIOD_S}},
             {"type": "secret_text", "name": "LIMITER_KEY", "text": "<64 hex>"} if first
@@ -358,8 +399,32 @@ class Tool(ToolCase):
             "domain twice": lambda: setattr(self.stub, "domains", self.stub.domains * 2),
             "domain missing": lambda: setattr(self.stub, "domains", []),
         }
+        binding = self.binding_drift
+        drifts.update({
+            "rate limit": binding("RATE_LIMITER", simple={"limit": 7, "period": 60}),
+            "rate period": binding("RATE_LIMITER", simple={"limit": 6, "period": 10}),
+            "rate namespace": binding("RATE_LIMITER", namespace_id="1001"),
+            "send_email extra key": binding("EMAIL", allowed_sender_addresses=["x@example.com"]),
+            "send_email allowlist": binding("EMAIL", allowed_destination_addresses=["x@example.com"]),
+            "foreign DO script": binding("LIMITER", script_name="other-script"),
+            "DO class": binding("LIMITER", class_name="Other"),
+            "binding type": binding("LIMITER_KEY", type="plain_text"),
+            "duplicate binding": lambda: self.stub.settings_override.update(
+                bindings=self.stub.settings()["bindings"] + [self.stub.settings()["bindings"][0]]),
+            "multipart extra module": lambda: setattr(self.stub, "content_mode", "multipart-extra"),
+            "multipart extra module after, no entrypoint": lambda: setattr(self.stub, "content_mode",
+                                                                           "multipart-extra-last"),
+            "foreign entrypoint": lambda: setattr(self.stub, "content_mode", "entrypoint-foreign"),
+            "route on the host": lambda: setattr(self.stub, "routes", [{"pattern": "intake.interviewscam.com/*",
+                                                                         "script": "other"}]),
+            "wildcard route": lambda: setattr(self.stub, "routes", [{"pattern": "*.interviewscam.com/*",
+                                                                     "script": "other"}]),
+            "bare wildcard route": lambda: setattr(self.stub, "routes", [{"pattern": "*interviewscam.com/*",
+                                                                          "script": SCRIPT}]),
+        })
         for name, drift in drifts.items():
             with self.subTest(drift=name):
+                self.stub.content_mode, self.stub.routes = "raw", []
                 self.stub.metadata, self.stub.content, self.stub.domains = copy.deepcopy(good[0]), good[1], \
                     copy.deepcopy(good[2])
                 self.stub.settings_override = {}
@@ -409,6 +474,110 @@ class Tool(ToolCase):
             with self.subTest(target=target):
                 rc, out = self.run_tool("live-test", "--target", target, stdin="")
                 self.assertEqual(rc, 2, out)
+
+
+    def binding_drift(self, name, **changes):
+        def apply():
+            self.stub.settings_override.update(bindings=[dict(b, **changes) if b["name"] == name else b
+                                                         for b in self.stub.settings()["bindings"]])
+        return apply
+
+
+class ToolFixRound1(ToolCase):
+    """Fix round 1 of PR 2: review findings 2, 3, 6 and 11, and QA's rows."""
+
+    def test_verify_accepts_single_module_multipart(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        self.stub.content_mode = "multipart"
+        rc, out = self.run_tool("verify")
+        self.assertEqual(rc, 0, out)
+        self.stub.routes = [{"pattern": "www.interviewscam.com/*", "script": "other"},
+                            {"pattern": "interviewscam.com/x/*", "script": "other"}]
+        rc, out = self.run_tool("verify")
+        self.assertEqual(rc, 0, out)
+
+    def test_routes_read_from_the_zone(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        self.run_tool("verify")
+        paths = [r["path"] for r in self.stub.requests if r["method"] == "GET"]
+        self.assertIn(f"/client/v4/zones/{ZONE}/workers/routes", paths)
+
+    def test_without_rate_limiter_mode(self):
+        rc, out = self.run_tool("deploy", "--without-rate-limiter")
+        self.assertEqual(rc, 0, out)
+        meta = copy.deepcopy(self.stub.metadata)
+        next(b for b in meta["bindings"] if b["name"] == "LIMITER_KEY")["text"] = "<64 hex>"
+        self.assertEqual(meta, self.expected_metadata(first=True, without_rate_limiter=True))
+        rc, out = self.run_tool("verify")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("MISMATCH", out)
+        rc, out = self.run_tool("verify", "--without-rate-limiter")
+        self.assertEqual(rc, 0, out)
+        self.run_tool("deploy")
+        rc, out = self.run_tool("verify", "--without-rate-limiter")
+        self.assertEqual(rc, 1, out)
+
+    def test_deploy_exits_1_when_its_verify_fails(self):
+        self.stub.content_mode = "corrupt"
+        rc, out = self.run_tool("deploy")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("MISMATCH", out)
+        self.assertIn("revoke", out.lower())
+
+    def test_ids_never_printed(self):
+        self.stub.error_mode = True
+        for cmd in ("deploy", "verify"):
+            rc, out = self.run_tool(cmd)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("[account]", out)
+        self.stub.error_mode = False
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        self.stub.settings_override = {"bindings": [dict(b, destination_address="other@example.com")
+                                                    if b["name"] == "EMAIL" else b
+                                                    for b in self.stub.settings()["bindings"]]}
+        rc, out = self.run_tool("verify")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("destination_address differs", out)
+        self.assertNotIn("other@example.com", out)
+
+    def test_no_redirect_followed(self):
+        self.stub.redirect = True
+        rc, out = self.run_tool("deploy")
+        self.assertEqual(rc, 1, out)
+        self.assertNotIn("/client/v4/redirected", [r["path"] for r in self.stub.requests])
+        self.assertEqual(self.uploads(), [])
+
+    def test_no_proxy_used(self):
+        proxy = StubServer()
+        try:
+            env = {name: proxy.base.rsplit("/client", 1)[0] for name in
+                   ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")}
+            env.update({"NO_PROXY": "", "no_proxy": ""})
+            rc, out = self.run_tool("deploy", env=env)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(proxy.stub.requests, [], "a request went through the proxy")
+        finally:
+            proxy.close()
+
+    def test_refuses_ci_any_value(self):
+        for var in ("CI", "GITHUB_ACTIONS"):
+            for value in ("1", "yes", "false"):
+                with self.subTest(var=var, value=value):
+                    rc, out = self.run_tool("verify", env={var: value})
+                    self.assertEqual(rc, 2, out)
+        self.assertEqual(self.stub.requests, [])
+
+    def test_refuses_worker_dir_symlink(self):
+        worker = self.repo / "worker"
+        (self.repo / "real").mkdir()
+        (worker / "intake.js").rename(self.repo / "real" / "intake.js")
+        worker.rmdir()
+        worker.symlink_to("real")
+        self.commit_and_push("dir symlink")
+        rc, out = self.run_tool("deploy")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("symlink", out)
+        self.assertEqual(self.stub.requests, [])
 
 
 if __name__ == "__main__":

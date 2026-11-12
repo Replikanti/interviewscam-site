@@ -13,8 +13,8 @@ const HELPERS = new Set([
   "clientKeyMaterial", "detectImageType", "normalizeText", "isBlank", "defangSchemes",
   "subjectFor", "limiterDecide", "dayKey", "cleanSubject", "isValidEmail", "pageUrlOk",
 ]);
-const LIMITER_METHODS = new Set(["attempt", "reserve", "refund", "purge", "rows"]);
-const CAPTURE_METHODS = new Set(["list", "clear", "setFail"]);
+const LIMITER_METHODS = new Set(["attempt", "reserve", "refund", "purge", "rows", "noticeFailed"]);
+const CAPTURE_METHODS = new Set(["list", "clear", "setFail", "send"]);
 const BURST_METHODS = new Set(["reset", "keys"]);
 // The name of the one IntakeLimiter instance (LIMITER_NAME in intake.js,
 // which a Worker's main module cannot export: its named exports must be
@@ -26,6 +26,14 @@ export class BrokenLimiter extends DurableObject {
   attempt() { throw new Error("broken limiter"); }
   reserve() { throw new Error("broken limiter"); }
   refund() { throw new Error("broken limiter"); }
+}
+
+// Counts nothing and admits every attempt, then throws on reserve(): the
+// Worker must fail closed there too (intake-broken-reserve).
+export class BrokenReserveLimiter extends DurableObject {
+  attempt() { return { ok: true }; }
+  reserve() { throw new Error("broken reserve"); }
+  refund() { throw new Error("broken reserve"); }
 }
 
 function fromHex(hex) {

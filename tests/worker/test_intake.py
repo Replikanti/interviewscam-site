@@ -13,6 +13,7 @@ come from the INTAKE_* constants of tools/sitecheck.py, the single source
 """
 
 import hashlib
+import hmac
 import http.client
 import importlib.util
 import json
@@ -26,13 +27,15 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.parse
 from pathlib import Path
 
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "tests" / "worker" / "config.capnp"
-SOCKETS = ("intake", "intake-broken-limiter", "intake-bad-key", "probe")
+SOCKETS = ("intake", "intake-broken-limiter", "intake-bad-key", "intake-broken-reserve", "intake-no-burst",
+           "intake-missing-burst", "probe")
 LOG_LINE = re.compile(r"^intake event=[a-z-]+( code=[A-Z_]+)?$")
 FAR_FUTURE = 8_000_000_000_000  # ms, year 2223: purges every limiter row
 
@@ -172,9 +175,12 @@ def multipart(parts, boundary=None):
     for name, value in parts:
         out.append(f"--{boundary}\r\n".encode())
         if isinstance(value, tuple):
-            fname, ctype, data = value
+            # A fourth member "raw" sends the file name unescaped, as a
+            # hand-made request can (a browser escapes CR, LF and quotes).
+            fname, ctype, data, *raw = value
+            fname = fname if raw else quote(fname)
             out.append(f'Content-Disposition: form-data; name="{quote(name)}"; '
-                       f'filename="{quote(fname)}"\r\nContent-Type: {ctype}\r\n\r\n'.encode())
+                       f'filename="{fname}"\r\nContent-Type: {ctype}\r\n\r\n'.encode("utf-8"))
             out.append(data)
         else:
             out.append(f'Content-Disposition: form-data; name="{quote(name)}"\r\n\r\n'.encode())
@@ -431,8 +437,8 @@ class Fields(WorkerCase):
                 self.assertOutcome(send(self, correction(own_name=value)), "not-accepted")
         self.assertEqual(len(mails()), 1)
 
-    BLANKS = ("", " ", "\t", "\n", "\r\n", " ", "　", "​", "﻿", "⁠",
-              "\u0085", " ", " ​\t ")
+    BLANKS = ("", " ", "\t", "\n", "\r\n", "\u00A0", "\u3000", "\u200B", "\uFEFF", "\u2060",
+              "\u0085", "\u2028", " \u200B\t\u00A0")
 
     def test_required_blank_table(self):
         for channel, build in (("report", report), ("correction", correction)):
@@ -477,8 +483,9 @@ class Fields(WorkerCase):
         self.assertOutcome(send(self, report(details=value)), "sent")
         self.assertOutcome(send(self, report(details="a\r" * (cap // 2))), "sent")
         self.assertOutcome(send(self, report(details="a\r\n" * (cap // 2) + "a")), "too-long")
-        text = submissions()[0]["text"]
-        self.assertNotIn("\r", text)
+        for mail in submissions():
+            self.assertNotIn("\r", mail["text"])
+            self.assertIn("a\na\na\n", mail["text"], "a CR (alone or before LF) becomes one LF")
 
     def test_length_utf16_units(self):
         cap = next(f["cap"] for f in SC.INTAKE_FIELDS["report"] if f["name"] == "details")
@@ -490,7 +497,7 @@ class Fields(WorkerCase):
         for value in ("reporter", "a@@example.com", "a@b@example.com", "a b@example.com",
                       "x@y.example\r\nBcc: z@y.example", "x@y.example\nBcc: z@y.example",
                       " x@example.com", "x@-example.com", "x@example..com", "<x@example.com>",
-                      "x@exa_mple.com", "а@example.com", "x@example.com​"):
+                      "x@exa_mple.com", "\u0430@example.com", "x@example.com\u200B"):
             with self.subTest(email=ascii(value)):
                 self.assertOutcome(send(self, report(email=value)), "bad-address")
                 self.assertOutcome(send(self, correction(email=value)), "bad-address")
@@ -504,7 +511,7 @@ class Fields(WorkerCase):
 
     def test_page_url_table(self):
         for value in ("http://interviewscam.com/x/", "https://interviewscam.com.evil.example/",
-                      "https://interviewscam.com@evil.example/", "https://interviewscаm.com/x/",
+                      "https://interviewscam.com@evil.example/", "https://interviewsc\u0430m.com/x/",
                       "//interviewscam.com/x/", "/reports/x/", "file:///x", "https://evil.example/",
                       "https://www.interviewscam.com/", "javascript:alert(1)", "interviewscam.com/x/",
                       "https://interviewscam.com:8443/x/"):
@@ -520,7 +527,7 @@ class Fields(WorkerCase):
 
 class Honeypot(WorkerCase):
     def test_honeypot_table(self):
-        for value in ("x", " ", "​", "https://example.com", None):
+        for value in ("x", " ", "\u200B", "https://example.com", None):
             with self.subTest(website=ascii(value)):
                 self.assertOutcome(send(self, report(website=value)), "not-accepted")
                 self.assertOutcome(send(self, correction(website=value)), "not-accepted")
@@ -579,7 +586,7 @@ class Files(WorkerCase):
         self.assertEqual((att["filename"], att["type"]), ("evidence-1.jpg", "image/jpeg"))
 
     def test_file_name_sanitized(self):
-        name = '../../x\r\n"\x07‮' + "y" * 500 + ".png"
+        name = '../../x\r\n"\x07\u202E' + "y" * 500 + ".png"
         self.assertOutcome(send(self, report() + self.files((name, "image/png", PNG),
                                                             ("https://evil.example/a.png", "image/png", PNG))),
                            "sent")
@@ -780,6 +787,9 @@ class Limiter(WorkerCase):
         probe("limiter", "purge", midnight)
         rows = probe("limiter", "rows")
         self.assertEqual((rows["mails"], rows["days"], rows["alarm"]), ([], [], None))
+        # A reserve() alone sets the alarm to the end of its day.
+        self.assertTrue(probe("limiter", "reserve", self.KEY, now)["ok"])
+        self.assertEqual(probe("limiter", "rows")["alarm"], midnight)
 
     def test_limiter_failure_fails_closed(self):
         self.assertOutcome(send(self, report(), service="intake-broken-limiter"), "error")
@@ -868,18 +878,20 @@ class ResponsesAndMail(WorkerCase):
     def test_subject_table(self):
         url = "https://interviewscam.com/reports/x/"
         rows = [(report(name="Example Co"), "Report: Example Co"),
-                (report(name="\u0007A‮B​C  \t D⁦E\u0085F‍G﻿H"), "Report: ABC DE FGH"),
+                (report(name="\u0007A\u202EB\u200BC  \t D\u2066E\u0085F\u200DG\uFEFFH"), "Report: ABC DE FGH"),
                 (report(name="x" * 200), "Report: " + "x" * 200),
-                (correction(page_url=url), "Correction: " + url),
-                (correction(page_url=url, own_name="yes"), "Correction, own name: " + url),
-                (correction(page_url=" " + url + "​"), "Correction: " + url)]
+                (report(name="Acme https://evil.example/login"), "Report: Acme hxxps://evil.example/login"),
+                (report(name="Acme HTTP://a ftp://b"), "Report: Acme hxxp://a fxp://b"),
+                (correction(page_url=url), "Correction: hxxps" + url[5:]),
+                (correction(page_url=url, own_name="yes"), "Correction, own name: hxxps" + url[5:]),
+                (correction(page_url=url + "\u200b"), "Correction: hxxps" + url[5:])]
         for parts, _ in rows:
             self.assertOutcome(send(self, parts), "sent")
         self.assertEqual([m["subject"] for m in mails()], [s for _, s in rows])
-        self.assertEqual(probe("helper", "cleanSubject", "a\r\nb‪c"), "a bc")
-        long_url = "https://interviewscam.com/" + "é" * 900
+        self.assertEqual(probe("helper", "cleanSubject", "a\r\nb\u202Ac"), "a bc")
+        long_url = "https://interviewscam.com/" + "\u00E9" * 900
         self.assertEqual(probe("helper", "subjectFor", "correction", {"page_url": long_url, "own_name": "yes"}),
-                         "Correction, own name: " + long_url, "the raw value, not the percent-encoded one")
+                         "Correction, own name: hxxps" + long_url[5:], "the raw value, not the percent-encoded one")
 
     def test_defang_table(self):
         for raw, want in (("https://evil.example/x", "hxxps://evil.example/x"),
@@ -907,7 +919,7 @@ class ResponsesAndMail(WorkerCase):
 
     def test_mail_size_at_caps(self):
         caps = {f["name"]: f["cap"] for f in SC.INTAKE_FIELDS["report"] if f["cap"]}
-        fields = {name: "€" * cap for name, cap in caps.items()}  # 3 UTF-8 bytes per unit
+        fields = {name: "\u20AC" * cap for name, cap in caps.items()}  # 3 UTF-8 bytes per unit
         fields["email"] = "a" * (caps["email"] - len("@example.com")) + "@example.com"
         parts = report(**fields) + Files.big_files(SC.INTAKE_MAX_UPLOAD_BYTES)
         body, _ = multipart(parts)
@@ -952,6 +964,8 @@ class ResponsesAndMail(WorkerCase):
             "CLIENT_WINDOW_MS": SC.INTAKE_CLIENT_WINDOW_MS, "CLIENT_DAILY_MAILS": SC.INTAKE_CLIENT_DAILY_MAILS,
             "DAILY_CAP": SC.INTAKE_DAILY_CAP, "FILE_NAME_CAP": SC.INTAKE_FILE_NAME_CAP,
             "RESULT_IDS": list(SC.INTAKE_RESULT_IDS), "LIMITER_KEY_BYTES": SC.INTAKE_LIMITER_KEY_BYTES,
+            "BURST_ABSENT_BINDING": SC.INTAKE_BURST_ABSENT_BINDING,
+            "BURST_ABSENT_VALUE": SC.INTAKE_BURST_ABSENT_VALUE,
         }
         self.assertEqual(sorted(worker), sorted(expect))
         for key, value in expect.items():
@@ -978,6 +992,370 @@ class ResponsesAndMail(WorkerCase):
                          {"live_valid_report", "live_oversize", "live_not_image", "live_honeypot",
                           "live_headers", "live_rate_limit"})
         self.assertEqual(len(mails()), 1)
+
+
+def logged(action):
+    """The log lines workerd printed while action() ran."""
+    before = len(stdout_lines())
+    action()
+    deadline = time.monotonic() + 5
+    lines = stdout_lines()
+    while time.monotonic() < deadline and len(lines) == before:
+        time.sleep(0.05)
+        lines = stdout_lines()
+    time.sleep(0.2)
+    return stdout_lines()[before:]
+
+
+def body_lines(mail):
+    return mail["text"].split("\n")
+
+
+def probe_error(target, fn, *args):
+    """The error a probe call ends in, or None when it succeeds."""
+    _, _, _, data = request(SERVER["ports"]["probe"], "POST", "/",
+                            json.dumps({"target": target, "fn": fn, "args": list(args)}).encode(),
+                            {"Content-Type": "application/json"})
+    reply = json.loads(data)
+    return None if reply.get("ok") else reply.get("error")
+
+
+class FixRound1(WorkerCase):
+    """Fix round 1 of PR 2: the review findings and QA's gap rows."""
+
+    # --- review 1: the daily caps across 00:00 UTC
+    def midnight(self):
+        day = 86_400_000
+        return (base_now() // day + 1) * day
+
+    def test_reserve_after_rollover_counts_on_new_day(self):
+        d = self.midnight()
+        key, other = "a" * 64, "b" * 64
+        for _ in range(SC.INTAKE_CLIENT_DAILY_MAILS):
+            self.assertTrue(probe("limiter", "attempt", key, d - 1000)["ok"])
+            self.assertTrue(probe("limiter", "reserve", key, d - 1000)["ok"])
+        self.assertFalse(probe("limiter", "reserve", key, d - 1000)["ok"])
+        self.assertTrue(probe("limiter", "attempt", other, d + 1000)["ok"])  # deletes the old day's rows
+        late = probe("limiter", "reserve", key, d - 1000)  # a straggler whose body ran past 00:00
+        new_day = probe("helper", "dayKey", d + 1000)
+        self.assertEqual(late.get("day"), new_day, "counted on a day whose rows are gone")
+        self.assertTrue(late["ok"])
+        rows = probe("limiter", "rows")
+        self.assertEqual(rows["mails"], [{"day": new_day, "key": key, "n": 1}])
+        self.assertEqual(rows["days"], [{"day": new_day, "n": 1}])
+
+    def test_global_cap_after_rollover_counts_on_new_day(self):
+        d = self.midnight()
+        for i in range(SC.INTAKE_DAILY_CAP):
+            self.assertTrue(probe("limiter", "reserve", f"{i:064x}", d - 1000)["ok"])
+        self.assertFalse(probe("limiter", "reserve", "c" * 64, d - 1000)["ok"])
+        probe("limiter", "attempt", "e" * 64, d + 1000)
+        late = probe("limiter", "reserve", "d" * 64, d - 1000)
+        self.assertEqual((late["ok"], late["day"]), (True, probe("helper", "dayKey", d + 1000)))
+        self.assertEqual(probe("limiter", "rows")["days"], [{"day": late["day"], "n": 1}])
+
+    def test_refund_names_its_day(self):
+        now = base_now()
+        slot = probe("limiter", "reserve", "a" * 64, now)
+        probe("limiter", "refund", "a" * 64, slot["day"])
+        self.assertEqual(probe("limiter", "rows")["days"], [{"day": slot["day"], "n": 0}])
+
+    # --- review 3: the explicit no-binding mode
+    def test_no_binding_mode_relies_on_limiter(self):
+        ip = fresh_ip()
+        self.assertOutcome(send(self, report(), ip=ip, service="intake-no-burst"), "sent")
+        for _ in range(SC.INTAKE_CLIENT_LIMIT - 1):
+            send(self, report(website="x"), ip=ip, service="intake-no-burst")
+        self.assertOutcome(send(self, report(), ip=ip, service="intake-no-burst"), "too-many-attempts")
+        self.assertEqual(probe("burst", "keys"), [], "the no-binding mode reached a binding")
+
+    def test_missing_binding_fails_closed(self):
+        lines = logged(lambda: self.assertOutcome(send(self, report(), service="intake-missing-burst"), "error"))
+        self.assertIn("intake event=error code=E_BURST_MISSING", lines)
+        self.assertEqual(mails(), [])
+
+    # --- review 4: the subject defang, and page_url without white space
+    WHITE_SPACE = [chr(c) for c in (*range(0x09, 0x0e), 0x20, 0x85, 0xa0, 0x1680, *range(0x2000, 0x200b),
+                                    0x2028, 0x2029, 0x202f, 0x205f, 0x3000)]
+
+    def test_page_url_white_space_members(self):
+        self.assertEqual(len(self.WHITE_SPACE), 25)
+        for ch in self.WHITE_SPACE:
+            for value in (f"https://interviewscam.com/x{ch}https://evil.example/", f"{ch}https://interviewscam.com/x/",
+                          f"https://interviewscam.com/x/{ch}"):
+                with self.subTest(ch=hex(ord(ch)), at=value.index(ch)):
+                    self.assertFalse(probe("helper", "pageUrlOk", value))
+        self.assertTrue(probe("helper", "pageUrlOk", "https://interviewscam.com/x/\u200B"))
+        self.assertOutcome(send(self, correction(page_url="https://interviewscam.com/x https://evil.example/payload")),
+                           "bad-page-url")
+
+    def test_subject_scheme_members(self):
+        for raw, want in (("https://a", "hxxps://a"), ("http://a", "hxxp://a"), ("ftp://a", "fxp://a"),
+                          ("HTTPS://a", "hxxps://a"), ("FtP://a", "fxp://a"), ("hxxps://a", "hxxps://a")):
+            with self.subTest(raw=raw):
+                self.assertEqual(probe("helper", "subjectFor", "report", {"name": raw}), "Report: " + want)
+                self.assertEqual(probe("helper", "subjectFor", "correction", {"page_url": raw}), "Correction: " + want)
+
+    # --- review 5: single-line fields stay on one line
+    def test_single_line_fields_one_line(self):
+        for name in ("name", "contact_start"):
+            for brk in ("\n", "\r\n", "\r", "\t"):
+                with self.subTest(field=name, brk=ascii(brk)):
+                    probe("capture", "clear")
+                    forged = f"Acme{brk}Reply address: someone-else@example.org{brk}Own name: yes"
+                    self.assertOutcome(send(self, report(**{name: forged})), "sent")
+                    lines = body_lines(mails()[0])
+                    self.assertFalse([line for line in lines if line.startswith(("Reply address: someone",
+                                                                                  "Own name:"))], lines)
+                    label = {"name": "Name: ", "contact_start": "Where the contact started: "}[name]
+                    self.assertIn(label + "Acme Reply address: someone-else@example.org Own name: yes", lines)
+
+    # --- review 10: the send_email stand-in enforces the documented rules
+    def test_capture_enforces_send_email_rules(self):
+        ok = {"from": "intake@interviewscam.com", "subject": "s", "text": "t"}
+        self.assertIsNone(probe_error("capture", "send", ok))
+        self.assertIsNone(probe_error("capture", "send", dict(ok, to="operator@example.com")))
+        att = {"content": "x", "filename": "a", "type": "t", "disposition": "attachment"}
+        bad = {
+            "sender off the domain": dict(ok, **{"from": "x@evil.example"}),
+            "to another address": dict(ok, to="other@example.com"),
+            "no subject": {k: v for k, v in ok.items() if k != "subject"},
+            "subject over 998": dict(ok, subject="s" * 999),
+            "replyTo not an address": dict(ok, replyTo=5),
+            "attachments not a list": dict(ok, attachments="x"),
+            "bad disposition": dict(ok, attachments=[dict(att, disposition="x")]),
+            "33 attachments": dict(ok, attachments=[att] * 33),
+            "attachment without content": dict(ok, attachments=[{k: v for k, v in att.items() if k != "content"}]),
+            "attachment without filename": dict(ok, attachments=[{k: v for k, v in att.items() if k != "filename"}]),
+            "attachment without type": dict(ok, attachments=[{k: v for k, v in att.items() if k != "type"}]),
+            "over 25 MiB": dict(ok, text="x" * (25 * 1024 * 1024 + 1)),
+        }
+        for label, message in bad.items():
+            with self.subTest(case=label):
+                self.assertIsNotNone(probe_error("capture", "send", message))
+        self.assertIsNone(probe_error("capture", "send", dict(ok, attachments=[att] * 32)))
+
+    def test_notice_failure_retried(self):
+        now = int(time.time() * 1000)
+        for i in range(SC.INTAKE_DAILY_CAP):
+            self.assertTrue(probe("limiter", "reserve", f"{i:064x}", now)["ok"])
+        probe("capture", "setFail", "notice")
+        lines = logged(lambda: self.assertOutcome(send(self, report()), "paused"))
+        self.assertEqual(lines, ["intake event=paused code=E_NOTICE"])
+        self.assertEqual(mails(), [])
+        probe("capture", "setFail", "")
+        lines = logged(lambda: self.assertOutcome(send(self, report()), "paused"))
+        self.assertEqual(lines, ["intake event=paused code=E_DAILY_CAP"])
+        self.assertOutcome(send(self, report()), "paused")
+        (notice,) = mails()
+        day = probe("limiter", "rows")["days"][0]["day"]
+        self.assertEqual(notice["subject"], f"Intake paused: {SC.INTAKE_DAILY_CAP} submissions on {day}")
+        self.assertEqual(notice["text"], f"The daily cap of {SC.INTAKE_DAILY_CAP} mailed submissions was reached on "
+                         f"{day} (UTC). Until 00:00 UTC the form answers /not-sent/#paused, which points reporters "
+                         "to the email address.\n")
+        self.assertEqual(sorted(notice["keys"]), ["from", "subject", "text"])
+
+    # --- QA: rule branches without a killing case
+    def test_urlencoded_complete_rejected(self):
+        body = urllib.parse.urlencode(dict(report())).encode()
+        self.assertOutcome(send(self, body=body, ctype="application/x-www-form-urlencoded"), "not-accepted")
+        self.assertEqual(mails(), [])
+
+    def test_burst_refusal_distinct_from_limiter(self):
+        probe("burst", "reset", {"limit": 3, "period": 60, "mode": "on"})
+        ip = fresh_ip()
+        for _ in range(3):
+            self.assertOutcome(send(self, report(website="x"), ip=ip), "not-accepted")
+        lines = logged(lambda: self.assertOutcome(send(self, report(website="x"), ip=ip), "too-many-attempts"))
+        self.assertEqual(lines, ["intake event=too-many-attempts code=E_BURST_LIMIT"])
+        self.assertEqual(len(probe("limiter", "rows")["attempts"]), 3)
+
+    def test_limiter_key_is_hmac(self):
+        send(self, report(website="x"), ip="2001:db8:abc:1::1")
+        secret = bytes.fromhex("f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246")
+        want = hmac.new(secret, b"v6:2001:db8:abc:1", hashlib.sha256).hexdigest()
+        self.assertEqual(probe("burst", "keys"), [want])
+        self.assertEqual([r["key"] for r in probe("limiter", "rows")["attempts"]], [want])
+
+    def test_reserve_failure_fails_closed(self):
+        lines = logged(lambda: self.assertOutcome(send(self, report(), service="intake-broken-reserve"), "error"))
+        self.assertEqual(lines, ["intake event=error code=E_LIMITER"])
+        self.assertEqual(mails(), [])
+
+    def test_reserve_rechecks_client_mails(self):
+        now, key = base_now(), "b" * 64
+        for _ in range(SC.INTAKE_CLIENT_DAILY_MAILS):
+            self.assertTrue(probe("limiter", "reserve", key, now)["ok"])
+        self.assertEqual(probe("limiter", "reserve", key, now)["reason"], "client-mails")
+
+    def test_notice_reopen_only_after_notice(self):
+        now = base_now()
+        slots = [probe("limiter", "reserve", f"{i:064x}", now) for i in range(10)]
+        probe("limiter", "noticeFailed", slots[0]["day"])
+        self.assertEqual(probe("limiter", "rows")["days"], [{"day": slots[0]["day"], "n": 10}])
+
+    def test_reserve_refusal_code_client_mails(self):
+        """The mail cap checked again at reserve(): a key reaches it while its
+        body is still uploading (the race attempt() cannot see)."""
+        probe("burst", "reset", {"limit": 6, "period": 60, "mode": "off"})
+        ip = fresh_ip()
+        secret = bytes.fromhex("f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246")
+        key = hmac.new(secret, probe("helper", "clientKeyMaterial", ip).encode(), hashlib.sha256).hexdigest()
+        body, ctype = multipart(report())
+
+        def race():
+            sock = socket.create_connection(("127.0.0.1", SERVER["ports"]["intake"]), timeout=30)
+            try:
+                sock.sendall((f"POST /submit HTTP/1.1\r\nHost: intake.test\r\nContent-Type: {ctype}\r\n"
+                              f"Content-Length: {len(body)}\r\nOrigin: https://interviewscam.com\r\n"
+                              f"CF-Connecting-IP: {ip}\r\nConnection: close\r\n\r\n").encode() + body[:50])
+                deadline = time.monotonic() + 15
+                while not any(r["key"] == key for r in probe("limiter", "rows")["attempts"]):
+                    self.assertLess(time.monotonic(), deadline, "the attempt never reached the limiter")
+                    time.sleep(0.05)
+                now = int(time.time() * 1000)
+                for _ in range(SC.INTAKE_CLIENT_DAILY_MAILS):
+                    self.assertTrue(probe("limiter", "reserve", key, now)["ok"])
+                sock.sendall(body[50:])
+                data = b""
+                while chunk := sock.recv(65536):
+                    data += chunk
+            finally:
+                sock.close()
+            self.assertIn(b"not-sent/#too-many-attempts", data)
+
+        self.assertEqual(logged(race), ["intake event=too-many-attempts code=E_CLIENT_MAILS"])
+        self.assertEqual(mails(), [])
+
+    def test_refund_after_notice_keeps_pause(self):
+        now = base_now()
+        slots = [probe("limiter", "reserve", f"{i:064x}", now) for i in range(SC.INTAKE_DAILY_CAP)]
+        first = probe("limiter", "reserve", "c" * 64, now)
+        self.assertEqual((first["ok"], first.get("notice")), (False, True))
+        probe("limiter", "refund", f"{0:064x}", slots[0]["day"])
+        again = probe("limiter", "reserve", "d" * 64, now)
+        self.assertEqual((again["ok"], again.get("notice")), (False, False))
+
+    # --- QA: per-member sets
+    SUBJECT_STRIP = [chr(c) for c in (*range(0x200b, 0x2010), 0x2060, 0xfeff, *range(0x202a, 0x202f),
+                                      *range(0x2066, 0x206a))]
+    CONTROLS = [chr(c) for c in (*range(0x00, 0x09), *range(0x0e, 0x20), *range(0x7f, 0x85),
+                                 *range(0x86, 0xa0))]
+
+    def test_subject_strip_members(self):
+        self.assertEqual(len(self.SUBJECT_STRIP), 16)
+        for ch in self.SUBJECT_STRIP + self.CONTROLS:
+            with self.subTest(ch=hex(ord(ch))):
+                self.assertEqual(probe("helper", "cleanSubject", "a" + ch + "b"), "ab")
+        for raw, want in (("a \t\n b", "a b"), ("  a  ", "a"), ("a \u0007 b", "a b"), ("a \u0080 \u200B b", "a b"), ("a\u0085b", "a b"), ("a\u3000\u00A0b", "a b"),
+                          ("a\u000bb", "a b"), ("a\u000cb", "a b"), ("a\rb", "a b")):
+            with self.subTest(raw=ascii(raw)):
+                self.assertEqual(probe("helper", "cleanSubject", raw), want)
+
+    def test_body_control_members(self):
+        controls = "".join(chr(c) for c in (*range(0x00, 0x09), 0x0b, 0x0c, *range(0x0e, 0x20)))
+        self.assertOutcome(send(self, report(details="a" + controls + "b\tc\nd\u007f\u0085e")), "sent")
+        self.assertIn("\nab\tc\nd\u007f\u0085e\n", mails()[0]["text"])
+
+    def test_email_members(self):
+        for value, ok in (("@example.com", False), ("x@a-b.example", True), ("x@" + "a" * 63 + ".example", True),
+                          ("x@" + "a" * 64 + ".example", False), ("x@example.", False), ("x@-a.example", False),
+                          ("x@a-.example", False), ("x@a", True), ("x@a.b-c.d", True), ("x@.example", False),
+                          ("xexample.com", False), ("x@a.b", True)):
+            with self.subTest(value=value):
+                self.assertEqual(probe("helper", "isValidEmail", value), ok)
+
+    def test_magic_byte_members(self):
+        for mime, ext, signature in SC.INTAKE_IMAGE_TYPES:
+            data = bytearray(16)
+            for offset, hexes in signature:
+                data[offset:offset + len(hexes) // 2] = bytes.fromhex(hexes)
+            self.assertEqual(probe("helper", "detectImageType", data.hex()), {"type": mime, "ext": ext})
+            for offset, hexes in signature:
+                for i in range(len(hexes) // 2):
+                    with self.subTest(ext=ext, byte=offset + i):
+                        loose = bytearray(data)
+                        loose[offset + i] ^= 0x01
+                        self.assertIsNone(probe("helper", "detectImageType", loose.hex()))
+            end = max(o + len(h) // 2 for o, h in signature)
+            with self.subTest(ext=ext, truncated=end - 1):
+                self.assertIsNone(probe("helper", "detectImageType", bytes(data[:end - 1]).hex()))
+
+    def test_file_name_boundary(self):
+        cap = SC.INTAKE_FILE_NAME_CAP
+        for name, want in (("a" * cap, "a" * cap), ("a" * (cap + 1), "a" * cap),
+                           ("a" * (cap - 1) + "\U0001F600", "a" * (cap - 1)),
+                           ("a" * (cap - 2) + "\U0001F600", "a" * (cap - 2) + "\U0001F600"),
+                           ("a\tb\tc", "a b c")):
+            with self.subTest(length=len(name)):
+                probe("capture", "clear")
+                self.assertOutcome(send(self, report() + [("files", (name, "image/png", PNG, "raw"))]), "sent")
+                lines = [line for line in body_lines(mails()[0]) if line.startswith("evidence-1.png: ")]
+                self.assertEqual(lines, ["evidence-1.png: " + want])
+
+    # --- QA: the mail text and the log codes
+    def test_mail_text_exact(self):
+        self.assertOutcome(send(self, report(name="N", contact_start="C", details="D", headers="H",
+                                             email="r@example.com") + [("files", ("s.png", "image/png", PNG))]),
+                           "sent")
+        self.assertOutcome(send(self, correction(page_url="https://interviewscam.com/p/", request="R",
+                                                 email="o@example.com", own_name="yes")), "sent")
+        self.assertOutcome(send(self, correction(page_url="https://interviewscam.com/p/", request="R",
+                                                 email="o@example.com")), "sent")
+        notice = ("Notice: the URL schemes http, https and ftp in this message were rewritten to hxxp, hxxps "
+                  "and fxp; bare domains were not changed.")
+        self.assertEqual([m["text"] for m in mails()], [
+            f"{notice}\nChannel: report\nName: N\nWhere the contact started: C\n\nDetails:\nD\n\n\n"
+            "Mail headers:\nH\n\nReply address: r@example.com\n\n"
+            "Files (attachment: original name, cut to 100 characters):\nevidence-1.png: s.png\n",
+            f"{notice}\nChannel: correction\nPage: hxxps://interviewscam.com/p/\n\nRequest:\nR\n\n"
+            "Own name: yes\nReply address: o@example.com\n",
+            f"{notice}\nChannel: correction\nPage: hxxps://interviewscam.com/p/\n\nRequest:\nR\n\n"
+            "Own name: no\nReply address: o@example.com\n"])
+
+    def test_log_codes_table(self):
+        body, ctype = multipart(report(), boundary="AAA")
+        rows = [
+            (lambda: send(self, report(), origin="https://evil.example"), "not-accepted", "E_ORIGIN"),
+            (lambda: send(self, body=b"a=b", ctype="application/x-www-form-urlencoded"), "not-accepted",
+             "E_CONTENT_TYPE"),
+            (lambda: send(self, body=body[:-30], ctype=ctype), "not-accepted", "E_PARSE"),
+            (lambda: send(self, report()[1:]), "not-accepted", "E_CHANNEL"),
+            (lambda: send(self, report() + [("x", "y")]), "not-accepted", "E_FIELD"),
+            (lambda: send(self, report() + [("name", "x")]), "not-accepted", "E_DUPLICATE"),
+            (lambda: send(self, report(website="x")), "not-accepted", "E_HONEYPOT"),
+            (lambda: send(self, report(name=" ")), "missing-field", "E_REQUIRED"),
+            (lambda: send(self, report(name="x" * 201)), "too-long", "E_LENGTH"),
+            (lambda: send(self, report(email="x")), "bad-address", "E_EMAIL"),
+            (lambda: send(self, correction(page_url="/x")), "bad-page-url", "E_PAGE_URL"),
+            (lambda: send(self, report() + [("files", (f"{i}", "image/png", PNG)) for i in range(11)]),
+             "too-many-files", "E_FILE_COUNT"),
+            (lambda: send(self, report() + Files.big_files(SC.INTAKE_MAX_UPLOAD_BYTES + 1)), "too-large",
+             "E_UPLOAD_SIZE"),
+            (lambda: send(self, report() + [("files", ("a", "image/png", b"MZ"))]), "not-an-image", "E_FILE_TYPE"),
+            (lambda: send(self, report(), service="intake-broken-limiter"), "error", "E_LIMITER"),
+            (lambda: send(self, report(), service="intake-bad-key"), "error", "E_UNCAUGHT"),
+            (lambda: send(self, report()), "sent", None),
+        ]
+        for action, event, code in rows:
+            with self.subTest(event=event, code=code):
+                want = f"intake event={event}" + (f" code={code}" if code else "")
+                self.assertEqual(logged(action), [want])
+        probe("burst", "reset", {"limit": 6, "period": 60, "mode": "throw"})
+        self.assertEqual(logged(lambda: send(self, report())), ["intake event=error code=E_BURST"])
+        probe("burst", "reset", {"limit": 6, "period": 60, "mode": "off"})
+        ip = fresh_ip()
+        for _ in range(SC.INTAKE_CLIENT_LIMIT):
+            send(self, report(website="x"), ip=ip)
+        self.assertEqual(logged(lambda: send(self, report(), ip=ip)),
+                         ["intake event=too-many-attempts code=E_CLIENT_LIMIT"])
+        ip = fresh_ip()
+        for _ in range(SC.INTAKE_CLIENT_DAILY_MAILS):
+            send(self, report(), ip=ip)
+        self.assertEqual(logged(lambda: send(self, report(), ip=ip)),
+                         ["intake event=too-many-attempts code=E_CLIENT_MAILS"])
+        probe("capture", "setFail", "throw")
+        self.assertEqual(logged(lambda: send(self, report())), ["intake event=error code=E_SEND"])
 
 
 if __name__ == "__main__":

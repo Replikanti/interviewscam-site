@@ -172,7 +172,8 @@ literals_check() { sitecheck literals --root "$1"; }
 # the deploy tool's tests against a stub API on loopback (ADR-0006 part 2,
 # tests/worker/). It prints the unittest output and `worker checked: N
 # cases`, and fails when a case fails or errors, when none ran, or when any
-# was skipped (a skip would pass silently).
+# was skipped, marked an expected failure or an unexpected success (unittest
+# reports each of those as OK, so a broken rule would pass silently).
 worker_check() {
   local out rc n
   if [[ ! -x "$WORKERD_BIN" ]]; then
@@ -184,8 +185,9 @@ worker_check() {
   rc=$?
   printf '%s\n' "$out"
   n="$(sed -n 's/^Ran \([0-9][0-9]*\) tests\{0,1\} in .*/\1/p' <<<"$out")"
-  if [[ $rc -ne 0 || -z "$n" || "$n" -eq 0 ]] || grep -q 'skipped=' <<<"$out"; then
-    echo "FAIL: worker: exit $rc, ${n:-no} cases run (a skipped case fails too)" >&2
+  if [[ $rc -ne 0 || -z "$n" || "$n" -eq 0 ]] \
+      || grep -qE 'skipped=|expected failures=|unexpected successes=' <<<"$out"; then
+    echo "FAIL: worker: exit $rc, ${n:-no} cases run (a skipped case, an expected failure and an unexpected success fail too)" >&2
     return 1
   fi
   echo "worker checked: $n cases"

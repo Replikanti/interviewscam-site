@@ -26,6 +26,12 @@ const config :Workerd.Config = (
     # The same Worker with a malformed LIMITER_KEY: an exception no inner
     # handler catches, which the top-level handler maps to #error.
     (name = "intake-bad-key", worker = .intakeBadKey),
+    # A limiter that admits the attempt and throws on reserve().
+    (name = "intake-broken-reserve", worker = .intakeBrokenReserve),
+    # The explicit no-binding mode: no RATE_LIMITER, the marker binding set.
+    (name = "intake-no-burst", worker = .intakeNoBurst),
+    # Neither the binding nor the marker: every submission is #error.
+    (name = "intake-missing-burst", worker = .intakeMissingBurst),
     (name = "capture", worker = .capture),
     (name = "burst", worker = .burst),
     (name = "probe", worker = .probe),
@@ -37,6 +43,11 @@ const config :Workerd.Config = (
      service = "intake-broken-limiter"),
     (name = "intake-bad-key", address = "127.0.0.1:0", http = (),
      service = "intake-bad-key"),
+    (name = "intake-broken-reserve", address = "127.0.0.1:0", http = (),
+     service = "intake-broken-reserve"),
+    (name = "intake-no-burst", address = "127.0.0.1:0", http = (), service = "intake-no-burst"),
+    (name = "intake-missing-burst", address = "127.0.0.1:0", http = (),
+     service = "intake-missing-burst"),
     (name = "probe", address = "127.0.0.1:0", http = (), service = "probe"),
   ],
 );
@@ -78,6 +89,39 @@ const intakeBadKey :Workerd.Worker = (
   ],
 );
 
+const intakeBrokenReserve :Workerd.Worker = (
+  modules = [(name = "intake.js", esModule = embed "../../worker/intake.js")],
+  compatibilityDate = "2026-11-10",
+  bindings = [
+    (name = "EMAIL", service = "capture"),
+    (name = "RATE_LIMITER", service = "burst"),
+    (name = "LIMITER", durableObjectNamespace = (className = "BrokenReserveLimiter", serviceName = "probe")),
+    (name = "LIMITER_KEY", text = "f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246"),
+  ],
+);
+
+const intakeNoBurst :Workerd.Worker = (
+  modules = [(name = "intake.js", esModule = embed "../../worker/intake.js")],
+  compatibilityDate = "2026-11-10",
+  bindings = [
+    (name = "EMAIL", service = "capture"),
+    (name = "RATE_LIMITER_ABSENT", text = "refused-by-cloudflare"),
+    (name = "LIMITER", durableObjectNamespace = (className = "IntakeLimiter", serviceName = "intake")),
+    (name = "LIMITER_KEY", text = "f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246"),
+  ],
+);
+
+const intakeMissingBurst :Workerd.Worker = (
+  modules = [(name = "intake.js", esModule = embed "../../worker/intake.js")],
+  compatibilityDate = "2026-11-10",
+  bindings = [
+    (name = "EMAIL", service = "capture"),
+    (name = "RATE_LIMITER_ABSENT", text = "anything-else"),
+    (name = "LIMITER", durableObjectNamespace = (className = "IntakeLimiter", serviceName = "intake")),
+    (name = "LIMITER_KEY", text = "f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246"),
+  ],
+);
+
 const capture :Workerd.Worker = (
   modules = [(name = "capture.js", esModule = embed "capture.js")],
   compatibilityDate = "2026-11-10",
@@ -101,6 +145,7 @@ const probe :Workerd.Worker = (
   ],
   durableObjectNamespaces = [
     (className = "BrokenLimiter", uniqueKey = "interviewscam-intake-test-broken"),
+    (className = "BrokenReserveLimiter", uniqueKey = "interviewscam-intake-test-broken-reserve"),
   ],
   durableObjectStorage = (inMemory = void),
 );
