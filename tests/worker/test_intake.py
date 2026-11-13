@@ -1013,7 +1013,15 @@ class ResponsesAndMail(WorkerCase):
         for key, value in expect.items():
             with self.subTest(key=key):
                 self.assertEqual(worker[key], json.loads(json.dumps(value)))
-        self.assertEqual(SC.INTAKE_MAX_BODY, SC.INTAKE_MAX_UPLOAD_BYTES + 327_680)
+        # ADR-0006 Numbers: `headers` is 2x the largest measured header block
+        # (12,767 bytes, 2026-11-13) rounded up to the next 1,000; the body
+        # allowance is 3 UTF-8 bytes per text unit plus 18 parts of 1,024
+        # bytes, doubled and rounded up to a whole 64 KiB.
+        caps = {f["name"]: f["cap"] for f in SC.INTAKE_FIELDS["report"] if f["cap"]}
+        self.assertEqual(caps["headers"], -(-2 * 12_767 // 1000) * 1000)
+        allowance = -(-2 * (3 * sum(caps.values()) + 18 * 1024) // 65_536) * 65_536
+        self.assertEqual((sum(caps.values()), allowance), (36_654, 262_144))
+        self.assertEqual(SC.INTAKE_MAX_BODY, SC.INTAKE_MAX_UPLOAD_BYTES + allowance)
         self.assertEqual(SC.INTAKE_ACTION, SC.INTAKE_ORIGIN + "/submit")
 
     def test_config_matches_pins(self):

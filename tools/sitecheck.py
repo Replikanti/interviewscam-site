@@ -9929,12 +9929,12 @@ REFLOW_HEIGHT = 640
 # 20, image 20261101), so it is absorbed whether a killed Chrome keeps its
 # progress, the stall lies outside the VM, or only a fresh Chrome helps.
 # Upper bound: the 60-minute workflow cap (derived from the job duration on
-# a bucketed base of 1800 s, the slowest green job, 1554 s, rounded up to
-# the next 5 minutes; M5b PR 2 fix round 9, ADR-0004 Numbers) holds the
-# base, a fully used window (2 x L) and one more 70 s stall, so L is at
-# most 865 s; 75 s leaves 1580 s of the cap. Below 71 s job 20's shape
-# depends on a restart helping again; above 865 s an absorbed window plus a
-# second stall is cancelled at 60 minutes.
+# a bucketed base of 1800 s, the slowest green job, 1554 s, plus 46 s of
+# drift, rounded up to the next 5 minutes; M5b PR 2 fix rounds 9 and 10,
+# ADR-0004 Numbers) holds the base, a fully used window (2 x L) and one
+# more 70 s stall, so L is at most 865 s; 75 s leaves 1580 s of the cap.
+# Below 71 s job 20's shape depends on a restart helping again; above 865 s
+# an absorbed window plus a second stall is cancelled at 60 minutes.
 REFLOW_LAUNCH_TIMEOUT = 75
 # The budget of every later answer (ADR-0003 Numbers). A 23-page call makes
 # about 70 page-level calls in 1.9 to 2.8 s on the runner, and no later call
@@ -13010,15 +13010,15 @@ INTAKE_SCRIPT_TAG = "interviewscam-intake"
 # form attribute PR 3 sets (None: the control takes none). `channel` is the
 # hidden field naming the channel, `website` the honeypot (part 3 step 5,
 # present and empty), `files` the one multi-value field (part 4), `own_name`
-# a checkbox whose only value is "yes". `headers` 32,000 is provisional: the
-# operator measures real header blocks before this PR merges (Numbers).
+# a checkbox whose only value is "yes". `headers` 26,000 is 2x the largest
+# header block the operator measured, rounded up to the next 1,000 (Numbers).
 INTAKE_FIELDS = {
     "report": (
         {"name": "channel", "type": "hidden", "required": True, "cap": None, "autocomplete": None},
         {"name": "name", "type": "text", "required": True, "cap": 200, "autocomplete": "off"},
         {"name": "contact_start", "type": "text", "required": False, "cap": 200, "autocomplete": "off"},
         {"name": "details", "type": "textarea", "required": True, "cap": 10000, "autocomplete": "off"},
-        {"name": "headers", "type": "textarea", "required": False, "cap": 32000, "autocomplete": "off"},
+        {"name": "headers", "type": "textarea", "required": False, "cap": 26000, "autocomplete": "off"},
         {"name": "email", "type": "email", "required": True, "cap": 254, "autocomplete": "email"},
         {"name": "files", "type": "file", "required": False, "cap": None, "autocomplete": None},
         {"name": "website", "type": "honeypot", "required": False, "cap": None, "autocomplete": "off"},
@@ -13044,7 +13044,7 @@ INTAKE_IMAGE_TYPES = (
 )
 INTAKE_MAX_FILES = 10
 INTAKE_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
-INTAKE_MAX_BODY = INTAKE_MAX_UPLOAD_BYTES + 327_680
+INTAKE_MAX_BODY = INTAKE_MAX_UPLOAD_BYTES + 262_144
 INTAKE_FILE_NAME_CAP = 100
 INTAKE_CLIENT_LIMIT = 6
 INTAKE_CLIENT_WINDOW_MS = 3_600_000
@@ -13082,7 +13082,7 @@ INTAKE_RESULT_IDS = ("too-large", "too-many-files", "not-an-image", "missing-fie
 # tools/intake.py refuses to deploy a source that differs from this pin.
 INTAKE_WORKER_DIR = "worker"
 INTAKE_WORKER_SHA256 = {
-    "worker/intake.js": "ba62f93d18957e8f2de4cb394b6ebd9902d5855fa08fa3e6faf3dd3a6b2f8b80",
+    "worker/intake.js": "1610ffbe2b0c890b46c7c6d7a1722ee69ea4acac5f0c0a838bb8dbe53e9b4410",
 }
 
 
