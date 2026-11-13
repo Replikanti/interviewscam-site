@@ -1634,6 +1634,26 @@ class FixRound2(WorkerCase):
         self.assertIn(["noticeSent", "2000-01-01"], probe("record"))
         self.assertEqual(len(mails()), 1)
 
+    # --- fix round 9, D8-1: the failure report runs under ctx.waitUntil too
+    def test_failed_notice_report_runs_under_wait_until(self):
+        probe("record", "setup", True, False, False)
+        probe("capture", "setFail", "notice")
+        try:
+            body, ctype = multipart(report())
+            _, _, _, data = request(SERVER["ports"]["probe"], "POST", "/waituntil", body,
+                                    {"Content-Type": ctype, "Origin": "https://interviewscam.com",
+                                     "CF-Connecting-IP": fresh_ip()})
+        finally:
+            probe("capture", "setFail", "")
+        result = json.loads(data)["result"]
+        self.assertEqual((result["status"], result["location"]), (303, SC.INTAKE_NOT_SENT_URL + "#paused"))
+        self.assertEqual((result["waited"], result["settled"]), (1, [False]))
+        self.assertEqual(result["pending"], [True], "the promise is the running notice, not a settled stand-in")
+        self.assertEqual(result["order"], ["sent", "recorded", "settled", "returned"],
+                         "the promise must cover the failed send and its report")
+        self.assertIn(["noticeFailed", "2000-01-01"], probe("record"))
+        self.assertEqual(mails(), [])
+
     # --- fix round 5, D4-4a: only the intake host
     def test_other_host_refused_before_limiter(self):
         for host in ("evil.example", "intake.interviewscam.com.evil.example", "interviewscam.com", "127.0.0.1",

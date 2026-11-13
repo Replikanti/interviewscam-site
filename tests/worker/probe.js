@@ -131,19 +131,23 @@ async function waitUntilCase(request, env) {
   } };
   const order = [];
   const email = { send: async (message) => {
-    const result = await env.CAPTURE.send(message);
-    order.push("sent");
-    return result;
+    try {
+      return await env.CAPTURE.send(message);
+    } finally {
+      order.push("sent");
+    }
   } };
   const forwarded = new Request("https://intake.interviewscam.com/submit",
     { method: "POST", headers: request.headers, body: request.body });
   // Fix round 8: the limiter as the Worker sees it, forwarded whole, with
-  // only noticeSent wrapped to record when its report is done, so a promise
-  // that covers the send but not the report fails the order check.
+  // only the two notice reports wrapped to record when one is done, so a
+  // promise that covers the send but not its report fails the order check.
+  // Fix round 9: noticeFailed too, and "sent" is pushed whatever the send's
+  // outcome, so the failure branch is held to the same order.
   const recordingStub = (stub) => new Proxy(stub, { get(target, prop) {
-    if (prop !== "noticeSent") return target[prop];
+    if (prop !== "noticeSent" && prop !== "noticeFailed") return target[prop];
     return async (...args) => {
-      const result = await target.noticeSent(...args);
+      const result = await target[prop](...args);
       order.push("recorded");
       return result;
     };
