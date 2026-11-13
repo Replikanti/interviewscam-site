@@ -1326,6 +1326,49 @@ PY
     n_failed=$((n_failed + 1))
   fi
 
+  # Wiring: check_main runs the worker step (ADR-0006 part 2) on the repo
+  # root, which no fixture directory can prove, and worker_check fails on a
+  # failed, an erroring and a skipped case, an expected failure, an
+  # unexpected success and on a run of none: each branch
+  # runs on a temporary root holding one tests/worker/test_x.py.
+  # shellcheck disable=SC2016 # the patterns match a literal $CHECK_ROOT
+  if grep -qE '^ *run_step "worker \(intake Worker and deploy tool\)" step_worker;?$' <<<"$(declare -f check_main)" \
+      && grep -qE '^ *worker_check "\$CHECK_ROOT";?$' <<<"$(declare -f step_worker)"; then
+    echo "ok   wiring/worker-step (check_main runs step_worker on the repo root)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL wiring/worker-step: check_main in tools/check.sh does not run" \
+      "step_worker, or step_worker does not check \"\$CHECK_ROOT\""
+    n_failed=$((n_failed + 1))
+  fi
+  local wk_root wk_case wk_body wk_out wk_rc wk_line
+  for wk_case in pass fail error skip xfail xpass none; do
+    wk_root="$(mktemp -d)"
+    mkdir -p "$wk_root/tests/worker"
+    case "$wk_case" in
+      pass) wk_body='    def test_a(self): pass' ;;
+      fail) wk_body='    def test_a(self): self.fail("x")' ;;
+      error) wk_body='    def test_a(self): raise RuntimeError("x")' ;;
+      skip) wk_body=$'    def test_a(self): pass\n    def test_b(self): self.skipTest("x")' ;;
+      xfail) wk_body=$'    def test_a(self): pass\n    @unittest.expectedFailure\n    def test_b(self): self.fail("x")' ;;
+      xpass) wk_body=$'    def test_a(self): pass\n    @unittest.expectedFailure\n    def test_b(self): pass' ;;
+      none) wk_body='    pass' ;;
+    esac
+    printf 'import unittest\nclass T(unittest.TestCase):\n%s\n' "$wk_body" >"$wk_root/tests/worker/test_x.py"
+    wk_out="$(worker_check "$wk_root" 2>&1)"
+    wk_rc=$?
+    rm -rf "$wk_root"
+    if [[ "$wk_case" == pass && $wk_rc -eq 0 && "$wk_out" == *"worker checked: 1 cases"* ]] \
+        || [[ "$wk_case" != pass && $wk_rc -ne 0 && "$wk_out" != *"worker checked:"* ]]; then
+      echo "ok   worker-check/$wk_case (exit $wk_rc)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL worker-check/$wk_case: exit $wk_rc; output:"
+      while IFS= read -r wk_line; do echo "     | $wk_line"; done <<<"$wk_out"
+      n_failed=$((n_failed + 1))
+    fi
+  done
+
   # Wiring: check_main must run the literals step (ADR-0004 part 13), which
   # the fixtures above prove only through literals_check.
   # shellcheck disable=SC2016 # the patterns match a literal $CHECK_ROOT
@@ -1722,6 +1765,67 @@ PY
     n_passed=$((n_passed + 1))
   else
     echo "FAIL site-built-pins-missing-stem: $(cat "$out")"
+    n_failed=$((n_failed + 1))
+  fi
+
+  # guard-worker-exact (M5b PR 2 fix round 1, QA): guard_worker_pins gives
+  # exactly the findings each worker fixture names, and none on a root
+  # without worker/, so a scan without recursion, a directory read as a
+  # source, an unpinned file passed or an absent worker/ made a finding each
+  # change the set. Through importlib, because the guard fixtures check one
+  # substring each.
+  if python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/guard" >"$out" 2>&1 <<'PY'
+import importlib.util
+import pathlib
+import sys
+import tempfile
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+guard = pathlib.Path(sys.argv[2])
+UNPINNED = "a worker source that is not pinned"
+MISSING = "a pinned worker source is missing"
+SYMLINK = "a worker source must be a regular file, not a symlink"
+MISMATCH = "the worker source's SHA-256 is"
+cases = {
+    "pass-worker-pin": set(),
+    "fail-worker-pin-nested": {("worker/sub/extra.js", UNPINNED), ("worker/intake.js", MISSING)},
+    "fail-worker-pin-missing": {("worker/extra.js", UNPINNED), ("worker/intake.js", MISSING)},
+    "fail-worker-file-missing": {("worker/README", UNPINNED), ("worker/intake.js", MISSING)},
+    "fail-worker-pin-mismatch": {("worker/intake.js", MISMATCH)},
+    "fail-worker-symlink": {("worker/intake.js", SYMLINK)},
+}
+bad = []
+
+
+def kinds(root):
+    findings = sitecheck.Findings()
+    sitecheck.guard_worker_pins(root, findings)
+    got = set()
+    for item in findings.items:
+        where, message = item[len("FAIL: "):].split(": ", 1)
+        kind = next((k for k in (UNPINNED, MISSING, SYMLINK, MISMATCH) if message.startswith(k)), message)
+        got.add((where, kind))
+    return got, findings.items
+
+
+for name, want in cases.items():
+    got, items = kinds(guard / name)
+    if got != want:
+        bad.append(f"{name}: {items}")
+with tempfile.TemporaryDirectory() as tmp:
+    got, items = kinds(pathlib.Path(tmp))
+    if got:
+        bad.append(f"root without worker/: {items}")
+print("\n".join(bad))
+sys.exit(1 if bad else 0)
+PY
+  then
+    echo "ok   guard-worker-exact (each worker fixture gives exactly its findings; none without worker/)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL guard-worker-exact: $(cat "$out")"
     n_failed=$((n_failed + 1))
   fi
 

@@ -1,0 +1,1 @@
+worker/intake.js: a worker source must be a regular file, not a symlink

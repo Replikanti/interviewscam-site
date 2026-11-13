@@ -54,7 +54,7 @@ FIXTURE_CONTENT=(content)
 FIXTURE_RECORD_SECTIONS=(reports campaigns)
 FIXTURE_SKIP=(.git .github .gitignore .hugo_build.lock .tools .fixture-site
   public public-fixtures resources worktrees CLAUDE.md README.md docs
-  lychee.toml schema tests tools)
+  lychee.toml schema tests tools worker)
 # shellcheck source=tools/fetch-tools.sh
 source "$CHECK_ROOT/tools/fetch-tools.sh"
 
@@ -168,6 +168,31 @@ render_check() {
 # label-list.html, under <root>/layouts, <root>/assets and <root>/static.
 literals_check() { sitecheck literals --root "$1"; }
 
+# worker_check <root>: the intake Worker's tests under the pinned workerd and
+# the deploy tool's tests against a stub API on loopback (ADR-0006 part 2,
+# tests/worker/). It prints the unittest output and `worker checked: N
+# cases`, and fails when a case fails or errors, when none ran, or when any
+# was skipped, marked an expected failure or an unexpected success (unittest
+# reports each of those as OK, so a broken rule would pass silently).
+worker_check() {
+  local out rc n
+  if [[ ! -x "$WORKERD_BIN" ]]; then
+    echo "FAIL: workerd not found at $WORKERD_BIN; run tools/fetch-tools.sh" >&2
+    return 1
+  fi
+  out="$(cd "$1" && WORKERD_BIN="$WORKERD_BIN" python3 -I -B -m unittest discover -v \
+    -s tests/worker -t tests/worker -p 'test_*.py' 2>&1)"
+  rc=$?
+  printf '%s\n' "$out"
+  n="$(sed -n 's/^Ran \([0-9][0-9]*\) tests\{0,1\} in .*/\1/p' <<<"$out")"
+  if [[ $rc -ne 0 || -z "$n" || "$n" -eq 0 ]] \
+      || grep -qE 'skipped=|expected failures=|unexpected successes=' <<<"$out"; then
+    echo "FAIL: worker: exit $rc, ${n:-no} cases run (a skipped case, an expected failure and an unexpected success fail too)" >&2
+    return 1
+  fi
+  echo "worker checked: $n cases"
+}
+
 # tokens_check <root>: data/tokens.toml well formed, every listed colour pair
 # at its WCAG 2.2 contrast minimum, and no colour literal in the site sources
 # (SPEC section 7).
@@ -212,6 +237,8 @@ step_shellcheck() {
 }
 
 step_guard() { guard_check "$CHECK_ROOT"; }
+
+step_worker() { worker_check "$CHECK_ROOT"; }
 
 step_records() { records_check "$CHECK_ROOT" "$CHECK_ROOT/schema"; }
 
@@ -404,6 +431,7 @@ check_main() {
   esac
 
   run_step "guard (repo rules)" step_guard
+  run_step "worker (intake Worker and deploy tool)" step_worker
   run_step "records (schema, defang)" step_records
   run_step "tokens (contrast, colour literals)" step_tokens
   run_step "literals (fixed copy only from data/labels.toml)" step_literals
