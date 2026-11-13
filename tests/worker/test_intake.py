@@ -28,6 +28,7 @@ import tempfile
 import time
 import unittest
 import urllib.parse
+from email import quoprimime
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -967,8 +968,11 @@ class ResponsesAndMail(WorkerCase):
         self.assertOutcome(send(self, parts), "sent")
         mail = mails()[0]
         text_bytes = len(mail["text"].encode("utf-8")) + len(mail["subject"].encode("utf-8"))
-        qp = text_bytes * 3 * 76 / 75
+        # A soft line break is "=" plus CRLF (RFC 2045 6.7), so 78 bytes carry 75.
+        qp = text_bytes * 3 * 78 / 75
         self.assertLessEqual(qp, 419_430, "the mail text bound of ADR-0006 Numbers")
+        encoded = quoprimime.body_encode(mail["text"].encode("utf-8").decode("latin-1"), maxlinelen=76, eol="\r\n")
+        self.assertLessEqual(len(encoded), qp, "the model must bound a real quoted-printable encode")
         att = sum(math.ceil(a["size"] / 3) * 4 * 78 / 76 for a in mail["attachments"])
         self.assertLessEqual(att + qp, 14.1 * 1024 * 1024)
         self.assertLess(att + qp, 25 * 1024 * 1024)
