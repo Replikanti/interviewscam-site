@@ -24,11 +24,11 @@ jobs:
   pages-artifact:
     runs-on: ubuntu-24.04
     # ADR-0004 Numbers, "check.sh workflow timeouts": derived from the job
-    # duration, which timeout-minutes counts, last in M5b PR 2 fix round 5
-    # (Replikanti/interviewscam#13): the slowest green job, 1533 s
-    # (deploy.yml pages-artifact, run 43353246902), sets both terms.
-    # Cap >= max(2 x 1533 s = 3066 s, 1533 s + 2 x 75 s
-    # (REFLOW_LAUNCH_TIMEOUT) + 70 s = 1753 s), rounded up to 52 min.
+    # duration, which timeout-minutes counts, last re-checked in M5b PR 2
+    # fix round 8 (Replikanti/interviewscam#13): the slowest green job,
+    # 1554 s (lighthouse.yml build, run 43400693223), sets both terms.
+    # Cap >= max(2 x 1554 s = 3108 s, 1554 s + 2 x 75 s
+    # (REFLOW_LAUNCH_TIMEOUT) + 70 s = 1774 s), rounded up to 52 min.
     # Re-derive in the next PR that changes check.sh.
     # Same check.sh as the check job in ci.yml; a cap that is too low here
     # would block a deploy once M6 adds it.
