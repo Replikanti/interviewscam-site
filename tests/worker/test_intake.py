@@ -1629,7 +1629,8 @@ class FixRound2(WorkerCase):
         self.assertEqual((result["status"], result["location"]), (303, SC.INTAKE_NOT_SENT_URL + "#paused"))
         self.assertEqual((result["waited"], result["settled"]), (1, [True]))
         self.assertEqual(result["pending"], [True], "the promise is the running notice, not a settled stand-in")
-        self.assertEqual(result["order"], ["sent", "settled"], "the promise settled before the notice was sent")
+        self.assertEqual(result["order"], ["sent", "recorded", "settled", "returned"],
+                         "the promise must cover the send and its report, and the response waits for both")
         self.assertIn(["noticeSent", "2000-01-01"], probe("record"))
         self.assertEqual(len(mails()), 1)
 

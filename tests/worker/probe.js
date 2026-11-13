@@ -137,9 +137,30 @@ async function waitUntilCase(request, env) {
   } };
   const forwarded = new Request("https://intake.interviewscam.com/submit",
     { method: "POST", headers: request.headers, body: request.body });
-  const testEnv = { EMAIL: email, RATE_LIMITER: env.BURST, LIMITER: env.RECORD,
+  // Fix round 8: the limiter as the Worker sees it, forwarded whole, with
+  // only noticeSent wrapped to record when its report is done, so a promise
+  // that covers the send but not the report fails the order check.
+  const recordingStub = (stub) => new Proxy(stub, { get(target, prop) {
+    if (prop !== "noticeSent") return target[prop];
+    return async (...args) => {
+      const result = await target.noticeSent(...args);
+      order.push("recorded");
+      return result;
+    };
+  } });
+  const limiter = new Proxy(env.RECORD, { get(target, prop) {
+    if (prop === "get") return (...args) => recordingStub(target.get(...args));
+    const value = target[prop];
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+  const testEnv = { EMAIL: email, RATE_LIMITER: env.BURST, LIMITER: limiter,
     LIMITER_KEY: "f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246" };
   const response = await intake.default.fetch(forwarded, testEnv, ctx);
+  // The response waits for the notice task on purpose: the refusal's log
+  // code, E_NOTICE or E_DAILY_CAP, depends on its outcome (worker/intake.js,
+  // "if (!(await task)) return redirect"; ADR-0006 Numbers, "Global cap":
+  // "the refusal logs code=E_NOTICE").
+  order.push("returned");
   const settled = await Promise.all(passed);
   return { status: response.status, location: response.headers.get("Location"), waited: passed.length, settled,
     pending: pending.map((mark) => !mark.settled), order };
