@@ -124,15 +124,25 @@ async function waitUntilCase(request, env) {
     promise.then(() => { mark.settled = !mark.turn; });
     Promise.resolve().then(() => { mark.turn = true; });
     pending.push(mark);
+    // Fix round 7: the order of the notice's send completing and this
+    // promise settling, so a stand-in that settles later than one microtask
+    // turn but before the send is caught too.
+    promise.then(() => { order.push("settled"); });
+  } };
+  const order = [];
+  const email = { send: async (message) => {
+    const result = await env.CAPTURE.send(message);
+    order.push("sent");
+    return result;
   } };
   const forwarded = new Request("https://intake.interviewscam.com/submit",
     { method: "POST", headers: request.headers, body: request.body });
-  const testEnv = { EMAIL: env.CAPTURE, RATE_LIMITER: env.BURST, LIMITER: env.RECORD,
+  const testEnv = { EMAIL: email, RATE_LIMITER: env.BURST, LIMITER: env.RECORD,
     LIMITER_KEY: "f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246" };
   const response = await intake.default.fetch(forwarded, testEnv, ctx);
   const settled = await Promise.all(passed);
   return { status: response.status, location: response.headers.get("Location"), waited: passed.length, settled,
-    pending: pending.map((mark) => !mark.settled) };
+    pending: pending.map((mark) => !mark.settled), order };
 }
 
 export default {

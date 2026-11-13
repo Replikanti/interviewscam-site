@@ -763,12 +763,31 @@ class Limiter(WorkerCase):
         send(self, report(), ip=ip4)
         send(self, report(), ip="2001:db8:dead:beef::5")
         rows = probe("limiter", "rows")
-        dump = json.dumps(rows)
         for table in ("attempts", "mails"):
             for row in rows[table]:
                 self.assertRegex(row["key"], r"^[0-9a-f]{64}$")
+        # The needles are scanned in the strings only (fix round 7): the rows
+        # also hold times in ms, and a time can contain "2001" by chance.
+        strings, numbers = [], []
+
+        def walk(value):
+            if isinstance(value, str):
+                strings.append(value)
+            elif isinstance(value, bool):
+                pass
+            elif isinstance(value, (int, float)):
+                numbers.append(value)
+            elif isinstance(value, dict):
+                for item in value.values():
+                    walk(item)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+        walk(rows)
         for needle in ("198.51.100", "51.100.77", "dead", "beef", "2001", "db8"):
-            self.assertNotIn(needle, dump)
+            self.assertFalse([text for text in strings if needle in text], needle)
+        self.assertNotIn(3325256781, numbers, "the IPv4 address stored as an integer")
+        self.assertEqual([r["key"] for r in rows["attempts"]].count(PIN_KEY), 1)
         self.assertEqual(len([r for r in rows["attempts"] if r["key"] != PIN_KEY]), 2)
         self.assertEqual(len(rows["mails"]), 2)
         self.assertNotIn(ip4, "\n".join(stdout_lines()))
@@ -1610,6 +1629,7 @@ class FixRound2(WorkerCase):
         self.assertEqual((result["status"], result["location"]), (303, SC.INTAKE_NOT_SENT_URL + "#paused"))
         self.assertEqual((result["waited"], result["settled"]), (1, [True]))
         self.assertEqual(result["pending"], [True], "the promise is the running notice, not a settled stand-in")
+        self.assertEqual(result["order"], ["sent", "settled"], "the promise settled before the notice was sent")
         self.assertIn(["noticeSent", "2000-01-01"], probe("record"))
         self.assertEqual(len(mails()), 1)
 
