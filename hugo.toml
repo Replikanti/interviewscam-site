@@ -76,6 +76,13 @@ disable = true
 # anywhere (SPEC section 7, sitecheck site rule (e)).
 operator = "Martin Holý (Replikanti)"
 contact = "report@interviewscam.com"
+# The intake endpoint the report and correction forms post to (ADR-0006,
+# SPEC D5). Its value is pinned to INTAKE_ACTION in tools/sitecheck.py by
+# the guard, and only the forms of /report-a-scam/ and /corrections/ may
+# name it (sitecheck site rule (a), ADR-0006 part 9).
+intake = "https://intake.interviewscam.com/submit"
 # The single source of the Content Security Policy every page carries as a
 # meta tag; GitHub Pages cannot set response headers (D9, SPEC section 8).
-csp = "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'"
+# form-action holds 'self' for the Home search form and the intake origin
+# for the two forms (ADR-0006 part 9, SPEC section 8).
+csp = "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self' https://intake.interviewscam.com"

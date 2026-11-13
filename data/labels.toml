@@ -114,17 +114,141 @@ answer_heading = "Found in the registry"
 partial_heading = "No exact match, but these come close"
 none_heading = "No report matches your search"
 
-# How to send a report or a correction request today
-# (layouts/_partials/how-to-send.html): the address as plain text and the
-# fixed subject line of each channel.
+# The email way, under the form (layouts/_partials/how-to-send.html): the
+# address as plain text and the fixed subject line of each channel.
 [how_to_send]
-heading = "How to send it"
 address = "Email address"
 subject = "Subject line"
 
 [how_to_send.subjects]
 report = "Report: <name of the company, app or person>"
 correction = "Correction: <page URL>"
+
+# The report and correction forms (layouts/_partials/how-to-send.html,
+# ADR-0006 parts 5 and 6) and the result page /not-sent/
+# (layouts/_partials/not-sent.html). Every string, the caps in the hints
+# included, is pinned a second time in tools/sitecheck.py (render rule 18),
+# so a change here turns render red until the same change lands there too.
+# A cap in a hint is the cap of INTAKE_FIELDS in tools/sitecheck.py, the
+# file and size caps are INTAKE_MAX_FILES and INTAKE_MAX_UPLOAD_BYTES, and
+# the attempt and message counts are INTAKE_CLIENT_LIMIT and
+# INTAKE_CLIENT_DAILY_MAILS. heading and button per channel;
+# fallback is the one sentence next to the submit button that names the
+# address as the way out when sending fails (ADR-0006 part 6).
+[intake]
+required = "(required)"
+defang = "Write links and domains defanged, so that nobody opens them by accident: hxxps instead of https, and [.] instead of each dot, for example hxxps://meet[.]example/join."
+
+[intake.report]
+heading = "Send your report"
+button = "Send report"
+fallback = "If sending fails or your evidence does not fit, send your report by email instead, to this address and with this subject line:"
+
+[intake.correction]
+heading = "Send your request"
+button = "Send request"
+fallback = "If sending fails or your evidence does not fit, send your request by email instead, to this address and with this subject line:"
+
+# One table per field of INTAKE_FIELDS that the reporter sees: the label and
+# the hint under it. website is the honeypot (ADR-0006 part 3 step 5),
+# hidden from everyone; its label tells a person who still meets it what to
+# do.
+[intake.field.name]
+label = "Name the scam used"
+hint = "The company, app or person, as it appeared in the messages. Up to 200 characters."
+
+[intake.field.contact_start]
+label = "Where the contact started"
+hint = "For example a job board, LinkedIn, Telegram or email. Up to 200 characters."
+
+[intake.field.details]
+label = "What happened"
+hint = "A few sentences with dates. Say whether you installed or ran anything. Up to 10,000 characters."
+
+[intake.field.headers]
+label = "Message headers"
+hint = "If the invite came by email, paste its full headers. Most mail apps show them under an option like \"Show original\" or \"View source\". Up to 26,000 characters."
+
+[intake.field.page_url]
+label = "URL of the page"
+hint = "The address of the page on interviewscam.com, copied from your browser. Up to 976 characters."
+
+[intake.field.request]
+label = "What is wrong"
+hint = "What the page says, what it should say instead, and why. Up to 10,000 characters."
+
+# value is not copy: it is the one value the Worker accepts for own_name
+# (ADR-0006 part 5), kept here because sitecheck literals reads the value
+# attribute as visible text. Render rule 18 pins it.
+[intake.field.own_name]
+label = "The page shows my own name"
+hint = "Your name is hidden first, before the review."
+value = "yes"
+
+[intake.field.email]
+label = "Your email address"
+hint = "The moderator replies to this address. It is never published."
+
+[intake.field.files]
+label = "Screenshots"
+hint = "PNG or JPEG, at most 10 files and 10 MB in total. Black out your own name, email address and phone number first. Never attach the file you were asked to run."
+
+[intake.field.website]
+label = "Leave this field empty"
+
+# /not-sent/: the intro is the page's own content (content/not-sent.md).
+# One section per result id of the Worker (INTAKE_RESULT_IDS, ADR-0006
+# part 6), in that order: its heading and the cause with the fix. Every
+# section then says that chosen files must be chosen again after going
+# back (files_again) and ends with the address as plain text
+# (address_intro, then the address).
+[intake.result]
+files_again = "If you go back to the form, choose your files again: the browser does not keep them."
+address_intro = "Email address for reports and requests:"
+
+[intake.result.too-large]
+heading = "The files are too large"
+text = "The form takes at most 10 MB of files in total. Choose fewer or smaller screenshots, or send the larger ones by email."
+
+[intake.result.too-many-files]
+heading = "Too many files"
+text = "The form takes at most 10 files. Choose the ones that show the most, or send the rest by email."
+
+[intake.result.not-an-image]
+heading = "A file is not an image"
+text = "The form takes PNG, JPEG, GIF and WebP images only. Remove every other file, for example a PDF or a document. Never send the file you were asked to run: write its SHA-256 hash in the text instead."
+
+[intake.result.missing-field]
+heading = "A required field is empty"
+text = "A field marked required held nothing, or only spaces or invisible characters. Fill in every required field and send it again."
+
+[intake.result.too-long]
+heading = "A text is too long"
+text = "A text is longer than its field allows. The hint under each field gives its limit. Shorten the text, or send it by email."
+
+[intake.result.bad-address]
+heading = "The email address does not work"
+text = "Check your email address for typing errors. It needs a name, an @ and a domain, without spaces."
+
+[intake.result.bad-page-url]
+heading = "The page URL is not a page of this site"
+text = "Copy the address of the page on interviewscam.com from your browser's address bar, exactly as it appears there, and send it again."
+
+[intake.result.too-many-attempts]
+heading = "Too many attempts"
+text = "The form takes at most 6 attempts an hour, and at most 3 sent messages a day, from one network. Try again later, after 00:00 UTC if 3 messages went out today, or send it by email now."
+
+[intake.result.paused]
+heading = "The form is paused for today"
+text = "The form takes a limited number of messages a day, and today's are used up. It opens again at 00:00 UTC. Send it by email now instead."
+
+[intake.result.not-accepted]
+heading = "The form could not accept this message"
+text = "The message did not come from the form on this site as it is, or a field that people never see was filled in. Go back and send it from the form again, or send it by email."
+
+[intake.result.error]
+heading = "Something went wrong"
+text = "The message could not be sent because of an error on the site's side. Try again later, or send it by email now."
 
 # The breadcrumb of record and section pages: the label of its <nav> and the
 # first item, in the nav and in the BreadcrumbList.

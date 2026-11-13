@@ -19,3 +19,11 @@ extensions = ["html", "css"]
 no_progress = true
 
 # Reserved for M5: accept or exclude bot-walled 403 sources (ADR-0002 part 7).
+
+# The intake endpoint (ADR-0006, M5b PR 3), the action of the two forms:
+# lychee reads <form action> as a link and sends a GET, which the POST-only
+# Worker answers with 405, and before PR 4's DNS cutover the host does not
+# resolve at all, so no GET can show the endpoint working. Exactly that URL,
+# anchored, nothing else under the host. The endpoint is proven by PR 4's
+# live test and `tools/intake.py verify` instead.
+exclude = ["^https://intake\\.interviewscam\\.com/submit$"]

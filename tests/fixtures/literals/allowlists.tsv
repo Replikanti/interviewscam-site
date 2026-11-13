@@ -5,8 +5,10 @@
 # differ, so widening an allowlist is a visible diff here, with its own review.
 LITERALS_LABELS_READERS	layouts/_partials/label-list.html
 LITERALS_LABELS_READERS	layouts/_partials/label.html
+LITERALS_PLAIN_ATTRS	accept
 LITERALS_PLAIN_ATTRS	action
 LITERALS_PLAIN_ATTRS	aria-current
+LITERALS_PLAIN_ATTRS	aria-describedby
 LITERALS_PLAIN_ATTRS	aria-hidden
 LITERALS_PLAIN_ATTRS	aria-labelledby
 LITERALS_PLAIN_ATTRS	aria-live
@@ -17,6 +19,7 @@ LITERALS_PLAIN_ATTRS	cx
 LITERALS_PLAIN_ATTRS	cy
 LITERALS_PLAIN_ATTRS	d
 LITERALS_PLAIN_ATTRS	datetime
+LITERALS_PLAIN_ATTRS	enctype
 LITERALS_PLAIN_ATTRS	fill
 LITERALS_PLAIN_ATTRS	for
 LITERALS_PLAIN_ATTRS	height
@@ -25,6 +28,7 @@ LITERALS_PLAIN_ATTRS	http-equiv
 LITERALS_PLAIN_ATTRS	id
 LITERALS_PLAIN_ATTRS	integrity
 LITERALS_PLAIN_ATTRS	lang
+LITERALS_PLAIN_ATTRS	maxlength
 LITERALS_PLAIN_ATTRS	method
 LITERALS_PLAIN_ATTRS	name
 LITERALS_PLAIN_ATTRS	r
@@ -287,6 +291,7 @@ LITERALS_SITE_MEMBERS	Sections
 LITERALS_SITE_MEMBERS	Title
 LITERALS_SITE_PARAMS	contact
 LITERALS_SITE_PARAMS	csp
+LITERALS_SITE_PARAMS	intake
 LITERALS_SITE_PARAMS	operator
 LITERALS_HUGO_DATA	labels
 LITERALS_HUGO_DATA	tokens
@@ -407,6 +412,17 @@ LITERALS_COLLECTION_VALUES	layouts/_partials/index-item.html	chip
 LITERALS_COLLECTION_VALUES	layouts/_partials/jsonld.html	https://schema.org
 LITERALS_COLLECTION_VALUES	layouts/_partials/lookups.html	https://bazaar.abuse.ch/sample/%s/
 LITERALS_COLLECTION_VALUES	layouts/_partials/lookups.html	https://www.virustotal.com/gui/file/%s
+LITERALS_COLLECTION_VALUES	layouts/_partials/not-sent.html	bad-address
+LITERALS_COLLECTION_VALUES	layouts/_partials/not-sent.html	bad-page-url
+LITERALS_COLLECTION_VALUES	layouts/_partials/not-sent.html	error
+LITERALS_COLLECTION_VALUES	layouts/_partials/not-sent.html	missing-field
+LITERALS_COLLECTION_VALUES	layouts/_partials/not-sent.html	not-accepted
+LITERALS_COLLECTION_VALUES	layouts/_partials/not-sent.html	not-an-image
+LITERALS_COLLECTION_VALUES	layouts/_partials/not-sent.html	paused
+LITERALS_COLLECTION_VALUES	layouts/_partials/not-sent.html	too-large
+LITERALS_COLLECTION_VALUES	layouts/_partials/not-sent.html	too-long
+LITERALS_COLLECTION_VALUES	layouts/_partials/not-sent.html	too-many-attempts
+LITERALS_COLLECTION_VALUES	layouts/_partials/not-sent.html	too-many-files
 LITERALS_COLLECTION_VALUES	layouts/_partials/record-item.html	chip
 LITERALS_COLLECTION_VALUES	layouts/home.feed.json	1
 LITERALS_COLLECTION_VALUES	layouts/reports/page.html	basis
@@ -531,6 +547,7 @@ HUGO_CONFIG_PINNED	outputFormats.feed.baseName	feed
 HUGO_CONFIG_PINNED	outputFormats.feed.isPlainText	true
 HUGO_CONFIG_PINNED	outputFormats.feed.mediaType	application/json
 HUGO_CONFIG_PINNED	outputs.home	["html", "feed"]
+HUGO_CONFIG_PINNED	params.intake	https://intake.interviewscam.com/submit
 HUGO_CONFIG_PINNED	privacy.disqus.disable	true
 HUGO_CONFIG_PINNED	privacy.googleAnalytics.disable	true
 HUGO_CONFIG_PINNED	privacy.instagram.disable	true

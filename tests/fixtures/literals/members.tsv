@@ -124,7 +124,7 @@ branch	replace-from-pipe	assets/css/x.css	p { --a: {{ .x | replace "-" }}; }	rep
 branch	replace-from-value	assets/css/x.css	p { --a: {{ replace .x "-" .y }}; }	replace takes its replacement from a value	1
 branch	markup-tag-splits-words	layouts/page.html	<p>{{ .x | printf "%s free<br>money" }}</p>	string literal '%s free<br>money' is copy (L3)	1
 branch	hugo-member	layouts/page.html	<p>{{ hugo.Environment }}</p>	hugo.Environment is not a member a template may read	1
-branch	site-chain-inner	layouts/page.html	<p>{{ site.Home.Site.Params.blurb }}</p>	site.Home.Site.Params.blurb: site.Params only as operator, contact or csp (L4)	1
+branch	site-chain-inner	layouts/page.html	<p>{{ site.Home.Site.Params.blurb }}</p>	site.Home.Site.Params.blurb: site.Params only as operator, contact, csp or intake (L4)	1
 branch	tokens-not-color	layouts/page.html	<p>{{ hugo.Data.tokens.font.body }}</p>	outside a CSS template, data/tokens.toml only as hugo.Data.tokens.color	1
 branch	css-var	assets/css/site.css	p::before { content: var(--m) }	content draws a custom property with var()	1
 branch	css-custom-property	assets/css/site.css	:root { --m: "Free" }	custom property --m holds the text 'Free'	1
@@ -348,7 +348,7 @@ SINK_KINDS	file	layouts/page.html	<p>{{ .File }}</p>	the action prints a file in
 SINK_KINDS	time	layouts/page.html	<p>{{ .Date }}</p>	the action prints a time into the page text	1
 SINK_KINDS	resource	layouts/baseof.html	{{ with resources.Get "js/copy.js" }}<p>{{ . }}</p>{{ end }}	the action prints a resource into the page text	1
 SINK_KINDS	resource-data	layouts/baseof.html	{{ with resources.Get "js/copy.js" | resources.Fingerprint "sha384" }}<p>{{ .Data }}</p>{{ end }}	the action prints a resource-data into the page text	1
-SINK_KINDS	siteparams	layouts/page.html	<p>{{ .Site.Params }}</p>	.Site.Params: site.Params only as operator, contact or csp (L4)	1
+SINK_KINDS	siteparams	layouts/page.html	<p>{{ .Site.Params }}</p>	.Site.Params: site.Params only as operator, contact, csp or intake (L4)	1
 SINK_KINDS	hugodata	layouts/page.html	{{ with hugo.Data }}<p>{{ . }}</p>{{ end }}	hugo.Data: hugo.Data only as hugo.Data.labels or hugo.Data.tokens (L4)	1
 SINK_KINDS	label-entry	layouts/page.html	{{ range partial "label-list.html" (dict "key" "copy" "fields" (slice "title")) }}<p>{{ . }}</p>{{ end }}	the action prints a table of data/labels.toml into the page text	1
 +		layouts/_partials/label-list.html	{{- $v := hugo.Data.labels -}}{{- return $v -}}		

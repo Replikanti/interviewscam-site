@@ -1,0 +1,1 @@
+honeypots without a box, counted per state (S0 and S2): 4

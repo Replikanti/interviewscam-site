@@ -235,7 +235,7 @@ def render(root, schemas):
     with contextlib.redirect_stdout(buffer):
         rc = sitecheck.cmd_render(argparse.Namespace(
             records=str(root), schemas=str(schemas), fixtures=None, no_feed=False,
-            no_search=True, no_report_pins=True, public=str(root / "public")))
+            no_search=True, no_report_pins=True, no_intake=True, public=str(root / "public")))
     output = buffer.getvalue()
     return rc, output, sum(line.startswith("FAIL: ") for line in output.splitlines())
 
@@ -343,7 +343,8 @@ PY
 # search_cases_runner <sitecheck.py> <cases table> <base case> <schema dir>:
 # render rules 15 and 16 (the A to Z page, the Home search form and its
 # hidden result sections, ADR-0005 part 6) one branch and one flagging-set
-# member per row (M4 PR 2 and PR 3). A row is
+# member per row (M4 PR 2 and PR 3); with the label render-intake, rule 18
+# (the intake forms, M5b PR 3). A row is
 # name, file, find, replace and expect, tab-separated, with \n, \t, \r and
 # \0 in find and replace read as a newline, a tab, U+000D and U+0000 (fix
 # round 12: a table line cannot hold the last two), then optional further find
@@ -351,9 +352,13 @@ PY
 # wrapper, because an element an ancestor's end tag closes is a markup:
 # finding). It copies the base case to
 # a temporary directory, replaces the one occurrence of find in <file>
-# (relative to the case; find `*` deletes the file instead) and runs the
-# real cmd_render with the feed rules off (the base has no feed) and the
-# search rules on: expect PASS needs exit 0, any other expect exit 1 with
+# (relative to the case; find `*` deletes the file instead, and find `+`
+# creates it, with its directories, holding replace; the file must not
+# exist yet) and runs the
+# real cmd_render with the switches the base case's marker files ask for,
+# as the fixture loop does (the feed rules with a feed.txt, rules 15 and 16
+# with a search.txt, rule 17 with a report-pins.txt, rule 18 with an
+# intake.txt): expect PASS needs exit 0, any other expect exit 1 with
 # that text in the output; an expect COUNT=<n> <text> (fix round 11, QA
 # recheck of 5b1519d) also needs exactly n findings, so a row can prove that
 # the class-scoped rules stay off on a page with a markup: finding. A find string that is absent, or present more
@@ -375,12 +380,15 @@ spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
 sitecheck = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sitecheck)
 table, base, schema_dir = Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
-# The label of the lines (render-search, or render-report for rule 17), and
-# the switches the base case asks for, as in the fixture loop: the feed
-# rules with a feed.txt, rule 17 with a report-pins.txt.
+# The label of the lines (render-search, render-report for rule 17 or
+# render-intake for rule 18), and the switches the base case asks for, as
+# in the fixture loop: the feed rules with a feed.txt, rules 15 and 16 with
+# a search.txt, rule 17 with a report-pins.txt, rule 18 with an intake.txt.
 label = sys.argv[5]
 no_feed = not (base / "feed.txt").is_file()
+no_search = not (base / "search.txt").is_file()
 no_report_pins = not (base / "report-pins.txt").is_file()
+no_intake = not (base / "intake.txt").is_file()
 
 
 def unescape(text):
@@ -403,10 +411,17 @@ for row in rows:
         root = Path(tmp) / "case"
         shutil.copytree(base, root)
         path = root / rel
-        if not path.is_file():
+        if edits[0][0] == "+":
+            if path.exists() or len(edits) != 1:
+                print(f"FAIL {label}/{name}: {rel} already exists in {base.name}, or the "
+                      "row has further edits; + creates one new file")
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(edits[0][1], encoding="utf-8")
+        elif not path.is_file():
             print(f"FAIL {label}/{name}: {rel} is not a file of {base.name}")
             continue
-        if edits[0][0] == "*":
+        elif edits[0][0] == "*":
             path.unlink()
         else:
             text = path.read_text(encoding="utf-8")
@@ -423,7 +438,8 @@ for row in rows:
         with contextlib.redirect_stdout(buffer):
             rc = sitecheck.cmd_render(argparse.Namespace(
                 records=str(root), schemas=str(schema_dir), fixtures=None, no_feed=no_feed,
-                no_search=False, no_report_pins=no_report_pins, public=str(root / "public")))
+                no_search=no_search, no_report_pins=no_report_pins, no_intake=no_intake,
+                public=str(root / "public")))
         output = buffer.getvalue()
     count = None
     if expect.startswith("COUNT="):
@@ -820,6 +836,191 @@ else:
 PY
 }
 
+# site_intake_runner <sitecheck.py> <cases table> <base case> <schema dir>
+# (M5b PR 3, ADR-0006 part 9): site rule (a) for the intake endpoint and
+# the intake origin in the CSP, one branch and one variant per row, on a
+# copy of render/pass-intake (the real built pages; the built pins off,
+# because the case's stylesheet and scripts are copies). A row is name,
+# file, find, replace and expect, then optional further find and replace
+# pairs; \n and \t in find and replace are a newline and a tab, and every
+# find string must occur exactly once. Three files are not paths: @csp sets
+# params.csp in hugo.toml and the content of every page's CSP meta to
+# replace, @css appends replace to the built stylesheet and @js to the
+# built copy script (find is - for all three). The table holds one row per
+# member of CSP_DIRECTIVES but form-action (csp-intake/<directive>, the intake
+# origin in that directive), and site-intake/coverage takes that set from
+# the code. Then the real cmd_site runs:
+# expect PASS needs exit 0, any other expect exit 1 with that text in the
+# output. The last line, site-intake/table, counts the rows. -B: no
+# tools/__pycache__.
+site_intake_runner() {
+  python3 -I -B - "$1" "$2" "$3" "$4" <<'PY'
+import argparse
+import contextlib
+import importlib.util
+import io
+import re
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+table, base, schema_dir = Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
+label = "site-intake"
+
+
+def unescape(text):
+    return text.replace("\\n", "\n").replace("\\t", "\t")
+
+
+rows = [line.split("\t") for line in table.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")]
+policy = re.search(r'^csp = "(.*)"$', (base / "hugo.toml").read_text(encoding="utf-8"),
+                   re.M).group(1)
+names, bad = set(), 0
+for row in rows:
+    if len(row) < 5 or (len(row) - 5) % 2 or not row[0] or row[0] in names:
+        print(f"FAIL {label}/table: malformed or duplicate row {row!r}")
+        bad += 1
+        continue
+    name, rel, find, replace, expect = row[:5]
+    names.add(name)
+    edits = [(unescape(f), unescape(r)) for f, r in [row[2:4]] + list(zip(row[5::2], row[6::2]))]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "case"
+        shutil.copytree(base, root)
+        public = root / "public"
+        if rel == "@csp":
+            config = root / "hugo.toml"
+            config.write_text(config.read_text(encoding="utf-8").replace(
+                f'csp = "{policy}"', f'csp = "{edits[0][1]}"'), encoding="utf-8")
+            for page in public.rglob("*.html"):
+                text = page.read_text(encoding="utf-8")
+                page.write_text(text.replace(f'content="{policy}"', f'content="{edits[0][1]}"'),
+                                encoding="utf-8")
+        elif rel in ("@css", "@js"):
+            pattern = "css/site.min.*.css" if rel == "@css" else "js/copy.min.*.js"
+            target = next(public.glob(pattern))
+            target.write_text(target.read_text(encoding="utf-8") + edits[0][1], encoding="utf-8")
+        else:
+            path = root / rel
+            text = path.read_text(encoding="utf-8") if path.is_file() else ""
+            counts = []
+            for find, rep in edits:
+                counts.append(text.count(find))
+                text = text.replace(find, rep, 1)
+            if counts != [1] * len(edits):
+                print(f"FAIL {label}/{name}: the find strings occur {counts} times in {rel} "
+                      "(in turn), the row needs exactly one each")
+                continue
+            path.write_text(text, encoding="utf-8")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            rc = sitecheck.cmd_site(argparse.Namespace(
+                records=str(root), schemas=str(schema_dir), no_built_pins=True,
+                public=str(public)))
+        output = buffer.getvalue()
+    if expect == "PASS" and rc == 0:
+        print(f"ok   {label}/{name} (passed as expected)")
+    elif expect != "PASS" and rc == 1 and expect in output:
+        print(f"ok   {label}/{name} (failed as expected: {expect})")
+    else:
+        print(f"FAIL {label}/{name}: expected "
+              f"{'exit 0' if expect == 'PASS' else 'exit 1 and ' + repr(expect)}; got exit "
+              f"{rc}; output:")
+        for line in output.splitlines():
+            print(f"     | {line}")
+if not rows or bad:
+    print(f"FAIL {label}/table: {len(rows)} rows, {bad} malformed")
+else:
+    print(f"ok   {label}/table ({len(rows)} rows)")
+PY
+}
+
+# intake_coverage <sitecheck.py> <render table> <site table> [drop] (M5b
+# PR 3): the rows of tests/fixtures/render/intake-cases.tsv and
+# tests/fixtures/site/intake-cases.tsv cover every member of the sets render
+# rule 18 and site rule (a) read, taken from the code: per channel of
+# INTAKE_FIELDS each field missing, duplicated, renamed, of another type and
+# with another autocomplete, a required field without required and an
+# optional one with it, a capped field at cap - 1, cap + 1 and without
+# maxlength, and the label and hint of each visible field; per MIME type of
+# INTAKE_IMAGE_TYPES an accept without it; per result id of
+# INTAKE_RESULT_IDS the section missing, doubled, its id elsewhere and its
+# heading and text reworded; per member of INTAKE_REFERRER_TAGS and per
+# channel a referrerpolicy row; per channel the page and its form missing;
+# per member of URL_ATTRS a row that names the intake host in it, and per
+# member of FORM_ATTRS one that leaves the origin; per page of
+# INTAKE_FORM_PAGES the CSP without the intake origin; per member of
+# CSP_DIRECTIVES but form-action the intake origin in that directive. A row name the table
+# lacks fails the line render-intake/coverage or site-intake/coverage. With
+# drop, that row is left out of the tables first, so the line must fail
+# (the negative proof). -B: no tools/__pycache__.
+intake_coverage() {
+  python3 -I -B - "$1" "$2" "$3" "${4:-}" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+drop = sys.argv[4]
+
+
+def names(path):
+    return {line.split("\t", 1)[0] for line in Path(path).read_text(encoding="utf-8").splitlines()
+            if line and not line.startswith("#")} - {drop}
+
+
+render, site = names(sys.argv[2]), names(sys.argv[3])
+want = set()
+mimes = list(dict.fromkeys(mime for mime, _, _ in sitecheck.INTAKE_IMAGE_TYPES))
+for channel, fields in sitecheck.INTAKE_FIELDS.items():
+    want |= {f"a-{channel}-page-missing", f"a-{channel}-form-missing"}
+    want |= {f"c-{channel}-referrerpolicy-{tag}" for tag in sitecheck.INTAKE_REFERRER_TAGS}
+    for field in fields:
+        name, kind = field["name"], field["type"]
+        stem = f"b-{channel}-{name}"
+        want |= {f"{stem}-{case}" for case in ("missing", "duplicated", "renamed", "type",
+                                               "autocomplete")}
+        if kind not in ("hidden", "honeypot", "checkbox"):
+            want.add(f"{stem}-required")
+        if field["cap"] is not None:
+            want |= {f"{stem}-maxlength-{case}" for case in ("below", "above", "absent")}
+        if kind not in ("hidden", "honeypot"):
+            want |= {f"{stem}-{case}" for case in ("label-for", "no-label", "hint-reworded",
+                                                   "label-reworded")}
+        if kind == "file":
+            want |= {f"b-{channel}-files-accept-without-{mime.split('/')[1]}" for mime in mimes}
+for rid in sitecheck.INTAKE_RESULT_IDS:
+    want |= {f"d-{rid}-{case}" for case in ("missing", "doubled", "id-elsewhere",
+                                            "heading-reworded", "text-reworded")}
+missing = sorted(want - render)
+if missing:
+    print(f"FAIL render-intake/coverage: {len(missing)} member(s) without a row: "
+          + ", ".join(missing[:20]))
+else:
+    print(f"ok   render-intake/coverage ({len(want)} member rows)")
+want = {f"fail-intake-host-in-{attr.replace(':', '-')}" for attr in sitecheck.URL_ATTRS}
+want |= {f"fail-{tag}-{'action' if attr == 'action' else 'formaction'}-intake"
+         + ("-slash" if tag == "form" else "") for tag, attr in sitecheck.FORM_ATTRS}
+want |= {"fail-csp-form-action-missing-intake"
+         + ("" if channel == "report" else f"-{channel}")
+         for channel in sitecheck.INTAKE_FORM_PAGES.values()}
+want |= {f"csp-intake/{directive}" for directive in sitecheck.CSP_DIRECTIVES - {"form-action"}}
+missing = sorted(want - site)
+if missing:
+    print(f"FAIL site-intake/coverage: {len(missing)} member(s) without a row: "
+          + ", ".join(missing))
+else:
+    print(f"ok   site-intake/coverage ({len(want)} member rows)")
+PY
+}
+
 # allowlists_runner <sitecheck.py> <allowlists table>: the contents of every
 # passing set of sitecheck literals (LITERALS_PASSING_SETS), of the CSP and
 # guard allowlists, of site rule (k)'s two passing sets and URL trim set
@@ -1012,8 +1213,12 @@ selftest_main() {
         # the other cases' hand-made report pages predate those templates.
         pins_mode=no-report-pins
         [[ -f "$dir/report-pins.txt" ]] && pins_mode=""
+        # Rule 18 (the intake forms, M5b PR 3) only in a case with an
+        # intake.txt, which holds the real built intake and result pages.
+        intake_mode=no-intake
+        [[ -f "$dir/intake.txt" ]] && intake_mode=""
         render_check "$dir" "$SELFTEST_ROOT/schema" "$dir/public" "$leak_fixtures" \
-          "$feed_mode" "$search_mode" "$pins_mode" >"$out" 2>&1
+          "$feed_mode" "$search_mode" "$pins_mode" "$intake_mode" >"$out" 2>&1
         rc=$?
         ;;
       lighthouse)
@@ -1196,6 +1401,21 @@ selftest_main() {
     n_failed=$((n_failed + 1))
   else
     echo "ok   wiring/render-report-pins (both render steps run rule 17; no --no-report-pins)"
+    n_passed=$((n_passed + 1))
+  fi
+
+  # Wiring: both builds run rule 18, the intake forms and their result
+  # pages (M5b PR 3): neither render step, run against a stub sitecheck,
+  # passes --no-intake (check_main runs both steps, proven above).
+  local intake_args
+  intake_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render; step_render_fixtures)"
+  if [[ "$(grep -c '^render$' <<<"$intake_args")" != 2 ]] \
+      || grep -qx -- '--no-intake' <<<"$intake_args"; then
+    echo "FAIL wiring/render-intake-rules: step_render or step_render_fixtures in" \
+      "tools/check.sh does not run sitecheck render with rule 18 (it passes --no-intake)"
+    n_failed=$((n_failed + 1))
+  else
+    echo "ok   wiring/render-intake-rules (both render steps run rule 18; no --no-intake)"
     n_passed=$((n_passed + 1))
   fi
 
@@ -1681,6 +1901,88 @@ PINNED
     sed 's/^/     | /' "$out"
     n_failed=$((n_failed + 1))
   fi
+
+  # render-intake/<row> and site-intake/<row> (M5b PR 3, ADR-0006 parts 3,
+  # 5, 6 and 9): render rule 18 from tests/fixtures/render/intake-cases.tsv
+  # (search_cases_runner, rule 18 on through the base's intake.txt) and site
+  # rule (a) with the CSP from tests/fixtures/site/intake-cases.tsv
+  # (site_intake_runner), both on copies of render/pass-intake, the real
+  # built intake pages; then the coverage of both tables against the member
+  # sets in the code, and its negative proof (one member row left out each).
+  search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+    "$FIXTURES/render/intake-cases.tsv" "$FIXTURES/render/pass-intake" \
+    "$SELFTEST_ROOT/schema" render-intake >"$out" 2>&1
+  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+  if ! grep -qE '^(ok   |FAIL )render-intake/table' "$out"; then
+    echo "FAIL render-intake: the runner did not finish; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+  site_intake_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+    "$FIXTURES/site/intake-cases.tsv" "$FIXTURES/render/pass-intake" \
+    "$SELFTEST_ROOT/schema" >"$out" 2>&1
+  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+  if ! grep -qE '^(ok   |FAIL )site-intake/table' "$out"; then
+    echo "FAIL site-intake: the runner did not finish; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+  # site-intake-expect (the negative proof of site_intake_runner's expect):
+  # a real row with an expect text the findings do not hold must fail, and
+  # a PASS row that fails must fail too.
+  local expect_table
+  expect_table=$(mktemp)
+  awk -F'\t' -v OFS='\t' '
+    $1 == "fail-input-formaction-intake" { $1 = $1 "-wrong-expect"; $5 = "(a) <form action> submits to"; print }
+    $1 == "fail-button-formaction-intake" { $1 = $1 "-as-pass"; $5 = "PASS"; print }
+  ' "$FIXTURES/site/intake-cases.tsv" >"$expect_table"
+  site_intake_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$expect_table" \
+    "$FIXTURES/render/pass-intake" "$SELFTEST_ROOT/schema" >"$out" 2>&1
+  rm -f "$expect_table"
+  if [[ "$(grep -cE '^FAIL site-intake/fail-(input|button)-formaction-intake-(wrong-expect|as-pass):' "$out")" == 2 ]]; then
+    echo "ok   site-intake-expect (a wrong expect and a failing PASS row each fail)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL site-intake-expect: a row with a wrong expect or a failing PASS row did not fail; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+  intake_coverage "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render/intake-cases.tsv" \
+    "$FIXTURES/site/intake-cases.tsv" >"$out" 2>&1
+  sed -n '/^ok   \|^FAIL /p' "$out"
+  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+  if [[ "$(grep -cE '^ok   (render|site)-intake/coverage' "$out")" != 2 ]]; then
+    echo "FAIL intake-coverage: the coverage lines did not both pass; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+  local drop kind
+  # One member of every family the coverage reads: the five attribute
+  # families of a field, the MIME types, the result ids, the referrer tags,
+  # the pages, URL_ATTRS, FORM_ATTRS, INTAKE_FORM_PAGES, CSP_DIRECTIVES.
+  for drop in render:b-report-name-renamed render:b-correction-email-required \
+      render:b-report-headers-maxlength-above render:b-correction-request-hint-reworded \
+      render:b-correction-files-accept-without-webp render:d-error-doubled \
+      render:c-correction-referrerpolicy-input render:a-correction-page-missing \
+      site:fail-intake-host-in-data site:fail-input-formaction-intake \
+      site:fail-csp-form-action-missing-intake-correction site:csp-intake/worker-src; do
+    kind="${drop%%:*}"
+    intake_coverage "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render/intake-cases.tsv" \
+      "$FIXTURES/site/intake-cases.tsv" "${drop#*:}" >"$out" 2>&1
+    if grep -q "^FAIL $kind-intake/coverage: 1 member(s) without a row: ${drop#*:}\$" "$out"; then
+      echo "ok   $kind-intake/coverage-fails-on-missing-row (${drop#*:})"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL $kind-intake/coverage-fails-on-missing-row: without ${drop#*:} the coverage line did not fail; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  done
 
   # render-search-count (M4 PR 3 fix round 12b, QA recheck of 54d4517): the
   # COUNT=<n> expectation itself. Rows of the real table with a wrong count

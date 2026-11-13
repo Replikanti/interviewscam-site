@@ -1626,7 +1626,11 @@ CSP_WHITESPACE = "\t\n\f\r "
 
 def csp_problems(policy):
     """A policy may only use 'self' and 'none', directive names from
-    CSP_DIRECTIVES, and must set default-src."""
+    CSP_DIRECTIVES, and must set default-src. One exception (ADR-0006 part
+    9, M5b PR 3): form-action may also hold the intake origin, once, as
+    exactly INTAKE_ORIGIN (no other case, port, path, wildcard or scheme),
+    because the report and correction forms post there; every other
+    directive keeps refusing it."""
     problems = []
     seen = set()
     # review4 A1: CSP splits on ASCII whitespace only, so a no-break space
@@ -1645,12 +1649,43 @@ def csp_problems(policy):
                             "text (review3 6)")
         if name in CSP_REPORTING:
             problems.append(f"CSP reporting directive {name} sends requests")
+        intake = 0
         for source in sources:
+            if name == "form-action" and source == INTAKE_ORIGIN:
+                intake += 1
+                continue
             if source.lower() not in CSP_SOURCES:
                 problems.append(f"CSP source not allowed in {name}: {show(source)} "
-                                "(only 'self' and 'none' are)")
+                                "(only 'self' and 'none' are, and in form-action also "
+                                f"exactly {INTAKE_ORIGIN}, ADR-0006 part 9)")
+        if intake > 1:
+            problems.append(f"CSP form-action names the intake origin {intake} times; it "
+                            "names it once")
     if "default-src" not in seen:
         problems.append("CSP has no default-src")
+    return problems
+
+
+def intake_csp_problems(page):
+    """Site rule (a) on a page with the intake form: every CSP meta's
+    form-action lists INTAKE_ORIGIN (a missing form-action does not; the
+    browser would then allow every target, and the policy names its
+    targets)."""
+    problems = []
+    for tag, attrs in page.elements:
+        if tag != "meta" or attrs.get("http-equiv", "").strip().lower() \
+                != "content-security-policy":
+            continue
+        sources = []
+        for directive in (d.strip(CSP_WHITESPACE) for d in attrs.get("content", "").split(";")):
+            name, *rest = re.split(f"[{CSP_WHITESPACE}]+", directive) if directive else [""]
+            if name.lower() == "form-action":
+                sources = rest
+                break
+        if INTAKE_ORIGIN not in sources:
+            problems.append("(a) the form submits to the intake endpoint, but this page's "
+                            f"CSP form-action does not list {INTAKE_ORIGIN}, so the browser "
+                            "would block it (ADR-0006 part 9)")
     return problems
 
 
@@ -2115,16 +2150,54 @@ def own_path(rel):
     return "/" + rel
 
 
+# Site rule (a) for the intake endpoint (ADR-0006 part 9, M5b PR 3): the
+# only pages whose <form action> may leave the origin, and only as exactly
+# INTAKE_ACTION (the attribute value entity-decoded, compared as a whole
+# string, so no case, space, port, path or query variant passes). Every
+# formaction stays bound to the origin, leaves_origin is unchanged (so every
+# request-scan rule keeps refusing the intake origin), and no other URL
+# attribute may name the intake host at all.
+INTAKE_FORM_PAGES = {"report-a-scam/index.html": "report", "corrections/index.html": "correction"}
+
+
+def is_intake_action(tag, name, value):
+    """True for the one allowed form of the intake endpoint: a <form
+    action> that is exactly INTAKE_ACTION."""
+    return tag == "form" and name == "action" and value == INTAKE_ACTION
+
+
+def names_intake_host(value):
+    """True when a URL attribute's value leaves the origin for the intake
+    host, in any spelling a browser resolves to it (case, trailing dot,
+    userinfo, port, backslashes, protocol-relative)."""
+    return leaves_origin(value) and url_host(value) == INTAKE_HOSTNAME
+
+
 def markup_problems(page, rel):
     """Rules (a) to (e) on one HTML page; rel is its path under public/."""
     problems = []
     canonicals = []
     for tag, attrs in page.elements:
-        # (a) A form never submits to another origin or scheme.
+        # (a) A form never submits to another origin or scheme, except the
+        # intake form of the two intake pages (ADR-0006 part 9).
         for (ftag, fattr) in FORM_ATTRS:
-            if tag == ftag and fattr in attrs and leaves_origin(attrs[fattr]):
+            if tag != ftag or fattr not in attrs:
+                continue
+            if is_intake_action(tag, fattr, attrs[fattr]):
+                if rel not in INTAKE_FORM_PAGES:
+                    problems.append(f"(a) <form action> names the intake endpoint on "
+                                    f"{own_path(rel)}; only /report-a-scam/ and /corrections/ "
+                                    "may post to it (ADR-0006 part 9)")
+            elif leaves_origin(attrs[fattr]):
                 problems.append(f"(a) <{tag} {fattr}> submits to "
                                 f"{show(attrs[fattr])}, another origin")
+        for name in URL_ATTRS:
+            if name in attrs and not is_intake_action(tag, name, attrs[name]) \
+                    and names_intake_host(attrs[name]):
+                problems.append(f"(a) <{tag} {name}> names the intake origin "
+                                f"({show(attrs[name])}); only the <form action> of "
+                                "/report-a-scam/ and /corrections/ may, as exactly "
+                                f"{show(INTAKE_ACTION)} (ADR-0006 part 9)")
         # (b) No web manifest until its icons[].src are request-scanned.
         rels = attrs.get("rel", "").lower().split()
         if tag == "link" and "manifest" in rels:
@@ -2306,6 +2379,13 @@ def cmd_site(args):
                             findings.add(rel, problem)
                 for problem in markup_problems(page, path.relative_to(public).as_posix()):
                     findings.add(rel, problem)
+                # (a) A page that posts to the intake endpoint lists the
+                # intake origin in its CSP form-action, or the browser would
+                # block the form without a word (ADR-0006 part 9).
+                if any(is_intake_action(tag, "action", attrs.get("action"))
+                       for tag, attrs in page.elements):
+                    for problem in intake_csp_problems(page):
+                        findings.add(rel, problem)
                 for problem in rawtext_built_problems(text):
                     findings.add(rel, problem)
                 scripts += [(rel, attrs["src"]) for tag, attrs in page.elements
@@ -5739,6 +5819,14 @@ def cmd_render(args):
         problems, search_summary = search_problems(pages, records, campaigns)
         for rel, problem in problems:
             findings.add(rel, problem)
+    # Rule 18 runs on every site build; --no-intake is for the self-test's
+    # render fixtures, which have no intake pages (selftest.sh passes it
+    # unless the case has an intake.txt).
+    intake_summary = ""
+    if not args.no_intake:
+        problems, intake_summary = intake_problems(pages, contact)
+        for rel, problem in problems:
+            findings.add(rel, problem)
     if not pages:
         findings.add("public", "no HTML pages found; nothing was checked")
     n_reports = sum(r.section == "reports" for r in records)
@@ -5746,7 +5834,7 @@ def cmd_render(args):
     return findings.report(
         f"render checked: {len(records)} records (reports {n_reports}, campaigns "
         f"{len(records) - n_reports}), {n_record_pages} record pages, {len(pages)} "
-        f"HTML pages, {len(files)} files{feed_summary}{search_summary}")
+        f"HTML pages, {len(files)} files{feed_summary}{search_summary}{intake_summary}")
 
 
 # ---------------------------------------------------------------------------
@@ -6137,12 +6225,16 @@ LITERALS_SCRIPT_TEXT_ATTRS = frozenset({"data-copy-done", "data-copy-failed"})
 # MathML text attribute nobody listed (aria-rowindextext, alttext, ...)
 # fails instead of passing. data-*, the content of a meta and style keep
 # their own rules. M3 PR 9 adds aria-live (the Copy button's status region,
-# an enumerated token) and integrity (the script's SHA-384, a hash).
+# an enumerated token) and integrity (the script's SHA-384, a hash). M5b PR
+# 3 adds the intake form's accept (MIME types), aria-describedby (id
+# references), enctype (a MIME type) and maxlength (a number): none of them
+# is shown or read out as text (a screen reader reads the element an
+# aria-describedby names, whose own text the other rules check).
 LITERALS_PLAIN_ATTRS = frozenset("""
-action aria-current aria-hidden aria-labelledby aria-live autocomplete charset class
-cx cy d datetime fill for height href http-equiv id integrity lang method name r rel
-role rx spellcheck src stroke stroke-linecap stroke-linejoin stroke-width tabindex
-type viewbox width xmlns
+accept action aria-current aria-describedby aria-hidden aria-labelledby aria-live
+autocomplete charset class cx cy d datetime enctype fill for height href http-equiv id
+integrity lang maxlength method name r rel role rx spellcheck src stroke stroke-linecap
+stroke-linejoin stroke-width tabindex type viewbox width xmlns
 """.split())
 # The attribute values a path piped into relURL or absURL may fill (A1).
 LITERALS_URL_ATTRS = frozenset({"href", "src", "action"})
@@ -6255,7 +6347,10 @@ LITERALS_ELEMENTS = HTML_ELEMENTS | SVG_ELEMENTS
 # reads it, and baseURL reaches a page only inside the permalinks.
 LITERALS_SITE_MEMBERS = {"Title", "Home", "RegularPages", "Pages", "GetPage",
                          "Sections", "Params", "Data"}
-LITERALS_SITE_PARAMS = {"operator", "contact", "csp"}
+# params.intake (M5b PR 3) is the intake endpoint, a URL that prints only
+# into the action of the intake form (its value kind is url, which no text
+# sink takes).
+LITERALS_SITE_PARAMS = {"operator", "contact", "csp", "intake"}
 LITERALS_HUGO_DATA = {"labels", "tokens"}
 # hugo: only Data (hugo.Sites, hugo.Environment, ... read config).
 LITERALS_HUGO_MEMBERS = {"Data"}
@@ -6421,6 +6516,13 @@ LITERALS_COLLECTION_VALUES = frozenset({
     ("layouts/_partials/header.html", "/methodology/"),
     ("layouts/_partials/header.html", "/about/"),
     ("layouts/_partials/how-to-send.html", "contact-send"),  # the address's id (Copy)
+    # The result ids of the intake Worker, the ids of the sections of
+    # /not-sent/ (INTAKE_RESULT_IDS, ADR-0006 part 6; M5b PR 3). They print
+    # only into id attributes and label keys; render rule 18 pins them.
+    *(("layouts/_partials/not-sent.html", rid) for rid in (
+        "too-large", "too-many-files", "not-an-image", "missing-field", "too-long",
+        "bad-address", "bad-page-url", "too-many-attempts", "paused", "not-accepted",
+        "error")),
     ("layouts/_partials/jsonld.html", "https://schema.org"),
     ("layouts/_partials/record-item.html", "chip"),
     # The state chip of an A to Z entry, as in record-item.html (M4 PR 2).
@@ -7194,8 +7296,8 @@ def copy_source_problems(rel, tokens, literals, css=False):
                 problems.append((t, f"{w}: never site.Data or .Site.Data; "
                                  "labels through label.html (L4)"))
             elif member == "Params" and sub not in LITERALS_SITE_PARAMS:
-                problems.append((t, f"{w}: site.Params only as operator, contact or "
-                                 "csp (L4)"))
+                problems.append((t, f"{w}: site.Params only as operator, contact, csp "
+                                 "or intake (L4)"))
             elif member not in LITERALS_SITE_MEMBERS:
                 problems.append((t, f"{w}: site.{member} is not a member a template "
                                  "may read (L4)"))
@@ -8374,8 +8476,8 @@ def field_of(shape, name):
     if shape in ("params", "content", "file"):
         return kinds("content")
     if shape == "siteparams":
-        return kinds({"operator": "config", "contact": "config", "csp": "csp"}.get(
-            name, "unknown"))
+        return kinds({"operator": "config", "contact": "config", "csp": "csp",
+                      "intake": "url"}.get(name, "unknown"))
     if shape == "hugo":
         return kinds("hugodata" if name == "Data" else "unknown")
     if shape == "hugodata":
@@ -9384,7 +9486,7 @@ LITERALS_SCRIPT_PATTERNS = frozenset({("assets/js/search.js", "[\\p{L}\\p{N}]")}
 # every style attribute and <style> element of a built page, and the CSP's
 # style-src 'self' would block them.
 STYLESHEET_SHA256 = {
-    "assets/css/site.css": "692d492f09fa807f81d2b9fc4a83c13eb00c9e16c952d9e85fd70cf3a378c866",
+    "assets/css/site.css": "6140f5782ce7cab0aa23ee3b45b58e93b13dea79c8885e2e828937d771d93652",
     "assets/css/tokens.css": "725a7b2808e32866e206468f43b1097c8b34e879e13baeee309391f1fe53ad27",
     "data/tokens.toml": "b867bb5bae4cc1a95bf730e132b3e2d4f0744a984308835837b73279dce39182",
 }
@@ -9687,7 +9789,7 @@ def head_problems(text, rel, built):
                         "order (values shown are pinned here, the others by their own rule)")
     return problems
 BUILT_STYLESHEET_SHA256 = {
-    "site": "470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38",
+    "site": "f0029531c083fb96a2c5602c1b04f5996446d4e056f24a72b994edac6185a23c",
 }
 BUILT_SCRIPT_SHA384 = {
     "copy": "64df53ed5d62c8c5c8be3aee6bd39c1171a2bb88742b3424790354056657c3faf100ea7cc044affe06e76164b883b924",
@@ -11640,6 +11742,11 @@ REFLOW_HIT_SCRIPT = r"""
           ".state-sentence, .record-label, .aliases, .campaign-line, .state-basis"),
           function (el) { if (!results || !results.contains(el)) add(kinds[5], el); });
     }
+    // The intake block of /report-a-scam/ and /corrections/ and every
+    // result section of /not-sent/ (render rule 18, M5b PR 3): the form, its
+    // way out by email and each refusal's way out.
+    Array.prototype.forEach.call(document.querySelectorAll(".send, .result"),
+        function (el) { add(kinds[6], el); });
   }
   window.__iscRegions = regions.map(function (r) { return r[1]; });
   // The occlusion check (fix round 1): every element that shows, outside a
@@ -11685,7 +11792,7 @@ REFLOW_HIT_SCRIPT = r"""
         Math.round(b.left) + " to " + Math.round(b.right) + ", y " + Math.round(b.top) + " to " +
         Math.round(b.bottom));
     });
-    Array.prototype.forEach.call(region.querySelectorAll("a, button, input"), function (c) {
+    Array.prototype.forEach.call(region.querySelectorAll("a, button, input, textarea"), function (c) {
       if (c.getClientRects().length === 0) return;
       controls++;
       c.scrollIntoView({block: "center", inline: "nearest"});
@@ -11802,9 +11909,58 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
 SEARCH_NAVIGATION_EVENTS = frozenset({"Page.frameRequestedNavigation",
                                       "Page.frameStartedNavigating",
                                       "Page.frameStartedLoading", "Page.frameNavigated"})
+# Reflow case (10), the honeypot (ADR-0006 part 3 step 5, M5b PR 3): the
+# field website of the intake forms sits in <div hidden>, which render rule
+# 18 pins, but a stylesheet or a script can still lay it out, and then a
+# person can fill it and the Worker refuses the submission. So on every
+# page, with the script running (S0) and with scripting off (S2), every
+# <input name=website>, its label and the element around it have no box
+# (getClientRects() empty), and the browser sees as many of those inputs as
+# the page's file holds.
+REFLOW_HONEYPOT_SCRIPT = r"""
+(function () {
+  function label(el) {
+    var s = el.localName;
+    if (el.id) s += "#" + el.id;
+    return s;
+  }
+  var inputs = document.querySelectorAll('input[name="website"]'), boxed = [];
+  Array.prototype.forEach.call(inputs, function (el) {
+    var tied = el.id ? document.querySelectorAll('label[for="' + el.id + '"]') : [];
+    [el, el.parentElement].concat(Array.prototype.slice.call(tied)).forEach(function (x) {
+      if (!x) return;
+      var r = x.getBoundingClientRect();
+      if (x.getClientRects().length) boxed.push(label(x) + " (" + r.width.toFixed(1) + " x " +
+                                                r.height.toFixed(1) + " CSS px)");
+    });
+  });
+  return {count: inputs.length, boxed: boxed};
+})()
+"""
+
+
+def reflow_honeypots(tools, session, findings, where, state, want):
+    """Case (10) in one state: want is the number of honeypot inputs the
+    page's file holds. Returns that number when the state passed, else 0."""
+    seen = reflow_value(tools, session, REFLOW_HONEYPOT_SCRIPT, where)
+    ok = True
+    if seen.get("count") != want:
+        findings.add(where, f"(10) {state}: the browser sees {seen.get('count')} honeypot "
+                     f"input(s) (name website), the page's file holds {want}; the browser built "
+                     "another tree than the static checks read")
+        ok = False
+    for item in seen.get("boxed", []):
+        findings.add(where, f"(10) {state}: the honeypot's {show(item, 120)} has a box; the "
+                     "field website renders nothing, or a person can fill it and the intake "
+                     "Worker refuses the submission (ADR-0006 part 3 step 5)")
+        ok = False
+    return want if ok else 0
+
+
 REFLOW_HIT_KINDS = ("the search form", "/a-z/ entries (.index-list)", "a .no-report block",
                     "the What to do now panel", "a revealed result section",
-                    "a pinned line of a report page or Home")
+                    "a pinned line of a report page or Home",
+                    "an intake block (.send) or a /not-sent/ section (.result)")
 
 
 def reflow_hits(tools, session, findings, where, revealed=None):
@@ -12288,7 +12444,7 @@ def cmd_reflow(args):
     launched = False
     n_items = 0
     n_copy = n_search = n_reveals = n_revealed = n_heads = n_regions = n_documents = 0
-    n_hit_regions = 0
+    n_hit_regions = n_honeypots = 0
     search_summary = "; search: not run (--no-search)"
     try:
         # The launch: start Chrome and wait for its first answer, within
@@ -12530,6 +12686,11 @@ def cmd_reflow(args):
             # (6) S0: the script ran, so every Copy button is revealed, and
             # the search results stay hidden: no query was made.
             copy_state(where, REFLOW_STATES[0], True)
+            # (10) S0: the honeypot has no box (M5b PR 3).
+            honeypots = sum(1 for tag, attrs in elements
+                            if tag == "input" and attrs.get("name") == "website")
+            n_honeypots += reflow_honeypots(tools, session, findings, where, REFLOW_STATES[0],
+                                            honeypots)
             # (7) The skip link's reveal applies on keyboard focus: one Tab
             # press from the loaded page focuses the first focusable
             # element, which must carry the class and grow past 1 x 1 px
@@ -12618,6 +12779,9 @@ def cmd_reflow(args):
                 findings.add(where, f"did not load with scripting off: {error}")
             else:
                 copy_state(where, REFLOW_STATES[2], False)
+                # (10) S2: the honeypot has no box with scripting off either.
+                n_honeypots += reflow_honeypots(tools, session, findings, where,
+                                                REFLOW_STATES[2], honeypots)
                 # (9) the whole document in the browser, S2 (fix round 11).
                 seen = reflow_value(tools, session, REFLOW_DOCUMENT_SCRIPT, where) or None
                 parsed = static_document((public / rel).read_text(encoding="utf-8",
@@ -12676,7 +12840,8 @@ def cmd_reflow(args):
                            f"skip-link reveals: {n_reveals}; heads as parsed: {n_heads}; "
                            f"pinned regions as parsed: {n_regions}; documents as parsed "
                            f"(scripting off): {n_documents}; regions hit-tested and painting: "
-                           f"{n_hit_regions}{search_summary}")
+                           f"{n_hit_regions}; honeypots without a box, counted per state "
+                           f"(S0 and S2): {n_honeypots}{search_summary}")
 
 
 # ---------------------------------------------------------------------------
@@ -13087,6 +13252,342 @@ INTAKE_WORKER_SHA256 = {
 
 
 # ---------------------------------------------------------------------------
+# Rule 18 (ADR-0006 parts 3, 5, 6 and 9 and Numbers "page_url"; M5b PR 3):
+# the report and correction forms, their result pages and the page URL
+# bound. (a) /report-a-scam/ and /corrections/ exist, each holds exactly one
+# <form>, and no other page holds a form that posts to the intake host;
+# (b) the how-to-send block of each is exactly the tree
+# layouts/_partials/how-to-send.html emits for its channel (intake_block_tree,
+# compared raw by region_problems: count, order and nesting, every attribute
+# byte for byte, the raw action, method, enctype, every field of
+# INTAKE_FIELDS with its type, maxlength, required and autocomplete, the
+# hidden channel field, the honeypot in <div hidden>, every label, hint and
+# the address with its Copy button, every text), in its exact ancestor
+# chain; (c) on those two pages no <meta name=referrer>, no rel holding
+# noreferrer on a form and no referrerpolicy on a form or a submitter
+# (INTAKE_REFERRER_TAGS), because such a policy makes the browser send
+# Origin: null, which the Worker refuses (ADR-0006 part 3 step 2); (d)
+# /sent/ exists, and /not-sent/ holds every result id of the Worker exactly
+# once, as the section tree of layouts/_partials/not-sent.html with its text,
+# in INTAKE_RESULT_IDS order; (e) every built page's URL, as the browser's
+# address bar copies it (percent-encoded), is at most the page_url cap, so
+# the correction form can name every page. An exact tree, not a list of
+# bad constructs: a blocklist closes only its probes (see the note on the
+# regions above). The texts live here a second time on purpose, as the D6,
+# D7 and D10 strings do, so a copy change shows up in a safety-net diff.
+INTAKE_PAGES = {f"public/{rel}": channel for rel, channel in INTAKE_FORM_PAGES.items()}
+INTAKE_SENT_REL = "public/sent/index.html"
+INTAKE_NOT_SENT_REL = "public/not-sent/index.html"
+INTAKE_BLOCK_TEMPLATE = "layouts/_partials/how-to-send.html"
+INTAKE_RESULT_TEMPLATE = "layouts/_partials/not-sent.html"
+# The how-to-send block sits in the content card of page.html.
+INTAKE_CHAIN = [("div", {"class": "card prose"})] + HTML_CHAIN
+# ADR-0006 part 3 step 2: the elements whose referrerpolicy rule (c) refuses.
+INTAKE_REFERRER_TAGS = ("form", "button", "input")
+# The free-text fields whose hint also points at the defang instruction.
+INTAKE_DEFANG_FIELDS = ("details", "request")
+# The one value the Worker accepts for own_name (ADR-0006 part 5).
+INTAKE_OWN_NAME_VALUE = "yes"
+INTAKE_PAGE_URL_CAP = next(f["cap"] for f in INTAKE_FIELDS["correction"]
+                           if f["name"] == "page_url")
+# What the address bar copies: the WHATWG path percent-encode set (C0
+# controls, space, ", #, <, >, ?, `, {, } and every non-ASCII code point)
+# encoded, the rest of printable ASCII kept.
+INTAKE_URL_SAFE = "".join(c for c in map(chr, range(0x21, 0x7F)) if c not in '"#<>?`{}')
+
+
+def intake_cap(name):
+    """The cap of a field, the same in every channel that has it."""
+    return next(f["cap"] for fields in INTAKE_FIELDS.values() for f in fields
+                if f["name"] == name)
+
+
+def intake_mib(n):
+    return n // (1024 * 1024)
+
+
+INTAKE_REQUIRED = "(required)"
+INTAKE_DEFANG = ("Write links and domains defanged, so that nobody opens them by accident: "
+                 "hxxps instead of https, and [.] instead of each dot, for example "
+                 "hxxps://meet[.]example/join.")
+# heading, button and fallback sentence per channel (ADR-0006 part 6
+# closure: the one sentence next to the submit button), and the subject
+# line of the email way.
+INTAKE_CHANNEL_TEXTS = {
+    "report": ("Send your report", "Send report",
+               "If sending fails or your evidence does not fit, send your report by email "
+               "instead, to this address and with this subject line:",
+               "Report: <name of the company, app or person>"),
+    "correction": ("Send your request", "Send request",
+                   "If sending fails or your evidence does not fit, send your request by email "
+                   "instead, to this address and with this subject line:",
+                   "Correction: <page URL>"),
+}
+INTAKE_ADDRESS_TERM = "Email address"
+INTAKE_SUBJECT_TERM = "Subject line"
+INTAKE_COPY_TEXTS = ("Copy", "Copied", "Copy failed, select the text instead")
+# label and hint per field; a cap in a hint is the field's cap.
+INTAKE_FIELD_TEXTS = {
+    "name": ("Name the scam used", "The company, app or person, as it appeared in the "
+             f"messages. Up to {intake_cap('name'):,} characters."),
+    "contact_start": ("Where the contact started", "For example a job board, LinkedIn, "
+                      f"Telegram or email. Up to {intake_cap('contact_start'):,} characters."),
+    "details": ("What happened", "A few sentences with dates. Say whether you installed or "
+                f"ran anything. Up to {intake_cap('details'):,} characters."),
+    "headers": ("Message headers", "If the invite came by email, paste its full headers. Most "
+                "mail apps show them under an option like \"Show original\" or \"View "
+                f"source\". Up to {intake_cap('headers'):,} characters."),
+    "page_url": ("URL of the page", "The address of the page on interviewscam.com, copied from "
+                 f"your browser. Up to {intake_cap('page_url'):,} characters."),
+    "request": ("What is wrong", "What the page says, what it should say instead, and why. "
+                f"Up to {intake_cap('request'):,} characters."),
+    "own_name": ("The page shows my own name", "Your name is hidden first, before the review."),
+    "email": ("Your email address", "The moderator replies to this address. It is never "
+              "published."),
+    "files": ("Screenshots", f"PNG or JPEG, at most {INTAKE_MAX_FILES} files and "
+              f"{intake_mib(INTAKE_MAX_UPLOAD_BYTES)} MB in total. Black out your own name, email "
+              "address and phone number first. Never attach the file you were asked to run."),
+    "website": ("Leave this field empty", None),
+}
+INTAKE_FILES_AGAIN = ("If you go back to the form, choose your files again: the browser does "
+                      "not keep them.")
+INTAKE_ADDRESS_INTRO = "Email address for reports and requests:"
+# heading and text per result id of the Worker (ADR-0006 part 6).
+INTAKE_RESULT_TEXTS = {
+    "too-large": ("The files are too large", "The form takes at most "
+                  f"{intake_mib(INTAKE_MAX_UPLOAD_BYTES)} MB of files in total. Choose fewer or "
+                  "smaller screenshots, or send the larger ones by email."),
+    "too-many-files": ("Too many files", f"The form takes at most {INTAKE_MAX_FILES} files. "
+                       "Choose the ones that show the most, or send the rest by email."),
+    "not-an-image": ("A file is not an image", "The form takes PNG, JPEG, GIF and WebP images "
+                     "only. Remove every other file, for example a PDF or a document. Never send "
+                     "the file you were asked to run: write its SHA-256 hash in the text "
+                     "instead."),
+    "missing-field": ("A required field is empty", "A field marked required held nothing, or "
+                      "only spaces or invisible characters. Fill in every required field and send "
+                      "it again."),
+    "too-long": ("A text is too long", "A text is longer than its field allows. The hint under "
+                 "each field gives its limit. Shorten the text, or send it by email."),
+    "bad-address": ("The email address does not work", "Check your email address for typing "
+                    "errors. It needs a name, an @ and a domain, without spaces."),
+    "bad-page-url": ("The page URL is not a page of this site", "Copy the address of the page "
+                     "on interviewscam.com from your browser's address bar, exactly as it "
+                     "appears there, and send it again."),
+    "too-many-attempts": ("Too many attempts", f"The form takes at most {INTAKE_CLIENT_LIMIT} "
+                          "attempts an hour, and at most "
+                          f"{INTAKE_CLIENT_DAILY_MAILS} sent messages a day, from one network. Try "
+                          f"again later, after 00:00 UTC if {INTAKE_CLIENT_DAILY_MAILS} messages went "
+                          "out today, or send it by email now."),
+    "paused": ("The form is paused for today", "The form takes a limited number of messages a "
+               "day, and today's are used up. It opens again at 00:00 UTC. Send it by email now "
+               "instead."),
+    "not-accepted": ("The form could not accept this message", "The message did not come from "
+                     "the form on this site as it is, or a field that people never see was "
+                     "filled in. Go back and send it from the form again, or send it by email."),
+    "error": ("Something went wrong", "The message could not be sent because of an error on "
+              "the site's side. Try again later, or send it by email now."),
+}
+
+
+def intake_field_tree(field):
+    """The markup how-to-send.html emits for one field of INTAKE_FIELDS
+    (every type but the hidden channel field)."""
+    name, kind = field["name"], field["type"]
+    fid = f"intake-{name}"
+    label_text, hint_text = INTAKE_FIELD_TEXTS[name]
+    attrs = {"id": fid, "name": name}
+    if kind != "textarea":
+        attrs["type"] = "text" if kind == "honeypot" else kind
+    if field["cap"] is not None:
+        attrs["maxlength"] = str(field["cap"])
+    if field["required"]:
+        attrs["required"] = ""
+    if kind == "file":
+        attrs["multiple"] = ""
+        attrs["accept"] = ",".join(dict.fromkeys(mime for mime, _, _ in INTAKE_IMAGE_TYPES))
+    if kind == "checkbox":
+        attrs["value"] = INTAKE_OWN_NAME_VALUE
+    if kind == "honeypot":
+        attrs["tabindex"] = "-1"
+    if field["autocomplete"] is not None:
+        attrs["autocomplete"] = field["autocomplete"]
+    if kind != "honeypot":
+        attrs["aria-describedby"] = f"{fid}-hint" + (
+            " intake-defang" if name in INTAKE_DEFANG_FIELDS else "")
+    control = pinned("textarea" if kind == "textarea" else "input", attrs, "")
+    if kind == "honeypot":
+        return pinned("div", {"hidden": ""}, None, pinned("label", {"for": fid}, label_text),
+                      control)
+    if field["required"]:
+        label = pinned("label", {"for": fid}, f"{label_text} {INTAKE_REQUIRED}",
+                       pinned("span", {"class": "required"}, INTAKE_REQUIRED))
+    else:
+        label = pinned("label", {"for": fid}, label_text)
+    hint = pinned("p", {"class": "hint", "id": f"{fid}-hint"}, hint_text)
+    if kind == "checkbox":
+        return pinned("div", {"class": "field field-check"}, None, control, label, hint)
+    return pinned("div", {"class": "field"}, None, label, hint, control)
+
+
+def intake_block_tree(channel, contact):
+    """The tree how-to-send.html emits for a channel: the heading, the form
+    (the hidden channel field, the defang instruction, every other field of
+    INTAKE_FIELDS in order, the honeypot last, the submit button), the
+    fallback sentence and the email way."""
+    heading, button, fallback, subject = INTAKE_CHANNEL_TEXTS[channel]
+    body = []
+    for field in INTAKE_FIELDS[channel]:
+        if field["type"] == "hidden":
+            body.append(pinned("input", {"type": "hidden", "name": field["name"],
+                                         "value": channel}, ""))
+            body.append(pinned("p", {"class": "hint", "id": "intake-defang"}, INTAKE_DEFANG))
+        else:
+            body.append(intake_field_tree(field))
+    body.append(pinned("button", {"type": "submit", "class": "button-primary"}, button))
+    form = pinned("form", {"class": "intake", "action": INTAKE_ACTION, "method": "post",
+                           "enctype": "multipart/form-data"}, None, *body)
+    copy, done, failed = INTAKE_COPY_TEXTS
+    address = pinned("dd", None, None,
+                     pinned("span", {"class": "address", "id": "contact-send"}, contact),
+                     pinned("button", {"type": "button", "class": "copy", "hidden": "",
+                                       "data-copy-target": "contact-send",
+                                       "data-copy-done": done, "data-copy-failed": failed}, copy),
+                     pinned("span", {"class": "copy-status", "role": "status",
+                                     "aria-live": "polite"}, ""))
+    email = pinned("dl", {"class": "send-list"}, None,
+                   pinned("div", None, None, pinned("dt", None, INTAKE_ADDRESS_TERM), address),
+                   pinned("div", None, None, pinned("dt", None, INTAKE_SUBJECT_TERM),
+                          pinned("dd", None, subject)))
+    return pinned("section", {"class": "send", "aria-labelledby": "how-to-send"}, None,
+                  pinned("h2", {"id": "how-to-send"}, heading), form,
+                  pinned("p", {"class": "send-fallback"}, fallback), email)
+
+
+def not_sent_section_tree(rid, contact):
+    """The section not-sent.html emits for one result id."""
+    heading, text = INTAKE_RESULT_TEXTS[rid]
+    return pinned("section", {"class": "card result", "id": rid,
+                              "aria-labelledby": f"{rid}-heading"}, None,
+                  pinned("h2", {"id": f"{rid}-heading"}, heading), pinned("p", None, text),
+                  pinned("p", None, INTAKE_FILES_AGAIN),
+                  pinned("p", None, f"{INTAKE_ADDRESS_INTRO} {contact}",
+                         pinned("span", {"class": "address"}, contact)))
+
+
+def intake_referrer_problems(page, path):
+    """Rule 18 (c) on an intake page."""
+    problems = []
+    for el in page.root.walk():
+        if el.tag == "meta" and ascii_lower(el.attrs.get("name", "")) == "referrer":
+            problems.append(f"rule 18 (c): {path} holds a <meta name=referrer>; a referrer "
+                            "policy can make the browser send Origin: null with the form, which "
+                            "the intake Worker refuses (ADR-0006 part 3 step 2)")
+        if el.tag == "form" and "noreferrer" in ascii_lower(el.attrs.get("rel", "")).split():
+            problems.append(f"rule 18 (c): the form on {path} has a rel that holds noreferrer; "
+                            "the browser then sends Origin: null, which the intake Worker "
+                            "refuses (ADR-0006 part 3 step 2)")
+        if el.tag in INTAKE_REFERRER_TAGS and "referrerpolicy" in el.attrs:
+            problems.append(f"rule 18 (c): a <{el.tag}> on {path} carries referrerpolicy; a "
+                            "referrer policy on the form or a submitter can make the browser "
+                            "send Origin: null, which the intake Worker refuses (ADR-0006 part "
+                            "3 step 2)")
+    return problems
+
+
+def intake_problems(pages, contact):
+    """Rule 18 on a site build. Returns (problems, summary)."""
+    problems, n_forms, n_sections = [], 0, 0
+    for rel, page in pages.items():
+        if rel in INTAKE_PAGES or page.unread:
+            continue
+        for el in page.root.walk():
+            if el.tag == "form" and names_intake_host(el.attrs.get("action", "")):
+                problems.append((rel, f"rule 18 (a): a form on {own_path(rel.removeprefix('public/'))} "
+                                      "posts to the intake endpoint; only /report-a-scam/ and "
+                                      "/corrections/ hold the intake form (ADR-0006 part 9)"))
+    for rel, channel in INTAKE_PAGES.items():
+        path = own_path(rel.removeprefix("public/"))
+        page = pages.get(rel)
+        if page is None:
+            problems.append((rel, f"rule 18 (a): {path} was not built; it holds the {channel} "
+                                  "form (ADR-0006 part 5)"))
+            continue
+        if page.unread:
+            continue
+        forms = [el for el in page.root.walk() if el.tag == "form"]
+        if len(forms) != 1:
+            problems.append((rel, f"rule 18 (a): {path} holds {len(forms)} forms; it holds "
+                                  "exactly one, the intake form"))
+        problems += [(rel, p) for p in intake_referrer_problems(page, path)]
+        what = f"rule 18 (b): the intake block on {path}"
+        if contact is None:
+            problems.append((rel, f"{what} cannot be pinned: hugo.toml has no params.contact"))
+            continue
+        blocks = [el for el in page.root.walk() if el.tag == "section" and "send" in el.classes]
+        if len(blocks) != 1:
+            problems.append((rel, f"{what}: {path} holds {len(blocks)} sections of class send; "
+                                  "it holds exactly one"))
+            continue
+        problems += [(rel, p) for p in chain_problems(blocks[0], INTAKE_CHAIN, what)]
+        found = region_problems(blocks[0], intake_block_tree(channel, contact), what,
+                                INTAKE_BLOCK_TEMPLATE)
+        problems += [(rel, p) for p in (found[1] if found else [])]
+        n_forms += len(forms) == 1 and not found
+    if pages.get(INTAKE_SENT_REL) is None:
+        problems.append((INTAKE_SENT_REL, "rule 18 (d): /sent/ was not built; the intake Worker "
+                                          "sends every accepted submission there (ADR-0006 "
+                                          "part 6)"))
+    page = pages.get(INTAKE_NOT_SENT_REL)
+    if page is None:
+        problems.append((INTAKE_NOT_SENT_REL, "rule 18 (d): /not-sent/ was not built; the intake "
+                                              "Worker sends every refusal there (ADR-0006 part 6)"))
+    elif not page.unread:
+        ids = {}
+        for el in page.root.walk():
+            if "id" in el.attrs:
+                ids.setdefault(el.attrs["id"], []).append(el)
+        for rid in INTAKE_RESULT_IDS:
+            found = ids.get(rid, [])
+            if len(found) != 1:
+                problems.append((INTAKE_NOT_SENT_REL, f"rule 18 (d): /not-sent/ holds {len(found)} "
+                                 f"elements with the id {rid}; the Worker names it as the "
+                                 "fragment of its redirect, so it occurs exactly once"))
+                continue
+            what = f"rule 18 (d): the section #{rid} on /not-sent/"
+            problems += [(INTAKE_NOT_SENT_REL, p)
+                         for p in chain_problems(found[0], HTML_CHAIN, what)]
+            result = region_problems(found[0], not_sent_section_tree(rid, contact or ""), what,
+                                     INTAKE_RESULT_TEMPLATE)
+            problems += [(INTAKE_NOT_SENT_REL, p) for p in (result[1] if result else [])]
+            n_sections += not result
+        mains = [el for el in page.root.walk() if el.tag == "main"]
+        want = [("h1", {}), ("div", {"class": "card prose"})] + [
+            ("section", {"class": "card result", "id": rid, "aria-labelledby": f"{rid}-heading"})
+            for rid in INTAKE_RESULT_IDS]
+        got = [(c.tag, c.attrs) for c in mains[0].children
+               if isinstance(c, Element)] if len(mains) == 1 else None
+        if got != want:
+            def shown(items):
+                return ", ".join("<" + t + "".join(f" {k}={show(v, 30)}" for k, v in a.items())
+                                 + ">" for t, a in items)
+            problems.append((INTAKE_NOT_SENT_REL, f"rule 18 (d): /not-sent/'s <main> holds "
+                             f"{shown(got) if got is not None else f'{len(mains)} <main> elements'}; "
+                             f"page.html and {INTAKE_RESULT_TEMPLATE} emit exactly "
+                             f"{shown(want)}, one section per result id in INTAKE_RESULT_IDS "
+                             "order"))
+    for rel in pages:
+        path = own_path(rel.removeprefix("public/"))
+        url = SITE_ORIGIN + urllib.parse.quote(path, safe=INTAKE_URL_SAFE)
+        if len(url) > INTAKE_PAGE_URL_CAP:
+            problems.append((rel, f"rule 18 (e): the URL of {path[:40]}... is {len(url)} "
+                                  f"characters as the address bar copies it, over "
+                                  f"{INTAKE_PAGE_URL_CAP}, the page_url cap of the correction "
+                                  "form (ADR-0006 Numbers): the form could not name this page"))
+    return problems, (f"; intake: {n_forms} forms, {n_sections} result sections, {len(pages)} "
+                      f"page URLs within {INTAKE_PAGE_URL_CAP}")
+
+
+# ---------------------------------------------------------------------------
 # Guard
 
 # The pattern tables. The tool scan skips exactly these lines of this file
@@ -13134,6 +13635,10 @@ HUGO_CONFIG_PINNED = {
     "security.exec.allow": ["none"],
     "security.http.urls": ["none"],
     **{f"privacy.{key}.disable": True for key in HUGO_PRIVACY},
+    # The intake endpoint the two forms post to (ADR-0006, M5b PR 3): the
+    # one URL a form may leave the origin for (site rule (a)), so it can
+    # only change with the constant.
+    "params.intake": INTAKE_ACTION,
 }
 HUGO_CONFIG_STRINGS = ("title", "params.operator", "params.contact", "params.csp")
 # The HUGO_* environment variables the build may see: this repo's own tool
@@ -13850,6 +14355,9 @@ def build_parser():
     # Self-test only (rule 17): the hand-made render fixtures predate the
     # report page templates of today; check.sh never passes it.
     p.add_argument("--no-report-pins", action="store_true")
+    # Self-test only (rule 18): a render fixture without an intake.txt has no
+    # intake pages; check.sh never passes it.
+    p.add_argument("--no-intake", action="store_true")
     p.add_argument("public")
     p.set_defaults(func=cmd_render)
     p = sub.add_parser("tokens", allow_abbrev=False)
