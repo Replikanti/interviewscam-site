@@ -489,6 +489,8 @@ class Tool(ToolCase):
             # Fix round 5.
             "domain in another zone": lambda: self.stub.domains[0].update(zone_id="0" * 32),
             "domain environment staging": lambda: self.stub.domains[0].update(environment="staging"),
+            "domain environment empty": lambda: self.stub.domains[0].update(environment=""),
+            "domain zone missing": lambda: self.stub.domains[0].pop("zone_id"),
             "domain previews on": lambda: self.stub.domains[0].update(previews_enabled=True),
             "domain flags missing": lambda: setattr(self.stub, "domains", [
                 {k: v for k, v in self.stub.domains[0].items() if k not in ("enabled", "previews_enabled")}]),
@@ -832,6 +834,12 @@ class ToolQARound5(ToolCase):
         self.stub.domains.append({"hostname": "other.interviewscam.com", "service": "other-worker",
                                   "zone_id": ZONE, "environment": "production", "enabled": True,
                                   "previews_enabled": False})
+        self.assertEqual(self.run_tool("verify")[0], 0)
+
+    def test_domain_without_a_legacy_environment_passes(self):
+        """`environment` is deprecated in the API, so an answer without it is the normal one."""
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        self.stub.domains[0].pop("environment")
         self.assertEqual(self.run_tool("verify")[0], 0)
 
     def test_domain_answer_needs_both_flags(self):

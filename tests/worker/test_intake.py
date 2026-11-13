@@ -758,6 +758,7 @@ class Limiter(WorkerCase):
         return body, {"Content-Type": ctype, "Origin": "https://interviewscam.com"}
 
     def test_limiter_stores_no_ip(self):
+        pin_day()
         ip4 = "198.51.100.77"
         send(self, report(), ip=ip4)
         send(self, report(), ip="2001:db8:dead:beef::5")
@@ -768,7 +769,7 @@ class Limiter(WorkerCase):
                 self.assertRegex(row["key"], r"^[0-9a-f]{64}$")
         for needle in ("198.51.100", "51.100.77", "dead", "beef", "2001", "db8"):
             self.assertNotIn(needle, dump)
-        self.assertEqual(len(rows["attempts"]), 2)
+        self.assertEqual(len([r for r in rows["attempts"] if r["key"] != PIN_KEY]), 2)
         self.assertEqual(len(rows["mails"]), 2)
         self.assertNotIn(ip4, "\n".join(stdout_lines()))
 
@@ -839,6 +840,7 @@ class GlobalCap(WorkerCase):
         self.assertEqual((a, b), ("2026-12-31", "2027-01-01"))
 
     def test_send_failure_refunds(self):
+        pin_day()
         ip = fresh_ip()
         probe("capture", "setFail", "throw")
         self.assertOutcome(send(self, report(), ip=ip), "error")
@@ -1586,7 +1588,8 @@ class FixRound2(WorkerCase):
     # --- fix round 5, D4-1: the pinned day holds across 00:00 UTC
     def test_pinned_day_holds_across_midnight(self):
         day = 86_400_000
-        for wall in (1798761300000, 1798761599000):  # 2026-12-31T23:55:00Z, 23:59:59Z
+        midnight = (int(time.time() * 1000) // day + 1) * day  # the next 00:00 UTC, always ahead of the wall clock
+        for wall in (midnight - 5 * 60_000, midnight - 1000):  # 23:55:00Z and 23:59:59Z of today
             with self.subTest(wall=wall):
                 probe("limiter", "purge", FAR_FUTURE)
                 pinned = base_now(wall)
@@ -1606,18 +1609,24 @@ class FixRound2(WorkerCase):
         result = json.loads(data)["result"]
         self.assertEqual((result["status"], result["location"]), (303, SC.INTAKE_NOT_SENT_URL + "#paused"))
         self.assertEqual((result["waited"], result["settled"]), (1, [True]))
+        self.assertEqual(result["pending"], [True], "the promise is the running notice, not a settled stand-in")
         self.assertIn(["noticeSent", "2000-01-01"], probe("record"))
         self.assertEqual(len(mails()), 1)
 
     # --- fix round 5, D4-4a: only the intake host
     def test_other_host_refused_before_limiter(self):
-        for host in ("evil.example", "intake.interviewscam.com.evil.example", "interviewscam.com", "127.0.0.1"):
+        for host in ("evil.example", "intake.interviewscam.com.evil.example", "interviewscam.com", "127.0.0.1",
+                     "xintake.interviewscam.com", "evil.intake.interviewscam.com"):
             with self.subTest(host=host):
                 out = send(self, report(), headers={"Host": host})
                 self.assertEqual(out.status, 404)
         self.assertEqual(probe("burst", "keys"), [])
         self.assertEqual(probe("limiter", "rows")["attempts"], [])
         self.assertEqual(mails(), [])
+
+    def test_intake_host_with_a_port_is_the_intake_host(self):
+        """Cloudflare proxies HTTPS on 8443 too; the URL then carries the port, the host is the same one."""
+        self.assertOutcome(send(self, report(), headers={"Host": INTAKE_HOST + ":8443"}), "sent")
 
     # --- QA: the limiter's own rows
     def test_access_expiry_is_own_key_only(self):

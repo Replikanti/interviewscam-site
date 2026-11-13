@@ -116,14 +116,23 @@ async function call(env, { target, fn, args = [] }) {
 // ctx.waitUntil (fix round 5 of PR 2).
 async function waitUntilCase(request, env) {
   const passed = [];
-  const ctx = { waitUntil: (promise) => { passed.push(promise); } };
+  const pending = [];
+  const ctx = { waitUntil: (promise) => {
+    passed.push(promise);
+    // Still unsettled one microtask turn after the call: the running notice, not a stand-in.
+    const mark = { settled: false, turn: false };
+    promise.then(() => { mark.settled = !mark.turn; });
+    Promise.resolve().then(() => { mark.turn = true; });
+    pending.push(mark);
+  } };
   const forwarded = new Request("https://intake.interviewscam.com/submit",
     { method: "POST", headers: request.headers, body: request.body });
   const testEnv = { EMAIL: env.CAPTURE, RATE_LIMITER: env.BURST, LIMITER: env.RECORD,
     LIMITER_KEY: "f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246" };
   const response = await intake.default.fetch(forwarded, testEnv, ctx);
   const settled = await Promise.all(passed);
-  return { status: response.status, location: response.headers.get("Location"), waited: passed.length, settled };
+  return { status: response.status, location: response.headers.get("Location"), waited: passed.length, settled,
+    pending: pending.map((mark) => !mark.settled) };
 }
 
 export default {
