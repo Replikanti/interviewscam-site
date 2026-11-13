@@ -511,6 +511,11 @@ def verify_deployed(api, sc, pins, account, zone, destination, without_rate_limi
     elif own[0].get("enabled") is not True or own[0].get("previews_enabled") is not False:
         problems.append(f"{sc.INTAKE_HOSTNAME} is not routed with previews off: enabled "
                         f"{own[0].get('enabled')!r}, previews_enabled {own[0].get('previews_enabled')!r}")
+    # Fix round 5 of PR 2: the domain sits in the prompted zone, whose routes
+    # were read above, and maps to the production script, not a legacy
+    # service environment (the domain list marks environment as deprecated).
+    elif own[0].get("zone_id") != zone or own[0].get("environment") not in (None, "production"):
+        problems.append(f"{sc.INTAKE_HOSTNAME} is in another zone or environment than the one checked")
     for problem in problems:
         OUT.say(f"verify: MISMATCH: {problem}")
     if not problems:

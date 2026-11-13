@@ -20,6 +20,7 @@ import { DurableObject } from "cloudflare:workers";
 
 const SITE_ORIGIN = "https://interviewscam.com";
 const PATH = "/submit";
+const INTAKE_HOST = "intake.interviewscam.com";
 const LIMITER_NAME = "intake";
 
 // The pause notice is tried at most this often per UTC day (Numbers, "Global
@@ -448,7 +449,10 @@ async function noticeTask(env, limiter, slot) {
 
 async function handle(request, env, ctx) {
   if (request.method !== "POST") return empty(405, { Allow: "POST" });
-  if (new URL(request.url).pathname !== PATH) return empty(404);
+  // Only the intake host (fix round 5 of PR 2): a route or domain on any
+  // other host reaches neither the limiter nor the mail.
+  const url = new URL(request.url);
+  if (url.hostname !== INTAKE_HOST || url.pathname !== PATH) return empty(404);
 
   const origin = request.headers.get("Origin");
   if (origin !== null && origin !== SITE_ORIGIN) return redirect("not-accepted", "E_ORIGIN");
@@ -518,8 +522,8 @@ async function handle(request, env, ctx) {
       // its own try (slot.noticeTry), so a late report of a try that went
       // stale cannot move a newer one (fix round 4 of PR 2). The send and
       // its report run under ctx.waitUntil, so a client that goes away does
-      // not cancel them (Workers limits docs: "outstanding work may be
-      // canceled unless it is passed to ctx.waitUntil()").
+      // not cancel them for up to 30 s (Context docs); a send that runs
+      // longer is left to the 60 s stale bound and the try number.
       if (slot.notice === true) {
         const task = noticeTask(env, limiter, slot);
         if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(task);
@@ -620,11 +624,14 @@ export class IntakeLimiter extends DurableObject {
 
   async attempt(key, now) {
     checkArgs(key, now);
-    this.latest(now);
+    // The mail cap is read on the day reserve() counts on, the newest one
+    // seen (fix round 5 of PR 2: on the caller's day, a refused attempt
+    // near a rollover could write a row).
+    const day = dayKey(this.latest(now));
     this.expire(key, now);
     const rows = this.sql.exec("SELECT at FROM attempts WHERE key = ?", key).toArray().map((r) => r.at);
     if (!limiterDecide(rows, now).allowed) return { ok: false, reason: "client-limit" };
-    if (this.mailCount(dayKey(now), key) >= INTAKE.CLIENT_DAILY_MAILS) return { ok: false, reason: "client-mails" };
+    if (this.mailCount(day, key) >= INTAKE.CLIENT_DAILY_MAILS) return { ok: false, reason: "client-mails" };
     const seq = rows.filter((at) => at === now).length;
     this.sql.exec("INSERT INTO attempts (key, at, seq) VALUES (?, ?, ?)", key, now, seq);
     await this.schedule(now + INTAKE.CLIENT_WINDOW_MS);

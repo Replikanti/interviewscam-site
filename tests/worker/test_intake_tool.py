@@ -53,6 +53,7 @@ class Stub:
         self.metadata = None
         self.content = b""
         self.domains = []
+        self.domains_unfiltered = False  # the list answers ignore the service filter
         self.settings_override = {}
         self.uploaded = []         # each upload's metadata, as sent
         self.content_mode = "raw"  # raw | multipart | multipart-extra | entrypoint-foreign | corrupt
@@ -179,7 +180,7 @@ class Stub:
             service = query.get("service", [None])[0]
             return 200, {"success": True, "errors": [],
                          "result": [d for d in self.domains if (want is None or d["hostname"] == want)
-                                    and (service is None or d["service"] == service)]}
+                                    and (service is None or self.domains_unfiltered or d["service"] == service)]}
         return 404, {"success": False, "errors": [{"code": 7003, "message": "no route"}], "result": None}
 
 
@@ -485,6 +486,9 @@ class Tool(ToolCase):
             "malformed route": lambda: setattr(self.stub, "routes", ["intake.interviewscam.com/*"]),
             # Fix round 4: the script's custom domains.
             "domain disabled": lambda: self.stub.domains[0].update(enabled=False),
+            # Fix round 5.
+            "domain in another zone": lambda: self.stub.domains[0].update(zone_id="0" * 32),
+            "domain environment staging": lambda: self.stub.domains[0].update(environment="staging"),
             "domain previews on": lambda: self.stub.domains[0].update(previews_enabled=True),
             "domain flags missing": lambda: setattr(self.stub, "domains", [
                 {k: v for k, v in self.stub.domains[0].items() if k not in ("enabled", "previews_enabled")}]),
@@ -810,6 +814,33 @@ class ToolQARound4(ToolCase):
         self.assertEqual(self.run_tool("deploy")[0], 0)
         (post,) = [r for r in self.stub.requests if r["method"] == "POST" and r["path"].endswith("/subdomain")]
         self.assertEqual(post["headers"].get("content-type"), "application/json")
+
+
+class ToolQARound5(ToolCase):
+    """QA recheck 4 of PR 2: survivors of the round-4 sweep that a case kills."""
+
+    def test_deploy_sends_both_domain_flags(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        (put,) = [r for r in self.stub.requests if r["method"] == "PUT" and r["path"].endswith("/workers/domains")]
+        body = json.loads(put["body"])
+        self.assertIs(body.get("enabled"), True)
+        self.assertIs(body.get("previews_enabled"), False)
+
+    def test_other_scripts_domains_are_not_this_scripts(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        self.stub.domains_unfiltered = True  # an answer that ignores the service filter
+        self.stub.domains.append({"hostname": "other.interviewscam.com", "service": "other-worker",
+                                  "zone_id": ZONE, "environment": "production", "enabled": True,
+                                  "previews_enabled": False})
+        self.assertEqual(self.run_tool("verify")[0], 0)
+
+    def test_domain_answer_needs_both_flags(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        for key in ("enabled", "previews_enabled"):
+            with self.subTest(missing=key):
+                self.stub.domains[0].pop(key)
+                self.assertEqual(self.run_tool("verify")[0], 1, key)
+                self.stub.domains[0][key] = key == "enabled"
 
 
 if __name__ == "__main__":

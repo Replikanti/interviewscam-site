@@ -36,6 +36,9 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "tests" / "worker" / "config.capnp"
 SOCKETS = ("intake", "intake-broken-limiter", "intake-bad-key", "intake-broken-reserve", "intake-no-burst",
            "intake-missing-burst", "intake-record", "probe")
+# The Worker answers only its own host (fix round 5), so every request
+# names it; the loopback address would otherwise be the Host.
+INTAKE_HOST = "intake.interviewscam.com"
 LOG_LINE = re.compile(r"^intake event=[a-z-]+( code=[A-Z_]+)?$")
 FAR_FUTURE = 8_000_000_000_000  # ms, year 2223: purges every limiter row
 
@@ -127,8 +130,9 @@ def stdout_lines():
 
 def request(port, method, path, body=b"", headers=None, timeout=120):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    headers = {"Host": INTAKE_HOST, **(headers or {})}
     try:
-        conn.request(method, path, body=body, headers=headers or {})
+        conn.request(method, path, body=body, headers=headers)
         resp = conn.getresponse()
         data = resp.read()
         return resp.status, {k.lower(): v for k, v in resp.getheaders()}, \
@@ -146,12 +150,25 @@ def probe(target, fn=None, *args, timeout=120):
     return reply["result"]
 
 
-def base_now():
-    """Noon UTC of tomorrow, in ms: an injected time whose alarms (an hour
-    later, or the next 00:00 UTC) lie in the future, so the limiter's own
-    alarm never fires during a case, and no case straddles a UTC midnight."""
+def base_now(wall_ms=None):
+    """Noon UTC of the day after wall_ms (default: the wall clock), in ms: an
+    injected time whose alarms (an hour later, or the next 00:00 UTC) lie in
+    the future, so the limiter's own alarm never fires during a case."""
     day = 86_400_000
-    return (int(time.time() * 1000) // day + 1) * day + day // 2
+    wall = int(time.time() * 1000) if wall_ms is None else wall_ms
+    return (wall // day + 1) * day + day // 2
+
+
+PIN_KEY = "f" * 64
+
+
+def pin_day():
+    """Fix round 5: the Worker reserves at its own Date.now(), which can
+    pass 00:00 UTC during a case. An attempt() at base_now() makes it the
+    newest time the limiter has seen, and reserve() never counts on an
+    older day (fix round 1), so every Worker reserve of the case counts on
+    that one day, whatever the wall clock reads (test_pinned_day_*)."""
+    probe("limiter", "attempt", PIN_KEY, base_now())
 
 
 _IP = [0]
@@ -342,8 +359,8 @@ class RequestHandling(WorkerCase):
         # whole body meets a closed connection).
         conn = http.client.HTTPConnection("127.0.0.1", SERVER["ports"]["intake"], timeout=20)
         try:
-            conn.putrequest("POST", "/submit")
-            for k, v in (("Content-Type", ctype), ("Content-Length", str(SC.INTAKE_MAX_BODY + 1)),
+            conn.putrequest("POST", "/submit", skip_host=True)
+            for k, v in (("Host", INTAKE_HOST), ("Content-Type", ctype), ("Content-Length", str(SC.INTAKE_MAX_BODY + 1)),
                          ("Origin", "https://interviewscam.com"), ("CF-Connecting-IP", fresh_ip())):
                 conn.putheader(k, v)
             conn.endheaders()
@@ -358,7 +375,7 @@ class RequestHandling(WorkerCase):
         conn = http.client.HTTPConnection("127.0.0.1", SERVER["ports"]["intake"], timeout=30)
         try:
             conn.request("POST", "/submit", body=iter([body[:100], body[100:]]), encode_chunked=True,
-                         headers={"Content-Type": ctype, "Transfer-Encoding": "chunked",
+                         headers={"Host": INTAKE_HOST, "Content-Type": ctype, "Transfer-Encoding": "chunked",
                                   "Origin": "https://interviewscam.com", "CF-Connecting-IP": fresh_ip()})
             resp = conn.getresponse()
             resp.read()
@@ -377,7 +394,7 @@ class RequestHandling(WorkerCase):
     def raw_post(self, body, ctype, content_length):
         sock = socket.create_connection(("127.0.0.1", SERVER["ports"]["intake"]), timeout=20)
         try:
-            head = (f"POST /submit HTTP/1.1\r\nHost: intake.test\r\nContent-Type: {ctype}\r\n"
+            head = (f"POST /submit HTTP/1.1\r\nHost: intake.interviewscam.com\r\nContent-Type: {ctype}\r\n"
                     f"Content-Length: {content_length}\r\nOrigin: https://interviewscam.com\r\n"
                     f"CF-Connecting-IP: {fresh_ip()}\r\nConnection: close\r\n\r\n").encode()
             sock.sendall(head + body)
@@ -669,6 +686,7 @@ class Limiter(WorkerCase):
         self.assertEqual(mails(), [])
 
     def test_client_daily_mail_cap(self):
+        pin_day()
         self.burst_off()
         ip = fresh_ip()
         for i in range(SC.INTAKE_CLIENT_DAILY_MAILS):
@@ -798,6 +816,7 @@ class Limiter(WorkerCase):
 
 class GlobalCap(WorkerCase):
     def test_daily_cap_50_51(self):
+        pin_day()
         cap, per = SC.INTAKE_DAILY_CAP, SC.INTAKE_CLIENT_DAILY_MAILS
         ips = [fresh_ip() for _ in range(math.ceil((cap + 2) / per))]
         for i in range(cap):
@@ -987,7 +1006,7 @@ class ResponsesAndMail(WorkerCase):
         (PR 4), here against workerd, without the 2.5 s spacing."""
         ip = fresh_ip()
         results = TOOL.live_suite(f"http://127.0.0.1:{SERVER['ports']['intake']}", spacing=0,
-                                  extra_headers={"CF-Connecting-IP": ip})
+                                  extra_headers={"CF-Connecting-IP": ip, "Host": INTAKE_HOST})
         failed = [r for r in results if not r[1]]
         self.assertEqual(failed, [])
         self.assertEqual({r[0] for r in results},
@@ -1138,7 +1157,8 @@ class FixRound1(WorkerCase):
         self.assertIsNone(probe_error("capture", "send", dict(ok, attachments=[att] * 32)))
 
     def test_notice_failure_retried(self):
-        now = int(time.time() * 1000)
+        pin_day()
+        now = base_now()
         for i in range(SC.INTAKE_DAILY_CAP):
             self.assertTrue(probe("limiter", "reserve", f"{i:064x}", now)["ok"])
         probe("capture", "setFail", "notice")
@@ -1207,6 +1227,7 @@ class FixRound1(WorkerCase):
     def test_reserve_refusal_code_client_mails(self):
         """The mail cap checked again at reserve(): a key reaches it while its
         body is still uploading (the race attempt() cannot see)."""
+        pin_day()
         probe("burst", "reset", {"limit": 6, "period": 60, "mode": "off"})
         ip = fresh_ip()
         secret = bytes.fromhex("f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246")
@@ -1216,14 +1237,14 @@ class FixRound1(WorkerCase):
         def race():
             sock = socket.create_connection(("127.0.0.1", SERVER["ports"]["intake"]), timeout=30)
             try:
-                sock.sendall((f"POST /submit HTTP/1.1\r\nHost: intake.test\r\nContent-Type: {ctype}\r\n"
+                sock.sendall((f"POST /submit HTTP/1.1\r\nHost: intake.interviewscam.com\r\nContent-Type: {ctype}\r\n"
                               f"Content-Length: {len(body)}\r\nOrigin: https://interviewscam.com\r\n"
                               f"CF-Connecting-IP: {ip}\r\nConnection: close\r\n\r\n").encode() + body[:50])
                 deadline = time.monotonic() + 15
                 while not any(r["key"] == key for r in probe("limiter", "rows")["attempts"]):
                     self.assertLess(time.monotonic(), deadline, "the attempt never reached the limiter")
                     time.sleep(0.05)
-                now = int(time.time() * 1000)
+                now = base_now()
                 for _ in range(SC.INTAKE_CLIENT_DAILY_MAILS):
                     self.assertTrue(probe("limiter", "reserve", key, now)["ok"])
                 sock.sendall(body[50:])
@@ -1324,6 +1345,7 @@ class FixRound1(WorkerCase):
             "Own name: no\nReply address: o@example.com\n"])
 
     def test_log_codes_table(self):
+        pin_day()
         body, ctype = multipart(report(), boundary="AAA")
         rows = [
             (lambda: send(self, report(), origin="https://evil.example"), "not-accepted", "E_ORIGIN"),
@@ -1379,7 +1401,7 @@ class FixRound2(WorkerCase):
         """One POST over a raw socket; the body after its first 50 bytes is
         held back for pause seconds, as a slow upload would be."""
         body, mp = multipart(parts if parts is not None else report())
-        head = ("POST /submit HTTP/1.1\r\nHost: intake.test\r\nOrigin: https://interviewscam.com\r\n"
+        head = ("POST /submit HTTP/1.1\r\nHost: intake.interviewscam.com\r\nOrigin: https://interviewscam.com\r\n"
                 f"CF-Connecting-IP: {fresh_ip()}\r\nContent-Type: {mp}\r\nContent-Length: {len(body)}\r\n"
                 "Connection: close\r\n\r\n").encode()
         sock = socket.create_connection(("127.0.0.1", SERVER["ports"][port_name]), timeout=30)
@@ -1474,7 +1496,8 @@ class FixRound2(WorkerCase):
         self.assertEqual(probe("limiter", "rows")["days"][0]["n"], SC.INTAKE_DAILY_CAP + 2 * SC.INTAKE_NOTICE_TRIES)
 
     def test_sent_notice_is_final(self):
-        now = int(time.time() * 1000)
+        pin_day()
+        now = base_now()
         for i in range(SC.INTAKE_DAILY_CAP):
             self.assertTrue(probe("limiter", "reserve", f"{i:064x}", now)["ok"])
         self.assertOutcome(send(self, report()), "paused")
@@ -1560,6 +1583,42 @@ class FixRound2(WorkerCase):
             with self.subTest(noticeTry=bad):
                 self.assertIsNotNone(probe_error("limiter", "noticeFailed", day, bad))
 
+    # --- fix round 5, D4-1: the pinned day holds across 00:00 UTC
+    def test_pinned_day_holds_across_midnight(self):
+        day = 86_400_000
+        for wall in (1798761300000, 1798761599000):  # 2026-12-31T23:55:00Z, 23:59:59Z
+            with self.subTest(wall=wall):
+                probe("limiter", "purge", FAR_FUTURE)
+                pinned = base_now(wall)
+                probe("limiter", "attempt", PIN_KEY, pinned)
+                before = probe("limiter", "reserve", "a" * 64, wall)            # the Worker before 00:00
+                after = probe("limiter", "reserve", "b" * 64, wall + 10 * 60_000)  # and after it
+                self.assertEqual((before["day"], after["day"]), (probe("helper", "dayKey", pinned),) * 2)
+                self.assertEqual((wall + 10 * 60_000) // day, wall // day + 1, "the second time is past 00:00")
+
+    # --- fix round 5, D4-6: the notice runs under ctx.waitUntil
+    def test_notice_runs_under_wait_until(self):
+        probe("record", "setup", True, False, False)
+        body, ctype = multipart(report())
+        _, _, _, data = request(SERVER["ports"]["probe"], "POST", "/waituntil", body,
+                                {"Content-Type": ctype, "Origin": "https://interviewscam.com",
+                                 "CF-Connecting-IP": fresh_ip()})
+        result = json.loads(data)["result"]
+        self.assertEqual((result["status"], result["location"]), (303, SC.INTAKE_NOT_SENT_URL + "#paused"))
+        self.assertEqual((result["waited"], result["settled"]), (1, [True]))
+        self.assertIn(["noticeSent", "2000-01-01"], probe("record"))
+        self.assertEqual(len(mails()), 1)
+
+    # --- fix round 5, D4-4a: only the intake host
+    def test_other_host_refused_before_limiter(self):
+        for host in ("evil.example", "intake.interviewscam.com.evil.example", "interviewscam.com", "127.0.0.1"):
+            with self.subTest(host=host):
+                out = send(self, report(), headers={"Host": host})
+                self.assertEqual(out.status, 404)
+        self.assertEqual(probe("burst", "keys"), [])
+        self.assertEqual(probe("limiter", "rows")["attempts"], [])
+        self.assertEqual(mails(), [])
+
     # --- QA: the limiter's own rows
     def test_access_expiry_is_own_key_only(self):
         now, a, b = base_now(), "a" * 64, "b" * 64
@@ -1613,7 +1672,8 @@ class FixRound2(WorkerCase):
 
     # --- N7: the notice is tried at most NOTICE_TRIES times a day
     def test_notice_tries_bounded(self):
-        now = int(time.time() * 1000)
+        pin_day()
+        now = base_now()
         for i in range(SC.INTAKE_DAILY_CAP):
             self.assertTrue(probe("limiter", "reserve", f"{i:064x}", now)["ok"])
         probe("capture", "setFail", "notice")

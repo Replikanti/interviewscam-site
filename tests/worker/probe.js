@@ -111,8 +111,26 @@ async function call(env, { target, fn, args = [] }) {
   throw new Error(`probe: unknown call ${target}.${fn}`);
 }
 
+// POST /waituntil: the Worker's fetch with a recording ctx and the
+// recording limiter, so a case can see that the pause notice runs under
+// ctx.waitUntil (fix round 5 of PR 2).
+async function waitUntilCase(request, env) {
+  const passed = [];
+  const ctx = { waitUntil: (promise) => { passed.push(promise); } };
+  const forwarded = new Request("https://intake.interviewscam.com/submit",
+    { method: "POST", headers: request.headers, body: request.body });
+  const testEnv = { EMAIL: env.CAPTURE, RATE_LIMITER: env.BURST, LIMITER: env.RECORD,
+    LIMITER_KEY: "f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246" };
+  const response = await intake.default.fetch(forwarded, testEnv, ctx);
+  const settled = await Promise.all(passed);
+  return { status: response.status, location: response.headers.get("Location"), waited: passed.length, settled };
+}
+
 export default {
   async fetch(request, env) {
+    if (new URL(request.url).pathname === "/waituntil") {
+      return Response.json({ ok: true, result: await waitUntilCase(request, env) });
+    }
     try {
       const result = await call(env, await request.json());
       return Response.json({ ok: true, result: result === undefined ? null : result });
