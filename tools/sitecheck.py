@@ -13175,8 +13175,11 @@ INTAKE_SCRIPT_TAG = "interviewscam-intake"
 # form attribute PR 3 sets (None: the control takes none). The visible text
 # controls take none (fix round 1 of PR 3, ADR-0006 part 5): with
 # autocomplete=off a browser does not restore their text when the reporter
-# goes Back from /not-sent/, which the result pages tell them to do. Only the
-# honeypot keeps off, and email takes email. `channel` is the
+# goes Back from /not-sent/, which the result pages tell them to do. The
+# honeypot keeps off, and email takes email. scam_alias (`name` until
+# 2026-11-14) takes off too: browser form history is keyed by the field
+# name, and under `name` Chrome offered values typed into other sites' name
+# fields, for most people their own name (ADR-0006 part 5). `channel` is the
 # hidden field naming the channel, `website` the honeypot (part 3 step 5,
 # present and empty), `files` the one multi-value field (part 4), `own_name`
 # a checkbox whose only value is "yes". `headers` 26,000 is 2x the largest
@@ -13184,7 +13187,7 @@ INTAKE_SCRIPT_TAG = "interviewscam-intake"
 INTAKE_FIELDS = {
     "report": (
         {"name": "channel", "type": "hidden", "required": True, "cap": None, "autocomplete": None},
-        {"name": "name", "type": "text", "required": True, "cap": 200, "autocomplete": None},
+        {"name": "scam_alias", "type": "text", "required": True, "cap": 200, "autocomplete": "off"},
         {"name": "contact_start", "type": "text", "required": False, "cap": 200, "autocomplete": None},
         {"name": "details", "type": "textarea", "required": True, "cap": 10000, "autocomplete": None},
         {"name": "headers", "type": "textarea", "required": False, "cap": 26000, "autocomplete": None},
@@ -13251,7 +13254,7 @@ INTAKE_RESULT_IDS = ("too-large", "too-many-files", "not-an-image", "missing-fie
 # tools/intake.py refuses to deploy a source that differs from this pin.
 INTAKE_WORKER_DIR = "worker"
 INTAKE_WORKER_SHA256 = {
-    "worker/intake.js": "79f206d192c4d23b21f1065f36fbbc08465a75622736840ff0a632ee5a544915",
+    "worker/intake.js": "ab453c1dfdb79a7a0ebde8ab71fce829d06c4bc2308abc5d8e84f2c012fef7dc",
 }
 
 
@@ -13337,8 +13340,8 @@ INTAKE_SUBJECT_TERM = "Subject line"
 INTAKE_COPY_TEXTS = ("Copy", "Copied", "Copy failed, select the text instead")
 # label and hint per field; a cap in a hint is the field's cap.
 INTAKE_FIELD_TEXTS = {
-    "name": ("Name the scam used", "The company, app or person, as it appeared in the "
-             f"messages. Up to {intake_cap('name'):,} characters."),
+    "scam_alias": ("What the scam called itself", "The company, app or person, as it appeared "
+                   f"in the messages. Up to {intake_cap('scam_alias'):,} characters."),
     "contact_start": ("Where the contact started", "For example a job board, LinkedIn, "
                       f"Telegram or email. Up to {intake_cap('contact_start'):,} characters."),
     "details": ("What happened", "A few sentences with dates. Say whether you installed or "

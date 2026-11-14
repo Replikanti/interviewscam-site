@@ -209,7 +209,7 @@ def multipart(parts, boundary=None):
 
 
 def report(**over):
-    fields = {"channel": "report", "name": "Example Front Co", "contact_start": "A message on a job board",
+    fields = {"channel": "report", "scam_alias": "Example Front Co", "contact_start": "A message on a job board",
               "details": "They asked me to run a repository before the call.", "headers": "",
               "email": "reporter@example.com", "website": ""}
     fields.update(over)
@@ -323,7 +323,7 @@ class RequestHandling(WorkerCase):
         self.assertEqual(len(mails()), 2)
 
     def test_not_multipart_rejected(self):
-        cases = [(b"channel=report&name=x", "application/x-www-form-urlencoded"),
+        cases = [(b"channel=report&scam_alias=x", "application/x-www-form-urlencoded"),
                  (json.dumps(dict(report())).encode(), "application/json"),
                  (b"channel=report", "text/plain"),
                  (multipart(report())[0], None)]
@@ -418,10 +418,38 @@ class RequestHandling(WorkerCase):
 class Fields(WorkerCase):
     def test_unknown_field_rejected(self):
         for parts in (report() + [("extra", "x")], report() + [("own_name", "yes")],
-                      correction() + [("name", "x")], report() + [("Name", "x")]):
+                      correction() + [("name", "x")], report() + [("Scam_alias", "x")]):
             with self.subTest(parts=[p[0] for p in parts]):
                 self.assertOutcome(send(self, parts), "not-accepted")
         self.assertEqual(mails(), [])
+
+    # --- the rename of `name` (M5b PR 4 autofill look, 2026-11-14): browser
+    # form history is keyed by the field name, so a field called `name`
+    # offered reporters their own name. A report form cached with the old
+    # name posts `name`, which is no field any more: refused, never mailed.
+    def test_old_name_field_rejected(self):
+        old = [("name", v) if k == "scam_alias" else (k, v) for k, v in report()]
+        for parts in (old, report() + [("name", "x")]):
+            with self.subTest(parts=[p[0] for p in parts]):
+                self.assertOutcome(send(self, parts), "not-accepted")
+        self.assertEqual(mails(), [])
+
+    def test_scam_alias_name_label_autocomplete(self):
+        names = [f["name"] for f in SC.INTAKE_FIELDS["report"]]
+        self.assertIn("scam_alias", names)
+        self.assertNotIn("name", names)
+        for part in ("name", "mail", "user", "company", "org", "title", "phone", "address"):
+            self.assertNotIn(part, "scam_alias")
+        label = SC.INTAKE_FIELD_TEXTS["scam_alias"][0]
+        self.assertEqual(label, "What the scam called itself")
+        self.assertNotIn("name", label.lower())
+        # autocomplete=off on this one field; the other visible text controls
+        # take none, so Back from /not-sent/ finds their text (ADR-0006 part 5).
+        autocomplete = {(channel, f["name"]): f["autocomplete"] for channel, fields in SC.INTAKE_FIELDS.items()
+                for f in fields if f["autocomplete"] is not None}
+        self.assertEqual(autocomplete, {("report", "scam_alias"): "off", ("report", "email"): "email",
+                                ("report", "website"): "off", ("correction", "email"): "email",
+                                ("correction", "website"): "off"})
 
     def test_channel_closed_set(self):
         base = [p for p in report() if p[0] != "channel"]
@@ -680,7 +708,7 @@ class Limiter(WorkerCase):
         self.burst_off()
         ip = fresh_ip()
         for parts in (report(website="x"), correction(page_url="/x/"), report(email="bad"),
-                      report(name=""), report() + [("files", ("a.png", "image/png", b"MZ"))],
+                      report(scam_alias=""), report() + [("files", ("a.png", "image/png", b"MZ"))],
                       report() + [("x", "y")]):
             send(self, parts, ip=ip)
         self.assertOutcome(send(self, report(), ip=ip), "too-many-attempts")
@@ -841,7 +869,7 @@ class GlobalCap(WorkerCase):
         cap, per = SC.INTAKE_DAILY_CAP, SC.INTAKE_CLIENT_DAILY_MAILS
         ips = [fresh_ip() for _ in range(math.ceil((cap + 2) / per))]
         for i in range(cap):
-            self.assertOutcome(send(self, report(name=f"Report {i + 1}"), ip=ips[i // per]), "sent",
+            self.assertOutcome(send(self, report(scam_alias=f"Report {i + 1}"), ip=ips[i // per]), "sent",
                                f"mail {i + 1}")
         self.assertOutcome(send(self, report(), ip=ips[cap // per]), "paused")
         all_mails = mails()
@@ -881,9 +909,9 @@ class GlobalCap(WorkerCase):
 class ResponsesAndMail(WorkerCase):
     def test_redirect_targets_closed(self):
         seen = set()
-        for parts, kw in ((report(), {}), (report(website="x"), {}), (report(name=""), {}),
+        for parts, kw in ((report(), {}), (report(website="x"), {}), (report(scam_alias=""), {}),
                           (report(email="x"), {}), (correction(page_url="/x/"), {}),
-                          (report(name="x" * 201), {}),
+                          (report(scam_alias="x" * 201), {}),
                           (report() + [("files", ("a.png", "image/png", b"MZ"))], {}),
                           (report() + [("files", (f"{i}.png", "image/png", PNG)) for i in range(11)], {}),
                           (report(), {"origin": "https://evil.example"})):
@@ -918,11 +946,11 @@ class ResponsesAndMail(WorkerCase):
 
     def test_subject_table(self):
         url = "https://interviewscam.com/reports/x/"
-        rows = [(report(name="Example Co"), "Report: Example Co"),
-                (report(name="\u0007A\u202EB\u200BC  \t D\u2066E\u0085F\u200DG\uFEFFH"), "Report: ABC DE FGH"),
-                (report(name="x" * 200), "Report: " + "x" * 200),
-                (report(name="Acme https://evil.example/login"), "Report: Acme hxxps://evil.example/login"),
-                (report(name="Acme HTTP://a ftp://b"), "Report: Acme hxxp://a fxp://b"),
+        rows = [(report(scam_alias="Example Co"), "Report: Example Co"),
+                (report(scam_alias="\u0007A\u202EB\u200BC  \t D\u2066E\u0085F\u200DG\uFEFFH"), "Report: ABC DE FGH"),
+                (report(scam_alias="x" * 200), "Report: " + "x" * 200),
+                (report(scam_alias="Acme https://evil.example/login"), "Report: Acme hxxps://evil.example/login"),
+                (report(scam_alias="Acme HTTP://a ftp://b"), "Report: Acme hxxp://a fxp://b"),
                 (correction(page_url=url), "Correction: hxxps" + url[5:]),
                 (correction(page_url=url, own_name="yes"), "Correction, own name: hxxps" + url[5:]),
                 (correction(page_url=url + "\u200b"), "Correction: hxxps" + url[5:])]
@@ -980,9 +1008,9 @@ class ResponsesAndMail(WorkerCase):
     def test_logs_event_codes_only(self):
         secret_name = "Sentinel Name 7f3a"
         ip = "203.0.113.99"
-        send(self, report(name=secret_name), ip=ip)
-        send(self, report(name=secret_name, website="x"), ip=ip)
-        send(self, report(name=secret_name), origin="https://evil.example")
+        send(self, report(scam_alias=secret_name), ip=ip)
+        send(self, report(scam_alias=secret_name, website="x"), ip=ip)
+        send(self, report(scam_alias=secret_name), origin="https://evil.example")
         send(self, report(), service="intake-bad-key")
         send(self, report(), service="intake-broken-limiter")
         deadline = time.monotonic() + 5
@@ -1045,7 +1073,7 @@ class ResponsesAndMail(WorkerCase):
         self.assertEqual({r[0] for r in results},
                          {"live_valid_report", "live_oversize", "live_not_image", "live_honeypot",
                           "live_headers", "live_rate_limit"})
-        self.assertEqual(len(mails()), 1)
+        self.assertEqual([m["subject"] for m in mails()], ["Report: interviewscam live test"])
 
 
 def logged(action):
@@ -1147,12 +1175,12 @@ class FixRound1(WorkerCase):
         for raw, want in (("https://a", "hxxps://a"), ("http://a", "hxxp://a"), ("ftp://a", "fxp://a"),
                           ("HTTPS://a", "hxxps://a"), ("FtP://a", "fxp://a"), ("hxxps://a", "hxxps://a")):
             with self.subTest(raw=raw):
-                self.assertEqual(probe("helper", "subjectFor", "report", {"name": raw}), "Report: " + want)
+                self.assertEqual(probe("helper", "subjectFor", "report", {"scam_alias": raw}), "Report: " + want)
                 self.assertEqual(probe("helper", "subjectFor", "correction", {"page_url": raw}), "Correction: " + want)
 
     # --- review 5: single-line fields stay on one line
     def test_single_line_fields_one_line(self):
-        for name in ("name", "contact_start"):
+        for name in ("scam_alias", "contact_start"):
             for brk in ("\n", "\r\n", "\r", "\t"):
                 with self.subTest(field=name, brk=ascii(brk)):
                     probe("capture", "clear")
@@ -1161,7 +1189,7 @@ class FixRound1(WorkerCase):
                     lines = body_lines(mails()[0])
                     self.assertFalse([line for line in lines if line.startswith(("Reply address: someone",
                                                                                   "Own name:"))], lines)
-                    label = {"name": "Name: ", "contact_start": "Where the contact started: "}[name]
+                    label = {"scam_alias": "Name: ", "contact_start": "Where the contact started: "}[name]
                     self.assertIn(label + "Acme Reply address: someone-else@example.org Own name: yes", lines)
 
     # --- review 10: the send_email stand-in enforces the documented rules
@@ -1359,7 +1387,7 @@ class FixRound1(WorkerCase):
 
     # --- QA: the mail text and the log codes
     def test_mail_text_exact(self):
-        self.assertOutcome(send(self, report(name="N", contact_start="C", details="D", headers="H",
+        self.assertOutcome(send(self, report(scam_alias="N", contact_start="C", details="D", headers="H",
                                              email="r@example.com") + [("files", ("s.png", "image/png", PNG))]),
                            "sent")
         self.assertOutcome(send(self, correction(page_url="https://interviewscam.com/p/", request="R",
@@ -1387,10 +1415,11 @@ class FixRound1(WorkerCase):
             (lambda: send(self, body=body[:-30], ctype=ctype), "not-accepted", "E_PARSE"),
             (lambda: send(self, report()[1:]), "not-accepted", "E_CHANNEL"),
             (lambda: send(self, report() + [("x", "y")]), "not-accepted", "E_FIELD"),
-            (lambda: send(self, report() + [("name", "x")]), "not-accepted", "E_DUPLICATE"),
+            (lambda: send(self, report(scam_alias=None) + [("name", "x")]), "not-accepted", "E_FIELD"),
+            (lambda: send(self, report() + [("scam_alias", "x")]), "not-accepted", "E_DUPLICATE"),
             (lambda: send(self, report(website="x")), "not-accepted", "E_HONEYPOT"),
-            (lambda: send(self, report(name=" ")), "missing-field", "E_REQUIRED"),
-            (lambda: send(self, report(name="x" * 201)), "too-long", "E_LENGTH"),
+            (lambda: send(self, report(scam_alias=" ")), "missing-field", "E_REQUIRED"),
+            (lambda: send(self, report(scam_alias="x" * 201)), "too-long", "E_LENGTH"),
             (lambda: send(self, report(email="x")), "bad-address", "E_EMAIL"),
             (lambda: send(self, correction(page_url="/x")), "bad-page-url", "E_PAGE_URL"),
             (lambda: send(self, report() + [("files", (f"{i}", "image/png", PNG)) for i in range(11)]),
@@ -1710,7 +1739,7 @@ class FixRound2(WorkerCase):
                 if line.startswith(("Reply address: someone", "Own name:"))]
 
     def test_single_line_white_space_members(self):
-        for name in ("name", "contact_start"):
+        for name in ("scam_alias", "contact_start"):
             for ch in self.WHITE_SPACE:
                 with self.subTest(field=name, ch=hex(ord(ch))):
                     probe("capture", "clear")

@@ -1,1 +1,1 @@
-(hit) in an intake block (.send) or a /not-sent/ section (.result) ('section[.]send'), the centre of 'input#intake-name hits div[.]cover'
+(hit) in an intake block (.send) or a /not-sent/ section (.result) ('section[.]send'), the centre of 'input#intake-scam_alias hits div[.]cover'

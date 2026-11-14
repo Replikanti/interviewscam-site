@@ -1974,13 +1974,13 @@ PINNED
   # rewordings; the MIME types; per result id missing, doubled, id elsewhere
   # and the two rewordings; the sitemap; the pages and forms; the referrer
   # tags; URL_ATTRS, FORM_ATTRS, INTAKE_FORM_PAGES and CSP_DIRECTIVES.
-  for drop in render:b-report-name-renamed render:b-correction-email-required \
+  for drop in render:b-report-scam_alias-renamed render:b-correction-email-required \
       render:b-report-headers-maxlength-above render:b-correction-request-hint-reworded \
       render:b-correction-files-accept-without-webp render:d-error-doubled \
       render:c-correction-referrerpolicy-input render:a-correction-page-missing \
       render:b-correction-page_url-autocomplete-off render:d-not-sent-in-sitemap \
       render:b-report-details-missing render:b-report-email-duplicated \
-      render:b-correction-page_url-type render:b-report-name-autocomplete \
+      render:b-correction-page_url-type render:b-report-scam_alias-autocomplete \
       render:b-report-contact_start-maxlength-below render:b-correction-request-maxlength-absent \
       render:b-report-headers-label-for render:b-correction-email-no-label \
       render:b-report-files-label-reworded render:d-paused-missing \

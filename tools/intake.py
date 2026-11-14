@@ -596,7 +596,7 @@ def live_target(target, sc):
 
 
 def live_report(sc, extra=(), **over):
-    fields = {"channel": "report", "name": "interviewscam live test", "contact_start": "",
+    fields = {"channel": "report", "scam_alias": "interviewscam live test", "contact_start": "",
               "details": "Live test of the intake Worker (ADR-0006 part 12 step 9). No scam is reported.",
               "headers": "", "email": "live-test@example.com", "website": ""}
     fields.update(over)
