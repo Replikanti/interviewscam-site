@@ -8,13 +8,16 @@
 // POST https://intake.interviewscam.com/submit, multipart/form-data, from
 // the forms on /report-a-scam/ and /corrections/. Each accepted submission
 // is mailed to the operator through the send_email binding EMAIL, whose
-// destination_address is fixed at deploy time. Nothing is stored but the
-// limiter rows (part 11), and every outcome the code decides is a 303 to a
-// static page of the site, so the Worker writes no text a reporter reads
-// (part 6). The checks run cheapest first (part 3): method and path,
-// Origin, the Rate Limiting binding RATE_LIMITER, the Durable Object
-// IntakeLimiter, Content-Length, the body, the fields, the files, the
-// global daily cap, the mail. Every failure of a limiter fails closed.
+// destination_address is fixed at deploy time, with `to` the plain_text
+// binding EMAIL_TO, the same address from the same deploy prompt (part 7 as
+// amended 2026-11-14: live, a send without `to` throws). Nothing is stored
+// but the limiter rows (part 11), and every outcome the code decides is a
+// 303 to a static page of the site, so the Worker writes no text a reporter
+// reads (part 6). The checks run cheapest first (part 3): method and path,
+// Origin, the recipient binding EMAIL_TO, the Rate Limiting binding
+// RATE_LIMITER, the Durable Object IntakeLimiter, Content-Length, the body,
+// the fields, the files, the global daily cap, the mail. Every failure of a
+// limiter fails closed.
 
 import { DurableObject } from "cloudflare:workers";
 
@@ -84,6 +87,7 @@ export const INTAKE = Object.freeze({
   LIMITER_KEY_BYTES: 32,
   BURST_ABSENT_BINDING: "RATE_LIMITER_ABSENT",
   BURST_ABSENT_VALUE: "refused-by-cloudflare",
+  RECIPIENT_BINDING: "EMAIL_TO",
   RESULT_IDS: Object.freeze(["too-large", "too-many-files", "not-an-image", "missing-field", "too-long",
     "bad-address", "bad-page-url", "too-many-attempts", "paused", "not-accepted", "error"]),
 });
@@ -112,6 +116,44 @@ const EMAIL_RE = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0
 
 export function isValidEmail(value) {
   return EMAIL_RE.test(value);
+}
+
+// Part 7 as amended 2026-11-14: the recipient, the EMAIL_TO binding's value
+// when it is a string of at most RECIPIENT_MAX code units in the grammar
+// above, else null; never throws. The grammar and the bound are those of
+// the deploy prompt (tools/intake.py, EMAIL_RE and len <= 254), so every
+// value the tool can upload passes.
+const RECIPIENT_MAX = 254;
+
+export function recipientOf(env) {
+  try {
+    const value = env[INTAKE.RECIPIENT_BINDING];
+    return typeof value === "string" && value.length <= RECIPIENT_MAX && isValidEmail(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+// Part 11 as amended 2026-11-14: what a failed send() logs as its cause.
+// The error's code when it is a string of the form E_ plus 1 to 64 capitals,
+// digits or underscores (at least twice the longest code of Cloudflare's
+// Email Service list, 27 after the prefix), else its name when it is a
+// capital and up to 31 letters (at least twice AggregateError, 14), else
+// "unknown". Never the message: the binding's message for another recipient
+// names the address.
+const CAUSE_CODE = /^E_[A-Z0-9_]{1,64}$/;
+const CAUSE_NAME = /^[A-Z][A-Za-z]{0,31}$/;
+
+export function sendCause(error) {
+  try {
+    const code = error.code;
+    if (typeof code === "string" && CAUSE_CODE.test(code)) return code;
+    const name = error.name;
+    if (typeof name === "string" && CAUSE_NAME.test(name)) return name;
+  } catch {
+    // A thrown null, or a property that throws: no cause to name.
+  }
+  return "unknown";
 }
 
 // page_url must parse with the WHATWG URL parser to the site's origin, and
@@ -364,9 +406,9 @@ const LABELS = Object.freeze({
 });
 const BLOCK_FIELDS = new Set(["details", "headers", "request"]);
 
-// Part 7: text only, from the fixed sender, no `to` (the binding's
-// destination_address applies), replyTo the validated address.
-function buildMail(checked) {
+// Part 7: text only, from the fixed sender, `to` the recipient binding's
+// address (as amended 2026-11-14), replyTo the validated address.
+function buildMail(checked, to) {
   const lines = [
     "Notice: the URL schemes http, https and ftp in this message were rewritten to hxxp, hxxps and fxp; bare domains were not changed.",
     `Channel: ${checked.channel}`,
@@ -388,6 +430,7 @@ function buildMail(checked) {
   const fields = { ...checked.text, own_name: checked.ownName ? "yes" : "" };
   const mail = {
     from: INTAKE.SENDER,
+    to,
     replyTo: checked.text.email,
     subject: subjectFor(checked.channel, fields),
     text: lines.join("\n") + "\n",
@@ -398,53 +441,59 @@ function buildMail(checked) {
 
 // Numbers, "Global cap": a notice to the operator on the first refusal of
 // the UTC day, tried at most NOTICE_TRIES times. It never names a reporter
-// and has no reply address.
-async function sendNotice(env, day) {
+// and has no reply address. null when it went out, else the send's cause.
+async function sendNotice(env, day, to) {
   try {
     await env.EMAIL.send({
       from: INTAKE.SENDER,
+      to,
       subject: `Intake paused: ${INTAKE.DAILY_CAP} submissions on ${day}`,
       text: `The daily cap of ${INTAKE.DAILY_CAP} mailed submissions was reached on ${day} (UTC). `
         + "Until 00:00 UTC the form answers /not-sent/#paused, which points reporters to the email address.\n",
     });
-    return true;
-  } catch {
-    return false;
+    return null;
+  } catch (error) {
+    return sendCause(error);
   }
 }
 
-// Part 11: event codes only, never a field value, an address or a key.
-function log(event, code) {
-  console.log(code ? `intake event=${event} code=${code}` : `intake event=${event}`);
+// Part 11: event codes only, never a field value, an address or a key; a
+// failed send adds its cause (sendCause).
+function log(event, code, cause) {
+  let line = `intake event=${event}`;
+  if (code) line += ` code=${code}`;
+  if (code && cause) line += ` cause=${cause}`;
+  console.log(line);
 }
 
 function empty(status, extra = {}) {
   return new Response(null, { status, headers: { ...BASE_HEADERS, ...extra } });
 }
 
-function redirect(id, code) {
-  log(id, code);
+function redirect(id, code, cause) {
+  log(id, code, cause);
   const location = id === "sent" ? INTAKE.SENT_URL : `${INTAKE.NOT_SENT_URL}#${id}`;
   return empty(303, { Location: location });
 }
 
 // Send the pause notice and report the outcome of this try to the limiter;
-// true when the notice went out.
-async function noticeTask(env, limiter, slot) {
-  if (!(await sendNotice(env, slot.day))) {
+// null when the notice went out, else the failed send's cause.
+async function noticeTask(env, limiter, slot, to) {
+  const cause = await sendNotice(env, slot.day, to);
+  if (cause !== null) {
     try {
       await limiter.noticeFailed(slot.day, slot.noticeTry);
     } catch {
       log("paused", "E_NOTICE_REOPEN");
     }
-    return false;
+    return cause;
   }
   try {
     await limiter.noticeSent(slot.day);
   } catch {
     log("paused", "E_NOTICE_SENT");
   }
-  return true;
+  return null;
 }
 
 async function handle(request, env, ctx) {
@@ -456,6 +505,11 @@ async function handle(request, env, ctx) {
 
   const origin = request.headers.get("Origin");
   if (origin !== null && origin !== SITE_ORIGIN) return redirect("not-accepted", "E_ORIGIN");
+
+  // The recipient binding (part 7 as amended 2026-11-14): a deploy without a
+  // valid EMAIL_TO counts no attempt, uses neither limiter and sends nothing.
+  const to = recipientOf(env);
+  if (to === null) return redirect("error", "E_RECIPIENT_BINDING");
 
   const key = await limiterKey(env.LIMITER_KEY, clientKeyMaterial(request.headers.get("CF-Connecting-IP")));
   // The Rate Limiting binding, or the explicit no-binding mode of ADR-0006
@@ -525,23 +579,24 @@ async function handle(request, env, ctx) {
       // not cancel them for up to 30 s (Context docs); a send that runs
       // longer is left to the 60 s stale bound and the try number.
       if (slot.notice === true) {
-        const task = noticeTask(env, limiter, slot);
+        const task = noticeTask(env, limiter, slot, to);
         if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(task);
-        if (!(await task)) return redirect("paused", "E_NOTICE");
+        const cause = await task;
+        if (cause !== null) return redirect("paused", "E_NOTICE", cause);
       }
       return redirect("paused", "E_DAILY_CAP");
     }
     return redirect("too-many-attempts", "E_CLIENT_MAILS");
   }
   try {
-    await env.EMAIL.send(buildMail(checked));
-  } catch {
+    await env.EMAIL.send(buildMail(checked, to));
+  } catch (error) {
     try {
       await limiter.refund(key, slot.day);
     } catch {
       log("error", "E_REFUND");
     }
-    return redirect("error", "E_SEND");
+    return redirect("error", "E_SEND", sendCause(error));
   }
   return redirect("sent");
 }

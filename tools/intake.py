@@ -9,8 +9,10 @@ deploy uploads worker/intake.js as the one script interviewscam-intake,
 with its bindings, and maps intake.interviewscam.com to it, then runs
 verify. verify reads back what decides where submissions go: the deployed
 script bytes against INTAKE_WORKER_SHA256, the bindings (the send_email
-destination among them), tail consumers, Logpush, observability, the
-custom domain, and that no zone Worker route covers the intake host.
+destination and the plain_text recipient EMAIL_TO, the address the Worker
+passes as `to`, both the prompted address), tail consumers, Logpush,
+observability, the custom domain, and that no zone Worker route covers the
+intake host.
 --without-rate-limiter (deploy and verify) is the explicit no-binding mode
 of ADR-0006 part 3 step 3, only for an account whose plan refuses the Rate
 Limiting binding. live-test runs the live suite of ADR-0006 Consequences
@@ -256,13 +258,17 @@ def script_path(sc, account, suffix=""):
 def expected_bindings(sc, destination, without_rate_limiter=False):
     """The bindings of ADR-0006 part 10. --without-rate-limiter is the
     explicit no-binding mode of part 3 step 3: a plain_text marker instead of
-    the Rate Limiting binding, which the Worker then requires."""
+    the Rate Limiting binding, which the Worker then requires. EMAIL_TO, the
+    recipient the Worker passes as `to` (part 7 as amended 2026-11-14), holds
+    the same prompted address as destination_address. LIMITER_KEY stays last:
+    build_metadata replaces the last binding with the key."""
     burst = ({"type": "plain_text", "name": sc.INTAKE_BURST_ABSENT_BINDING, "text": sc.INTAKE_BURST_ABSENT_VALUE}
              if without_rate_limiter else
              {"type": "ratelimit", "name": "RATE_LIMITER", "namespace_id": str(sc.INTAKE_RATELIMIT_NAMESPACE_ID),
               "simple": {"limit": sc.INTAKE_BURST_LIMIT, "period": sc.INTAKE_BURST_PERIOD_S}})
     return [
         {"type": "send_email", "name": "EMAIL", "destination_address": destination},
+        {"type": "plain_text", "name": sc.INTAKE_RECIPIENT_BINDING, "text": destination},
         {"type": "durable_object_namespace", "name": "LIMITER", "class_name": "IntakeLimiter"},
         burst,
         {"type": "secret_text", "name": "LIMITER_KEY"},
@@ -323,8 +329,13 @@ def binding_problems(sc, actual, destination, without_rate_limiter=False):
     want = {b["name"]: b for b in expected_bindings(sc, destination, without_rate_limiter)}
     have = {}
     for b in actual or []:
-        if not isinstance(b, dict) or b.get("name") in have:
-            problems.append(f"binding listed twice or malformed: {b!r}")
+        # Only the name: a second EMAIL or EMAIL_TO would print an address
+        # the redaction does not know (it registers only the prompted one).
+        if not isinstance(b, dict):
+            problems.append(f"binding malformed: a {type(b).__name__}, not an object")
+            continue
+        if b.get("name") in have:
+            problems.append(f"binding listed twice: {b.get('name')!r}")
             continue
         have[b.get("name")] = b
     if sorted(have) != sorted(want):
@@ -339,8 +350,12 @@ def binding_problems(sc, actual, destination, without_rate_limiter=False):
                 if (simple.get("limit"), simple.get("period")) != (value["limit"], value["period"]):
                     problems.append(f"{name}: simple is {simple!r}, expected {value!r}")
             elif str(b.get(key)) != str(value):
+                # Neither address is printed: the deployed one is not
+                # registered with the redaction.
                 if key == "destination_address":
                     problems.append(f"{name}: destination_address differs from the prompted address")
+                elif name == sc.INTAKE_RECIPIENT_BINDING and key == "text":
+                    problems.append(f"{name}: text differs from the prompted address")
                 else:
                     problems.append(f"{name}: {key} is {b.get(key)!r}, expected {value!r}")
         if w["type"] == "send_email":

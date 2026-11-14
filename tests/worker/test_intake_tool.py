@@ -284,6 +284,9 @@ class ToolCase(unittest.TestCase):
                     if line and not line.startswith("#"))
         bindings = [
             {"type": "send_email", "name": "EMAIL", "destination_address": DEST},
+            # PR 4a: the recipient the Worker passes as `to`, from the same
+            # prompt, right after EMAIL (LIMITER_KEY stays last).
+            {"type": "plain_text", "name": "EMAIL_TO", "text": DEST},
             {"type": "durable_object_namespace", "name": "LIMITER", "class_name": "IntakeLimiter"},
             {"type": "plain_text", "name": "RATE_LIMITER_ABSENT", "text": "refused-by-cloudflare"}
             if without_rate_limiter else
@@ -444,6 +447,14 @@ class Tool(ToolCase):
             "send_email extra key": binding("EMAIL", allowed_sender_addresses=["x@example.com"]),
             "send_email allowlist": binding("EMAIL", allowed_destination_addresses=["x@example.com"]),
             "foreign DO script": binding("LIMITER", script_name="other-script"),
+            # PR 4a: the recipient binding.
+            "recipient text": binding("EMAIL_TO", text="other@example.com"),
+            "recipient as secret_text": binding("EMAIL_TO", type="secret_text"),
+            "recipient missing": lambda: self.stub.settings_override.update(
+                bindings=[b for b in self.stub.settings()["bindings"] if b["name"] != "EMAIL_TO"]),
+            "recipient twice": lambda: self.stub.settings_override.update(
+                bindings=self.stub.settings()["bindings"]
+                + [b for b in self.stub.settings()["bindings"] if b["name"] == "EMAIL_TO"]),
             "DO class": binding("LIMITER", class_name="Other"),
             "binding type": binding("LIMITER_KEY", type="plain_text"),
             "duplicate binding": lambda: self.stub.settings_override.update(
@@ -849,6 +860,43 @@ class ToolQARound5(ToolCase):
                 self.stub.domains[0].pop(key)
                 self.assertEqual(self.run_tool("verify")[0], 1, key)
                 self.stub.domains[0][key] = key == "enabled"
+
+
+class ToolRecipient(ToolCase):
+    """PR 4a: the recipient binding EMAIL_TO (ADR-0006 part 7 as amended
+    2026-11-14). verify compares its text with the prompted address and
+    never prints the deployed one: the redaction knows only the prompted
+    value."""
+
+    OTHER = "other@example.com"
+
+    def other_bindings(self):
+        return [dict(b, text=self.OTHER) if b["name"] == "EMAIL_TO" else b for b in self.stub.settings()["bindings"]]
+
+    def test_recipient_drift_not_printed(self):
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        self.assertEqual(self.run_tool("verify")[0], 0)
+        for where in ("settings", "active version"):
+            with self.subTest(where=where):
+                self.stub.settings_override, self.stub.version_override = {}, {}
+                override = self.stub.settings_override if where == "settings" else self.stub.version_override
+                override["bindings"] = self.other_bindings()
+                rc, out = self.run_tool("verify")
+                self.assertEqual(rc, 1, out)
+                self.assertIn("EMAIL_TO: text differs from the prompted address", out)
+                self.assertNotIn(self.OTHER, out)
+
+    def test_recipient_twice_not_printed(self):
+        """A second EMAIL_TO with another address: the duplicate's finding
+        names the binding, not its value."""
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        self.stub.settings_override = {"bindings": self.stub.settings()["bindings"]
+                                       + [{"type": "plain_text", "name": "EMAIL_TO", "text": self.OTHER}]}
+        rc, out = self.run_tool("verify")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("MISMATCH", out)
+        self.assertIn("EMAIL_TO", out)
+        self.assertNotIn(self.OTHER, out)
 
 
 if __name__ == "__main__":
