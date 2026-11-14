@@ -948,7 +948,9 @@ PY
 # with another autocomplete, a required field without required and an
 # optional one with it, a capped field at cap - 1, cap + 1 and without
 # maxlength, and the label and hint of each visible field; per MIME type of
-# INTAKE_IMAGE_TYPES an accept without it; per result id of
+# INTAKE_IMAGE_TYPES an accept without it; per visible text control without
+# autocomplete a row that adds autocomplete=off (fix round 1); per page of
+# INTAKE_UNLISTED a row that lists it in the sitemap; per result id of
 # INTAKE_RESULT_IDS the section missing, doubled, its id elsewhere and its
 # heading and text reworded; per member of INTAKE_REFERRER_TAGS and per
 # channel a referrerpolicy row; per channel the page and its form missing;
@@ -994,8 +996,11 @@ for channel, fields in sitecheck.INTAKE_FIELDS.items():
         if kind not in ("hidden", "honeypot"):
             want |= {f"{stem}-{case}" for case in ("label-for", "no-label", "hint-reworded",
                                                    "label-reworded")}
+        if field["autocomplete"] is None and kind in ("text", "url", "email", "textarea"):
+            want.add(f"{stem}-autocomplete-off")
         if kind == "file":
             want |= {f"b-{channel}-files-accept-without-{mime.split('/')[1]}" for mime in mimes}
+want |= {f"d-{path.strip('/')}-in-sitemap" for path in sitecheck.INTAKE_UNLISTED}
 for rid in sitecheck.INTAKE_RESULT_IDS:
     want |= {f"d-{rid}-{case}" for case in ("missing", "doubled", "id-elsewhere",
                                             "heading-reworded", "text-reworded")}
@@ -1962,13 +1967,25 @@ PINNED
     n_failed=$((n_failed + 1))
   fi
   local drop kind
-  # One member of every family the coverage reads: the five attribute
-  # families of a field, the MIME types, the result ids, the referrer tags,
-  # the pages, URL_ATTRS, FORM_ATTRS, INTAKE_FORM_PAGES, CSP_DIRECTIVES.
+  # One row of every case family the coverage reads, so dropping a family
+  # from intake_coverage turns its line red (fix round 1, QA): per field
+  # missing, duplicated, renamed, type, autocomplete, autocomplete=off,
+  # required, the three maxlength cases, label-for, no-label and the two
+  # rewordings; the MIME types; per result id missing, doubled, id elsewhere
+  # and the two rewordings; the sitemap; the pages and forms; the referrer
+  # tags; URL_ATTRS, FORM_ATTRS, INTAKE_FORM_PAGES and CSP_DIRECTIVES.
   for drop in render:b-report-name-renamed render:b-correction-email-required \
       render:b-report-headers-maxlength-above render:b-correction-request-hint-reworded \
       render:b-correction-files-accept-without-webp render:d-error-doubled \
       render:c-correction-referrerpolicy-input render:a-correction-page-missing \
+      render:b-correction-page_url-autocomplete-off render:d-not-sent-in-sitemap \
+      render:b-report-details-missing render:b-report-email-duplicated \
+      render:b-correction-page_url-type render:b-report-name-autocomplete \
+      render:b-report-contact_start-maxlength-below render:b-correction-request-maxlength-absent \
+      render:b-report-headers-label-for render:b-correction-email-no-label \
+      render:b-report-files-label-reworded render:d-paused-missing \
+      render:d-too-long-id-elsewhere render:d-bad-address-heading-reworded \
+      render:d-not-accepted-text-reworded render:a-report-form-missing \
       site:fail-intake-host-in-data site:fail-input-formaction-intake \
       site:fail-csp-form-action-missing-intake-correction site:csp-intake/worker-src; do
     kind="${drop%%:*}"

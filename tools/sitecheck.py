@@ -5824,7 +5824,7 @@ def cmd_render(args):
     # unless the case has an intake.txt).
     intake_summary = ""
     if not args.no_intake:
-        problems, intake_summary = intake_problems(pages, contact)
+        problems, intake_summary = intake_problems(pages, contact, public)
         for rel, problem in problems:
             findings.add(rel, problem)
     if not pages:
@@ -13172,7 +13172,11 @@ INTAKE_SCRIPT_TAG = "interviewscam-intake"
 # ADR-0006 part 5, the closed field set per channel, in form order. type is
 # the form control (PR 3 renders it); cap is the length bound in UTF-16 code
 # units after CRLF and CR become LF (None: no text bound); autocomplete is the
-# form attribute PR 3 sets (None: the control takes none). `channel` is the
+# form attribute PR 3 sets (None: the control takes none). The visible text
+# controls take none (fix round 1 of PR 3, ADR-0006 part 5): with
+# autocomplete=off a browser does not restore their text when the reporter
+# goes Back from /not-sent/, which the result pages tell them to do. Only the
+# honeypot keeps off, and email takes email. `channel` is the
 # hidden field naming the channel, `website` the honeypot (part 3 step 5,
 # present and empty), `files` the one multi-value field (part 4), `own_name`
 # a checkbox whose only value is "yes". `headers` 26,000 is 2x the largest
@@ -13180,18 +13184,18 @@ INTAKE_SCRIPT_TAG = "interviewscam-intake"
 INTAKE_FIELDS = {
     "report": (
         {"name": "channel", "type": "hidden", "required": True, "cap": None, "autocomplete": None},
-        {"name": "name", "type": "text", "required": True, "cap": 200, "autocomplete": "off"},
-        {"name": "contact_start", "type": "text", "required": False, "cap": 200, "autocomplete": "off"},
-        {"name": "details", "type": "textarea", "required": True, "cap": 10000, "autocomplete": "off"},
-        {"name": "headers", "type": "textarea", "required": False, "cap": 26000, "autocomplete": "off"},
+        {"name": "name", "type": "text", "required": True, "cap": 200, "autocomplete": None},
+        {"name": "contact_start", "type": "text", "required": False, "cap": 200, "autocomplete": None},
+        {"name": "details", "type": "textarea", "required": True, "cap": 10000, "autocomplete": None},
+        {"name": "headers", "type": "textarea", "required": False, "cap": 26000, "autocomplete": None},
         {"name": "email", "type": "email", "required": True, "cap": 254, "autocomplete": "email"},
         {"name": "files", "type": "file", "required": False, "cap": None, "autocomplete": None},
         {"name": "website", "type": "honeypot", "required": False, "cap": None, "autocomplete": "off"},
     ),
     "correction": (
         {"name": "channel", "type": "hidden", "required": True, "cap": None, "autocomplete": None},
-        {"name": "page_url", "type": "url", "required": True, "cap": 976, "autocomplete": "off"},
-        {"name": "request", "type": "textarea", "required": True, "cap": 10000, "autocomplete": "off"},
+        {"name": "page_url", "type": "url", "required": True, "cap": 976, "autocomplete": None},
+        {"name": "request", "type": "textarea", "required": True, "cap": 10000, "autocomplete": None},
         {"name": "own_name", "type": "checkbox", "required": False, "cap": None, "autocomplete": None},
         {"name": "email", "type": "email", "required": True, "cap": 254, "autocomplete": "email"},
         {"name": "files", "type": "file", "required": False, "cap": None, "autocomplete": None},
@@ -13247,7 +13251,7 @@ INTAKE_RESULT_IDS = ("too-large", "too-many-files", "not-an-image", "missing-fie
 # tools/intake.py refuses to deploy a source that differs from this pin.
 INTAKE_WORKER_DIR = "worker"
 INTAKE_WORKER_SHA256 = {
-    "worker/intake.js": "1610ffbe2b0c890b46c7c6d7a1722ee69ea4acac5f0c0a838bb8dbe53e9b4410",
+    "worker/intake.js": "79f206d192c4d23b21f1065f36fbbc08465a75622736840ff0a632ee5a544915",
 }
 
 
@@ -13278,6 +13282,11 @@ INTAKE_WORKER_SHA256 = {
 INTAKE_PAGES = {f"public/{rel}": channel for rel, channel in INTAKE_FORM_PAGES.items()}
 INTAKE_SENT_REL = "public/sent/index.html"
 INTAKE_NOT_SENT_REL = "public/not-sent/index.html"
+# The result pages stay out of the sitemap (fix round 1 of PR 3, review A2):
+# /sent/ thanks a visitor for a message they never sent when it is reached
+# from a search result. Their front matter sets [sitemap] disable = true.
+INTAKE_UNLISTED = ("/sent/", "/not-sent/")
+INTAKE_SITEMAP_LOC = re.compile(r"<loc>(.*?)</loc>", re.S)
 INTAKE_BLOCK_TEMPLATE = "layouts/_partials/how-to-send.html"
 INTAKE_RESULT_TEMPLATE = "layouts/_partials/not-sent.html"
 # The how-to-send block sits in the content card of page.html.
@@ -13494,9 +13503,27 @@ def intake_referrer_problems(page, path):
     return problems
 
 
-def intake_problems(pages, contact):
+def intake_sitemap_problems(public):
+    """Rule 18 (d): no <loc> of public/sitemap.xml names a result page, in
+    any form site_path reads as the site's own (case, entities; site_path
+    trims the padding as a browser does)."""
+    path = public / "sitemap.xml"
+    if not path.is_file():
+        return []
+    problems = []
+    for loc in INTAKE_SITEMAP_LOC.findall(path.read_text(encoding="utf-8", errors="replace")):
+        target = site_path(html.unescape(loc), "/")
+        if target in INTAKE_UNLISTED:
+            problems.append(("public/sitemap.xml", f"rule 18 (d): the sitemap lists {target}; "
+                             "the result pages stay out of it ([sitemap] disable = true in "
+                             "their front matter), so no search result leads a visitor there"))
+    return problems
+
+
+def intake_problems(pages, contact, public):
     """Rule 18 on a site build. Returns (problems, summary)."""
     problems, n_forms, n_sections = [], 0, 0
+    problems += intake_sitemap_problems(public)
     for rel, page in pages.items():
         if rel in INTAKE_PAGES or page.unread:
             continue

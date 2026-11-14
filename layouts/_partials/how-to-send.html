@@ -10,7 +10,10 @@
 
   The field names, their order, types, caps (maxlength, in UTF-16 code
   units as the Worker counts them), required and autocomplete come from
-  INTAKE_FIELDS in tools/sitecheck.py, and render rule 18 pins this markup
+  INTAKE_FIELDS in tools/sitecheck.py (the six visible text controls carry
+  no autocomplete attribute, so the browser restores their text when the
+  reporter goes Back from /not-sent/, ADR-0006 part 5), and render rule 18
+  pins this markup
   as an exact tree with every text, so a field changes here, in the Worker
   and in the constants in one PR. `channel` is the hidden field naming the
   channel; `website` is the honeypot (ADR-0006 part 3 step 5), inside
@@ -28,13 +31,13 @@
 <input type="hidden" name="channel" value="{{ . }}">
 <p class="hint" id="intake-defang">{{ partial "label.html" "intake.defang" }}</p>
 {{- if eq . "report" }}
-<div class="field"><label for="intake-name">{{ partial "label.html" "intake.field.name.label" }} <span class="required">{{ $required }}</span></label><p class="hint" id="intake-name-hint">{{ partial "label.html" "intake.field.name.hint" }}</p><input id="intake-name" name="name" type="text" maxlength="200" required autocomplete="off" aria-describedby="intake-name-hint"></div>
-<div class="field"><label for="intake-contact_start">{{ partial "label.html" "intake.field.contact_start.label" }}</label><p class="hint" id="intake-contact_start-hint">{{ partial "label.html" "intake.field.contact_start.hint" }}</p><input id="intake-contact_start" name="contact_start" type="text" maxlength="200" autocomplete="off" aria-describedby="intake-contact_start-hint"></div>
-<div class="field"><label for="intake-details">{{ partial "label.html" "intake.field.details.label" }} <span class="required">{{ $required }}</span></label><p class="hint" id="intake-details-hint">{{ partial "label.html" "intake.field.details.hint" }}</p><textarea id="intake-details" name="details" maxlength="10000" required autocomplete="off" aria-describedby="intake-details-hint intake-defang"></textarea></div>
-<div class="field"><label for="intake-headers">{{ partial "label.html" "intake.field.headers.label" }}</label><p class="hint" id="intake-headers-hint">{{ partial "label.html" "intake.field.headers.hint" }}</p><textarea id="intake-headers" name="headers" maxlength="26000" autocomplete="off" aria-describedby="intake-headers-hint"></textarea></div>
+<div class="field"><label for="intake-name">{{ partial "label.html" "intake.field.name.label" }} <span class="required">{{ $required }}</span></label><p class="hint" id="intake-name-hint">{{ partial "label.html" "intake.field.name.hint" }}</p><input id="intake-name" name="name" type="text" maxlength="200" required aria-describedby="intake-name-hint"></div>
+<div class="field"><label for="intake-contact_start">{{ partial "label.html" "intake.field.contact_start.label" }}</label><p class="hint" id="intake-contact_start-hint">{{ partial "label.html" "intake.field.contact_start.hint" }}</p><input id="intake-contact_start" name="contact_start" type="text" maxlength="200" aria-describedby="intake-contact_start-hint"></div>
+<div class="field"><label for="intake-details">{{ partial "label.html" "intake.field.details.label" }} <span class="required">{{ $required }}</span></label><p class="hint" id="intake-details-hint">{{ partial "label.html" "intake.field.details.hint" }}</p><textarea id="intake-details" name="details" maxlength="10000" required aria-describedby="intake-details-hint intake-defang"></textarea></div>
+<div class="field"><label for="intake-headers">{{ partial "label.html" "intake.field.headers.label" }}</label><p class="hint" id="intake-headers-hint">{{ partial "label.html" "intake.field.headers.hint" }}</p><textarea id="intake-headers" name="headers" maxlength="26000" aria-describedby="intake-headers-hint"></textarea></div>
 {{- else }}
-<div class="field"><label for="intake-page_url">{{ partial "label.html" "intake.field.page_url.label" }} <span class="required">{{ $required }}</span></label><p class="hint" id="intake-page_url-hint">{{ partial "label.html" "intake.field.page_url.hint" }}</p><input id="intake-page_url" name="page_url" type="url" maxlength="976" required autocomplete="off" aria-describedby="intake-page_url-hint"></div>
-<div class="field"><label for="intake-request">{{ partial "label.html" "intake.field.request.label" }} <span class="required">{{ $required }}</span></label><p class="hint" id="intake-request-hint">{{ partial "label.html" "intake.field.request.hint" }}</p><textarea id="intake-request" name="request" maxlength="10000" required autocomplete="off" aria-describedby="intake-request-hint intake-defang"></textarea></div>
+<div class="field"><label for="intake-page_url">{{ partial "label.html" "intake.field.page_url.label" }} <span class="required">{{ $required }}</span></label><p class="hint" id="intake-page_url-hint">{{ partial "label.html" "intake.field.page_url.hint" }}</p><input id="intake-page_url" name="page_url" type="url" maxlength="976" required aria-describedby="intake-page_url-hint"></div>
+<div class="field"><label for="intake-request">{{ partial "label.html" "intake.field.request.label" }} <span class="required">{{ $required }}</span></label><p class="hint" id="intake-request-hint">{{ partial "label.html" "intake.field.request.hint" }}</p><textarea id="intake-request" name="request" maxlength="10000" required aria-describedby="intake-request-hint intake-defang"></textarea></div>
 <div class="field field-check"><input id="intake-own_name" name="own_name" type="checkbox" value="{{ partial "label.html" "intake.field.own_name.value" }}" aria-describedby="intake-own_name-hint"><label for="intake-own_name">{{ partial "label.html" "intake.field.own_name.label" }}</label><p class="hint" id="intake-own_name-hint">{{ partial "label.html" "intake.field.own_name.hint" }}</p></div>
 {{- end }}
 <div class="field"><label for="intake-email">{{ partial "label.html" "intake.field.email.label" }} <span class="required">{{ $required }}</span></label><p class="hint" id="intake-email-hint">{{ partial "label.html" "intake.field.email.hint" }}</p><input id="intake-email" name="email" type="email" maxlength="254" required autocomplete="email" aria-describedby="intake-email-hint"></div>
