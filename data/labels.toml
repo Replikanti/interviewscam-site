@@ -153,8 +153,8 @@ fallback = "If sending fails or your evidence does not fit, send your request by
 # the hint under it. website is the honeypot (ADR-0006 part 3 step 5),
 # hidden from everyone; its label tells a person who still meets it what to
 # do.
-[intake.field.name]
-label = "Name the scam used"
+[intake.field.scam_alias]
+label = "What the scam called itself"
 hint = "The company, app or person, as it appeared in the messages. Up to 200 characters."
 
 [intake.field.contact_start]

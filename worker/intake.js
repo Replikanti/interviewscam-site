@@ -46,7 +46,7 @@ export const INTAKE = Object.freeze({
   FIELDS: Object.freeze({
     report: Object.freeze([
       FIELD("channel", "hidden", true, null, null),
-      FIELD("name", "text", true, 200, null),
+      FIELD("scam_alias", "text", true, 200, "off"),
       FIELD("contact_start", "text", false, 200, null),
       FIELD("details", "textarea", true, 10000, null),
       FIELD("headers", "textarea", false, 26000, null),
@@ -150,7 +150,7 @@ export function cleanSubject(value) {
 // the body's scheme rewrite, which keeps the length (fix round 1 of PR 2:
 // a live URL in a report name reached the subject line).
 export function subjectFor(channel, fields) {
-  if (channel === "report") return "Report: " + defangSchemes(cleanSubject(fields.name));
+  if (channel === "report") return "Report: " + defangSchemes(cleanSubject(fields.scam_alias));
   const prefix = fields.own_name === "yes" ? "Correction, own name: " : "Correction: ";
   return prefix + defangSchemes(cleanSubject(fields.page_url));
 }
@@ -359,7 +359,7 @@ export async function validate(form) {
 }
 
 const LABELS = Object.freeze({
-  name: "Name", contact_start: "Where the contact started", details: "Details", headers: "Mail headers",
+  scam_alias: "Name", contact_start: "Where the contact started", details: "Details", headers: "Mail headers",
   email: "Reply address", page_url: "Page", request: "Request",
 });
 const BLOCK_FIELDS = new Set(["details", "headers", "request"]);
