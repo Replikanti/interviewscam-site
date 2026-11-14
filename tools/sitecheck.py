@@ -13244,6 +13244,14 @@ INTAKE_RATELIMIT_NAMESPACE_ID = 279040673
 # ends as #error (E_BURST_MISSING), which the live test and verify catch.
 INTAKE_BURST_ABSENT_BINDING = "RATE_LIMITER_ABSENT"
 INTAKE_BURST_ABSENT_VALUE = "refused-by-cloudflare"
+# The recipient binding (ADR-0006 part 7 as amended 2026-11-14, M5b PR 4a):
+# live, a structured send() without `to` throws, whatever the send bindings
+# page says, so the Worker passes `to` from this plain_text binding.
+# `tools/intake.py deploy` uploads it with the prompted address, the same
+# value as EMAIL's destination_address, and verify compares it; a missing or
+# malformed value is #error (E_RECIPIENT_BINDING) before the limiter. Never
+# the address itself in the source: the repo is public.
+INTAKE_RECIPIENT_BINDING = "EMAIL_TO"
 # ADR-0006 part 6: the fragment ids of /not-sent/, a closed set.
 INTAKE_RESULT_IDS = ("too-large", "too-many-files", "not-an-image", "missing-field", "too-long",
                      "bad-address", "bad-page-url", "too-many-attempts", "paused", "not-accepted",
@@ -13254,7 +13262,7 @@ INTAKE_RESULT_IDS = ("too-large", "too-many-files", "not-an-image", "missing-fie
 # tools/intake.py refuses to deploy a source that differs from this pin.
 INTAKE_WORKER_DIR = "worker"
 INTAKE_WORKER_SHA256 = {
-    "worker/intake.js": "ab453c1dfdb79a7a0ebde8ab71fce829d06c4bc2308abc5d8e84f2c012fef7dc",
+    "worker/intake.js": "307eb2d7f97f1d578b81c2218ce2de2f00cc7b2bfd42e8847a87eb5a4e9a7b2a",
 }
 
 

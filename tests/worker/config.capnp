@@ -6,6 +6,9 @@
 #   RATE_LIMITER  the Rate Limiting binding: the RPC service burst.js
 #   LIMITER       the Durable Object IntakeLimiter, SQLite-backed, stored in
 #                 a temporary directory the test passes as limiter-store
+# and the plain_text binding EMAIL_TO, the recipient the Worker passes as
+# `to` (ADR-0006 part 7 as amended 2026-11-14): operator@example.com, the
+# DESTINATION of capture.js, as deploy gives it the destination_address.
 # Every socket is passed in by the test as an already bound loopback socket
 # (--socket-fd), so no port is guessed. compatibilityDate equals
 # WORKERD_COMPAT_DATE in tools/pins.env (test_config_matches_pins), which the
@@ -34,6 +37,11 @@ const config :Workerd.Config = (
     (name = "intake-missing-burst", worker = .intakeMissingBurst),
     # A limiter that records the times and days the Worker passes (probe.js).
     (name = "intake-record", worker = .intakeRecord),
+    # No EMAIL_TO: every submission is #error before the limiter.
+    (name = "intake-no-recipient", worker = .intakeNoRecipient),
+    # EMAIL_TO well formed but not the destination: the binding refuses the
+    # send (probe H), so the slot is refunded and the request is #error.
+    (name = "intake-other-recipient", worker = .intakeOtherRecipient),
     (name = "capture", worker = .capture),
     (name = "burst", worker = .burst),
     (name = "probe", worker = .probe),
@@ -51,6 +59,9 @@ const config :Workerd.Config = (
     (name = "intake-missing-burst", address = "127.0.0.1:0", http = (),
      service = "intake-missing-burst"),
     (name = "intake-record", address = "127.0.0.1:0", http = (), service = "intake-record"),
+    (name = "intake-no-recipient", address = "127.0.0.1:0", http = (), service = "intake-no-recipient"),
+    (name = "intake-other-recipient", address = "127.0.0.1:0", http = (),
+     service = "intake-other-recipient"),
     (name = "probe", address = "127.0.0.1:0", http = (), service = "probe"),
   ],
 );
@@ -63,6 +74,7 @@ const intake :Workerd.Worker = (
     (name = "RATE_LIMITER", service = "burst"),
     (name = "LIMITER", durableObjectNamespace = "IntakeLimiter"),
     (name = "LIMITER_KEY", text = "f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246"),
+    (name = "EMAIL_TO", text = "operator@example.com"),
   ],
   durableObjectNamespaces = [
     (className = "IntakeLimiter", uniqueKey = "interviewscam-intake-test", enableSql = true),
@@ -78,6 +90,7 @@ const intakeBrokenLimiter :Workerd.Worker = (
     (name = "RATE_LIMITER", service = "burst"),
     (name = "LIMITER", durableObjectNamespace = (className = "BrokenLimiter", serviceName = "probe")),
     (name = "LIMITER_KEY", text = "f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246"),
+    (name = "EMAIL_TO", text = "operator@example.com"),
   ],
 );
 
@@ -89,6 +102,7 @@ const intakeBadKey :Workerd.Worker = (
     (name = "RATE_LIMITER", service = "burst"),
     (name = "LIMITER", durableObjectNamespace = (className = "IntakeLimiter", serviceName = "intake")),
     (name = "LIMITER_KEY", text = "not-a-key"),
+    (name = "EMAIL_TO", text = "operator@example.com"),
   ],
 );
 
@@ -100,6 +114,7 @@ const intakeBrokenReserve :Workerd.Worker = (
     (name = "RATE_LIMITER", service = "burst"),
     (name = "LIMITER", durableObjectNamespace = (className = "BrokenReserveLimiter", serviceName = "probe")),
     (name = "LIMITER_KEY", text = "f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246"),
+    (name = "EMAIL_TO", text = "operator@example.com"),
   ],
 );
 
@@ -111,6 +126,7 @@ const intakeNoBurst :Workerd.Worker = (
     (name = "RATE_LIMITER_ABSENT", text = "refused-by-cloudflare"),
     (name = "LIMITER", durableObjectNamespace = (className = "IntakeLimiter", serviceName = "intake")),
     (name = "LIMITER_KEY", text = "f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246"),
+    (name = "EMAIL_TO", text = "operator@example.com"),
   ],
 );
 
@@ -122,6 +138,7 @@ const intakeMissingBurst :Workerd.Worker = (
     (name = "RATE_LIMITER_ABSENT", text = "anything-else"),
     (name = "LIMITER", durableObjectNamespace = (className = "IntakeLimiter", serviceName = "intake")),
     (name = "LIMITER_KEY", text = "f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246"),
+    (name = "EMAIL_TO", text = "operator@example.com"),
   ],
 );
 
@@ -133,6 +150,30 @@ const intakeRecord :Workerd.Worker = (
     (name = "RATE_LIMITER", service = "burst"),
     (name = "LIMITER", durableObjectNamespace = (className = "RecordingLimiter", serviceName = "probe")),
     (name = "LIMITER_KEY", text = "f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246"),
+    (name = "EMAIL_TO", text = "operator@example.com"),
+  ],
+);
+
+const intakeNoRecipient :Workerd.Worker = (
+  modules = [(name = "intake.js", esModule = embed "../../worker/intake.js")],
+  compatibilityDate = "2026-11-10",
+  bindings = [
+    (name = "EMAIL", service = "capture"),
+    (name = "RATE_LIMITER", service = "burst"),
+    (name = "LIMITER", durableObjectNamespace = (className = "IntakeLimiter", serviceName = "intake")),
+    (name = "LIMITER_KEY", text = "f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246"),
+  ],
+);
+
+const intakeOtherRecipient :Workerd.Worker = (
+  modules = [(name = "intake.js", esModule = embed "../../worker/intake.js")],
+  compatibilityDate = "2026-11-10",
+  bindings = [
+    (name = "EMAIL", service = "capture"),
+    (name = "RATE_LIMITER", service = "burst"),
+    (name = "LIMITER", durableObjectNamespace = (className = "IntakeLimiter", serviceName = "intake")),
+    (name = "LIMITER_KEY", text = "f17474ac183f5727b19cad79d6bcc87ce754d404e1b5ffaf7ff3f83346bf0246"),
+    (name = "EMAIL_TO", text = "other@example.net"),
   ],
 );
 

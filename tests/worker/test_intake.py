@@ -36,11 +36,21 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "tests" / "worker" / "config.capnp"
 SOCKETS = ("intake", "intake-broken-limiter", "intake-bad-key", "intake-broken-reserve", "intake-no-burst",
-           "intake-missing-burst", "intake-record", "probe")
+           "intake-missing-burst", "intake-record", "intake-no-recipient", "intake-other-recipient", "probe")
 # The Worker answers only its own host (fix round 5), so every request
 # names it; the loopback address would otherwise be the Host.
 INTAKE_HOST = "intake.interviewscam.com"
-LOG_LINE = re.compile(r"^intake event=[a-z-]+( code=[A-Z_]+)?$")
+LOG_LINE = re.compile(r"^intake event=[a-z-]+( code=[A-Z_]+( cause=(E_[A-Z0-9_]{1,64}|[A-Z][A-Za-z]{0,31}|unknown))?)?$")
+# The EMAIL_TO of config.capnp, which capture.js accepts as `to` (its
+# DESTINATION), and that of intake-other-recipient, which it refuses.
+DESTINATION = "operator@example.com"
+OTHER_RECIPIENT = "other@example.net"
+# The cause a failed send() logs under workerd (ADR-0006 part 11 as amended
+# 2026-11-14). Measured with the pinned workerd: an error thrown by the
+# stand-in keeps its own `code` across the RPC call (it arrives with the
+# own keys `code` and `remote`), so the log line names the stand-in's code,
+# E_TEST_FAILURE for its throw and notice modes.
+TEST_FAILURE_CAUSE = "E_TEST_FAILURE"
 FAR_FUTURE = 8_000_000_000_000  # ms, year 2223: purges every limiter row
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + bytes(8)
@@ -933,16 +943,20 @@ class ResponsesAndMail(WorkerCase):
 
     def test_mail_envelope_fixed(self):
         self.assertOutcome(send(self, report(email="r@example.com")), "sent")
+        self.assertOutcome(send(self, correction()), "sent")
         self.assertOutcome(send(self, correction(own_name="yes")), "sent")
+        self.assertEqual(len(mails()), 3)
         for mail in mails():
             self.assertEqual(mail["from"], SC.INTAKE_SENDER)
-            self.assertNotIn("to", mail["keys"])
+            # ADR-0006 part 7 as amended 2026-11-14: `to` is the EMAIL_TO
+            # binding's string, exactly (live, a send without it throws).
+            self.assertEqual(mail["to"], DESTINATION)
             self.assertNotIn("html", mail["keys"])
             self.assertNotIn("cc", mail["keys"])
             self.assertNotIn("bcc", mail["keys"])
             self.assertNotIn("headers", mail["keys"])
-            self.assertEqual(set(mail["keys"]) - {"attachments"}, {"from", "replyTo", "subject", "text"})
-        self.assertEqual([m["replyTo"] for m in mails()], ["r@example.com", "owner@example.com"])
+            self.assertEqual(set(mail["keys"]) - {"attachments"}, {"from", "to", "replyTo", "subject", "text"})
+        self.assertEqual([m["replyTo"] for m in mails()], ["r@example.com", "owner@example.com", "owner@example.com"])
 
     def test_subject_table(self):
         url = "https://interviewscam.com/reports/x/"
@@ -1013,15 +1027,24 @@ class ResponsesAndMail(WorkerCase):
         send(self, report(scam_alias=secret_name), origin="https://evil.example")
         send(self, report(), service="intake-bad-key")
         send(self, report(), service="intake-broken-limiter")
+        # PR 4a: a failed send logs its cause, and the refusal of another
+        # recipient (probe H) carries the address in its message.
+        probe("capture", "setFail", "throw")
+        send(self, report(scam_alias=secret_name))
+        probe("capture", "setFail", "")
+        send(self, report(scam_alias=secret_name), service="intake-other-recipient")
         deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not any("code=" in line for line in stdout_lines()):
+        while time.monotonic() < deadline and sum(" cause=" in line for line in stdout_lines()) < 2:
             time.sleep(0.1)
         lines = stdout_lines()
         self.assertGreater(len(lines), 5)
         bad = [line for line in lines if not LOG_LINE.match(line)]
         self.assertEqual(bad, [])
+        self.assertIn(f"intake event=error code=E_SEND cause={TEST_FAILURE_CAUSE}", lines)
+        self.assertIn("intake event=error code=E_SEND cause=E_RECIPIENT_NOT_ALLOWED", lines)
         joined = "\n".join(lines)
-        for needle in (secret_name, ip, "example.com", "f17474ac"):
+        for needle in (secret_name, ip, "@", "example.com", "example.net", OTHER_RECIPIENT, "not allowed",
+                       "f17474ac"):
             self.assertNotIn(needle, joined)
 
     def test_constants_match_worker(self):
@@ -1040,6 +1063,7 @@ class ResponsesAndMail(WorkerCase):
             "RESULT_IDS": list(SC.INTAKE_RESULT_IDS), "LIMITER_KEY_BYTES": SC.INTAKE_LIMITER_KEY_BYTES,
             "BURST_ABSENT_BINDING": SC.INTAKE_BURST_ABSENT_BINDING,
             "BURST_ABSENT_VALUE": SC.INTAKE_BURST_ABSENT_VALUE,
+            "RECIPIENT_BINDING": SC.INTAKE_RECIPIENT_BINDING,
         }
         self.assertEqual(sorted(worker), sorted(expect))
         for key, value in expect.items():
@@ -1192,30 +1216,68 @@ class FixRound1(WorkerCase):
                     label = {"scam_alias": "Name: ", "contact_start": "Where the contact started: "}[name]
                     self.assertIn(label + "Acme Reply address: someone-else@example.org Own name: yes", lines)
 
-    # --- review 10: the send_email stand-in enforces the documented rules
+    # --- review 10: the send_email stand-in enforces the documented rules;
+    # PR 4a: the recipient as the live binding answered (probes A to H)
+    PROBE_A_MESSAGE = 'Email must have at least one recipient in "to", "cc", or "bcc".'
+    PROBE_E_MESSAGE = ("Cannot initialize N10edgeworker3api12EmailAddressE with required members from an "
+                       "undefined or null value.")
+
     def test_capture_enforces_send_email_rules(self):
-        ok = {"from": "intake@interviewscam.com", "subject": "s", "text": "t"}
-        self.assertIsNone(probe_error("capture", "send", ok))
-        self.assertIsNone(probe_error("capture", "send", dict(ok, to="operator@example.com")))
+        ok = {"from": "intake@interviewscam.com", "to": DESTINATION, "subject": "s", "text": "t"}
+        no_to = {k: v for k, v in ok.items() if k != "to"}
         att = {"content": "x", "filename": "a", "type": "t", "disposition": "attachment"}
-        bad = {
-            "sender off the domain": dict(ok, **{"from": "x@evil.example"}),
-            "to another address": dict(ok, to="other@example.com"),
-            "no subject": {k: v for k, v in ok.items() if k != "subject"},
-            "subject over 998": dict(ok, subject="s" * 999),
-            "replyTo not an address": dict(ok, replyTo=5),
-            "attachments not a list": dict(ok, attachments="x"),
-            "bad disposition": dict(ok, attachments=[dict(att, disposition="x")]),
-            "33 attachments": dict(ok, attachments=[att] * 33),
-            "attachment without content": dict(ok, attachments=[{k: v for k, v in att.items() if k != "content"}]),
-            "attachment without filename": dict(ok, attachments=[{k: v for k, v in att.items() if k != "filename"}]),
-            "attachment without type": dict(ok, attachments=[{k: v for k, v in att.items() if k != "type"}]),
-            "over 25 MiB": dict(ok, text="x" * (25 * 1024 * 1024 + 1)),
+        png = {"content": "x", "filename": "evidence-1.png", "type": "image/png", "disposition": "attachment"}
+        full = dict(ok, replyTo="reporter@example.com", attachments=[png])
+        accepted = {
+            "C: to the destination, text only": ok,
+            "G: the Worker's full shape with to": full,
+            "32 attachments with to": dict(ok, attachments=[att] * 32),
         }
-        for label, message in bad.items():
+        for label, message in accepted.items():
             with self.subTest(case=label):
+                self.assertIsNone(probe("capture", "verdict", message))
+                self.assertIsNone(probe_error("capture", "send", message))
+        not_allowed = ("Error", "E_RECIPIENT_NOT_ALLOWED")
+        invalid = ("Error", "E_VALIDATION_ERROR")
+        refused = {  # label: (message, name, code, the error's message or None)
+            "A: no to, the Worker's shape": ({k: v for k, v in full.items() if k != "to"}, "TypeError", None,
+                                             self.PROBE_A_MESSAGE),
+            "B: no to, text only": (no_to, "TypeError", None, self.PROBE_A_MESSAGE),
+            "E: to null": (dict(ok, to=None), "TypeError", None, self.PROBE_E_MESSAGE),
+            "F: to empty list": (dict(ok, to=[]), "TypeError", None, self.PROBE_A_MESSAGE),
+            "to empty string (unprobed, stricter)": (dict(ok, to=""), "TypeError", None, None),
+            "H: to another address": (dict(ok, to="other@example.com"), *not_allowed,
+                                      "email to other@example.com not allowed"),
+            "to a list (unprobed)": (dict(ok, to=[DESTINATION]), *not_allowed, None),
+            "to an object (unprobed)": (dict(ok, to={"email": DESTINATION}), *not_allowed, None),
+            "to in another case (unprobed)": (dict(ok, to="OPERATOR@example.com"), *not_allowed, None),
+            "cc key (unprobed)": (dict(ok, cc=DESTINATION), *not_allowed, None),
+            "cc empty list (unprobed)": (dict(ok, cc=[]), *not_allowed, None),
+            "bcc key (unprobed)": (dict(ok, bcc=DESTINATION), *not_allowed, None),
+            "sender off the domain": (dict(ok, **{"from": "x@evil.example"}), *invalid, None),
+            "no subject": ({k: v for k, v in ok.items() if k != "subject"}, *invalid, None),
+            "subject over 998": (dict(ok, subject="s" * 999), *invalid, None),
+            "replyTo not an address": (dict(ok, replyTo=5), *invalid, None),
+            "attachments not a list": (dict(ok, attachments="x"), *invalid, None),
+            "bad disposition": (dict(ok, attachments=[dict(att, disposition="x")]), *invalid, None),
+            "33 attachments": (dict(ok, attachments=[att] * 33), *invalid, None),
+            "attachment without content": (dict(ok, attachments=[{k: v for k, v in att.items() if k != "content"}]),
+                                           *invalid, None),
+            "attachment without filename": (dict(ok, attachments=[{k: v for k, v in att.items()
+                                                                   if k != "filename"}]), *invalid, None),
+            "attachment without type": (dict(ok, attachments=[{k: v for k, v in att.items() if k != "type"}]),
+                                        *invalid, None),
+            "over 25 MiB": (dict(ok, text="x" * (25 * 1024 * 1024 + 1)), *invalid, None),
+        }
+        for label, (message, name, code, text) in refused.items():
+            with self.subTest(case=label):
+                verdict = probe("capture", "verdict", message)
+                self.assertIsNotNone(verdict)
+                self.assertEqual((verdict["name"], verdict["code"]), (name, code))
+                if text is not None:
+                    self.assertEqual(verdict["message"], text)
                 self.assertIsNotNone(probe_error("capture", "send", message))
-        self.assertIsNone(probe_error("capture", "send", dict(ok, attachments=[att] * 32)))
+        self.assertEqual(len(mails()), len(accepted), "a refused message was recorded")
 
     def test_notice_failure_retried(self):
         pin_day()
@@ -1224,7 +1286,7 @@ class FixRound1(WorkerCase):
             self.assertTrue(probe("limiter", "reserve", f"{i:064x}", now)["ok"])
         probe("capture", "setFail", "notice")
         lines = logged(lambda: self.assertOutcome(send(self, report()), "paused"))
-        self.assertEqual(lines, ["intake event=paused code=E_NOTICE"])
+        self.assertEqual(lines, [f"intake event=paused code=E_NOTICE cause={TEST_FAILURE_CAUSE}"])
         self.assertEqual(mails(), [])
         probe("capture", "setFail", "")
         lines = logged(lambda: self.assertOutcome(send(self, report()), "paused"))
@@ -1236,7 +1298,8 @@ class FixRound1(WorkerCase):
         self.assertEqual(notice["text"], f"The daily cap of {SC.INTAKE_DAILY_CAP} mailed submissions was reached on "
                          f"{day} (UTC). Until 00:00 UTC the form answers /not-sent/#paused, which points reporters "
                          "to the email address.\n")
-        self.assertEqual(sorted(notice["keys"]), ["from", "subject", "text"])
+        self.assertEqual(sorted(notice["keys"]), ["from", "subject", "text", "to"])
+        self.assertEqual(notice["to"], DESTINATION)
 
     # --- QA: rule branches without a killing case
     def test_urlencoded_complete_rejected(self):
@@ -1429,6 +1492,7 @@ class FixRound1(WorkerCase):
             (lambda: send(self, report() + [("files", ("a", "image/png", b"MZ"))]), "not-an-image", "E_FILE_TYPE"),
             (lambda: send(self, report(), service="intake-broken-limiter"), "error", "E_LIMITER"),
             (lambda: send(self, report(), service="intake-bad-key"), "error", "E_UNCAUGHT"),
+            (lambda: send(self, report(), service="intake-no-recipient"), "error", "E_RECIPIENT_BINDING"),
             (lambda: send(self, report()), "sent", None),
         ]
         for action, event, code in rows:
@@ -1449,7 +1513,8 @@ class FixRound1(WorkerCase):
         self.assertEqual(logged(lambda: send(self, report(), ip=ip)),
                          ["intake event=too-many-attempts code=E_CLIENT_MAILS"])
         probe("capture", "setFail", "throw")
-        self.assertEqual(logged(lambda: send(self, report())), ["intake event=error code=E_SEND"])
+        self.assertEqual(logged(lambda: send(self, report())),
+                         [f"intake event=error code=E_SEND cause={TEST_FAILURE_CAUSE}"])
 
 
 class FixRound2(WorkerCase):
@@ -1509,13 +1574,15 @@ class FixRound2(WorkerCase):
         probe("record", "setup", False, False, True)
         probe("capture", "setFail", "throw")
         lines = logged(lambda: self.assertIn(b"#error", self.raw_submit("intake-record")))
-        self.assertEqual(lines, ["intake event=error code=E_REFUND", "intake event=error code=E_SEND"])
+        self.assertEqual(lines, ["intake event=error code=E_REFUND",
+                                 f"intake event=error code=E_SEND cause={TEST_FAILURE_CAUSE}"])
 
     def test_notice_reopen_failure_is_logged_and_still_paused(self):
         probe("record", "setup", True, False, True)
         probe("capture", "setFail", "notice")
         lines = logged(lambda: self.assertIn(b"#paused", self.raw_submit("intake-record")))
-        self.assertEqual(lines, ["intake event=paused code=E_NOTICE_REOPEN", "intake event=paused code=E_NOTICE"])
+        self.assertEqual(lines, ["intake event=paused code=E_NOTICE_REOPEN",
+                                 f"intake event=paused code=E_NOTICE cause={TEST_FAILURE_CAUSE}"])
         self.assertIn(["noticeFailed", "2000-01-01"], probe("record"))  # the reserved day, not today
 
     def test_notice_reopen_touches_only_its_own_day(self):
@@ -1668,7 +1735,9 @@ class FixRound2(WorkerCase):
                                  "CF-Connecting-IP": fresh_ip()})
         result = json.loads(data)["result"]
         self.assertEqual((result["status"], result["location"]), (303, SC.INTAKE_NOT_SENT_URL + "#paused"))
-        self.assertEqual((result["waited"], result["settled"]), (1, [True]))
+        # The task settles to null when the notice went out, else to the
+        # failed send's cause (PR 4a).
+        self.assertEqual((result["waited"], result["settled"]), (1, [None]))
         self.assertEqual(result["pending"], [True], "the promise is the running notice, not a settled stand-in")
         self.assertEqual(result["order"], ["sent", "recorded", "settled", "returned"],
                          "the promise must cover the send and its report, and the response waits for both")
@@ -1688,7 +1757,7 @@ class FixRound2(WorkerCase):
             probe("capture", "setFail", "")
         result = json.loads(data)["result"]
         self.assertEqual((result["status"], result["location"]), (303, SC.INTAKE_NOT_SENT_URL + "#paused"))
-        self.assertEqual((result["waited"], result["settled"]), (1, [False]))
+        self.assertEqual((result["waited"], result["settled"]), (1, [TEST_FAILURE_CAUSE]))
         self.assertEqual(result["pending"], [True], "the promise is the running notice, not a settled stand-in")
         self.assertEqual(result["order"], ["sent", "recorded", "settled", "returned"],
                          "the promise must cover the failed send and its report")
@@ -1771,13 +1840,117 @@ class FixRound2(WorkerCase):
         codes = []
         for _ in range(SC.INTAKE_NOTICE_TRIES + 2):
             codes += logged(lambda: self.assertOutcome(send(self, report()), "paused"))
-        self.assertEqual(codes, ["intake event=paused code=E_NOTICE"] * SC.INTAKE_NOTICE_TRIES
-                         + ["intake event=paused code=E_DAILY_CAP"] * 2)
+        self.assertEqual(codes, [f"intake event=paused code=E_NOTICE cause={TEST_FAILURE_CAUSE}"]
+                         * SC.INTAKE_NOTICE_TRIES + ["intake event=paused code=E_DAILY_CAP"] * 2)
         self.assertEqual(probe("limiter", "rows")["days"][0]["n"],
                          SC.INTAKE_DAILY_CAP + 2 * SC.INTAKE_NOTICE_TRIES)
         probe("capture", "setFail", "")
         self.assertOutcome(send(self, report()), "paused")
         self.assertEqual(mails(), [], "a fourth notice after the tries ran out")
+
+
+# The recipientOf table (PR 4a): a label, the binding's value (ABSENT: no
+# EMAIL_TO at all) and whether it is a recipient. The same rows run through
+# the deploy prompt's grammar (test_recipient_grammar_matches_prompt).
+ABSENT = object()
+LONGEST = "a" * (254 - len("@example.com")) + "@example.com"
+RECIPIENT_ROWS = [
+    ("absent", ABSENT, False),
+    ("an object", {}, False),
+    ("empty", "", False),
+    ("a space", " ", False),
+    ("trailing space", "operator@example.com ", False),
+    ("trailing LF", "operator@example.com\n", False),
+    ("CRLF and a Bcc header", "operator@example.com\r\nBcc: x@example.com", False),
+    ("a number", 5, False),
+    ("null", None, False),
+    ("a list", ["operator@example.com"], False),
+    ("Cyrillic o in the local part", "\u043eperator@example.com", False),
+    ("U+200B inside", "operator\u200b@example.com", False),
+    ("the destination", "operator@example.com", True),
+    ("a dotless domain", "a@b", True),
+    ("254 units", LONGEST, True),
+    ("255 units", "a" + LONGEST, False),
+]
+
+
+class Recipient(WorkerCase):
+    """PR 4a: the recipient binding EMAIL_TO and the cause of a failed send
+    (ADR-0006 parts 7 and 11 as amended 2026-11-14)."""
+
+    def test_recipient_binding_missing_fails_closed(self):
+        ip = fresh_ip()
+        lines = logged(lambda: self.assertOutcome(send(self, report(), ip=ip, service="intake-no-recipient"),
+                                                  "error"))
+        self.assertEqual(lines, ["intake event=error code=E_RECIPIENT_BINDING"])
+        self.assertEqual(mails(), [])
+        rows = probe("limiter", "rows")
+        self.assertEqual((rows["attempts"], rows["mails"], rows["days"]), ([], [], []), "the attempt was counted")
+        self.assertEqual(probe("burst", "keys"), [], "the Rate Limiting binding was used")
+
+    def test_recipient_of_table(self):
+        self.assertEqual(len(LONGEST), 254)
+        for label, value, valid in RECIPIENT_ROWS:
+            with self.subTest(row=label):
+                env = {} if value is ABSENT else {"EMAIL_TO": value}
+                self.assertEqual(probe("helper", "recipientOf", env), value if valid else None)
+
+    def test_recipient_grammar_matches_prompt(self):
+        """tools/intake.py prompts for the destination with EMAIL_RE.fullmatch
+        and len <= 254 and uploads it as EMAIL_TO, so the Worker must take
+        every value the prompt takes and nothing else."""
+        rows = [(label, value, valid) for label, value, valid in RECIPIENT_ROWS if isinstance(value, str)]
+        self.assertGreater(len(rows), 10)
+        for label, value, valid in rows:
+            with self.subTest(row=label):
+                prompt_takes = len(value) <= 254 and TOOL.EMAIL_RE.fullmatch(value) is not None
+                self.assertEqual(prompt_takes, valid)
+                self.assertEqual(probe("helper", "recipientOf", {"EMAIL_TO": value}) is not None, prompt_takes)
+
+    def test_recipient_not_allowed_refunds_and_logs_no_address(self):
+        pin_day()
+        ip = fresh_ip()
+        lines = logged(lambda: self.assertOutcome(send(self, report(), ip=ip, service="intake-other-recipient"),
+                                                  "error"))
+        # The binding's code arrives across RPC (TEST_FAILURE_CAUSE above).
+        self.assertEqual(lines, ["intake event=error code=E_SEND cause=E_RECIPIENT_NOT_ALLOWED"])
+        for line in lines:
+            self.assertNotIn("@", line)
+            self.assertNotIn(OTHER_RECIPIENT, line)
+        rows = probe("limiter", "rows")
+        self.assertEqual(sum(r["n"] for r in rows["days"]), 0, "the global slot was not refunded")
+        self.assertEqual(sum(r["n"] for r in rows["mails"]), 0, "the client's mail was not refunded")
+        self.assertEqual(mails(), [])
+
+    def test_send_cause_table(self):
+        code64 = "E_" + "A" * 64
+        rows = [
+            ("probe H's code", {"kind": "Error", "code": "E_RECIPIENT_NOT_ALLOWED",
+                                "message": "email to x@example.com not allowed"}, "E_RECIPIENT_NOT_ALLOWED"),
+            ("TypeError without code", {"kind": "TypeError", "message": "no recipient"}, "TypeError"),
+            ("one after the prefix", {"kind": "Error", "code": "E_A"}, "E_A"),
+            ("the prefix alone", {"kind": "Error", "code": "E_"}, "Error"),
+            ("64 after the prefix", {"kind": "Error", "code": code64}, code64),
+            ("65 after the prefix", {"kind": "Error", "code": code64 + "A"}, "Error"),
+            ("trailing LF", {"kind": "Error", "code": "E_X\n"}, "Error"),
+            ("a forged line", {"kind": "Error", "code": "E_X\nintake event=sent"}, "Error"),
+            ("lowercase", {"kind": "Error", "code": "e_field_missing"}, "Error"),
+            ("Cyrillic E", {"kind": "Error", "code": "\u0415_FIELD_MISSING"}, "Error"),
+            ("trailing space", {"kind": "Error", "code": "E_X "}, "Error"),
+            ("numeric", {"kind": "Error", "code": 10063}, "Error"),
+            ("name of 32 letters", {"kind": "Error", "name": "A" + "b" * 31}, "A" + "b" * 31),
+            ("name of 33 letters", {"kind": "Error", "name": "A" + "b" * 32}, "unknown"),
+            ("name with an address", {"kind": "Error", "name": "Error: a@b.example"}, "unknown"),
+            ("empty name", {"kind": "Error", "name": ""}, "unknown"),
+            ("a thrown string", {"kind": "string", "message": "email to x@example.com not allowed"}, "unknown"),
+            ("thrown null", {"kind": "null"}, "unknown"),
+            ("a code getter that throws", {"kind": "Error", "codeThrows": True}, "unknown"),
+        ]
+        self.assertLessEqual(2 * len("AggregateError"), 32)
+        self.assertGreaterEqual(64, 2 * len("SENDER_DOMAIN_NOT_AVAILABLE"))
+        for label, desc, want in rows:
+            with self.subTest(row=label):
+                self.assertEqual(probe("cause", None, desc), want)
 
 
 if __name__ == "__main__":
