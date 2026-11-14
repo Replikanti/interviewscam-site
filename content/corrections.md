@@ -15,7 +15,9 @@ If a page on this site is wrong about you, your company or anything else, you ca
 
 ## What happens next
 
-- Every request is acknowledged and reviewed.
+- Every request is acknowledged and reviewed. The moderator replies to the email address you give.
+- A request about something the page's own evidence and sources can show, for example a wrong artifact or a source that does not say what the page cites it for, is reviewed on its merits, whether or not you answer that reply.
+- A request that depends on who you are waits for your answer to that reply. That is a request about your own name, a request made on behalf of a named company, a request under data protection law, or a request to withdraw your own report.
 - The outcome is one of three. The page is corrected, the page is removed, or the page stays as it is. You get the reason in every case.
 - The page stays up while the request is reviewed. This stops a fake company from hiding its own page by sending a request.
 - A request about your own personal data under the GDPR, for example access, deletion or an objection, is answered within one month, as Article 12(3) of the GDPR requires.
@@ -25,10 +27,10 @@ If a page on this site is wrong about you, your company or anything else, you ca
 
 Scam campaigns often use the names of real people, for example as a fake recruiter or as someone at a company they impersonate. If a page shows your name and you ask, your name is hidden first, before the review.
 
-The review then checks that the request really comes from you. You may be asked for proof of identity. It is used only to check the request and is deleted once the decision is made. If the request did not come from you, the name returns.
+The review then checks that the request really comes from you. You may be asked for proof of identity. It is used only to check the request and is deleted once the decision is made. If the request did not come from you, the name returns. If you have not answered the moderator's reply within 28 days of the request, the request counts as not verified and the name returns.
 
 The artifacts and the rest of the page stay up throughout, so other candidates can still find the warning. This follows the GDPR, which lets you restrict the use of your data while your objection is checked (Articles 18 and 21).
 
-Companies follow the general rule above. Their pages stay up during the review.
+Companies follow the general rule above. Their pages stay up during the review. A company shows that a request comes from it by answering from an address on its own domain, or with other evidence.
 
-Send your request by email to the address below, with the page URL in the subject line.
+Send your request with the form below. If the form does not work for you, the email address under it reaches the same moderator.

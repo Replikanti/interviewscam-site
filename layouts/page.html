@@ -2,7 +2,9 @@
      channel    "report" or "correction": adds the how-to-send block
      checklist  true: adds the full checklist (checklist in data/labels.toml)
      a_z        true: adds the A to Z list of every report and campaign
-                family and the no-report block (a-z.html, ADR-0005 part 2) */ -}}
+                family and the no-report block (a-z.html, ADR-0005 part 2)
+     not_sent   true: adds one section per result id of the intake Worker
+                (not-sent.html, ADR-0006 part 6) */ -}}
 {{ define "main" }}
 <h1>{{ .Title }}</h1>
 <div class="card prose">
@@ -18,5 +20,8 @@
 {{- end }}
 {{- if .Params.a_z }}
 {{ partial "a-z.html" . }}
+{{- end }}
+{{- if .Params.not_sent }}
+{{ partial "not-sent.html" . }}
 {{- end }}
 {{ end }}

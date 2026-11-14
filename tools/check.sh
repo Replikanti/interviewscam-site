@@ -59,7 +59,7 @@ FIXTURE_SKIP=(.git .github .gitignore .hugo_build.lock .tools .fixture-site
 source "$CHECK_ROOT/tools/fetch-tools.sh"
 
 HTML_NOT_RUN_LINE='NOT RUN: HTML validation (Nu Html Checker) was NOT run locally. It runs only in CI (required check job). A local green does not mean the HTML is valid.'
-REFLOW_NOT_RUN_LINE='NOT RUN: reflow at 320 CSS px (sitecheck reflow) was NOT run locally, and with it its hidden-state cases (the Copy button hidden without its script, the search results hidden until a query, the skip link shown on keyboard focus), the hit test and paint check of the pinned regions, and case (8), the search typed and submitted on Home against the oracle. It runs only in CI, in the runner'"'"'s Google Chrome. A local green does not mean the pages reflow or hide and reveal as they should, or that the search answers.'
+REFLOW_NOT_RUN_LINE='NOT RUN: reflow at 320 CSS px (sitecheck reflow) was NOT run locally, and with it its hidden-state cases (the Copy button hidden without its script, the search results hidden until a query, the skip link shown on keyboard focus, the honeypot of the intake forms without a box), the hit test and paint check of the pinned regions (the intake forms and the result sections of /not-sent/ among them), and case (8), the search typed and submitted on Home against the oracle. It runs only in CI, in the runner'"'"'s Google Chrome. A local green does not mean the pages reflow or hide and reveal as they should, or that the search answers.'
 
 in_github_actions() { [[ "${GITHUB_ACTIONS:-}" == true ]]; }
 
@@ -140,7 +140,7 @@ site_check() {
 }
 
 # render_check <root> <schema dir> <built dir> [<fixtures dir>] [no-feed]
-# [no-search] [no-report-pins]: the markup contract of the record pages (ADR-0004): one page
+# [no-search] [no-report-pins] [no-intake]: the markup contract of the record pages (ADR-0004): one page
 # per record and none without one, the fixed titles, the D6, D7 and D10
 # wording, the campaign line and attribution, artifacts and external links,
 # structured data, no hidden persona name anywhere, the index lists, the
@@ -148,18 +148,20 @@ site_check() {
 # (rules 11 to 13), and the A to Z page /a-z/ with the Home search form
 # (rule 15, ADR-0005). With a fixtures dir, no record may share its slug or
 # name with a fixture record under <fixtures dir>/**/content/ (the
-# fixture-leak check; production only). no-feed, no-search and
-# no-report-pins (the self-test's hand-made render fixtures only) leave out
-# rules 11 to 13, rules 15 and 16, and rule 17 (the exact trees of the
-# report pages, M4 PR 4); both builds always run them.
+# fixture-leak check; production only). no-feed, no-search,
+# no-report-pins and no-intake (the self-test's hand-made render fixtures
+# only) leave out rules 11 to 13, rules 15 and 16, rule 17 (the exact trees
+# of the report pages, M4 PR 4) and rule 18 (the intake forms, their result
+# pages and the page URL bound, M5b PR 3); both builds always run them.
 render_check() {
-  local fixtures=() feed=() search=() pins=()
+  local fixtures=() feed=() search=() pins=() intake=()
   [[ -n "${4:-}" ]] && fixtures=(--fixtures "$4")
   [[ "${5:-}" == no-feed ]] && feed=(--no-feed)
   [[ "${6:-}" == no-search ]] && search=(--no-search)
   [[ "${7:-}" == no-report-pins ]] && pins=(--no-report-pins)
+  [[ "${8:-}" == no-intake ]] && intake=(--no-intake)
   sitecheck render --records "$1" --schemas "$2" "${fixtures[@]}" "${feed[@]}" \
-    "${search[@]}" "${pins[@]}" "$3"
+    "${search[@]}" "${pins[@]}" "${intake[@]}" "$3"
 }
 
 # literals_check <root>: fixed public copy only from data/labels.toml

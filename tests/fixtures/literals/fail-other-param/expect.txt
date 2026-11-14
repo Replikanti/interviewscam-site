@@ -1,1 +1,1 @@
-site.Params.description: site.Params only as operator, contact or csp (L4)
+site.Params.description: site.Params only as operator, contact, csp or intake (L4)

@@ -91,11 +91,19 @@ jobs:
     # (48 x the mean audit), at most 30.4 s (job set up, artifact download,
     # resolve, digest, install, server start); T_run = the mean audit per
     # job, at most 11.8 s (single audits up to 35.0 s).
-    # 2 x (30.4 + 54 x 11.8) s = 1335.2 s -> 23 min. 18 pages: Home, 404,
+    # 2 x (30.4 + 54 x 11.8) s = 1335.2 s -> 23 min for 18 pages: Home, 404,
     # the eight static pages (with /a-z/ from M4 PR 2), the two production
-    # section pages from M5 and the six fixture pages (ADR-0005 Numbers),
-    # so the value holds through M5.
-    timeout-minutes: 23
+    # section pages from M5 and the six fixture pages (ADR-0005 Numbers).
+    # M5b PR 3 (Replikanti/interviewscam#13) adds the result pages /sent/
+    # and /not-sent/, so 20 pages (ADR-0006 Numbers, "Lighthouse page
+    # count 20"). M5b PR 3's green job on 18 pages (run 43544311814) took
+    # 636 s for 54 audits, mean 11.1 s, so T_setup = 636 - 54 x 11.1 =
+    # 36.6 s (the script's own setup line reads 26.4 s; the job time also
+    # counts the start and the download); 20, not 18, because /reports/ and
+    # /campaigns/ join from M5. One run gives no spread, so the factor stays 2, and each input
+    # is the larger of that run and M4 PR 2's maxima:
+    # 2 x (36.6 + 60 x 11.8) s = 1489.2 s -> 25 min.
+    timeout-minutes: 25
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
