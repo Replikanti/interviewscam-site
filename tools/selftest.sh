@@ -1085,6 +1085,451 @@ else:
 PY
 }
 
+# guard_public_runner <sitecheck.py> <schema dir> <pins.env> (ADR-0007 part 4,
+# Replikanti/interviewscam#38 PR B): the public-tree rules PT1 to PT4 and the
+# workflow hardening WH1 to WH4, one row per member of every flagging set and
+# per form the readers take or refuse, each in its own temporary root (PT) or
+# on one workflow text (WH), through importlib. The members are written out
+# here, not read from the code, so a member cut from a set in sitecheck.py
+# turns its row red: the 15 record keys (and a row that requires them to
+# equal params.required of the two schemas), the 5 mail suffixes in lower
+# and upper case, the 5 image signatures as bytes, the 4 allowed triggers
+# (equal to WORKFLOW_TRIGGERS_ALLOWED) and the denied ones of ADR-0007 part
+# 4. A PT row expects exactly one finding with its text (or none: PASS); a
+# WH row exactly the number of findings it names. The last lines,
+# guard-public/table and guard-wf/table, count the rows. -B: no
+# tools/__pycache__.
+guard_public_runner() {
+  python3 -I -B - "$1" "$2" "$3" <<'PY'
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+schema_dir = Path(sys.argv[2])
+sha = next(line.split("@", 1)[1] for line in Path(sys.argv[3]).read_text().splitlines()
+           if line.startswith("ACTION_CHECKOUT="))
+counts = {"guard-public": 0, "guard-wf": 0}
+bad = {"guard-public": 0, "guard-wf": 0}
+
+
+def report(family, name, ok, detail):
+    counts[family] += 1
+    if ok:
+        print(f"ok   {family}/{name} ({detail})")
+    else:
+        bad[family] += 1
+        print(f"FAIL {family}/{name}: {detail}")
+
+
+# ---- PT rows: (name, files {rel: bytes or str}, symlinks, expect, git) ----
+RECORD_KEYS = ("artifacts", "delivery", "evidence", "first_seen", "independent_reports",
+               "last_reviewed", "last_seen", "name", "name_type", "sources", "state",
+               "state_basis", "steals", "summary", "targeted_os")
+MAIL_SUFFIXES = (".eml", ".emlx", ".mbox", ".mbx", ".msg")
+IMAGES = {
+    "png": b"\x89PNG\r\n\x1a\n",
+    "jpeg": b"\xff\xd8\xff",
+    "gif87a": b"GIF87a",
+    "gif89a": b"GIF89a",
+    "webp": b"RIFF\x00\x00\x00\x00WEBP",
+}
+SCHEMAS = {f"schema/{n}": (schema_dir / n).read_bytes()
+           for n in ("report.schema.json", "campaign.schema.json")}
+PAGE = '+++\ntitle = "About"\ndescription = "About the site."\n{extra}+++\nAbout.\n'
+rows = []
+PT1 = "PT1: a directory or symlink in content/"
+PT2B = "PT2b: a record key"
+PT4_MAIL = "PT4: a saved mail file"
+PT4_IMAGE = "PT4: a raster image"
+for key in RECORD_KEYS:
+    rows.append((f"record-keys/{key}/top-level", {**SCHEMAS, "content/about.md":
+                 PAGE.format(extra=f'{key} = "x"\n')}, (), PT2B))
+    rows.append((f"record-keys/{key}/params", {**SCHEMAS, "content/about.md":
+                 PAGE.format(extra=f'[params]\n{key} = "x"\n')}, (), PT2B))
+for label, spelled in (("fullwidth", "ｎａｍｅ"), ("zero-width", "na​me"),
+                       ("uppercase", "NAME")):
+    rows.append((f"record-keys/name-{label}/top-level", {**SCHEMAS, "content/about.md":
+                 PAGE.format(extra=f'"{spelled}" = "x"\n')}, (), PT2B))
+    rows.append((f"record-keys/name-{label}/params", {**SCHEMAS, "content/about.md":
+                 PAGE.format(extra=f'[params]\n"{spelled}" = "x"\n')}, (), PT2B))
+rows += [
+    ("record-keys/params-table-uppercase", {**SCHEMAS, "content/about.md":
+     PAGE.format(extra='[PARAMS]\nsummary = "x"\n')}, (), PT2B),
+    ("record-keys/params-array-of-tables", {**SCHEMAS, "content/about.md":
+     PAGE.format(extra='[[params]]\nsummary = "x"\n')}, (), PT2B),
+    ("record-keys/nested-table-passes", {**SCHEMAS, "content/about.md":
+     PAGE.format(extra='[sitemap]\ndisable = true\n')}, (), "PASS"),
+    ("record-keys/ignored-page-on-disk", {**SCHEMAS, ".gitignore": "/content/draft.md\n",
+     "content/draft.md": PAGE.format(extra='summary = "x"\n')}, (), PT2B, True),
+    # Design choice: the schema is read only when a static page needs it.
+    ("pt2b/no-page-no-schema-passes", {"docs/readme.txt": "Text.\n"}, (), "PASS"),
+    ("pt2b/page-no-schema-fails", {"content/about.md": PAGE.format(extra="")}, (),
+     "PT2b: cannot read the record keys"),
+    ("pt2b/page-unreadable-schema-fails", {"schema/report.schema.json": "{",
+     "schema/campaign.schema.json": SCHEMAS["schema/campaign.schema.json"],
+     "content/about.md": PAGE.format(extra="")}, (), "PT2b: cannot read the record keys"),
+    ("pt2b/page-schema-required-empty-fails", {"schema/report.schema.json":
+     '{"properties": {"params": {"required": []}}}',
+     "schema/campaign.schema.json": SCHEMAS["schema/campaign.schema.json"],
+     "content/about.md": PAGE.format(extra="")}, (), "PT2b: cannot read the record keys"),
+    ("pt2b/page-schema-required-mapping-fails", {"schema/report.schema.json":
+     '{"properties": {"params": {"required": {"name": true}}}}',
+     "schema/campaign.schema.json": SCHEMAS["schema/campaign.schema.json"],
+     "content/about.md": PAGE.format(extra="")}, (), "PT2b: cannot read the record keys"),
+    ("pt2b/page-schema-without-required-fails", {"schema/report.schema.json": "{}",
+     "schema/campaign.schema.json": SCHEMAS["schema/campaign.schema.json"],
+     "content/about.md": PAGE.format(extra="")}, (), "PT2b: cannot read the record keys"),
+    ("pt2b/leading-blank-before-fence-fails", {**SCHEMAS, "content/about.md":
+     "\n" + PAGE.format(extra="")}, (), "PT2b: the front matter of a static page must be TOML"),
+    # PT1 reads the disk: an ignored record directory fails too.
+    ("pt1/ignored-on-disk", {".gitignore": "/content/*/\n", "content/reports/x.md":
+     PAGE.format(extra="")}, (), PT1, True),
+    ("pt1/empty-directory", {"docs/readme.txt": "x"}, ("content/reports/",), PT1),
+    # Staged, then deleted from the disk: the next commit still carries it, so
+    # git's listing counts as well as the disk (the read then fails closed).
+    ("pt1/staged-deleted-on-disk", {"content/reports/x.md": "x"}, (),
+     [PT1, "PT2a: cannot read"], "index-only"),
+    ("pt2a/staged-deleted-org-in-content", {"content/x.org": "#+title: Draft\n"}, (),
+     ["PT2a: a file in content/ that is not a static page", "PT2a: cannot read"],
+     "index-only"),
+    ("pt1/dot-directory", {"content/.drafts/x.txt": "x"}, (), PT1),
+    # PT3: the missing policy passes (design choice); every other form fails.
+    ("pt3/missing-policy-passes", {"docs/readme.txt": "Text.\n"}, (), "PASS"),
+    ("pt3/empty-policy-passes", {"schema/record-policy.json": '{ "retired_slugs" : [ ] }\n'},
+     (), "PASS"),
+    ("pt3/one-slug-fails", {"schema/record-policy.json": '{"retired_slugs": ["a"]}'}, (),
+     "PT3: must be exactly"),
+    ("pt3/other-key-fails", {"schema/record-policy.json": '{"retired_slugs": [], "x": 1}'},
+     (), "PT3: must be exactly"),
+    ("pt3/duplicate-key-fails", {"schema/record-policy.json":
+     '{"retired_slugs": ["a"], "retired_slugs": []}'}, (), "PT3: cannot read: a key appears twice"),
+    ("pt3/not-json-fails", {"schema/record-policy.json": '{"retired_slugs": []'}, (),
+     "PT3: cannot read"),
+    ("pt3/second-policy-fullwidth", {"data/record－policy.json": "{}"}, (),
+     "PT3: a second file named"),
+    # Exemptions are exact.
+    ("exempt/tests-fixtures-passes", {"tests/fixtures/x/saved.eml": "x"}, (), "PASS"),
+    ("exempt/tests-fixtures-case-variant-fails", {"Tests/fixtures/x/saved.eml": "x"}, (),
+     PT4_MAIL),
+    ("pt4/not-mail-passes", {"docs/saved.txt": "x", "docs/saved.emlz": "x"}, (), "PASS"),
+    ("pt4/mail-fullwidth-dot", {"docs/saved．eml": "x"}, (), PT4_MAIL),
+    ("pt4/mail-zero-width", {"docs/saved.e​ml": "x"}, (), PT4_MAIL),
+    ("pt4/mail-dotfile", {"docs/.eml": "x"}, (), PT4_MAIL),
+    ("pt2a/front-matter-in-content-page-dir-skipped", {**SCHEMAS, "content/about.md":
+     PAGE.format(extra="")}, (), "PASS"),
+    ("pt2a/json-array-passes", {"data/x.json": '[{"a": 1}]\ntext\n'}, (), "PASS"),
+    ("pt2a/template-passes", {"layouts/x.html": '{{ define "main" }}{\n'}, (), "PASS"),
+    ("pt2a/not-utf8-json-passes", {"data/x.bin": b'{"a": "\xff"} more'}, (), "PASS"),
+    ("pt2a/markdown-extension-in-content", {"content/x.markdown": "+++\n+++\n"}, (),
+     "PT2a: a file in content/ that is not a static page"),
+    ("pt2a/org-in-content", {"content/x.org": "#+title: Draft\n"}, (),
+     "PT2a: a file in content/ that is not a static page"),
+    ("pt2a/html-in-content", {"content/x.html": "<p>Draft</p>\n"}, (),
+     "PT2a: a file in content/ that is not a static page"),
+    ("pt2a/case-variant-md-in-content", {"content/x.MD": "Draft\n"}, (),
+     "PT2a: a file in content/ that is not a static page"),
+    ("pt2a/ignored-org-on-disk", {".gitignore": "/content/x.org\n", "content/x.org":
+     "#+title: Draft\n"}, (), "PT2a: a file in content/ that is not a static page", True),
+]
+for suffix in MAIL_SUFFIXES:
+    rows.append((f"mail-suffix/{suffix[1:]}/lower", {f"docs/saved{suffix}": "x"}, (), PT4_MAIL))
+    rows.append((f"mail-suffix/{suffix[1:]}/upper", {f"docs/saved{suffix.upper()}": "x"}, (),
+                 PT4_MAIL))
+for kind, magic in IMAGES.items():
+    data = magic + b"\x00" * 8 + b"padding"
+    rows.append((f"image-magic/{kind}/outside", {"docs/evidence.dat": data}, (), PT4_IMAGE))
+    rows.append((f"image-magic/{kind}/nested-assets", {"docs/assets/evidence.dat": data}, (),
+                 PT4_IMAGE))
+    rows.append((f"image-magic/{kind}/case-variant-assets", {"Assets/evidence.dat": data}, (),
+                 PT4_IMAGE))
+    rows.append((f"image-magic/{kind}/assets", {"assets/evidence.dat": data}, (), "PASS"))
+    rows.append((f"image-magic/{kind}/static", {"static/evidence.dat": data}, (), "PASS"))
+rows.append(("image-magic/truncated-webp-passes", {"docs/evidence.dat": b"RIFF\x00\x00"}, (),
+             "PASS"))
+
+for row in rows:
+    name, files, dirs, expect = row[:4]
+    use_git = len(row) > 4 and row[4]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for rel, data in files.items():
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data if isinstance(data, bytes) else data.encode("utf-8"))
+        for rel in dirs:
+            (root / rel).mkdir(parents=True, exist_ok=True)
+        if use_git == "index-only":
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+            for rel in files:
+                (root / rel).unlink()
+                parent = (root / rel).parent
+                while parent != root and not any(parent.iterdir()):
+                    parent.rmdir()
+                    parent = parent.parent
+            listed = sitecheck.git_files(root)
+            if sorted(files) != [rel for rel in listed if rel in files]:
+                report("guard-public", name, False, f"git does not list the staged files: {listed}")
+                continue
+        elif use_git:
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            listed = sitecheck.git_files(root)
+            hidden = [rel for rel in files if rel.startswith("content/") and rel not in listed]
+            if not hidden:
+                report("guard-public", name, False, "the row's content/ file is not ignored, "
+                       f"so it does not prove the disk read; git lists {listed}")
+                continue
+        else:
+            listed = sorted(rel for rel in files)
+        findings = sitecheck.Findings()
+        sitecheck.guard_public_tree(root, listed, findings)
+        items = findings.items
+        if expect == "PASS":
+            report("guard-public", name, not items,
+                   "passed as expected" if not items else f"expected no finding; got {items}")
+        else:
+            want = expect if isinstance(expect, list) else [expect]
+            ok = len(items) == len(want) and all(
+                sum(text in item for item in items) == 1 for text in want)
+            report("guard-public", name, ok, f"failed as expected: {'; '.join(want)}" if ok
+                   else f"expected exactly the findings {want!r}; got {items}")
+schema_keys = set()
+for path in SCHEMAS:
+    schema_keys |= set(json.loads(SCHEMAS[path])["properties"]["params"]["required"])
+report("guard-public", "record-keys/schema-union", schema_keys == set(RECORD_KEYS),
+       f"the {len(RECORD_KEYS)} keys equal params.required of the schemas"
+       if schema_keys == set(RECORD_KEYS) else
+       f"the schemas require {sorted(schema_keys)}, the rows {sorted(RECORD_KEYS)}")
+
+# ---- WH rows: (name, [(find, replace)], count, expect) on BASE ----
+BASE = f"""name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@{sha} # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/check.sh
+        shell: bash
+        run: bash tools/check.sh
+"""
+ON = "on:\n  pull_request:\n  push:\n    branches: [main]\n"
+WITH = "        with:\n          persist-credentials: false\n"
+STEP = f"      - uses: actions/checkout@{sha} # v7.0.1\n{WITH}"
+WH1, WH1_READ = "WH1: trigger", "WH1: cannot read the triggers"
+WH2, WH2_READ = "WH2: actions/checkout needs exactly one", "WH2:"
+WH3, WH4 = "WH3: a credential input", "WH4: a secrets reference"
+ALLOWED = ("pull_request", "push", "schedule", "workflow_dispatch")
+DENIED = ("pull_request_target", "issue_comment", "pull_request_review",
+          "pull_request_review_comment", "discussion_comment", "workflow_call",
+          "repository_dispatch", "workflow_run", "Push", "рush", "pu​sh",
+          "Pull_request", "SCHEDULE", "Workflow_Dispatch", "push ")
+wh = [("base", [], 0, ""),
+      ("allowed-equal-the-code", None, 0, "")]
+for trigger in ALLOWED:
+    wh += [(f"trigger-allowed/{trigger}/mapping", [(ON, f"on:\n  {trigger}:\n")], 0, ""),
+           (f"trigger-allowed/{trigger}/scalar", [(ON, f"on: {trigger}\n")], 0, ""),
+           (f"trigger-allowed/{trigger}/flow-list", [(ON, f"on: [{trigger}]\n")], 0, ""),
+           (f"trigger-allowed/{trigger}/block-list", [(ON, f"on:\n  - {trigger}\n")], 0, "")]
+for trigger in DENIED:
+    wh += [(f"trigger-denied/{json.dumps(trigger)[1:-1]}/mapping",
+            [(ON, ON + f'  "{trigger}":\n')], 1, f"{WH1} {json.dumps(trigger)}"),
+           (f"trigger-denied/{json.dumps(trigger)[1:-1]}/flow-list",
+            [(ON, f'on: [push, "{trigger}"]\n')], 1, f"{WH1} {json.dumps(trigger)}"),
+           (f"trigger-denied/{json.dumps(trigger)[1:-1]}/block-list",
+            [(ON, f"on:\n  - push\n  - '{trigger}'\n")], 1, f"{WH1} {json.dumps(trigger)}"),
+           (f"trigger-denied/{json.dumps(trigger)[1:-1]}/scalar",
+            [(ON, f'on: "{trigger}"\n')], 1, f"{WH1} {json.dumps(trigger)}")]
+wh += [
+    ("trigger-forms/quoted-on-key", [(ON, '"on":\n  push:\n')], 0, ""),
+    ("trigger-forms/single-quoted-on-key", [(ON, "'on': [push]\n")], 0, ""),
+    ("trigger-forms/comment-after-scalar", [(ON, "on: push # weekly\n")], 0, ""),
+    ("trigger-forms/trailing-comma", [(ON, "on: [push, ]\n")], 0, ""),
+    ("trigger-forms/settings-nested", [(ON, ON + '  schedule:\n    - cron: "17 6 * * 1"\n')],
+     0, ""),
+    ("trigger-forms/alias", [(ON, "on: *triggers\n")], 1, WH1_READ),
+    ("trigger-forms/anchor", [(ON, "on: &triggers\n  push:\n")], 1, WH1_READ),
+    ("trigger-forms/tag", [(ON, "on: !!map\n  push:\n")], 1, WH1_READ),
+    ("trigger-forms/flow-mapping", [(ON, "on: {push: {}}\n")], 1, WH1_READ),
+    ("trigger-forms/block-scalar", [(ON, "on: |\n  push\n")], 1, WH1_READ),
+    ("trigger-forms/multi-line-flow-list", [(ON, "on: [push,\n  pull_request_target]\n")], 1,
+     WH1_READ),
+    ("trigger-forms/missing", [(ON, "")], 1, WH1_READ),
+    ("trigger-forms/twice", [(ON, ON + "on: [push]\n")], 1, WH1_READ),
+    ("trigger-forms/top-level-merge-key", [(ON, ON + "<<: *defaults\n")], 1, WH1_READ),
+    ("trigger-forms/complex-key", [(ON, "? on\n: push\n")], 1, WH1_READ),
+    ("trigger-forms/top-level-flow-mapping", [(ON, "{on: push}\n")], 1, WH1_READ),
+    ("trigger-forms/complex-key-beside-on", [(ON, ON + "? on\n: issue_comment\n")], 1,
+     WH1_READ),
+    ("trigger-forms/flow-list-alias-item", [(ON, "on: [push, *more]\n")], 1, WH1_READ),
+    ("trigger-forms/flow-list-empty-item", [(ON, 'on: [push, ""]\n')], 1, WH1_READ),
+    ("trigger-forms/list-item-key-empty", [(ON, "on:\n  - push:\n")], 1, WH1_READ),
+    ("trigger-forms/tab-indent", [(ON, "on:\n\tpush:\n")], 1, WH1_READ),
+    ("trigger-forms/mixed-list-and-mapping", [(ON, "on:\n  - push\n  schedule:\n")], 1,
+     WH1_READ),
+    ("trigger-forms/empty", [(ON, "on:\n")], 1, WH1_READ),
+    ("trigger-forms/compact-list-at-top", [(ON, "on:\n- push\n")], 1, WH1_READ),
+    ("trigger-forms/list-item-mapping", [(ON, "on:\n  - push: {}\n")], 1, WH1_READ),
+    ("trigger-forms/flow-list-nested", [(ON, "on: [push, [x]]\n")], 1, WH1_READ),
+    ("persist/missing-with", [(WITH, "")], 1, WH2),
+    ("persist/missing-key", [("          persist-credentials: false\n",
+                              "          fetch-depth: 1\n")], 1, WH2),
+    ("persist/true", [("persist-credentials: false", "persist-credentials: true")], 1, WH2),
+    ("persist/double-quoted", [("persist-credentials: false",
+                                'persist-credentials: "false"')], 1, WH2),
+    ("persist/single-quoted", [("persist-credentials: false",
+                                "persist-credentials: 'false'")], 1, WH2),
+    ("persist/expression", [("persist-credentials: false",
+                             "persist-credentials: ${{ false }}")], 1, WH2),
+    ("persist/capitalised", [("persist-credentials: false", "persist-credentials: False")],
+     1, WH2),
+    ("persist/yaml-1.1-no", [("persist-credentials: false", "persist-credentials: no")], 1,
+     WH2),
+    ("persist/key-case-variant", [("persist-credentials: false",
+                                   "Persist-Credentials: false")], 1, WH2),
+    ("persist/twice", [("          persist-credentials: false\n",
+                        "          persist-credentials: false\n"
+                        "          Persist-Credentials: true\n")], 1, WH2),
+    ("persist/alias", [("persist-credentials: false", "persist-credentials: *off")], 1, WH2),
+    ("persist/comment-passes", [("persist-credentials: false",
+                                 "persist-credentials: false # no token in .git/config")],
+     0, ""),
+    ("persist/with-flow-mapping", [(WITH, "        with: {persist-credentials: false}\n")], 2,
+     WH2_READ),
+    ("persist/with-alias", [(WITH, "        with: *checkout\n")], 2, WH2_READ),
+    ("persist/step-merge-key", [(WITH, "        <<: *defaults\n" + WITH)], 1,
+     "WH2: the key \"<<\" twice or as a merge key"),
+    ("persist/step-key-twice", [(WITH, WITH + "        name: a\n        name: b\n")], 1,
+     "WH2: the key \"name\" twice"),
+    ("persist/with-merge-key", [(WITH, "        with:\n          <<: *checkout\n")], 2,
+     WH2_READ),
+    ("persist/name-first-passes", [(STEP, "      - name: checkout\n        uses: actions/"
+                                    f"checkout@{sha}\n{WITH}")], 0, ""),
+    ("persist/name-first-missing", [(STEP, "      - name: checkout\n        uses: actions/"
+                                     f"checkout@{sha}\n")], 1, WH2),
+    ("persist/with-before-uses-passes", [(STEP, "      - with:\n          persist-credentials:"
+                                          f" false\n        uses: actions/checkout@{sha}\n")],
+     0, ""),
+    ("persist/quoted-uses-missing", [(STEP, f'      - uses: "actions/checkout@{sha}"\n')], 1,
+     WH2),
+    ("persist/case-variant-action-missing", [(STEP, f"      - uses: Actions/Checkout@{sha}\n")],
+     1, WH2),
+    ("persist/flow-step", [(STEP, f"      - {{uses: actions/checkout@{sha}}}\n")], 1,
+     "WH2: actions/checkout in a form the guard cannot read"),
+    ("persist/second-step-missing", [(STEP, STEP + f"      - uses: actions/checkout@{sha}\n")],
+     1, WH2),
+    ("persist/commented-checkout-ignored", [(STEP, STEP + f"      # - uses: actions/checkout@"
+                                             f"{sha}\n")], 0, ""),
+    ("credential/token", [(WITH, WITH + "          token: x\n")], 1, WH3),
+    ("credential/ssh-key", [(WITH, WITH + "          ssh-key: x\n")], 1, WH3),
+    ("credential/token-case-variant", [(WITH, WITH + "          Token: x\n")], 1, WH3),
+    ("credential/ssh-key-quoted", [(WITH, WITH + '          "ssh-key": x\n')], 1, WH3),
+    ("credential/token-expression", [(WITH, WITH + "          token: ${{ github.token }}\n")],
+     1, WH3),
+    ("credential/token-other-step-passes", [("        shell: bash\n",
+                                             "        shell: bash\n        with:\n"
+                                             "          token: x\n")], 0, ""),
+    ("secrets/with-value", [(WITH, WITH + "          path: ${{ secrets.X }}\n")], 1, WH4),
+    ("secrets/comment", [("permissions:", "# secrets\npermissions:")], 1, WH4),
+    ("secrets/uppercase", [("permissions:", "# SECRETS\npermissions:")], 1, WH4),
+    ("secrets/bracket", [(WITH, WITH + "          path: ${{ secrets['X'] }}\n")], 1, WH4),
+    ("secrets/inherit", [("    runs-on: ubuntu-24.04\n",
+                          "    runs-on: ubuntu-24.04\n    secrets: inherit\n")], 1, WH4),
+    ("secrets/word-part-passes", [("permissions:", "# nosecretsx\npermissions:")], 0, ""),
+]
+for name, edits, count, expect in wh:
+    if edits is None:
+        ok = tuple(sitecheck.WORKFLOW_TRIGGERS_ALLOWED) == ALLOWED
+        report("guard-wf", name, ok, "WORKFLOW_TRIGGERS_ALLOWED equals the four rows" if ok
+               else f"WORKFLOW_TRIGGERS_ALLOWED is {sitecheck.WORKFLOW_TRIGGERS_ALLOWED}")
+        continue
+    text = BASE
+    for find, replace in edits:
+        if text.count(find) != 1:
+            report("guard-wf", name, False, f"the find string occurs {text.count(find)} times")
+            break
+        text = text.replace(find, replace)
+    else:
+        findings = sitecheck.Findings()
+        sitecheck.guard_workflow_hardening(".github/workflows/w.yml", text, findings)
+        items = findings.items
+        ok = len(items) == count and all(expect in item for item in items)
+        report("guard-wf", name, ok,
+               ("passed as expected" if not count else
+                f"failed as expected: {count} x {expect}") if ok else
+               f"expected {count} finding(s) with {expect!r}; got {items}")
+for family in counts:
+    if bad[family]:
+        print(f"FAIL {family}/table: {counts[family]} rows, {bad[family]} failed")
+    else:
+        print(f"ok   {family}/table ({counts[family]} rows)")
+PY
+}
+
+# guard_wiring_runner <sitecheck.py> (ADR-0007 part 4): the real cmd_guard,
+# run on a temporary git work tree with one workflow and one static page
+# (guard_hugo_config stubbed, so no Hugo is needed), must call
+# guard_public_tree with that root and git's listing
+# (wiring/guard-public-tree-called) and guard_workflows must call
+# guard_workflow_hardening with the workflow's path and text
+# (wiring/guard-workflow-hardening-called). Recorders replace both
+# functions, so a cmd_guard that drops either call turns its line red.
+guard_wiring_runner() {
+  python3 -I -B - "$1" <<'PY'
+import argparse
+import contextlib
+import importlib.util
+import io
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+calls = {"tree": [], "hardening": []}
+sitecheck.guard_public_tree = lambda root, files, findings: calls["tree"].append((root, files))
+sitecheck.guard_workflow_hardening = lambda rel, text, findings: calls["hardening"].append((rel, text))
+sitecheck.guard_hugo_config = lambda root, hugo_bin, findings: None
+workflow = "name: x\non: push\npermissions:\n  contents: read\njobs: {}\n"
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp).resolve()
+    (root / ".github" / "workflows").mkdir(parents=True)
+    (root / ".github" / "workflows" / "x.yml").write_text(workflow)
+    (root / "content").mkdir()
+    (root / "content" / "about.md").write_text('+++\ntitle = "About"\n+++\n')
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    with contextlib.redirect_stdout(io.StringIO()):
+        sitecheck.cmd_guard(argparse.Namespace(root=str(root), hugo=None))
+    files = sitecheck.git_files(root)
+ok = calls["tree"] == [(root, files)]
+print(f"ok   wiring/guard-public-tree-called (cmd_guard passes the root and git's listing)"
+      if ok else f"FAIL wiring/guard-public-tree-called: calls {calls['tree']}")
+ok = calls["hardening"] == [(".github/workflows/x.yml", workflow)]
+print(f"ok   wiring/guard-workflow-hardening-called (guard_workflows passes each workflow)"
+      if ok else f"FAIL wiring/guard-workflow-hardening-called: calls {calls['hardening']}")
+PY
+}
+
 selftest_main() {
   require_work_tree || return 1
   load_pins || return 1
@@ -2084,6 +2529,31 @@ PY
     n_passed=$((n_passed + 1))
   else
     echo "FAIL site-built-pins-missing-stem: $(cat "$out")"
+    n_failed=$((n_failed + 1))
+  fi
+
+  # guard-public/<row> and guard-wf/<row> (ADR-0007 part 4,
+  # Replikanti/interviewscam#38 PR B): the public-tree rules and the
+  # workflow hardening, one row per member of every flagging set and per
+  # form (guard_public_runner above), plus their wiring into cmd_guard
+  # (guard_wiring_runner above).
+  guard_public_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$SELFTEST_ROOT/schema" \
+    "$SELFTEST_ROOT/tools/pins.env" >"$out" 2>&1
+  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+  if ! grep -qE '^(ok   |FAIL )guard-wf/table' "$out"; then
+    echo "FAIL guard-public: the runner did not finish; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+  guard_wiring_runner "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1
+  sed -n '/^ok   \|^FAIL /p' "$out"
+  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+  if [[ $(grep -c '^ok   wiring/guard-' "$out") -ne 2 ]]; then
+    echo "FAIL wiring/guard-public-tree: the wiring runner did not pass both lines; output:"
+    sed 's/^/     | /' "$out"
     n_failed=$((n_failed + 1))
   fi
 

@@ -1,0 +1,1 @@
+.github/workflows/ci.yml:3: WH1: trigger "issue_comment" is not one of

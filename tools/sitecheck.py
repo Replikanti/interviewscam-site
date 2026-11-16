@@ -6571,7 +6571,10 @@ PINNED_ALLOWLISTS = LITERALS_PASSING_SETS + (
     # its reveal.
     "RESOURCE_PATH_CHARS", "VH_DEFINITION_DECLARATIONS", "VH_REVEAL_DECLARATIONS",
     # and the T2 name regex (QA on PR #33: no net saw its text).
-    "LITERALS_TEMPLATE_NAME")
+    "LITERALS_TEMPLATE_NAME",
+    # The public-tree guard and the workflow hardening (ADR-0007 part 4):
+    # the allowed triggers and the two exemptions.
+    "WORKFLOW_TRIGGERS_ALLOWED", "PUBLIC_TREE_EXEMPT", "PUBLIC_IMAGE_DIRS")
 # L5: the CSS properties and @counter-style descriptors whose strings the
 # browser draws as text.
 CSS_TEXT_PROPERTIES = {"content", "list-style", "list-style-type", "quotes",
@@ -14102,6 +14105,277 @@ def guard_workflows(root, files, findings):
                              f"lighthouse job of {LIGHTHOUSE_WORKFLOW}; an artifact "
                              "of a run with that job can hold what registry code "
                              "wrote (ADR-0003 part 2)")
+        guard_workflow_hardening(rel, text, findings)
+
+
+# Workflow hardening (ADR-0007 part 4, Replikanti/interviewscam#38 PR B): one
+# rule set for every workflow of either repo; PR C calls the same function on
+# the private records repo's workflows. Read by indentation, line by line; a
+# form the reader cannot follow fails closed. It runs after guard_workflows'
+# per-line rules, which already refuse a double-quoted string with a
+# backslash escape and a complex key on every line.
+#
+# WH1: the triggers a workflow may use. Rejected: pull_request_target (runs in
+# the base repo with a write-capable token and secrets, so a checkout of the
+# PR head runs fork code with them); issue_comment, pull_request_review,
+# pull_request_review_comment and discussion_comment (an outsider can fire
+# them, and they run on the default branch with the repo's token);
+# workflow_call and repository_dispatch (their input comes from outside the
+# repo's own events); every case variant or look-alike of an allowed name
+# (compared exactly).
+WORKFLOW_TRIGGERS_ALLOWED = ("pull_request", "push", "schedule", "workflow_dispatch")
+# WH2 and WH3: the checkout action (GitHub resolves owner and name in any
+# case) and its credential inputs (input names are case-insensitive).
+CHECKOUT_ACTION = re.compile(r"(?i)actions/checkout(?:@|$)")
+CHECKOUT_CREDENTIAL_INPUT = re.compile(
+    r"""(?i)(?<![\w-])['"]?(token|ssh-key)['"]?\s*:(?:\s|$)""")
+# WH4: matched on the raw line, comments included, as LIGHTHOUSE_CREDENTIALS
+# does, so no quoting or comment trick hides one.
+WORKFLOW_SECRETS = re.compile(r"(?i)(?<![\w-])secrets(?![\w-])")
+HARDENING_WHY = "ADR-0007 part 4"
+YAML_PLAIN_KEY = re.compile(r"([^\s'\"#\[\]{},&*!|>%@`?-][^#]*?|-[^\s#][^#]*?)[ ]*:(?=[ ]|$)")
+YAML_DQ_KEY = re.compile(r'"([^"\\]*)"[ ]*:(?=[ ]|$)')
+YAML_SQ_KEY = re.compile(r"'((?:[^']|'')*)'[ ]*:(?=[ ]|$)")
+YAML_DASH = re.compile(r"-(?:[ ]+|$)")
+
+
+def yaml_scalar(text):
+    """(kind, value) of a YAML value as written on its line: empty, plain,
+    double, single, flowseq, or unreadable (a flow mapping, anchor, alias,
+    tag, block scalar or an unterminated quote)."""
+    text = text.strip()
+    if not text or text.startswith("#"):
+        return "empty", ""
+    if text[0] == '"':
+        match = re.fullmatch(r'"([^"\\]*)"[ ]*(?:#.*)?', text)
+        return ("double", match.group(1)) if match else ("unreadable", text)
+    if text[0] == "'":
+        match = re.fullmatch(r"'((?:[^']|'')*)'[ ]*(?:#.*)?", text)
+        return ("single", match.group(1).replace("''", "'")) if match else ("unreadable", text)
+    if text[0] == "[":
+        match = re.fullmatch(r"(\[[^\[\]{}#]*\])[ ]*(?:#.*)?", text)
+        return ("flowseq", match.group(1)) if match else ("unreadable", text)
+    if text[0] in "{&*!|>%@`":
+        return "unreadable", text
+    return "plain", re.sub(r"[ \t]+#.*$", "", text).rstrip()
+
+
+def yaml_line(line):
+    """None for a blank or comment line, else (indent, column, dash, key,
+    value): column is where the content starts after a list dash, key is
+    None for a list item without a key, and key is False when the line is
+    neither a key nor a scalar the reader can follow."""
+    if not line.strip() or line.lstrip().startswith("#"):
+        return None
+    lead = line[:len(line) - len(line.lstrip(" \t"))]
+    if "\t" in lead:
+        return len(lead), len(lead), False, False, ""
+    indent = len(lead)
+    rest, column, dash = line[indent:], indent, False
+    match = YAML_DASH.match(rest)
+    if match:
+        dash, column, rest = True, indent + match.end(), rest[match.end():]
+    for pattern in (YAML_DQ_KEY, YAML_SQ_KEY, YAML_PLAIN_KEY):
+        match = pattern.match(rest)
+        if match:
+            key = match.group(1)
+            if pattern is YAML_SQ_KEY:
+                key = key.replace("''", "'")
+            return indent, column, dash, key, rest[match.end():]
+    if dash:
+        return indent, column, dash, None, rest
+    return indent, column, dash, False, rest
+
+
+def workflow_triggers(lines):
+    """[(line number, trigger name)] of the top-level on:, or a reason the
+    reader cannot follow it (WH1)."""
+    tops = [(i, parsed) for i, line in enumerate(lines)
+            if (parsed := yaml_line(line)) and parsed[0] == 0]
+    for i, (_, _, dash, key, _) in tops:
+        if key == "<<":
+            return None, f"line {i + 1}: a top-level merge key can bring in on:"
+        if key is False and lines[i].lstrip()[:1] in ("?", "{"):
+            return None, f"line {i + 1}: a complex key or flow mapping at the top level"
+    ons = [(i, parsed) for i, parsed in tops if parsed[3] == "on" and not parsed[2]]
+    if not ons:
+        return None, "no top-level on: key in a form the guard reads"
+    if len(ons) > 1:
+        return None, "more than one top-level on: key"
+    start, (_, _, _, _, value) = ons[0]
+    kind, text = yaml_scalar(value)
+    if kind in ("plain", "double", "single"):
+        return [(start + 1, text)], None
+    if kind == "flowseq":
+        items = [item.strip() for item in text[1:-1].split(",")]
+        if items and not items[-1]:
+            items.pop()  # a trailing comma
+        triggers = []
+        for item in items:
+            item_kind, name = yaml_scalar(item)
+            if item_kind not in ("plain", "double", "single") or not name:
+                return None, f"line {start + 1}: a flow list item the guard cannot read"
+            triggers.append((start + 1, name))
+        return triggers, None
+    if kind != "empty":
+        return None, (f"line {start + 1}: on: as a flow mapping, anchor, alias, tag, "
+                      "block scalar or multi-line flow list")
+    triggers, child, forms = [], None, set()
+    for i in range(start + 1, len(lines)):
+        parsed = yaml_line(lines[i])
+        if parsed is None:
+            continue
+        indent, _, dash, key, rest = parsed
+        if indent == 0:
+            break
+        if child is None:
+            child = indent
+        if indent < child or key is False:
+            return None, f"line {i + 1}: a line under on: the guard cannot read"
+        if indent > child:
+            continue  # the settings of a trigger (branches, paths, cron)
+        if dash:
+            item_kind, name = yaml_scalar(rest)
+            if key is not None or item_kind not in ("plain", "double", "single") or not name:
+                return None, f"line {i + 1}: a list item under on: the guard cannot read"
+            forms.add("list")
+            triggers.append((i + 1, name))
+        else:
+            forms.add("mapping")
+            triggers.append((i + 1, key))
+    if not triggers:
+        return None, f"line {start + 1}: on: holds nothing the guard reads"
+    if len(forms) > 1:
+        return None, f"line {start + 1}: on: mixes a list and a mapping"
+    return triggers, None
+
+
+def checkout_step(lines, i):
+    """(first line, end line, key column) of the step mapping that holds
+    line i, or None when the reader cannot place it."""
+    parsed = yaml_line(lines[i])
+    if parsed is None or parsed[3] is False:
+        return None
+    indent, column, dash, _, _ = parsed
+    if dash:
+        start, k = i, column
+    else:
+        start, k = None, indent
+        for j in range(i - 1, -1, -1):
+            above = yaml_line(lines[j])
+            if above is None or above[0] > k:
+                continue
+            if above[0] == k and not above[2]:
+                continue
+            if above[2] and above[1] == k and above[0] < k:
+                start = j
+            break
+        if start is None:
+            return None
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        below = yaml_line(lines[j])
+        if below is None:
+            continue
+        if below[0] < k or (below[0] == k and below[2]):
+            end = j
+            break
+    return start, end, k
+
+
+def guard_workflow_hardening(rel, text, findings):
+    """WH1 to WH4 (ADR-0007 part 4) on one workflow file."""
+    lines = text.splitlines()
+    triggers, problem = workflow_triggers(lines)
+    if problem:
+        findings.add(rel, f"WH1: cannot read the triggers ({problem}); the guard reads on: "
+                     "only as a scalar, a flow list on one line or a block list or mapping "
+                     f"(fails closed, {HARDENING_WHY})")
+    for n, name in triggers or ():
+        if name not in WORKFLOW_TRIGGERS_ALLOWED:
+            findings.add(f"{rel}:{n}", f"WH1: trigger {json.dumps(name)} is not one of "
+                         f"{', '.join(WORKFLOW_TRIGGERS_ALLOWED)} (compared exactly): the "
+                         "others run with a write-capable token on code or input an outsider "
+                         f"controls, or take input from outside the repo ({HARDENING_WHY})")
+    for i, line in enumerate(lines):
+        refs = [m.group(2) for m in ACTION_REF.finditer(line)]
+        if not any(CHECKOUT_ACTION.match(ref) for ref in refs):
+            continue
+        parsed = yaml_line(line)
+        if parsed is None:
+            continue  # a comment
+        _, _, _, key, value = parsed
+        kind, ref = yaml_scalar(value) if isinstance(key, str) else ("", "")
+        step = checkout_step(lines, i) if key == "uses" and kind in (
+            "plain", "double", "single") and CHECKOUT_ACTION.match(ref) else None
+        if step is None:
+            findings.add(f"{rel}:{i + 1}", "WH2: actions/checkout in a form the guard cannot "
+                         f"read as one step (fails closed, {HARDENING_WHY})")
+            continue
+        hardening_checkout(rel, lines, step, findings)
+    for n, line in enumerate(lines, 1):
+        if WORKFLOW_SECRETS.search(line):
+            findings.add(f"{rel}:{n}", "WH4: a secrets reference (comments included); no "
+                         f"workflow of either repo needs one ({HARDENING_WHY})")
+
+
+def hardening_checkout(rel, lines, step, findings):
+    """WH2 and WH3 on one actions/checkout step."""
+    start, end, k = step
+    keys, inputs, with_line = {}, [], None
+    for j in range(start, end):
+        parsed = yaml_line(lines[j])
+        if parsed is None:
+            continue
+        indent, column, dash, key, value = parsed
+        bare = YAML_COMMENT.sub("", lines[j])
+        if CHECKOUT_CREDENTIAL_INPUT.search(bare):
+            findings.add(f"{rel}:{j + 1}", "WH3: a credential input (token, ssh-key) on "
+                         f"actions/checkout ({HARDENING_WHY})")
+        at_step = (j == start and column == k) or (j > start and indent == k)
+        if not at_step:
+            continue
+        if not isinstance(key, str):
+            findings.add(f"{rel}:{j + 1}", "WH2: a line of the checkout step the guard cannot "
+                         f"read (fails closed, {HARDENING_WHY})")
+            continue
+        if key in keys or key == "<<":
+            findings.add(f"{rel}:{j + 1}", f"WH2: the key {json.dumps(key)} twice or as a "
+                         f"merge key in the checkout step (fails closed, {HARDENING_WHY})")
+        keys[key] = j
+        if key == "with":
+            with_line = j
+            if yaml_scalar(value)[0] != "empty":
+                findings.add(f"{rel}:{j + 1}", "WH2: with: of actions/checkout must be a block "
+                             f"mapping the guard reads (fails closed, {HARDENING_WHY})")
+                with_line = None
+    if with_line is not None:
+        child = None
+        for j in range(with_line + 1, end):
+            parsed = yaml_line(lines[j])
+            if parsed is None:
+                continue
+            indent, _, dash, key, value = parsed
+            if indent <= k:
+                break
+            if child is None:
+                child = indent
+            if indent > child:
+                continue
+            if indent < child or dash or not isinstance(key, str) or key == "<<":
+                findings.add(f"{rel}:{j + 1}", "WH2: a with: line of actions/checkout the "
+                             f"guard cannot read (fails closed, {HARDENING_WHY})")
+                continue
+            inputs.append((j, key, value))
+    persist = [(j, key, value) for j, key, value in inputs
+               if key.lower() == "persist-credentials"]
+    good = (len(persist) == 1 and persist[0][1] == "persist-credentials"
+            and yaml_scalar(persist[0][2]) == ("plain", "false"))
+    if not good:
+        where = f"{rel}:{(persist[0][0] if persist else start) + 1}"
+        findings.add(where, "WH2: actions/checkout needs exactly one `persist-credentials: "
+                     "false` in its with: block, bare and lowercase; otherwise the job token "
+                     f"stays in .git/config for every later step ({HARDENING_WHY})")
 
 
 # lighthouse.yml is read by indentation, so every YAML form that can move a
@@ -14341,6 +14615,217 @@ def guard_worker_pins(root, findings):
                          "ADR-0006 part 10)")
 
 
+# The public-tree guard (ADR-0007 part 4, Replikanti/interviewscam#38 PR B):
+# the public code repo holds no record, draft, intake material or removal
+# entry; those live only in the private records repo and the operator's
+# mailbox (D4, D5). Fixture records live under tests/fixtures/, which every
+# rule exempts, compared exactly (a case variant such as Tests/fixtures/ is
+# no exemption). PT2a and PT4 read git's listing (tracked plus untracked, not
+# ignored); PT1 and PT2b read content/ from the disk too, as Hugo does, so an
+# ignored local draft fails as well.
+PUBLIC_TREE_EXEMPT = ("tests/fixtures/",)
+# PT4: images under these two are content-PR review surfaces already (the
+# routing rule: an image under assets/ or static/ is a content PR).
+PUBLIC_IMAGE_DIRS = ("assets/", "static/")
+# PT4: the forms saved mail arrives in (RFC 5322 message, Apple Mail
+# message, mbox mailbox in its two suffixes, Outlook message).
+PUBLIC_MAIL_SUFFIXES = (".eml", ".emlx", ".mbox", ".mbx", ".msg")
+PUBLIC_POLICY = "schema/" + RECORD_POLICY
+PUBLIC_WHY = "D4, ADR-0007 part 4"
+# PT2a: the front-matter fences Hugo reads on a file's first line (TOML,
+# YAML); JSON front matter is an object followed by more text.
+FRONT_MATTER_FENCES = (b"+++", b"---")
+UTF8_BOM = b"\xef\xbb\xbf"
+
+
+def guard_fold(text):
+    """A name or key as the public-tree rules compare it: NFKC, every
+    Default_Ignorable_Code_Point stripped (NFKC again, so a letter and its
+    accent split by one compose), casefold."""
+    text = unicodedata.normalize("NFKC", text).translate(INVISIBLE)
+    return unicodedata.normalize("NFKC", text).casefold()
+
+
+def front_matter_shape(data):
+    """Why bytes look like a front-matter document (PT2a), or None. Hugo
+    skips a BOM and leading whitespace before the front matter, so this
+    does too."""
+    head = data.removeprefix(UTF8_BOM).lstrip(b" \t\r\n")
+    first = head.split(b"\n", 1)[0].rstrip(b" \t\r")
+    if first in FRONT_MATTER_FENCES:
+        return f"its first line is the front-matter fence {first.decode()}"
+    if not head.startswith(b"{"):
+        return None
+    try:
+        text = head.decode("utf-8")
+        _, end = json.JSONDecoder().raw_decode(text)
+    except (UnicodeDecodeError, ValueError):
+        return None  # not a JSON object: a template such as {{ define }}
+    if text[end:].strip():
+        return "it starts with a JSON object followed by more text (JSON front matter)"
+    return None
+
+
+def image_type(head):
+    """The MIME type of INTAKE_IMAGE_TYPES whose signature the bytes carry."""
+    for mime, _, signature in INTAKE_IMAGE_TYPES:
+        if all(head[offset:offset + len(bytes.fromhex(magic))] == bytes.fromhex(magic)
+               for offset, magic in signature):
+            return mime
+    return None
+
+
+def record_keys(root):
+    """The folded union of params.required of the record schemas (PT2b), or
+    the reason it cannot be read."""
+    keys = set()
+    for name in RECORD_SCHEMAS.values():
+        try:
+            schema = json.loads((root / "schema" / name).read_text(encoding="utf-8"))
+            required = schema["properties"]["params"]["required"]
+        except (OSError, UnicodeDecodeError, ValueError, KeyError, TypeError) as exc:
+            return None, f"schema/{name}: {type(exc).__name__}: {exc}"
+        if not (isinstance(required, list) and required
+                and all(isinstance(key, str) for key in required)):
+            return None, f"schema/{name}: properties.params.required is not a list of keys"
+        keys.update(guard_fold(key) for key in required)
+    return keys, None
+
+
+def no_duplicate_keys(pairs):
+    keys = [key for key, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError(f"a key appears twice: {keys}")
+    return dict(pairs)
+
+
+def guard_public_tree(root, files, findings):
+    """PT1 to PT4 (ADR-0007 part 4)."""
+    files = [rel for rel in files if not rel.startswith(PUBLIC_TREE_EXEMPT)]
+    content = root / "content"
+    # PT1: structural, so a record section, a page bundle, a case variant or
+    # a look-alike or zero-width name all fail without a list of names.
+    subdirs, pages, others = set(), set(), set()
+    if content.is_symlink():
+        findings.add("content", "PT1: content/ is a symlink; Hugo builds whatever it "
+                     f"points to, so it fails closed ({PUBLIC_WHY})")
+    elif content.is_dir():
+        try:
+            entries = list(os.scandir(content))
+        except OSError as exc:
+            findings.add("content/", f"PT1: cannot list content/: {exc} ({PUBLIC_WHY})")
+            entries = []
+        for entry in entries:
+            if entry.is_symlink() or entry.is_dir(follow_symlinks=False):
+                subdirs.add(entry.name)
+            elif entry.name.endswith(".md"):
+                pages.add(f"content/{entry.name}")
+            else:
+                others.add(f"content/{entry.name}")
+    for rel in files:
+        parts = rel.split("/")
+        if parts[0] == "content" and len(parts) > 2:
+            subdirs.add(parts[1])
+        elif parts[0] == "content" and len(parts) == 2 and parts[1].endswith(".md"):
+            pages.add(rel)
+        elif parts[0] == "content" and len(parts) == 2:
+            others.add(rel)
+    for name in sorted(subdirs):
+        findings.add(f"content/{json.dumps(name)}", "PT1: a directory or symlink in "
+                     "content/; records and drafts live only in the private records repo, "
+                     f"and this repo's content/ holds only the static pages ({PUBLIC_WHY})")
+    # PT2a, in content/: Hugo reads front matter from every content format
+    # (Org's #+ lines, AsciiDoc, HTML and the rest), so content/ holds only
+    # the *.md static pages, whatever a file's first line.
+    for rel in sorted(others):
+        findings.add(f"content/{json.dumps(rel[len('content/'):])}", "PT2a: a file in content/ "
+                     "that is not a static page (*.md); Hugo builds every content format, "
+                     f"so this repo's content/ holds only the *.md pages ({PUBLIC_WHY})")
+    # PT2b: a record pasted into a static page would pass PT1.
+    keys, keys_error = None, None
+    for rel in sorted(pages):
+        try:
+            text = (root / rel).read_text(encoding="utf-8").removeprefix("﻿")
+        except (OSError, UnicodeDecodeError) as exc:
+            findings.add(rel, f"PT2b: cannot read the page: {exc} ({PUBLIC_WHY})")
+            continue
+        match = FRONT_MATTER.match(text)
+        if not match:
+            findings.add(rel, "PT2b: the front matter of a static page must be TOML "
+                         f"between +++ lines at the top (fails closed, {PUBLIC_WHY})")
+            continue
+        try:
+            data = tomllib.loads(match.group(1))
+        except tomllib.TOMLDecodeError as exc:
+            findings.add(rel, f"PT2b: the front matter is not valid TOML: {exc} "
+                         f"(fails closed, {PUBLIC_WHY})")
+            continue
+        if keys is None and keys_error is None:
+            keys, keys_error = record_keys(root)
+            if keys_error:
+                findings.add("schema/", f"PT2b: cannot read the record keys ({keys_error}); "
+                             f"the static pages cannot be checked (fails closed, {PUBLIC_WHY})")
+        if keys_error:
+            continue
+        found = []
+        for key, value in data.items():
+            if guard_fold(key) in keys:
+                found.append(key)
+            if guard_fold(key) == "params":
+                for table in value if isinstance(value, list) else [value]:
+                    if isinstance(table, dict):
+                        found += [f"{key}.{inner}" for inner in table
+                                  if guard_fold(inner) in keys]
+        for key in found:
+            findings.add(f"{rel}: {json.dumps(key)}", "PT2b: a record key (params.required "
+                         "of the record schemas) in the front matter of a static page; "
+                         f"records live only in the private records repo ({PUBLIC_WHY})")
+    # PT3: a public retired slug names a removed record.
+    policy = root / PUBLIC_POLICY
+    if policy.exists() or policy.is_symlink():
+        try:
+            data = json.loads(policy.read_text(encoding="utf-8"),
+                              object_pairs_hook=no_duplicate_keys)
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            findings.add(PUBLIC_POLICY, f"PT3: cannot read: {exc} (fails closed, {PUBLIC_WHY})")
+        else:
+            if not same_json(data, {"retired_slugs": []}):
+                findings.add(PUBLIC_POLICY, "PT3: must be exactly {\"retired_slugs\": []} in "
+                             "the public repo; a retired slug names a removed record, and "
+                             "removals live only in the private records repo "
+                             f"({PUBLIC_WHY})")
+    for rel in files:
+        name = rel.rsplit("/", 1)[-1]
+        if guard_fold(name) == RECORD_POLICY and rel != PUBLIC_POLICY:
+            findings.add(rel, f"PT3: a second file named {RECORD_POLICY}; the only one is "
+                         f"{PUBLIC_POLICY} with no retired slug ({PUBLIC_WHY})")
+    # PT2a and PT4, one read per file.
+    for rel in files:
+        parts = rel.split("/")
+        name = guard_fold(parts[-1])
+        if "." in name and "." + name.rsplit(".", 1)[1] in PUBLIC_MAIL_SUFFIXES:
+            findings.add(rel, "PT4: a saved mail file (by its suffix); raw evidence stays in "
+                         f"the operator's mailbox (D5, {PUBLIC_WHY})")
+        is_page = parts[0] == "content" and len(parts) == 2  # PT2b's pages, others above
+        if (root / rel).is_dir():
+            continue  # a symlink to a directory; git lists the files behind it on their own
+        try:
+            data = (root / rel).read_bytes()
+        except OSError as exc:
+            findings.add(rel, f"PT2a: cannot read: {exc} (fails closed, {PUBLIC_WHY})")
+            continue
+        shape = None if is_page else front_matter_shape(data)
+        if shape:
+            findings.add(rel, f"PT2a: a front-matter document outside content/*.md: {shape}; "
+                         "that is the shape of a record under any name, and records live "
+                         f"only in the private records repo ({PUBLIC_WHY})")
+        mime = None if rel.startswith(PUBLIC_IMAGE_DIRS) else image_type(data[:16])
+        if mime:
+            findings.add(rel, f"PT4: a raster image ({mime}, by its magic bytes) outside "
+                         "assets/ and static/; screenshots and other evidence stay in the "
+                         f"operator's mailbox (D5, {PUBLIC_WHY})")
+
+
 def cmd_guard(args):
     root = Path(args.root).resolve()
     if not root.is_dir():
@@ -14349,6 +14834,7 @@ def cmd_guard(args):
     findings = Findings()
     files = git_files(root)
     guard_package_files(files, findings)
+    guard_public_tree(root, files, findings)
     guard_tool_invocations(root, files, findings)
     guard_hugo_config(root, hugo_bin, findings)
     guard_hugo_env_names(root, files, findings)

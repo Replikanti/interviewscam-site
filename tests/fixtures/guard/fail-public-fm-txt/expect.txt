@@ -1,0 +1,1 @@
+notes.txt: PT2a: a front-matter document outside content/*.md
