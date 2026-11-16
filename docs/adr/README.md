@@ -34,3 +34,4 @@ A review of a PR that adds or changes an ADR rejects it when a decision has no r
 | [0004](0004-record-model.md) | Record model: D6 state on every name, defanged record text, URLs and persona names, feed, structured data, fixture build, Copy button |
 | [0005](0005-search.md) | Search: keys from the feed, display from `/a-z/`, matching rules, result display, two pinned scripts, search checks |
 | [0006](0006-intake-form.md) | Report and correction form: first-party intake Worker, anti-spam without a widget, uploads, mail, verification before acting, deploy and token scope in a shared Cloudflare account, DNS and mail cutover |
+| [0007](0007-repo-split.md) | Repo split: public code repo and private records repo, fresh public history, intake code public and data private, public-tree guard and workflow hardening, records mode and pin rule, private CI budget, SPEC location |

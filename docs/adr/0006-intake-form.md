@@ -68,7 +68,7 @@ Changes SPEC decision D5 (report intake) and adds one sentence to D9; edits SPEC
 - **Tooling.** workers-rs builds with `worker-build`, which downloads esbuild from `registry.npmjs.org` (`worker-build/src/binary.rs` on its main branch, read by the plan). workerd publishes standalone `workerd-linux-64.gz` binaries on its GitHub releases (v1.20261110.1: 44.7 MB).
 - **The account.** The Worker runs in the operator's Cloudflare account, an existing account shared with unrelated Workers. Some of those Workers turn form submissions into GitHub issues for their own purposes. The plan tier (Workers Free or Paid) and the members are recorded by the operator at the cutover (part 12 step 2).
 - **No public audience yet.** The site is not published until milestone 6 (GitHub Pages stays off), so until then no published page carries the address or the form; the address appears only in the public code repo.
-- **Open neighbours.** interviewscam-site#2 (M4 PR 4/4) adds render rule 17 and reflow cases (8) and (9) and rewrites much of `tools/sitecheck.py` and `tools/selftest.sh`, so PRs 2 and 3 branch after it merges and take the next free numbers. Replikanti/interviewscam#32 reworks how `site` reads the CSP; whichever lands second rebases.
+- **Open neighbours.** Replikanti/interviewscam-site-history#2 (M4 PR 4/4) adds render rule 17 and reflow cases (8) and (9) and rewrites much of `tools/sitecheck.py` and `tools/selftest.sh`, so PRs 2 and 3 branch after it merges and take the next free numbers. Replikanti/interviewscam#32 reworks how `site` reads the CSP; whichever lands second rebases.
 
 ## Decision
 
