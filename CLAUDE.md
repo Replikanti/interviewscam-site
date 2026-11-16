@@ -1,11 +1,19 @@
 # CLAUDE.md: interviewscam
 
-Community registry of fake job-interview scams that target developers, built as a static Hugo site for interviewscam.com. The repo is private and the site is public, so everything that builds into the site is public content.
+Community registry of fake job-interview scams that target developers, built as a static Hugo site for interviewscam.com. This repo, `Replikanti/interviewscam-site`, is public and holds the code; the records live in the private `Replikanti/interviewscam` (below). Both the repo and the site are public, so everything here is public content.
 
 ## Source of truth
 
 - [docs/SPEC.md](docs/SPEC.md) is the source of truth. Anything not written there is not agreed. A scope change is a PR that edits the SPEC.
 - A change to a SPEC §4 decision (D1 to D10) also adds an ADR in [docs/adr/](docs/adr/README.md). Every ADR decision states why and which alternatives lost, and every number states where it comes from and what breaks at another value. A number copied from another ADR needs its own reason.
+
+## Two repos ([ADR-0007](docs/adr/0007-repo-split.md))
+
+- **This repo (public):** the templates, assets, data, schemas, checks, workflows, the SPEC, the ADRs, the fixtures and the intake code. Its `content/` holds only the static pages (`content/*.md`). CI here runs every check on public runners.
+- **`Replikanti/interviewscam` (private):** only the records (`content/reports/`, `content/campaigns/`), the real `schema/record-policy.json`, four workflows and its own `README.md` and `CLAUDE.md`. Its issues hold intake triage, plans and the backlog ledger; refer to them here as `Replikanti/interviewscam#N`, because a bare `#N` points at this repo. It builds and deploys the site from this repo at a pinned commit.
+- **Records never enter this repo**, nor drafts, intake material or removal entries. Fixture records live only under `tests/fixtures/`. From PR B of Replikanti/interviewscam#38 the guard enforces it (the public-tree rules and the workflow hardening, ADR-0007 part 4).
+- **Records mode** (from PR C of Replikanti/interviewscam#38): `bash tools/check.sh --records <records checkout>` runs the pin rule, the guard, the records-repo rules and every content check on the real records, from a checkout of this repo at the pinned commit (ADR-0007 part 5).
+- **Pin bumps.** A pin is a commit of this repo's `main` with a green `check` from the GitHub Actions app. One private PR moves every `ref:` of the private workflows, at most once a day for that day's merges, plus on demand when a records PR needs new machinery. A merge here reaches production only through a pin bump, and every private run costs metered minutes (ADR-0007 part 6).
 
 ## Local check
 
@@ -89,7 +97,7 @@ Python 3.11+ standard library, one file, always run as `python3 -I` ([ADR-0002](
 - **Neutral, artifact-based records (D6, D7, D10).** A record describes artifacts, not a verdict about a company. A company or person name is either "name abused" (used without their involvement) or "front" (listing what was checked). Labels state facts, for example "reported 3 times, evidence reviewed on 2026-11-10", never "verified scam". A recruiter persona name appears only with the label "name used by the campaign, possibly a stolen identity". Attribution only as the cited source states it.
 - **Nothing live (D8).** Attacker URLs and domains are always defanged: `hxxp://` or `hxxps://`, and every dot in a hostname or IP as `[.]`, for example `hxxps://login[.]meeting[.]example/join`. This applies to records, page copy, issues, PR bodies and QA reports. In record text every dotted name is written defanged, vendor, tool, brand and file names included (`Dr[.]Web`, `Next[.]js`, `Setup[.]zip`), and the only live host is the site's own, `interviewscam.com` ([ADR-0004](docs/adr/0004-record-model.md) part 3). Prefer an undotted form where it reads naturally ("Doctor Web"). Record bodies carry no bare URLs, no Markdown links and no `<…>` autolinks; live links appear only in `params.sources[].url`, and a source host never equals, sits under or sits above a domain any record declares in `params.artifacts.domains` (R15). No malware binaries, only SHA-256 hashes linking to MalwareBazaar or VirusTotal; never download a sample to check a hash. Fixtures use only RFC 2606 reserved names (`.example`, `.test`, `.invalid`, `example.com`).
 - **No third-party requests (D9).** No external scripts, stylesheets, fonts, analytics or cookies. The Content Security Policy is a meta tag right after `<meta charset>` (Pages cannot set headers), and its single source is `params.csp` in `hugo.toml`.
-- **Pages stays off until M6 (#7).** On the Team plan a Pages site from this private repo is public as soon as it deploys. `deploy.yml` only builds and uploads the artifact with a read-only token; no workflow may deploy or enable Pages before M6.
+- **Pages stays off until M6 (Replikanti/interviewscam#7).** Pages is published from the private records repo (D4, ADR-0007 part 1), and on the Team plan a Pages site from a private repo is public as soon as it deploys. `deploy.yml` only builds and uploads the artifact with a read-only token; no workflow in either repo may deploy or enable Pages before M6, and this repo never publishes Pages (D4).
 - **No Worker deploy from CI** ([ADR-0006](docs/adr/0006-intake-form.md) part 10). Only the operator deploys, from their own machine, with `tools/intake.py` and a dashboard-made token valid to the next 00:00 UTC; no workflow holds a Cloudflare token. No Cloudflare token, account ID, zone ID or destination address enters the repo; the tool prompts for them and never writes them.
 - **No raw evidence or personal data** in the repo, issues or PRs: no reporter identity, unredacted screenshots or mail headers. They stay in the operator's mailbox (D5, D7). Issues carry only defanged artifacts and an evidence summary.
 
