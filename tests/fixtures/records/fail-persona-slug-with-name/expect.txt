@@ -1,0 +1,1 @@
+slug 'avery-fixture': a persona report's slug is persona-N

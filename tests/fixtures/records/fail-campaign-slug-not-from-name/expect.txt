@@ -1,0 +1,1 @@
+slug 'other-family' is neither 'fixture'

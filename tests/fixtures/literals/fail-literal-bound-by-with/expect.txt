@@ -1,0 +1,1 @@
+the action binds the bare literal 'check' for a later print (L3)

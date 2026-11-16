@@ -1,0 +1,1 @@
+params.hide_name: only a persona record can hide its name (R6)

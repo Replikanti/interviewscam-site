@@ -1,0 +1,1 @@
+configSettings.screenEmulation.disabled is true

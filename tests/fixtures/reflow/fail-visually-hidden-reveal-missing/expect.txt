@@ -1,0 +1,1 @@
+(7) the focused 'a[.]visually-hidden' is 1.0 x 1.0 CSS px

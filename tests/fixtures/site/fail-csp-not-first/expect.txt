@@ -1,0 +1,1 @@
+the Content-Security-Policy meta is not the first element after <meta charset>

@@ -1,0 +1,59 @@
+# Hugo site configuration (ADR-0001). The security, privacy and markup keys
+# below are the hardening keys of ADR-0001; each one exists for the reason
+# given there. Do not remove or relax them without an ADR.
+
+baseURL = "https://interviewscam.com/"
+# `locale` replaces `languageCode`, deprecated since Hugo v0.158.0.
+locale = "en"
+title = "interviewscam.com"
+
+# Nothing in M1 uses taxonomies or RSS, and the empty generated pages would
+# still be built and checked. M3 revisits this.
+disableKinds = ["taxonomy", "term", "rss"]
+
+# No generator meta in <head>: the CSP meta must be the first element after
+# <meta charset> (D9).
+disableHugoGeneratorInject = true
+
+# A broken internal reference fails the build instead of warning.
+refLinksErrorLevel = "ERROR"
+
+[markup.goldmark.renderer]
+# Raw HTML in Markdown is omitted. Already the default; explicit so the guard
+# can assert it (D8, D7).
+unsafe = false
+
+[markup.goldmark.extensions]
+# Bare https:// and www. text in a record must stay inert text (D8).
+linkify = false
+
+[security.exec]
+# No Hugo function may start an external program (D3).
+allow = ["none"]
+
+[security.http]
+# No build-time remote fetches (D3, D9).
+urls = ["none"]
+
+# Every embedded third-party surface is off (D9).
+[privacy.disqus]
+disable = true
+[privacy.googleAnalytics]
+disable = true
+[privacy.instagram]
+disable = true
+[privacy.vimeo]
+disable = true
+[privacy.x]
+disable = true
+[privacy.youtube]
+disable = true
+
+[params]
+# The single source of the Content Security Policy every page carries as a
+# meta tag; GitHub Pages cannot set response headers (D9, SPEC section 8).
+csp = "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'"
+
+[[module.mounts]]
+source = "docs/tpl"
+target = "layouts"

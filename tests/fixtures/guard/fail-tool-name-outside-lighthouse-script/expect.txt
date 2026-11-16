@@ -1,0 +1,1 @@
+tools/lighthouse-extra.sh:2: invokes or names the JavaScript tool 'npm'

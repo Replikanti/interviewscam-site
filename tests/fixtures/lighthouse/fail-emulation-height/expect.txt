@@ -1,0 +1,1 @@
+configSettings.screenEmulation.height is 640

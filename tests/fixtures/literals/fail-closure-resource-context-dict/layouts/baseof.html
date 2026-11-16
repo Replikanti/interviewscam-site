@@ -1,0 +1,1 @@
+<body>{{ with resources.Get "favicon.svg" | resources.ExecuteAsTemplate "favicon.svg" (dict "page" .Params) }}<img src="{{ .RelPermalink }}" alt="">{{ end }}</body>

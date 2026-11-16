@@ -1,0 +1,1 @@
+rule 7: an element carries the download attribute

@@ -1,0 +1,1 @@
+resources.ExecuteAsTemplate takes the bare `.` (the page) as its context

@@ -1,0 +1,10 @@
+[color]
+input_border = "#8592A6"
+ground = "#F3F6FC"
+
+[[pair]]
+fg = "input_border"
+bg = "ground"
+kind = "non_text"
+ratio = 2.91
+use = "input boundary on the ground"

@@ -1,0 +1,1 @@
+[.]js?x'> does not name the built file of a pinned script

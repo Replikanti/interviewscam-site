@@ -1,0 +1,1 @@
+body contains a Markdown link or image

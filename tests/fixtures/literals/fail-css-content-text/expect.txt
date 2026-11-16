@@ -1,0 +1,1 @@
+assets/css/site.css:2: content draws the text 'New' (L5)

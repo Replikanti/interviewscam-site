@@ -1,0 +1,4 @@
+This case runs render rules 15 and 16 (the A to Z page, the Home search
+form and its hidden result sections): selftest.sh leaves out --no-search
+when a render case has this file. It is also the base of the
+render-search/<row> lines (search-cases.tsv).

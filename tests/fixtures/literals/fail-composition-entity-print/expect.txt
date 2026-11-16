@@ -1,0 +1,1 @@
+the literal '&#' holds an & that does not start a complete entity

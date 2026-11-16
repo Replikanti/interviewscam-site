@@ -1,0 +1,1 @@
+expected exactly one Content-Security-Policy meta, found 2

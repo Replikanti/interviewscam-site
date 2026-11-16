@@ -1,0 +1,5 @@
+This case runs render rule 18 (the intake forms on /report-a-scam/ and
+/corrections/, the result pages /sent/ and /not-sent/ and the page URL
+bound): selftest.sh leaves out --no-intake when a render case has this
+file. It is the real built pages of those four and Home, and the base of
+the render-intake/<row> and site-intake/<row> lines (intake-cases.tsv).

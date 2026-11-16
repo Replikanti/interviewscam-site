@@ -1,0 +1,1 @@
+lighthouseVersion "13.5.0" is not the pinned "13.6.0"

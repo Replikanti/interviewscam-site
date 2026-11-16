@@ -1,0 +1,1 @@
+rule 3: 0 elements of class state-sentence

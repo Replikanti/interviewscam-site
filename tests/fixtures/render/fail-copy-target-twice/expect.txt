@@ -1,0 +1,1 @@
+rule 14: the Copy button for 'contact' names 2 elements with that id

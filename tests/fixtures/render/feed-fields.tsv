@@ -1,0 +1,43 @@
+# kind	slug	field	value (JSON)	expected finding	findings
+# Render rule 12, field by field (M3 PR 8 review 4): each row takes the feed
+# of tests/fixtures/render/pass-feed, sets one field of one entry to another
+# value that still validates against schema/feed.schema.json (so rule 11
+# passes and rule 12 runs), and must fail with exactly that many findings,
+# one of them the expected text. feed-fields/coverage fails when a field of
+# feed_report_entry, feed_campaign_entry or the schema's entry objects has
+# no row, so every compared field is pinned (tools/selftest.sh,
+# feed_fields_runner). All artifact values stay defanged (D8).
+reports	example-front-company	slug	"example-front-co"	rule 12: the reports entry 'example-front-co' has no record	2
+reports	example-front-company	url	"https://interviewscam.com/reports/example-front-co/"	rule 12: reports['example-front-company'].url is	1
+reports	example-front-company	name	"Example Front Co"	rule 12: reports['example-front-company'].name is	1
+reports	example-front-company	name_hidden	true	rule 12: reports['example-front-company'].name_hidden is	1
+reports	example-front-company	name_label	"(name used by the campaign, possibly a stolen identity)"	rule 12: reports['example-front-company'].name_label is	1
+reports	example-front-company	aliases	["Example Front Co"]	rule 12: reports['example-front-company'].aliases is	1
+reports	example-front-company	name_type	"domain"	rule 12: reports['example-front-company'].name_type is	1
+reports	example-front-company	state	"name_abused"	rule 12: reports['example-front-company'].state is	1
+reports	example-front-company	state_basis	["No company register in the countries named on its website lists this name."]	rule 12: reports['example-front-company'].state_basis is	1
+reports	example-front-company	campaign	{"artifact":"frontco-meet[.]pages[.]example","basis":"artifact","slug":"example-campaign-family","source_id":"platform-notice","url":"https://interviewscam.com/campaigns/example-campaign-family/"}	rule 12: reports['example-front-company'].campaign is	1
+reports	example-front-company	related	[]	rule 12: reports['example-front-company'].related is	1
+reports	example-front-company	summary	"A recruiting company with no trace outside its own website."	rule 12: reports['example-front-company'].summary is	1
+reports	example-front-company	evidence	"One candidate submission was reviewed."	rule 12: reports['example-front-company'].evidence is	1
+reports	example-front-company	first_seen	"2026-09-15"	rule 12: reports['example-front-company'].first_seen is	1
+reports	example-front-company	last_seen	"2026-10-29"	rule 12: reports['example-front-company'].last_seen is	1
+reports	example-front-company	last_reviewed	"2026-11-01"	rule 12: reports['example-front-company'].last_reviewed is	1
+reports	example-front-company	published	"2026-11-01"	rule 12: reports['example-front-company'].published is	1
+reports	example-front-company	independent_reports	5	rule 12: reports['example-front-company'].independent_reports is	1
+reports	example-front-company	label	"Reported 5 times, evidence reviewed on 2026-11-02"	rule 12: reports['example-front-company'].label is	1
+reports	example-front-company	artifacts	{"domains":["frontco-careers[.]example"]}	rule 12: reports['example-front-company'].artifacts is	1
+reports	example-front-company	sources	[]	rule 12: reports['example-front-company'].sources is	1
+campaigns	example-campaign-family	slug	"example-family"	rule 12: the campaigns entry 'example-family' has no record	2
+campaigns	example-campaign-family	url	"https://interviewscam.com/campaigns/example-family/"	rule 12: campaigns['example-campaign-family'].url is	1
+campaigns	example-campaign-family	name	"Example Family"	rule 12: campaigns['example-campaign-family'].name is	1
+campaigns	example-campaign-family	aliases	[]	rule 12: campaigns['example-campaign-family'].aliases is	1
+campaigns	example-campaign-family	summary	"A campaign family that reaches developers through fake job offers."	rule 12: campaigns['example-campaign-family'].summary is	1
+campaigns	example-campaign-family	first_seen	"2026-08-16"	rule 12: campaigns['example-campaign-family'].first_seen is	1
+campaigns	example-campaign-family	last_seen	"2026-10-30"	rule 12: campaigns['example-campaign-family'].last_seen is	1
+campaigns	example-campaign-family	delivery	["fake_meeting_app"]	rule 12: campaigns['example-campaign-family'].delivery is	1
+campaigns	example-campaign-family	targeted_os	["linux"]	rule 12: campaigns['example-campaign-family'].targeted_os is	1
+campaigns	example-campaign-family	steals	["Session cookies"]	rule 12: campaigns['example-campaign-family'].steals is	1
+campaigns	example-campaign-family	attribution	[{"source_id":"vendor-analysis","statement":"Run by the fictional Fixture Group"},{"source_id":"second-analysis","statement":"Shares its installer code with an earlier fixture campaign"}]	rule 12: campaigns['example-campaign-family'].attribution is	1
+campaigns	example-campaign-family	report_slugs	["example-front-company"]	rule 12: campaigns['example-campaign-family'].report_slugs is	1
+campaigns	example-campaign-family	sources	[]	rule 12: campaigns['example-campaign-family'].sources is	1

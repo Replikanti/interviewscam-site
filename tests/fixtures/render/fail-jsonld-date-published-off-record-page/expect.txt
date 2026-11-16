@@ -1,0 +1,1 @@
+public/about/index.html: rule 8: JSON-LD block 1 has a WebPage with datePublished on a page that is not a record's own page

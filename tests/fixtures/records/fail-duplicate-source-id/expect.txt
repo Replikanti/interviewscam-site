@@ -1,0 +1,1 @@
+params.sources: the source id 'vendor-report' appears more than once

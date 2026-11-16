@@ -1,0 +1,142 @@
+{{- /* The data feed /feed.json (SPEC section 5, ADR-0004 part 7): every
+  published report and campaign family as one JSON document, for
+  researchers and tools. Its fields are described by
+  schema/feed.schema.json and documented on /data-feed/; sitecheck render
+  rules 11 to 13 check the built file against the schema, the records and
+  that page. The output is the one jsonify action at the end (jsonify
+  sorts keys); everything above builds its dict.
+
+  - version: an integer, 1. It increases only on a breaking change (a
+    field removed, renamed or retyped, or its meaning changed); an
+    addition keeps it and is listed on /data-feed/ with its date.
+  - Dates are YYYY-MM-DD strings, as the records store them: a TOML
+    date of params reaches the template as a toml.LocalDate, which
+    jsonify writes as that string, and the record date (.Date, a
+    time.Time) is formatted with the one pinned layout. updated is the
+    latest report review date or record date, so two builds of one
+    commit are byte-identical; null without records.
+  - reports and campaigns are sorted by slug. A record body is never in
+    the feed.
+  - Names: a persona with params.hide_name = true has name null,
+    aliases [] and name_label null, and its params.name and
+    params.aliases are never read: only the visible branch below reads
+    them (SPEC section 6). A visible persona's name_label is the D10 label from
+    data/labels.toml, which every reader must show with the name and its
+    aliases; every other name has name_label null.
+  - Artifacts are the record's typed lists as stored, defanged (D8); each
+    sha256 item adds lookup_urls, the lookup pages its listed_on names
+    (lookups.html). */ -}}
+{{- /* JSON null: the value of a key no dict holds. */ -}}
+{{- $null := index (dict) "null" -}}
+{{- $lookups := partial "lookups.html" . -}}
+{{- $label := partial "label.html" "persona.label" -}}
+{{- $dates := slice -}}
+{{- $reportItems := slice -}}
+{{- range where site.RegularPages "Section" "reports" -}}
+  {{- $reportItems = $reportItems | append (dict "key" .File.ContentBaseName "page" .) -}}
+{{- end -}}
+{{- $campaignItems := slice -}}
+{{- range where site.RegularPages "Section" "campaigns" -}}
+  {{- $campaignItems = $campaignItems | append (dict "key" .File.ContentBaseName "page" .) -}}
+{{- end -}}
+{{- $reports := slice -}}
+{{- range sort $reportItems "key" -}}
+  {{- $page := .page -}}
+  {{- $p := $page.Params -}}
+  {{- $persona := eq $p.name_type "persona" -}}
+  {{- $hidden := and $persona (eq $p.hide_name true) -}}
+  {{- $published := $page.Date.Format "2006-01-02" -}}
+  {{- $dates = $dates | append $published $p.last_reviewed -}}
+  {{- $name := $null -}}
+  {{- $aliases := slice -}}
+  {{- $nameLabel := $null -}}
+  {{- if not $hidden -}}
+    {{- $name = $p.name -}}
+    {{- $aliases = $p.aliases | default slice -}}
+    {{- if $persona }}{{ $nameLabel = $label }}{{ end -}}
+  {{- end -}}
+  {{- $campaign := $null -}}
+  {{- with $p.campaign -}}
+    {{- $target := site.GetPage (printf "/campaigns/%s" .slug) -}}
+    {{- if not $target }}{{ errorf "home.feed.json: no campaign record %q" .slug }}{{ end -}}
+    {{- $campaign = dict "slug" .slug "url" $target.Permalink "basis" .basis "artifact" .artifact "source_id" .source -}}
+  {{- end -}}
+  {{- $artifacts := dict -}}
+  {{- range $type, $values := $p.artifacts -}}
+    {{- if eq $type "sha256" -}}
+      {{- $hashes := slice -}}
+      {{- range $values -}}
+        {{- $hash := .value -}}
+        {{- $urls := slice -}}
+        {{- range .listed_on }}{{ $urls = $urls | append (printf (index $lookups .) $hash) }}{{ end -}}
+        {{- $hashes = $hashes | append (merge . (dict "lookup_urls" $urls)) -}}
+      {{- end -}}
+      {{- $values = $hashes -}}
+    {{- end -}}
+    {{- $artifacts = merge $artifacts (dict $type $values) -}}
+  {{- end -}}
+  {{- $reports = $reports | append (dict
+    "slug" $page.File.ContentBaseName
+    "url" $page.Permalink
+    "name" $name
+    "name_hidden" $hidden
+    "name_label" $nameLabel
+    "aliases" $aliases
+    "name_type" $p.name_type
+    "state" $p.state
+    "state_basis" $p.state_basis
+    "campaign" $campaign
+    "related" ($p.related | default slice)
+    "summary" $p.summary
+    "evidence" $p.evidence
+    "first_seen" $p.first_seen
+    "last_seen" $p.last_seen
+    "last_reviewed" $p.last_reviewed
+    "published" $published
+    "independent_reports" $p.independent_reports
+    "label" (partial "report-label.html" $page)
+    "artifacts" $artifacts
+    "sources" ($p.sources | default slice)
+  ) -}}
+{{- end -}}
+{{- $campaigns := slice -}}
+{{- range sort $campaignItems "key" -}}
+  {{- $page := .page -}}
+  {{- $p := $page.Params -}}
+  {{- $slug := $page.File.ContentBaseName -}}
+  {{- $dates = $dates | append ($page.Date.Format "2006-01-02") -}}
+  {{- $reportSlugs := slice -}}
+  {{- range sort $reportItems "key" -}}
+    {{- if eq .page.Params.campaign.slug $slug }}{{ $reportSlugs = $reportSlugs | append .key }}{{ end -}}
+  {{- end -}}
+  {{- $attribution := slice -}}
+  {{- range $p.attribution -}}
+    {{- $attribution = $attribution | append (dict "statement" .statement "source_id" .source) -}}
+  {{- end -}}
+  {{- $campaigns = $campaigns | append (dict
+    "slug" $slug
+    "url" $page.Permalink
+    "name" $p.name
+    "aliases" ($p.aliases | default slice)
+    "summary" $p.summary
+    "first_seen" $p.first_seen
+    "last_seen" $p.last_seen
+    "delivery" $p.delivery
+    "targeted_os" $p.targeted_os
+    "steals" $p.steals
+    "attribution" $attribution
+    "report_slugs" $reportSlugs
+    "sources" $p.sources
+  ) -}}
+{{- end -}}
+{{- $updated := $null -}}
+{{- with $dates }}{{ $updated = index (sort . "value" "desc") 0 }}{{ end -}}
+{{- $feed := dict
+  "version" 1
+  "home_page_url" site.Home.Permalink
+  "documentation_url" (site.GetPage "/data-feed").Permalink
+  "updated" $updated
+  "reports" $reports
+  "campaigns" $campaigns
+-}}
+{{- $feed | jsonify -}}

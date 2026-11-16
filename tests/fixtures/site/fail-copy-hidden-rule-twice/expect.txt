@@ -1,0 +1,1 @@
+CSS: 2 top-level .copy[hidden] rules across the built CSS; exactly one is allowed

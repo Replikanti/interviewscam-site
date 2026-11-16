@@ -1,0 +1,1 @@
+draft: property not allowed by the schema

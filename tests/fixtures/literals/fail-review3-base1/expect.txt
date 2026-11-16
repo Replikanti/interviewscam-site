@@ -1,0 +1,1 @@
+in baseof.html every block, template and partial takes the bare `.` (the page), outside with and range

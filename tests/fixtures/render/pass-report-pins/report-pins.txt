@@ -1,0 +1,6 @@
+This case runs render rule 17 (the exact trees of the report pages, M4 PR
+4): selftest.sh leaves out --no-report-pins when a render case has this
+file. Its public/ is the fixture build of check.sh (public-fixtures/) and
+its content/ and hugo.toml those of .fixture-site/, copied as built; it is
+the base of the render-report/<row> lines (report-cases.tsv). After a
+change of a record template or a fixture record, copy both again.

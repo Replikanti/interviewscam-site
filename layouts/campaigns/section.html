@@ -1,0 +1,17 @@
+{{- /* The index of every record in this section, sorted by name (SPEC
+  section 6). The title is fixed in data/labels.toml, not read from
+  _index.md, so a section without one keeps it too. */ -}}
+{{ define "title" }}{{ partial "record-title.html" (dict "page" . "html" false) }} · {{ site.Title }}{{ end }}
+{{ define "head" }}{{ partial "jsonld.html" . }}{{ end }}
+{{ define "main" }}
+{{ partial "breadcrumb.html" (dict "page" . "jsonld" false) }}
+<h1>{{ partial "record-title.html" (dict "page" . "html" true) }}</h1>
+{{- with .Content }}
+<div class="prose">
+{{ . }}
+</div>
+{{- end }}
+<div class="card">
+{{ partial "record-list.html" .RegularPages }}
+</div>
+{{ end }}

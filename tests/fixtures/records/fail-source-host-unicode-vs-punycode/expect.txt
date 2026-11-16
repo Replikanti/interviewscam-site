@@ -1,0 +1,1 @@
+params.sources[0].url: its host 'xn--exmple-cua[.]test' equals the declared artifact domain 'xn--exmple-cua[.]test'

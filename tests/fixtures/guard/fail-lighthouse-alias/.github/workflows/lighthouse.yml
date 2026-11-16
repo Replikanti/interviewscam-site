@@ -1,0 +1,88 @@
+name: lighthouse
+
+# The Lighthouse row of SPEC section 8, measured on the built site
+# (ADR-0003). The registry code runs only in the job `lighthouse`: its
+# GITHUB_TOKEN has no permissions, it has no checkout, and it sees only the
+# artifact of `build` (public/ and tools/). Nothing on the deploy path reads
+# what that job could write, and no workflow restores a cache.
+#
+# Not a required check (ADR-0003 part 4): it needs the public package
+# registry on every run, and a registry outage must never block a removal
+# PR. Agent sessions still never merge a PR whose run is red or pending.
+on:
+  pull_request:
+    # The site-shaping paths. Record-only PRs are measured by the push run
+    # on main after the merge.
+    paths:
+      - "layouts/**"
+      - "assets/**"
+      - "static/**"
+      - "data/**"
+      - "i18n/**"
+      - "archetypes/**"
+      - "content/*.md"
+      - "hugo.toml"
+      - "tools/**"
+      - ".github/workflows/lighthouse.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same ref makes the older run's result moot.
+concurrency:
+  group: lighthouse-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Load-bearing job names: the guard reads this file, and ADR-0003 names
+  # `build` and `lighthouse`.
+  build:
+    runs-on: &runner ubuntu-24.04
+    # 3x the first green run, rounded up to whole minutes (ADR-0003 part 5):
+    # that run took 40 s (run 41913851725, 2026-11-04), 3 x 40 s = 120 s ->
+    # 2 min. It runs the same check.sh as the check job in ci.yml.
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/check.sh
+        shell: bash
+        run: bash tools/check.sh
+      # The checked build plus the check scripts, nothing else: no content/,
+      # no history. Retention 1 day, the shortest GitHub allows; only the
+      # job below reads it, minutes later.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: built-site
+          path: |
+            public
+            tools
+          if-no-files-found: error
+          retention-days: 1
+
+  lighthouse:
+    needs: build
+    runs-on: *runner
+    # No token permissions: injected registry code can read every token of
+    # its own job from process memory (ADR-0003 part 2).
+    permissions: {}
+    # ceil(3 x (T_setup + 8 pages x 3 runs x T_run)), ADR-0003 part 5, from
+    # the four measured runs of PR #15 on 2 pages (2026-11-04):
+    # T_setup = 21.6 s, the most job time spent outside the audits (job set
+    # up, artifact download, resolve, digest, install, server start);
+    # T_run = 12.6 s, the highest per-job mean of one audit (single audits
+    # took 11.2 to 19.2 s, the slowest being the cold first one).
+    # 3 x (21.6 + 24 x 12.6) s = 972 s -> 17 min. Eight pages is the M2 end
+    # count (Home, 404 and the six static pages); M3 re-derives it.
+    timeout-minutes: 17
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: built-site
+      - name: bash tools/lighthouse.sh
+        shell: bash
+        run: bash tools/lighthouse.sh

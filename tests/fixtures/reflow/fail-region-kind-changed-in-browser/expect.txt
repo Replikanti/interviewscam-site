@@ -1,0 +1,1 @@
+(9) a pinned region differs between the browser and the file: the browser has the regions

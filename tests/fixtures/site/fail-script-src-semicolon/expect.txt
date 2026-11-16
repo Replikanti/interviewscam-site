@@ -1,0 +1,1 @@
+the src holds ';' (U+003B)

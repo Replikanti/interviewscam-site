@@ -1,0 +1,29 @@
+# lychee configuration for tools/check.sh (ADR-0002 parts 2 and 7).
+#
+# root_dir and the remap of https://interviewscam.com/ to the local build need
+# the absolute path of the directory under check, which differs between the
+# CI runner, the operator's checkout and every self-test fixture, so
+# tools/check.sh passes them as --root-dir and --remap. --offline is passed
+# by check.sh too: offline on every PR, online only for --external.
+
+# A directory link resolves to its index.html, and it must exist.
+index_files = ["index.html"]
+
+# Check #fragment targets (id / name anchors) as well as files.
+include_fragments = "anchor-only"
+
+# Only the built site's own file types carry links.
+extensions = ["html", "css"]
+
+# Non-interactive output for CI logs.
+no_progress = true
+
+# Reserved for M5: accept or exclude bot-walled 403 sources (ADR-0002 part 7).
+
+# The intake endpoint (ADR-0006, M5b PR 3), the action of the two forms:
+# lychee reads <form action> as a link and sends a GET, which the POST-only
+# Worker answers with 405, and before PR 4's DNS cutover the host does not
+# resolve at all, so no GET can show the endpoint working. Exactly that URL,
+# anchored, nothing else under the host. The endpoint is proven by PR 4's
+# live test and `tools/intake.py verify` instead.
+exclude = ["^https://intake\\.interviewscam\\.com/submit$"]

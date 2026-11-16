@@ -1,0 +1,1 @@
+a download input that reads another run or repository in .github/workflows/lighthouse.yml

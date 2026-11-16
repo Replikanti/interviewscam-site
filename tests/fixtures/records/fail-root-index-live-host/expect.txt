@@ -1,0 +1,1 @@
+content/_index.md: line 5: body contains the live dotted name 'vendor[.]example'

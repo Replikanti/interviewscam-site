@@ -1,0 +1,17 @@
+{{- /* The static pages (SPEC section 6). Front matter:
+     channel    "report" or "correction": adds the how-to-send block
+     checklist  true: adds the full checklist (checklist in data/labels.toml) */ -}}
+{{ define "main" }}
+<h1>{{ .Title }}</h1>
+<div class="card prose">
+{{ .Content }}
+{{- with .Params.channel }}
+{{ partial "how-to-send.html" . }}
+{{- end }}
+</div>
+{{- if .Params.checklist }}
+<div class="card">
+{{ partial "checklist.html" (dict "details" true) }}
+</div>
+{{- end }}
+{{ end }}

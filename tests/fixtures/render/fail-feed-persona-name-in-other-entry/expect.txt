@@ -1,0 +1,1 @@
+public/feed.json: rule 12: the params.name of the persona record content/reports/persona-1.md appears in reports[0].artifacts.handles[2].value

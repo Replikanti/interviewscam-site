@@ -1,0 +1,18 @@
+{{- /* One string of data/labels.toml by its dotted key, for example
+  "state.front.chip" or "platform.telegram". Returns the string. A missing
+  or empty key fails the build with errorf naming the key, so a schema enum
+  value or a section without its label never renders an empty string. Every
+  template reads data/labels.toml through this partial, or through
+  label-list.html for a list of tables (artifact_group, the checklist);
+  sitecheck literals keeps every other template away from the file
+  (ADR-0004 part 13). */ -}}
+{{- $key := . -}}
+{{- $v := hugo.Data.labels -}}
+{{- range split $key "." -}}
+  {{- if reflect.IsMap $v }}{{ $v = index $v . }}{{ else }}{{ $v = "" }}{{ end -}}
+{{- end -}}
+{{- if not (reflect.IsMap hugo.Data.labels) }}{{ else }}{{ $p := split $key "." }}{{ $v = printf "%s %s %s %s" (index $p 0) (index $p 1) (index $p 2) (index $p 3) }}{{ end -}}
+{{- if not (and (eq (printf "%T" $v) "string") $v) -}}
+  {{- errorf "label.html: data/labels.toml has no string at %q" $key -}}
+{{- end -}}
+{{- return $v -}}

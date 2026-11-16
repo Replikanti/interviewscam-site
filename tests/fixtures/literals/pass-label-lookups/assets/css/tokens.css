@@ -1,0 +1,6 @@
+{{- $t := hugo.Data.tokens -}}
+:root {
+{{- range $key, $value := $t.color }}
+  --color-{{ replace $key "_" "-" }}: {{ $value }};
+{{- end }}
+}

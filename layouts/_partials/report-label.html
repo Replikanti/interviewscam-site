@@ -1,0 +1,19 @@
+{{- /* The D7 label of a report as plain text: what was reported and
+  reviewed, and when, never a verdict (SPEC section 5, ADR-0004 part 12).
+  Called with the report page; returns the text. N =
+  params.independent_reports; with N = 0 the record is a source-only
+  report and the label counts its cited sources. record-label.html prints
+  it on the page and home.feed.json lists it as label. */ -}}
+{{- $p := .Params -}}
+{{- $n := int $p.independent_reports -}}
+{{- $date := time.Format "2006-01-02" $p.last_reviewed -}}
+{{- $text := "" -}}
+{{- if ge $n 2 -}}
+  {{- $text = printf (partial "label.html" "label.reported") $n $date -}}
+{{- else if eq $n 1 -}}
+  {{- $text = printf (partial "label.html" "label.reported_once") $date -}}
+{{- else -}}
+  {{- $k := len $p.sources -}}
+  {{- $text = cond (eq $k 1) (printf (partial "label.html" "label.one_source") $date) (printf (partial "label.html" "label.sources") $k $date) -}}
+{{- end -}}
+{{- return $text -}}

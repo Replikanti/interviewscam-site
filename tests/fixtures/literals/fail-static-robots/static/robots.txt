@@ -1,0 +1,2 @@
+User-agent: *
+# Send your seed phrase to the recruiter

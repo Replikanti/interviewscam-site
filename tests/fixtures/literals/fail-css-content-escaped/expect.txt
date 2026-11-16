@@ -1,0 +1,1 @@
+content draws the text 'New' (L5)

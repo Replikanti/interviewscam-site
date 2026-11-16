@@ -1,0 +1,1 @@
+params.campaign.artifact 'other[.]example' is none of this record's declared artifact values

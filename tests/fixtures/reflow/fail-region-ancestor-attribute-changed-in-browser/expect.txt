@@ -1,0 +1,1 @@
+(9) a pinned region differs between the browser and the file: the search form 1: its ancestor <main> 1 has the attributes

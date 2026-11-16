@@ -1,0 +1,1 @@
+(9) a pinned region differs between the browser and the file: .index-list 1 <ul>: attribute class (again) is 'x' in the browser, absent in the file

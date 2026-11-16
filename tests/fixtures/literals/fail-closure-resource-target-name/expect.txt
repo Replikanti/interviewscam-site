@@ -1,0 +1,1 @@
+resources.Concat takes 'send-your-seed-phrase-to-the-recruiter[.]css', which is not a literal on LITERALS_RESOURCE_KEYS

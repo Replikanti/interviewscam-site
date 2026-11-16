@@ -1,0 +1,1 @@
+rule 6: params.attribution[0] does not link its source

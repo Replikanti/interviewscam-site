@@ -1,0 +1,1 @@
+actions/download-artifact outside the job `lighthouse` that runs tools/lighthouse.sh

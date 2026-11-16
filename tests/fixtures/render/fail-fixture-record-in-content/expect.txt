@@ -1,0 +1,1 @@
+rule 1: shares its slug and name with the fixture record fixtures/records/pass-leaked/content/reports/example-abused-company.md

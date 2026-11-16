@@ -1,0 +1,1 @@
+named colour 'black' in <circle stroke>

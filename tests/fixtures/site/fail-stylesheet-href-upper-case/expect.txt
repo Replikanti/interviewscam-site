@@ -1,0 +1,1 @@
+holds 'S' (U+0053), outside the closed alphabet

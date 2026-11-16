@@ -1,0 +1,1 @@
+(9) the document differs between the browser (scripting off) and the file: <html> > child 3 <body> > child 1 <main> > child 1 <table> > child 1 <tr>: the browser has <tbody>, the file <tr>

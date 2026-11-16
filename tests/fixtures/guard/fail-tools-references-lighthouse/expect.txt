@@ -1,0 +1,1 @@
+tools/check.sh:2: references tools/lighthouse.sh

@@ -1,0 +1,1 @@
+2 top-level .visually-hidden definitions across the built CSS

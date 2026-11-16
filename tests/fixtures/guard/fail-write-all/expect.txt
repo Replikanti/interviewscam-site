@@ -1,0 +1,1 @@
+permissions: write-all: Pages stays off until M6

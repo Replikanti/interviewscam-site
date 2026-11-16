@@ -1,0 +1,1 @@
+rule 7: <a href> is a data: URL

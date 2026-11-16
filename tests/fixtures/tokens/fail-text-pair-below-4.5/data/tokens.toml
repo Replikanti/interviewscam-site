@@ -1,0 +1,12 @@
+# A minimal tokens file: two opaque colours and one pair.
+[color]
+text = "#0F172A"
+card = "#FFFFFF"
+muted = "#8592A6"
+
+[[pair]]
+fg = "muted"
+bg = "card"
+kind = "text"
+ratio = 3.15
+use = "card body text"

@@ -1,0 +1,6 @@
+{{- $items := slice -}}
+{{- range first 20 site.RegularPages -}}
+{{- $items = $items | append (dict "id" .Permalink "url" .Permalink "title" .Title "content_text" .Summary "date_published" (.Date.Format "2006-01-02T15:04:05Z07:00")) -}}
+{{- end -}}
+{{- $feed := dict "version" "https://jsonfeed.org/version/1.1" "title" site.Title "home_page_url" site.Home.Permalink "feed_url" (.OutputFormats.Get "feed").Permalink "items" $items -}}
+{{- $feed | jsonify -}}

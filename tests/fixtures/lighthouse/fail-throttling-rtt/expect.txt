@@ -1,0 +1,1 @@
+configSettings.throttling.rttMs is 40

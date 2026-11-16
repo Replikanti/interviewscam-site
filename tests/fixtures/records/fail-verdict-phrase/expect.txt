@@ -1,0 +1,1 @@
+params.summary: contains the verdict phrase 'is a scam'

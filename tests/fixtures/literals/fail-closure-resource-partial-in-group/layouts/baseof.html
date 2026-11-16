@@ -1,0 +1,1 @@
+<body>{{ $r := resources.Get "css/site.css" }}{{ printf "%s" (partial "x.html" $r) | safeHTML }}</body>

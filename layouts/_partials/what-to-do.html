@@ -1,0 +1,18 @@
+{{- /* The warning panel "What to do now" (SPEC section 7: the only orange
+  besides the CTA): the report pages show it after the summary, and the
+  answer section of the Home search shows it after the matching entries
+  (ADR-0005 part 4). Called with a dict:
+    head  the heading element, "h2" on a report page, "h3" inside the
+          answer section, whose own heading is the h2
+  The id stays what-to-do on both pages, because no page holds two panels.
+  Render rule 16 pins the panel on Home. */ -}}
+{{- $head := .head -}}
+{{- if not (in (slice "h2" "h3") $head) }}{{ errorf "what-to-do.html: head is h2 or h3, not %q" $head }}{{ end }}
+<section class="panel-warn" aria-labelledby="what-to-do">
+{{ printf `<%s id="what-to-do">` $head | safeHTML }}<span class="panel-icon">{{ partial "icon.html" "warning" }}</span>{{ partial "label.html" "report.warning_heading" }}{{ printf `</%s>` $head | safeHTML }}
+<p>{{ partial "label.html" "report.warning_text" }}</p>
+<ul class="link-list">
+<li><a href="{{ "/before-your-call/" | relURL }}">{{ partial "label.html" "report.warning_before_link" }}</a></li>
+<li><a href="{{ "/before-your-call/#already-ran" | relURL }}">{{ partial "label.html" "report.warning_already_ran_link" }}</a></li>
+</ul>
+</section>

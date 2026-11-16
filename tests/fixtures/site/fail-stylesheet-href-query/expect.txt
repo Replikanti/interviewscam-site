@@ -1,0 +1,1 @@
+the href holds '?' (U+003F), outside the closed alphabet

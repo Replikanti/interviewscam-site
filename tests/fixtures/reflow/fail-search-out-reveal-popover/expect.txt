@@ -1,0 +1,1 @@
+(6) revealed #search-answer: #search-results is not visible once revealed

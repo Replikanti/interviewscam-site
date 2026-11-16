@@ -1,0 +1,1 @@
+rule 14: the Copy button for 'contact' copies '', which is not a declared artifact value

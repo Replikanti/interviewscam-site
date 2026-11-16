@@ -1,0 +1,1 @@
+(10) with the script running: the browser sees 1 honeypot input(s) (name website), the page's file holds 2

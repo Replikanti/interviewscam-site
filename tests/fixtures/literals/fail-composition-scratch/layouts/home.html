@@ -1,0 +1,1 @@
+<p>{{ $s := newScratch }}{{ $s.Add "l" (slice "free") }}{{ $s.Add "l" (slice "money") }}{{ range $s.Get "l" }}{{ . }} {{ end }}</p>

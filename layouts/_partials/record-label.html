@@ -1,0 +1,4 @@
+{{- /* The D7 label of a report on its page (SPEC section 5, ADR-0004
+  part 12). Called with the report page; the text comes from
+  report-label.html, which the feed reads too. */ -}}
+<p class="record-label">{{ partial "report-label.html" . }}</p>

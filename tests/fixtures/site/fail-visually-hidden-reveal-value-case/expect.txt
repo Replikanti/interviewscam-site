@@ -1,0 +1,1 @@
+the reveal needs color: var(--color-primary) !important

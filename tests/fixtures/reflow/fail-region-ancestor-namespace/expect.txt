@@ -1,0 +1,1 @@
+(9) a pinned region differs between the browser and the file: .no-report 1: its ancestor <div> 1 is in the html namespace in the browser, svg in the file

@@ -1,0 +1,1 @@
+literals checked: 7 layout files, 83 actions, 68 literals; 3 asset and static files

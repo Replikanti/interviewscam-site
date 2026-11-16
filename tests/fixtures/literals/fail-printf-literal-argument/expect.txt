@@ -1,0 +1,1 @@
+print, printf or println prints the literal 'npm' as a value (L3)

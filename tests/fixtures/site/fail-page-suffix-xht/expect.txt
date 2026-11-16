@@ -1,0 +1,1 @@
+public/extra.xht: (n) a page under the suffix '.xht'; the only page suffix is '.html'

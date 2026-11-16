@@ -1,0 +1,1 @@
+params.artifacts declares no artifact; a report declares at least one (R10)

@@ -1,0 +1,1 @@
+.github/workflows/x.yml:1: HUGO_PARAMS_CONTACT: a HUGO_* variable overrides the Hugo config

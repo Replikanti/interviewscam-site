@@ -1,0 +1,1 @@
+CSP directive 'send' is not a CSP Level 3 directive

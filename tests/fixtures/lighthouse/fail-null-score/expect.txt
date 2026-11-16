@@ -1,0 +1,1 @@
+category seo: score is null, not a number

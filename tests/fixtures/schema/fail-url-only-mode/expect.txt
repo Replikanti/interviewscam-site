@@ -1,0 +1,1 @@
+x-defang must be one of host, not 'url-only'

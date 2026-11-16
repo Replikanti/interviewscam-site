@@ -1,0 +1,1 @@
+holds 'C' (U+0043), outside the closed alphabet

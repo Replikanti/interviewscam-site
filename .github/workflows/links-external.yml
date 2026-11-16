@@ -1,0 +1,34 @@
+name: links-external
+
+# External links, weekly and on manual start (ADR-0002 part 7). Not a
+# required check: a third-party outage must never block a removal PR.
+on:
+  schedule:
+    # Mondays 06:17 UTC; off the hour to avoid the scheduler's peak.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  links-external:
+    runs-on: ubuntu-24.04
+    # ADR-0004 Numbers, "check.sh workflow timeouts": derived from the job
+    # duration, which timeout-minutes counts, on a bucketed base (M5b PR 2
+    # fix rounds 9 and 10, Replikanti/interviewscam#13): the slowest green
+    # job, 1554 s (lighthouse.yml build, run 43400693223), plus 46 s of
+    # drift, rounded up to the next 5-minute step, 1800 s, sets both terms.
+    # Cap >= max(2 x 1800 s = 3600 s, 1800 s + 2 x 75 s
+    # (REFLOW_LAUNCH_TIMEOUT) + 70 s = 2020 s), so 60 min. Re-derive only
+    # when a green job takes more than 1754 s.
+    # M3 has no external links to fetch yet (the fixture build's links stay
+    # offline); revisit once milestone 5 adds sources.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/check.sh --external
+        shell: bash
+        run: bash tools/check.sh --external

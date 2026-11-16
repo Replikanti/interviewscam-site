@@ -1,0 +1,1 @@
+hugo.toml: markup.goldmark.extensions.linkify: must be

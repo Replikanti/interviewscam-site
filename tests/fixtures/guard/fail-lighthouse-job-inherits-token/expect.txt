@@ -1,0 +1,1 @@
+job lighthouse: runs tools/lighthouse.sh without exactly one job-level `permissions: {}`

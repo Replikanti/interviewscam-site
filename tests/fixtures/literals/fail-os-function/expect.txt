@@ -1,0 +1,1 @@
+os.Getenv: translations, file reads, the environment and remote data are not a copy source (L4)

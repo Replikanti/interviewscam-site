@@ -1,0 +1,1 @@
+rule 3: the list item linking /reports/persona-1/: 0 elements of class state-chip

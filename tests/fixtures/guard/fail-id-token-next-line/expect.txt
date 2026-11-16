@@ -1,0 +1,1 @@
+pages/id-token permission with an indirect value

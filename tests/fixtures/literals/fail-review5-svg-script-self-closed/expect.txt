@@ -1,0 +1,1 @@
+<script/>: a self-closed script

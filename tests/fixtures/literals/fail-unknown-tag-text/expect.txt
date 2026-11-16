@@ -1,0 +1,1 @@
+string literal '%s<company name>' is copy (L3)

@@ -1,0 +1,1 @@
+fixture inputs: 9 top-level entries classified; 2 content entries

@@ -1,0 +1,1 @@
+rule 7: the internal link '/files/setup[.]exe' points to the file

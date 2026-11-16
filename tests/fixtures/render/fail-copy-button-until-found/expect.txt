@@ -1,0 +1,1 @@
+rule 14: the Copy button for 'domains-0' is not hidden (hidden='until-found')

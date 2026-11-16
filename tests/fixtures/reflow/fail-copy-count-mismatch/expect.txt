@@ -1,0 +1,1 @@
+(6) with the script running: the browser sees 1 Copy button(s), the page's file holds 2

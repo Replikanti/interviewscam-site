@@ -1,0 +1,4 @@
+{{- /* A collection value from the fixed list (LITERALS_COLLECTION_VALUES): the
+  JSON-LD context URL, in the file that list names. */ -}}
+{{- $ld := dict "@context" "https://schema.org" "@type" "WebPage" "datePublished" (.Date.Format "2006-01-02") "isPartOf" (dict "@type" "WebSite" "name" site.Title) }}
+<script type="application/ld+json">{{ $ld | jsonify | safeJS }}</script>

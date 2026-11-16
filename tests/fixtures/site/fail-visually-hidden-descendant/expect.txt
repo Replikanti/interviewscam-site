@@ -1,0 +1,1 @@
+.visually-hidden may appear only in its one top-level definition

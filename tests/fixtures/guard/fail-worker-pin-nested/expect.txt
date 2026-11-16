@@ -1,0 +1,1 @@
+worker/sub/extra.js: a worker source that is not pinned

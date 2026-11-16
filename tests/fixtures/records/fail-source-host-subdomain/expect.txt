@@ -1,0 +1,1 @@
+params.sources[0].url: its host 'blog[.]meeting[.]example' is a subdomain of the declared artifact domain 'meeting[.]example'

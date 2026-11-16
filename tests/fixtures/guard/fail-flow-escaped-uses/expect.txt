@@ -1,0 +1,1 @@
+YAML quoted string with a backslash escape or a complex key indicator

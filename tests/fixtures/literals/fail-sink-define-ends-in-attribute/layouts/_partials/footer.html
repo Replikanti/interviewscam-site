@@ -1,0 +1,6 @@
+{{- /* #31 delta review 1, the reviewer's text-call repro: the define ends
+  inside the attribute it opens, so at build time the caller's next markup
+  and .Kind land in that attribute, a tooltip. The quote after the define
+  closes the attribute in this file, so html.parser reads the end there on
+  every Python. */ -}}
+<footer><p>{{ template "zy" . }}<i class="{{ .Kind }}"></i>'></b></p>{{ define "zy" }}<b title='{{ end }}'></footer>

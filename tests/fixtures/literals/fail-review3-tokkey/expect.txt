@@ -1,0 +1,1 @@
+hugo.Data.tokens.color: outside a CSS template, a colour only by its key

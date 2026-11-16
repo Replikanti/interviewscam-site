@@ -1,0 +1,44 @@
+name: deploy
+
+# Builds and uploads the Pages artifact only. Nothing here publishes: the
+# token below can read the repo and nothing else, Pages stays disabled in the
+# repo settings until M6 (#7), and M6 adds the deploy job deliberately.
+on:
+  push:
+    branches: [main]
+  # Proves this workflow on the PR that changes it.
+  pull_request:
+    paths: [.github/workflows/deploy.yml]
+
+permissions:
+  contents: read
+
+# M6 must never cancel a deploy midway. Pushes to main share the group
+# `pages`; each PR gets its own group, so a PR run can never replace a
+# pending main run (a group keeps at most one pending run).
+concurrency:
+  group: ${{ github.event_name == 'push' && 'pages' || format('pages-pr-{0}', github.ref) }}
+  cancel-in-progress: false
+
+jobs:
+  pages-artifact:
+    runs-on: ubuntu-24.04
+    # 3x the first green run, rounded up to whole minutes: that run took 23 s
+    # (run 41839053673, 2026-11-04), 3 x 23 s = 69 s -> 2 min. Same reasoning
+    # as the check job in ci.yml: downloads and the image pull dominate.
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The same entry point as the `check` job, so the uploaded artifact is
+      # the checked build.
+      - name: bash tools/check.sh
+        shell: bash
+        run: bash tools/check.sh
+      # retention-days stays at the action's default of 1: only M6's deploy
+      # job in the same run will ever consume the artifact, and longer
+      # retention only uses the plan's Actions storage.
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: public

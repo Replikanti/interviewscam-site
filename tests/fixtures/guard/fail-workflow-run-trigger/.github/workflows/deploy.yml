@@ -1,0 +1,14 @@
+name: deploy
+on:
+  workflow_run:
+    workflows: [lighthouse]
+    types: [completed]
+permissions:
+  contents: read
+jobs:
+  pages-artifact:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: bash tools/check.sh
+        shell: bash
+        run: bash tools/check.sh

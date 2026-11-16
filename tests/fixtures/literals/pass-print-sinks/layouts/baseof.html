@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+{{- /* A meta CSP applies only to content after it, so it comes right after the charset (D9). */}}
+<meta http-equiv="Content-Security-Policy" content="{{ site.Params.csp }}">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{{- /* Light theme only (SPEC section 7): every token pair describes a light surface, so the browser must not draw dark controls on it. */}}
+<meta name="color-scheme" content="light">
+{{- /* The page's own description, else the site's; Lighthouse's SEO category needs one on every page. Record pages override the block with their summary. */}}
+<meta name="description" content="{{ block "description" . }}{{ .Description | default (partial "label.html" "site.description") }}{{ end }}">
+<title>{{ block "title" . }}{{ .Title }} · {{ site.Title }}{{ end }}</title>
+{{- /* The absolute URL of the page itself (ADR-0003 part 3; sitecheck site rule (d)). The 404 page has none: it answers for every missing URL. */}}
+{{- if ne .Kind "404" }}
+<link rel="canonical" href="{{ .Permalink }}">
+{{- end }}
+<meta name="theme-color" content="{{ hugo.Data.tokens.color.card }}">
+{{- with resources.Get "favicon.svg" | resources.ExecuteAsTemplate "favicon.svg" . }}
+<link rel="icon" href="{{ .RelPermalink }}" type="image/svg+xml">
+{{- end }}
+{{- /* One stylesheet: the token custom properties generated from data/tokens.toml, then site.css, which uses var(--...) only. */}}
+{{- $tokens := resources.Get "css/tokens.css" | resources.ExecuteAsTemplate "css/tokens.css" . }}
+{{- with slice $tokens (resources.Get "css/site.css") | resources.Concat "css/site.css" | resources.Minify | resources.Fingerprint }}
+<link rel="stylesheet" href="{{ .RelPermalink }}">
+{{- end }}
+{{- /* The one script, the Copy buttons (ADR-0004 part 11): first-party, minified and fingerprinted, with its SHA-384 as integrity, deferred. script-src 'self' allows it; sitecheck site rule (j) allows no other .js file and no other script src. */}}
+{{- with resources.Get "js/copy.js" | resources.Minify | resources.Fingerprint "sha384" }}
+<script src="{{ .RelPermalink }}" integrity="{{ .Data.Integrity }}" defer></script>
+{{- end }}
+{{- /* Record and section pages add their JSON-LD here (ADR-0004 part 8). */}}
+{{- block "head" . }}{{ end }}
+</head>
+<body>
+{{- /* The skip link uses the one sanctioned visually-hidden class (ADR-0003 part 6) and is shown on focus. */}}
+<a class="visually-hidden" href="#main">{{ partial "label.html" "site.skip_link" }}</a>
+{{ partial "header.html" . }}
+<main id="main" class="container" tabindex="-1">
+{{ block "main" . }}{{ end }}
+</main>
+{{ partial "footer.html" . }}
+</body>
+</html>

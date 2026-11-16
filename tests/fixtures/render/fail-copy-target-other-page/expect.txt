@@ -1,0 +1,1 @@
+rule 14: the Copy button for 'domains-0' copies 'frontco-meet[.]pages[.]example', which is not a declared artifact value

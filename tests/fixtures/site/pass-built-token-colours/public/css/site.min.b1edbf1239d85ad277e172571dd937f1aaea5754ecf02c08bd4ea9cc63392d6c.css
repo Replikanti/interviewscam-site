@@ -1,0 +1,1 @@
+:root{--color-text:#0F172A;--color-card:#FFFFFF;--color-shadow:#0f172a0f}body{color:var(--color-text);background:#fff;border-color:transparent;outline-color:currentcolor}p::before{content:"\201C"}

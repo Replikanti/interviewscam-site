@@ -1,0 +1,1 @@
+(6) with the script running: the page has search result elements but no #search-results the browser can reveal

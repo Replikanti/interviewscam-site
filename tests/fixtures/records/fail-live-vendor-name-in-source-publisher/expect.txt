@@ -1,0 +1,1 @@
+params.sources[0].publisher: record text contains the live dotted name 'dr[.]web'

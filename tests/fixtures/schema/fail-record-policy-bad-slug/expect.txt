@@ -1,0 +1,1 @@
+schema/record-policy.json: retired_slugs[0]: 'Persona 3' is not a slug

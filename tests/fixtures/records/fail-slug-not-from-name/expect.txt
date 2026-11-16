@@ -1,0 +1,1 @@
+slug 'other-name' is neither 'fixture' nor 'fixture-N' with N >= 2

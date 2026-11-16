@@ -1,0 +1,39 @@
+{{- /*
+  The design tokens as CSS custom properties, generated from data/tokens.toml
+  (SPEC section 7), the only file a colour value may live in. baseof runs this
+  file through resources.ExecuteAsTemplate and concatenates it in front of
+  site.css, which uses var(--...) only.
+
+  Names: --<table>-<key>, `_` turned into `-` (for example --color-chip-text,
+  --space-x4). Sizes in the tokens file are CSS px; the length tables below
+  are written as rem (px / 16), so a user's default font-size setting still
+  scales the page. Outline, border, shadow and underline widths stay px: they
+  are hairlines that must not grow with the text.
+
+  hugo.Data, not .Site.Data: the latter is deprecated since Hugo v0.156.0 and
+  fails the build under --panicOnWarning.
+*/ -}}
+{{- $t := hugo.Data.tokens -}}
+:root {
+{{- range $key, $value := $t.color }}
+  --color-{{ replace $key "_" "-" }}: {{ $value }};
+{{- end }}
+{{- range $key, $value := $t.font }}
+  --font-{{ replace $key "_" "-" }}: {{ $value | safeCSS }};
+{{- end }}
+{{- range $table := slice "weight" "line_height" }}
+{{- range $key, $value := index $t $table }}
+  --{{ replace $table "_" "-" }}-{{ replace $key "_" "-" }}: {{ $value }};
+{{- end }}
+{{- end }}
+{{- range $table := slice "type" "space" "layout" "radius" "target" }}
+{{- range $key, $value := index $t $table }}
+  --{{ $table }}-{{ replace $key "_" "-" }}: {{ div (float $value) 16 }}rem;
+{{- end }}
+{{- end }}
+{{- range $table := slice "focus" "border" "shadow" "underline" }}
+{{- range $key, $value := index $t $table }}
+  --{{ $table }}-{{ replace $key "_" "-" }}: {{ $value }}px;
+{{- end }}
+{{- end }}
+}

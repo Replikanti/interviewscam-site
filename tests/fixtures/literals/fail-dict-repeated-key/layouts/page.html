@@ -1,0 +1,5 @@
+{{- /* #31 delta review 2: Hugo keeps the last value of a repeated key, so
+  .id is .Kind and the with runs; read in hash order the analysis took ""
+  in some runs and pruned it. selftest.sh runs this case under several hash
+  seeds and requires the same output each time. */ -}}
+{{ with (dict "id" "" "id" $.Kind).id }}<p>{{ . }}</p>{{ end }}

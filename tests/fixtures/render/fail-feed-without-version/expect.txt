@@ -1,0 +1,1 @@
+public/feed.json: rule 11: does not match schema/feed.schema.json: the version field is missing

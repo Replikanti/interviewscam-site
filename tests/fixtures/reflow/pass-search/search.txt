@@ -1,0 +1,5 @@
+This reflow case runs case (8), the search (M4 PR 4): selftest.sh leaves
+out --no-search when a reflow case has this file. It holds Home, /a-z/,
+/feed.json and the built stylesheet and scripts of the fixture build
+(public-fixtures/), and is the base of the reflow-search/<row> lines
+(tests/fixtures/reflow/search-cases.tsv).

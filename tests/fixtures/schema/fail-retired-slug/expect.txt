@@ -1,0 +1,1 @@
+slug 'fixture' is retired in schema/record-policy.json

@@ -1,0 +1,1 @@
+public/feed.json: rule 11: does not match schema/feed.schema.json: reports[0].comment: property not allowed by the schema

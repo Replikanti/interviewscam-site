@@ -1,0 +1,1 @@
+a secrets reference in .github/workflows/lighthouse.yml; no credential may reach the job that runs registry code

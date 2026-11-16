@@ -1,0 +1,16 @@
+{{- /* The labelled variant of an own-artifact box (ADR-0004 part 5, M3
+  PR 8; #27 Known limit 4). Called with a dict:
+    page   the report page
+    value  the artifact value its box shows, as stored
+  On the page of a visible persona, a value that is not pure printable
+  ASCII (any character outside U+0021 to U+007E: a letter with a
+  diacritic, another script, a space) gets the D10 label right after its
+  box, because render rule 4 exempts the name inside a box only when the
+  box is plain printable ASCII or the label follows it. Returns the label
+  span with a space before it, or "" for every other value and page. */ -}}
+{{- $p := .page.Params -}}
+{{- $out := "" -}}
+{{- if and (eq .page.Section "reports") (eq $p.name_type "persona") (not $p.hide_name) (ne (replaceRE "[!-~]" "" .value) "") -}}
+  {{- $out = printf " <span class=\"persona-label\">%s</span>" (htmlEscape (partial "label.html" "persona.label")) | safeHTML -}}
+{{- end -}}
+{{- return $out -}}

@@ -1,0 +1,286 @@
+# Design tokens of direction C (Signal), picked 2026-11-04 on issue #3
+# (SPEC section 7). This file is the only place a colour value may appear:
+# `sitecheck tokens` rejects colour literals in assets/, layouts/, static/
+# and hugo.toml, and checks every [[pair]] below for WCAG 2.2 contrast.
+#
+# Keys are snake_case, because Go templates cannot read hyphenated keys
+# without `index`. The CSS custom properties are `--<table>-<key>` with `_`
+# turned into `-`, for example `--color-chip-text`.
+#
+# Light theme only (SPEC section 7): every ratio below describes a light
+# surface. A dark theme would need its own colours and pairs.
+
+[color]
+# Body text and headings. Darkest ink of the mockup; 16.49:1 to 17.85:1 on
+# the three surfaces, so it holds AA (4.5:1) with a wide margin.
+text = "#0F172A"
+# Secondary text: labels, meta, the lead paragraph, the footer. The lightest
+# grey that still passes 4.5:1 on both surfaces (6.99:1 on ground).
+muted = "#475569"
+# The page ground behind the cards.
+ground = "#F3F6FC"
+# Card, header and input surface.
+card = "#FFFFFF"
+# Background of the monospace artifact boxes (M3).
+code_bg = "#EEF2F9"
+# Links, primary buttons, the focus ring and the brand tile. 6.35:1 on ground
+# and 6.87:1 on card, so it passes as text (4.5:1) and as a focus indicator
+# (3:1, SC 1.4.11) on both surfaces.
+primary = "#2350C8"
+# Text and icons on the primary and cta fills.
+on_fill = "#FFFFFF"
+# State chips (M3): text on chip_bg.
+chip_text = "#1E3A8A"
+chip_bg = "#E3EAFB"
+# The "Report a scam" call to action and the warning icon. Common orange on
+# white fails 4.5:1 (SPEC section 7); this darker orange gives 5.17:1 for the
+# white CTA text.
+cta = "#C2410C"
+# The warning panel: text on its tinted ground.
+warn_text = "#9A3412"
+warn_bg = "#FFEAD5"
+# Boundary of the search input and of bordered secondary buttons.
+# PLACEMENT CONSTRAINT: 3.15:1 on card but only 2.91:1 on ground, below the
+# 3:1 of SC 1.4.11. Inputs and bordered buttons therefore sit only on card
+# surfaces. The check cannot prove placement, so review checks it (PR 4).
+input_border = "#8592A6"
+# Decorative only (card and header borders): the card boundary is carried by
+# the surface change, so no contrast minimum applies and it has no pair.
+card_border = "#DCE3EF"
+# Decorative only: the card shadow, the mockup's rgba(15,23,42,.06), which is
+# text at alpha 0x0F = 15/255 = 0.06. Not opaque, so it cannot be in a pair.
+shadow = "#0F172A0F"
+
+# Every colour pair the layout uses. `ratio` is the WCAG 2.2 relative-
+# luminance contrast ratio FLOORED to 2 decimals: WCAG thresholds are not
+# rounded, and a floored value never shows a pass for a failing pair. Some
+# values therefore read 0.01 lower than the issue table, which rounded.
+# `kind` sets the minimum: text 4.5:1 (SC 1.4.3), large_text 3:1 (SC 1.4.3,
+# 24 px or 18.66 px bold), non_text 3:1 (SC 1.4.11). The check recomputes
+# each ratio and fails on a wrong value or a pair under its minimum.
+
+[[pair]]
+fg = "text"
+bg = "ground"
+kind = "text"
+ratio = 16.49
+use = "headings and nav pill text on the ground"
+
+[[pair]]
+fg = "text"
+bg = "card"
+kind = "text"
+ratio = 17.85
+use = "card body text"
+
+[[pair]]
+fg = "text"
+bg = "code_bg"
+kind = "text"
+ratio = 15.90
+use = "monospace artifact boxes (M3)"
+
+[[pair]]
+fg = "muted"
+bg = "card"
+kind = "text"
+ratio = 7.57
+use = "labels, meta and secondary text in cards"
+
+[[pair]]
+fg = "muted"
+bg = "ground"
+kind = "text"
+ratio = 6.99
+use = "lead paragraph and footer text"
+
+[[pair]]
+fg = "primary"
+bg = "card"
+kind = "text"
+ratio = 6.87
+use = "links and secondary-button text in cards and the header"
+
+[[pair]]
+fg = "primary"
+bg = "ground"
+kind = "text"
+ratio = 6.35
+use = "footer links"
+
+[[pair]]
+fg = "on_fill"
+bg = "primary"
+kind = "text"
+ratio = 6.87
+use = "primary button text and the brand tile icon"
+
+[[pair]]
+fg = "on_fill"
+bg = "cta"
+kind = "text"
+ratio = 5.17
+use = "Report a scam CTA text"
+
+[[pair]]
+fg = "chip_text"
+bg = "chip_bg"
+kind = "text"
+ratio = 8.59
+use = "state chips (M3)"
+
+[[pair]]
+fg = "warn_text"
+bg = "warn_bg"
+kind = "text"
+ratio = 6.25
+use = "warning panel heading and text"
+
+[[pair]]
+fg = "cta"
+bg = "warn_bg"
+kind = "non_text"
+ratio = 4.43
+use = "warning icon on a warn tile"
+
+[[pair]]
+fg = "primary"
+bg = "chip_bg"
+kind = "non_text"
+ratio = 5.70
+use = "check icon on a chip tile"
+
+[[pair]]
+fg = "input_border"
+bg = "card"
+kind = "non_text"
+ratio = 3.15
+use = "search input and secondary-button boundary (on card only, see input_border)"
+
+[[pair]]
+fg = "primary"
+bg = "card"
+kind = "non_text"
+ratio = 6.87
+use = "focus ring on cards and the header"
+
+[[pair]]
+fg = "primary"
+bg = "ground"
+kind = "non_text"
+ratio = 6.35
+use = "focus ring on the ground"
+
+[[pair]]
+fg = "cta"
+bg = "card"
+kind = "non_text"
+ratio = 5.17
+use = "CTA button boundary on the white header"
+
+# Sizes. Every value below is in CSS px; the CSS (PR 4) writes rem (value /
+# 16), so a user's default font-size setting still scales the page. Source:
+# the C mockup unless a comment says otherwise.
+
+[font]
+# System stacks only: no web fonts, so no font request at all (D9).
+sans = 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+mono = 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace'
+
+[weight]
+# Mockup weights. A system font without a 650 face renders the nearest
+# heavier face (CSS font matching), so headings stay bolder than labels.
+heading = 650
+label = 600
+nav = 500
+body = 400
+
+[type]
+# The mockup's type scale, smallest to largest. Chips and small buttons.
+chip = 13
+# Labels, meta and the footer.
+label = 14
+# Lists and buttons.
+list = 15
+# Body text and inputs: the picked compact size, and the smallest input size
+# at which iOS Safari does not zoom the page on focus.
+body = 16
+# Brand, lead paragraph and h3.
+lead = 17
+# Section headings.
+h2 = 20
+# Page headings on every page except Home.
+h1 = 28
+# The Home h1 only.
+home_h1 = 30
+
+[line_height]
+# At least 1.5, so the SC 1.4.12 text-spacing override (1.5) never collides
+# with a tighter fixed value.
+body = 1.55
+# Headings: multi-line headings stay compact; SC 1.4.12 is an override, not a
+# minimum for authored values.
+heading = 1.2
+
+[space]
+# The 4 px grid: the key is the multiple of 4 px. The mockup's 6, 10, 14 and
+# 18 px snap to 8, 12, 16 and 20, which keeps the scale to eight tokens.
+x1 = 4
+x2 = 8
+x3 = 12
+x4 = 16
+x5 = 20
+x6 = 24
+x8 = 32
+x10 = 40
+
+[layout]
+# The mockup's content column. At 16 px system-ui text that is roughly 90
+# characters per line; a wider column makes long lines harder to follow.
+container_max = 760
+# Side gutter, card padding and the gap between cards (one 16 px step).
+gutter = 16
+card_padding = 16
+card_gap = 16
+
+[radius]
+# Mockup radii, largest surface to smallest.
+card = 14
+# Inputs, buttons and panels.
+control = 10
+# Icon tiles.
+tile = 8
+# Pills: any value above half the height gives a full round end.
+pill = 999
+
+[target]
+# Minimum height of links, nav pills, the CTA and footer links: the SC 2.5.5
+# and platform-guideline size, above the SC 2.5.8 AA minimum of 24 px,
+# because the primary persona taps on a phone under time pressure.
+min = 44
+# The search input and its submit button (mockup).
+input = 48
+
+[focus]
+# :focus-visible outline (SC 2.4.7), in primary: 6.35:1 to 6.87:1 against
+# both surfaces (SC 1.4.11). 3 px wide with a 2 px gap, so it stays visible
+# next to a 1 px border.
+outline_width = 3
+outline_offset = 2
+
+[border]
+# Mockup hairline: card_border on cards and the header, input_border on
+# inputs.
+width = 1
+
+[shadow]
+# The mockup's card shadow `0 1px 2px` in the shadow colour (decorative).
+y = 1
+blur = 2
+
+[underline]
+# Prose links: the underline offset (mockup), and hover thickens the line from
+# 1 to 2 px instead of changing colour, so hover needs no extra colour token.
+offset = 3
+thickness = 1
+hover_thickness = 2

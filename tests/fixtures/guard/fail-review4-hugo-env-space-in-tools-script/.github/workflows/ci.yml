@@ -1,0 +1,29 @@
+name: ci
+
+# No path filters: branch protection requires the `check` context, and a
+# required check must report on every PR.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Load-bearing name: branch protection requires exactly the context
+  # `check`. A rename must update the protection in the same session.
+  check:
+    runs-on: ubuntu-24.04
+    # 3x the first green run, rounded up to whole minutes: that run took 22 s
+    # (run 41839053598, 2026-11-04), 3 x 22 s = 66 s -> 2 min. Downloads and
+    # the image pull dominate and can run about 3x slower on a bad runner;
+    # the 360-minute default would let a hung run block merges for hours.
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/check.sh
+        shell: bash
+        run: bash tools/check.sh
