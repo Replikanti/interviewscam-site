@@ -14,3 +14,9 @@ resources/_gen/
 # part 4): git add refuses a directory under content/, and the guard's PT1
 # still reads the disk, so an ignored local one fails the check too.
 /content/*/
+# Editor swap, lock and backup files in content/: Hugo skips these names (a
+# leading . or #, a trailing ~), and ignored they are disk-only, which the
+# guard skips too (fix round 1 of interviewscam-site#11).
+/content/.*
+/content/#*
+/content/*~

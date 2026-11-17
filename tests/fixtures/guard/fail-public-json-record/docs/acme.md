@@ -1,0 +1,1 @@
+{"params": {"name": "Acme", "name_type": "company", "state": "front", "summary": "x", "artifacts": {"domains": ["acme[.]example"]}}}

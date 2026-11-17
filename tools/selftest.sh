@@ -1196,10 +1196,9 @@ rows += [
     # Staged, then deleted from the disk: the next commit still carries it, so
     # git's listing counts as well as the disk (the read then fails closed).
     ("pt1/staged-deleted-on-disk", {"content/reports/x.md": "x"}, (),
-     [PT1, "PT2a: cannot read"], "index-only"),
+     [PT1], "index-only"),
     ("pt2a/staged-deleted-org-in-content", {"content/x.org": "#+title: Draft\n"}, (),
-     ["PT2a: a file in content/ that is not a static page", "PT2a: cannot read"],
-     "index-only"),
+     ["PT2a: a file in content/ that is not a static page"], "index-only"),
     ("pt1/dot-directory", {"content/.drafts/x.txt": "x"}, (), PT1),
     # PT3: the missing policy passes (design choice); every other form fails.
     ("pt3/missing-policy-passes", {"docs/readme.txt": "Text.\n"}, (), "PASS"),
@@ -1216,7 +1215,10 @@ rows += [
     ("pt3/second-policy-fullwidth", {"data/record－policy.json": "{}"}, (),
      "PT3: a second file named"),
     # Exemptions are exact.
-    ("exempt/tests-fixtures-passes", {"tests/fixtures/x/saved.eml": "x"}, (), "PASS"),
+    ("exempt/tests-fixtures-passes", {"tests/fixtures/x/content/reports/r.md":
+     "+++\n[params]\nname = \"x\"\n+++\n", "tests/fixtures/x/schema/record-policy.json":
+     '{"retired_slugs": ["x"]}', "tests/fixtures/x/static/shot.png": b"\x89PNG\r\n\x1a\n",
+     "tests/fixtures/guard/fail-x/saved.eml": "x"}, (), "PASS"),
     ("exempt/tests-fixtures-case-variant-fails", {"Tests/fixtures/x/saved.eml": "x"}, (),
      PT4_MAIL),
     ("pt4/not-mail-passes", {"docs/saved.txt": "x", "docs/saved.emlz": "x"}, (), "PASS"),
@@ -1255,6 +1257,108 @@ for kind, magic in IMAGES.items():
 rows.append(("image-magic/truncated-webp-passes", {"docs/evidence.dat": b"RIFF\x00\x00"}, (),
              "PASS"))
 
+# Fix round 1 of interviewscam-site#11. R2: records as JSON or TOML anywhere,
+# and record keys at any depth of a static page's front matter.
+REPO_ROOT = schema_dir.parent
+REC_TOML = ('[params]\nname = "Acme"\nname_type = "company"\nstate = "front"\n'
+            'summary = "x"\nevidence = "y"\nfirst_seen = 2026-10-01\n'
+            '[params.artifacts]\ndomains = ["acme[.]example"]\n')
+REC_JSON = json.dumps({"params": {"name": "Acme", "state": "front", "summary": "x",
+                                  "artifacts": {"domains": ["acme[.]example"]}}})
+FLAT = ["name", "state", "summary", "evidence", "first_seen"]
+PT2A_SHAPE = "PT2a: a record in JSON or TOML form"
+schema_extra = json.loads(SCHEMAS["schema/report.schema.json"])
+schema_extra["properties"]["params"]["required"].append("x_extra")
+rows += [
+    ("shape/json-record-in-docs", {"docs/acme.md": REC_JSON}, (), PT2A_SHAPE),
+    ("shape/fenceless-toml-record", {"data/acme.toml": REC_TOML}, (), PT2A_SHAPE),
+    ("shape/json-array-of-records", {"data/x.json": f"[{REC_JSON}]"}, (), PT2A_SHAPE),
+    ("shape/params-nested-deeper", {"data/x.json": json.dumps({"a": {"params": {"summary": "x"}}})},
+     (), PT2A_SHAPE),
+    ("shape/params-uppercase-key", {"data/x.toml": '[PARAMS]\nsummary = "x"\n'}, (), PT2A_SHAPE),
+    ("shape/params-array-of-tables", {"data/x.toml": '[[params]]\nsummary = "x"\n'}, (),
+     PT2A_SHAPE),
+    ("shape/unwrapped-5-keys", {"data/x.toml": "".join(f'{k} = "x"\n' for k in FLAT)}, (),
+     PT2A_SHAPE),
+    ("shape/unwrapped-4-keys-passes", {"data/x.toml": "".join(f'{k} = "x"\n' for k in FLAT[:4])},
+     (), "PASS"),
+    ("shape/unwrapped-4-keys-and-mapping-passes", {"data/x.toml": "".join(
+     f'{k} = "x"\n' for k in FLAT[:4]) + '[artifacts]\ndomains = ["a[.]example"]\n'}, (), "PASS"),
+    ("shape/unwrapped-5-keys-fullwidth", {"data/x.json": json.dumps(
+     {"\uff4e\uff41\uff4d\uff45": "x", **{k: "x" for k in FLAT[1:]}})}, (), PT2A_SHAPE),
+    ("shape/schemas-and-labels-pass", {"docs/report.json": SCHEMAS["schema/report.schema.json"],
+     "docs/campaign.json": SCHEMAS["schema/campaign.schema.json"],
+     "docs/feed.json": (schema_dir / "feed.schema.json").read_bytes(),
+     "docs/labels.toml": (REPO_ROOT / "data" / "labels.toml").read_bytes()}, (), "PASS"),
+    ("record-keys/cascade-params", {**SCHEMAS, "content/about.md":
+     PAGE.format(extra='[cascade.params]\nname = "x"\n')}, (), PT2B),
+    ("record-keys/params-nested-table", {**SCHEMAS, "content/about.md":
+     PAGE.format(extra='[params.report]\nsummary = "x"\n')}, (), PT2B),
+    ("record-keys/menu-name", {**SCHEMAS, "content/about.md":
+     PAGE.format(extra='[menu.main]\nname = "About"\n')}, (), PT2B),
+    ("record-keys/key-in-array-of-tables", {**SCHEMAS, "content/about.md":
+     PAGE.format(extra='[[x]]\nstate = "front"\n')}, (), PT2B),
+    ("pt2b/toml-error-page-with-schema", {**SCHEMAS, "content/about.md":
+     "+++\ntitle = \n+++\nAbout.\n"}, (), "PT2b: the front matter is not valid TOML"),
+    ("pt2b/bom-page-passes", {**SCHEMAS, "content/about.md": "\ufeff" + PAGE.format(extra="")},
+     (), "PASS"),
+    ("pt2b/schema-differs-from-pin", {"schema/report.schema.json": json.dumps(schema_extra),
+     "schema/campaign.schema.json": SCHEMAS["schema/campaign.schema.json"],
+     "content/about.md": PAGE.format(extra="")}, (), "differs from RECORD_KEYS"),
+    # R3: the staged blob counts where the working tree differs.
+    ("staged/fence-record-overwritten", {"docs/acme.md": "+++\n" + REC_TOML + "+++\n"}, (),
+     "docs/acme.md (staged): PT2a: a front-matter document", {"docs/acme.md": "hello\n"}),
+    ("staged/json-record-overwritten", {"docs/acme.json": REC_JSON}, (),
+     "docs/acme.json (staged): " + PT2A_SHAPE, {"docs/acme.json": "{}"}),
+    ("staged/image-overwritten", {"docs/e.dat": IMAGES["png"] + b"0000"}, (),
+     "docs/e.dat (staged): PT4: a raster image", {"docs/e.dat": "x"}),
+    ("staged/policy-slug-overwritten", {"schema/record-policy.json": '{"retired_slugs": ["a"]}'},
+     (), "schema/record-policy.json (staged): PT3: must be exactly",
+     {"schema/record-policy.json": '{"retired_slugs": []}'}),
+    ("staged/page-key-overwritten", {**SCHEMAS, "content/about.md":
+     PAGE.format(extra='summary = "x"\n')}, (), 'content/about.md (staged): "summary": PT2b',
+     {"content/about.md": PAGE.format(extra="")}),
+    ("staged/disk-record-over-clean-blob", {"docs/acme.md": "hello\n"}, (),
+     "docs/acme.md: PT2a: a front-matter document",
+     {"docs/acme.md": "+++\n" + REC_TOML + "+++\n"}),
+    # R4: no false positive on a YAML document marker or editor files.
+    ("pt2a/workflow-document-marker-passes", {".github/workflows/x.yml":
+     "---\nname: x\non: push\n"}, (), "PASS"),
+    ("pt2a/yaml-fence-unclosed-passes", {"docs/x.yml": "---\ntitle: x\n"}, (), "PASS"),
+    ("pt2a/toml-fence-unclosed-passes", {"docs/x.md": "+++\ntitle\n"}, (), "PASS"),
+    ("content/editor-files-ignored-pass", {".gitignore": (REPO_ROOT / ".gitignore").read_bytes(),
+     **SCHEMAS, "content/about.md": PAGE.format(extra=""), "content/.about.md.swp": b"b0VIM",
+     "content/about.md~": "x", "content/#about.md#": "x"}, (), "PASS", True),
+    ("content/editor-file-not-ignored-fails", {**SCHEMAS, "content/about.md":
+     PAGE.format(extra=""), "content/.about.md.swp": b"b0VIM"}, (),
+     "PT2a: a file in content/ that is not a static page", "listed"),
+    ("content/hugo-ignored-disk-only-dir-passes", {".gitignore": "/content/.*\n",
+     "content/.drafts/x.md": "+++\n" + REC_TOML + "+++\n"}, (), "PASS", True),
+    # R6: under tests/fixtures/, media only in the guard's fixtures and a
+    # fixture tree's static/, assets/ or public/.
+    ("fixtures-media/mail-elsewhere-fails", {"tests/fixtures/scratch/report.eml": "x"}, (),
+     PT4_MAIL),
+    ("fixtures-media/image-elsewhere-fails", {"tests/fixtures/scratch/shot.dat":
+     IMAGES["png"] + b"0000"}, (), PT4_IMAGE),
+    ("fixtures-media/static-passes", {"tests/fixtures/x/static/a.dat": IMAGES["png"]}, (), "PASS"),
+    ("fixtures-media/assets-passes", {"tests/fixtures/x/assets/a.dat": IMAGES["png"]}, (), "PASS"),
+    ("fixtures-media/public-passes", {"tests/fixtures/x/public/a.dat": IMAGES["png"]}, (), "PASS"),
+    ("fixtures-media/guard-passes", {"tests/fixtures/guard/fail-x/a.eml": "x"}, (), "PASS"),
+    ("fixtures-media/static-as-name-fails", {"tests/fixtures/x/static.eml": "x"}, (), PT4_MAIL),
+    # R8: QA's rows.
+    ("mail-suffix/two-dots", {"docs/saved.2024.eml": "x"}, (), PT4_MAIL),
+    ("mail-suffix/three-dots-mbox", {"docs/a.b.c.mbox": "x"}, (), PT4_MAIL),
+    # Rows from the fix round 1 mutation sweep (each killed a surviving mutant).
+    ("shape/json-record-with-bom", {"docs/acme.json": b"\xef\xbb\xbf" + REC_JSON.encode()},
+     (), PT2A_SHAPE),
+    ("staged/policy-staged-deleted", {"schema/record-policy.json": '{"retired_slugs": ["a"]}'},
+     (), ["schema/record-policy.json (staged): PT3: must be exactly"], "index-only"),
+    ("fixtures-media/file-named-static-fails", {"tests/fixtures/x/static":
+     IMAGES["png"] + b"0000"}, (), PT4_IMAGE),
+    ("exempt/tests-fixtures-case-variant-record-fails", {"Tests/fixtures/x/notes.md":
+     "+++\n" + REC_TOML + "+++\n"}, (), "PT2a: a front-matter document"),
+]
+
 for row in rows:
     name, files, dirs, expect = row[:4]
     use_git = len(row) > 4 and row[4]
@@ -1266,7 +1370,19 @@ for row in rows:
             path.write_bytes(data if isinstance(data, bytes) else data.encode("utf-8"))
         for rel in dirs:
             (root / rel).mkdir(parents=True, exist_ok=True)
-        if use_git == "index-only":
+        # The guard reads git (git's listing, the staged blobs), as in production.
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        if isinstance(use_git, dict):
+            # Staged, then the working-tree copy overwritten: the next commit
+            # carries the staged blob, which the rules must read.
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+            for rel, data in use_git.items():
+                (root / rel).write_bytes(data if isinstance(data, bytes) else data.encode("utf-8"))
+            listed = sitecheck.git_files(root)
+        elif use_git == "listed":
+            listed = sitecheck.git_files(root)  # the swap file is untracked, not ignored
+        elif use_git == "index-only":
             subprocess.run(["git", "init", "-q", str(root)], check=True)
             subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
             for rel in files:
@@ -1365,30 +1481,30 @@ wh += [
     ("trigger-forms/trailing-comma", [(ON, "on: [push, ]\n")], 0, ""),
     ("trigger-forms/settings-nested", [(ON, ON + '  schedule:\n    - cron: "17 6 * * 1"\n')],
      0, ""),
-    ("trigger-forms/alias", [(ON, "on: *triggers\n")], 1, WH1_READ),
-    ("trigger-forms/anchor", [(ON, "on: &triggers\n  push:\n")], 1, WH1_READ),
-    ("trigger-forms/tag", [(ON, "on: !!map\n  push:\n")], 1, WH1_READ),
-    ("trigger-forms/flow-mapping", [(ON, "on: {push: {}}\n")], 1, WH1_READ),
+    ("trigger-forms/alias", [(ON, "on: *triggers\n")], 3, (WH1_READ, "WH reader")),
+    ("trigger-forms/anchor", [(ON, "on: &triggers\n  push:\n")], 3, (WH1_READ, "WH reader")),
+    ("trigger-forms/tag", [(ON, "on: !!map\n  push:\n")], 3, (WH1_READ, "WH reader")),
+    ("trigger-forms/flow-mapping", [(ON, "on: {push: {}}\n")], 2, (WH1_READ, "WH reader")),
     ("trigger-forms/block-scalar", [(ON, "on: |\n  push\n")], 1, WH1_READ),
-    ("trigger-forms/multi-line-flow-list", [(ON, "on: [push,\n  pull_request_target]\n")], 1,
-     WH1_READ),
+    ("trigger-forms/multi-line-flow-list", [(ON, "on: [push,\n  pull_request_target]\n")], 3,
+     (WH1_READ, "WH reader")),
     ("trigger-forms/missing", [(ON, "")], 1, WH1_READ),
-    ("trigger-forms/twice", [(ON, ON + "on: [push]\n")], 1, WH1_READ),
-    ("trigger-forms/top-level-merge-key", [(ON, ON + "<<: *defaults\n")], 1, WH1_READ),
-    ("trigger-forms/complex-key", [(ON, "? on\n: push\n")], 1, WH1_READ),
-    ("trigger-forms/top-level-flow-mapping", [(ON, "{on: push}\n")], 1, WH1_READ),
-    ("trigger-forms/complex-key-beside-on", [(ON, ON + "? on\n: issue_comment\n")], 1,
-     WH1_READ),
-    ("trigger-forms/flow-list-alias-item", [(ON, "on: [push, *more]\n")], 1, WH1_READ),
+    ("trigger-forms/twice", [(ON, ON + "on: [push]\n")], 2, (WH1_READ, "WH reader")),
+    ("trigger-forms/top-level-merge-key", [(ON, ON + "<<: *defaults\n")], 3, (WH1_READ, "WH reader")),
+    ("trigger-forms/complex-key", [(ON, "? on\n: push\n")], 3, (WH1_READ, "WH reader")),
+    ("trigger-forms/top-level-flow-mapping", [(ON, "{on: push}\n")], 2, (WH1_READ, "WH reader")),
+    ("trigger-forms/complex-key-beside-on", [(ON, ON + "? on\n: issue_comment\n")], 3,
+     (WH1_READ, "WH reader")),
+    ("trigger-forms/flow-list-alias-item", [(ON, "on: [push, *more]\n")], 2, (WH1_READ, "WH reader")),
     ("trigger-forms/flow-list-empty-item", [(ON, 'on: [push, ""]\n')], 1, WH1_READ),
     ("trigger-forms/list-item-key-empty", [(ON, "on:\n  - push:\n")], 1, WH1_READ),
-    ("trigger-forms/tab-indent", [(ON, "on:\n\tpush:\n")], 1, WH1_READ),
+    ("trigger-forms/tab-indent", [(ON, "on:\n\tpush:\n")], 3, (WH1_READ, "WH reader")),
     ("trigger-forms/mixed-list-and-mapping", [(ON, "on:\n  - push\n  schedule:\n")], 1,
      WH1_READ),
     ("trigger-forms/empty", [(ON, "on:\n")], 1, WH1_READ),
     ("trigger-forms/compact-list-at-top", [(ON, "on:\n- push\n")], 1, WH1_READ),
     ("trigger-forms/list-item-mapping", [(ON, "on:\n  - push: {}\n")], 1, WH1_READ),
-    ("trigger-forms/flow-list-nested", [(ON, "on: [push, [x]]\n")], 1, WH1_READ),
+    ("trigger-forms/flow-list-nested", [(ON, "on: [push, [x]]\n")], 2, (WH1_READ, "WH reader")),
     ("persist/missing-with", [(WITH, "")], 1, WH2),
     ("persist/missing-key", [("          persist-credentials: false\n",
                               "          fetch-depth: 1\n")], 1, WH2),
@@ -1408,19 +1524,19 @@ wh += [
     ("persist/twice", [("          persist-credentials: false\n",
                         "          persist-credentials: false\n"
                         "          Persist-Credentials: true\n")], 1, WH2),
-    ("persist/alias", [("persist-credentials: false", "persist-credentials: *off")], 1, WH2),
+    ("persist/alias", [("persist-credentials: false", "persist-credentials: *off")], 3, (WH2, "WH reader")),
     ("persist/comment-passes", [("persist-credentials: false",
                                  "persist-credentials: false # no token in .git/config")],
      0, ""),
     ("persist/with-flow-mapping", [(WITH, "        with: {persist-credentials: false}\n")], 2,
      WH2_READ),
-    ("persist/with-alias", [(WITH, "        with: *checkout\n")], 2, WH2_READ),
-    ("persist/step-merge-key", [(WITH, "        <<: *defaults\n" + WITH)], 1,
-     "WH2: the key \"<<\" twice or as a merge key"),
+    ("persist/with-alias", [(WITH, "        with: *checkout\n")], 4, (WH2_READ, "WH reader")),
+    ("persist/step-merge-key", [(WITH, "        <<: *defaults\n" + WITH)], 3,
+     ("WH2: the key \"<<\" twice or as a merge key", "WH reader")),
     ("persist/step-key-twice", [(WITH, WITH + "        name: a\n        name: b\n")], 1,
      "WH2: the key \"name\" twice"),
-    ("persist/with-merge-key", [(WITH, "        with:\n          <<: *checkout\n")], 2,
-     WH2_READ),
+    ("persist/with-merge-key", [(WITH, "        with:\n          <<: *checkout\n")], 4,
+     (WH2_READ, "WH reader")),
     ("persist/name-first-passes", [(STEP, "      - name: checkout\n        uses: actions/"
                                     f"checkout@{sha}\n{WITH}")], 0, ""),
     ("persist/name-first-missing", [(STEP, "      - name: checkout\n        uses: actions/"
@@ -1455,6 +1571,72 @@ wh += [
                           "    runs-on: ubuntu-24.04\n    secrets: inherit\n")], 1, WH4),
     ("secrets/word-part-passes", [("permissions:", "# nosecretsx\npermissions:")], 0, ""),
 ]
+
+# Fix round 1 of interviewscam-site#11. R1: the reader fails closed on every
+# form a YAML parser could read differently; R5: the function is safe alone.
+RD = "WH reader"
+REVIEW_TAIL = BASE[BASE.index("permissions:"):]
+for label, ch in (("U+2028", "\u2028"), ("U+2029", "\u2029"), ("U+0085", "\u0085"),
+                  ("U+FEFF", "\ufeff"), ("U+000B", "\x0b"), ("U+000C", "\x0c"),
+                  ("U+0000", "\x00"), ("U+001F", "\x1f"), ("U+007F", "\x7f"),
+                  ("U+009F", "\x9f")):
+    wh.append((f"reader/char-{label}", [("name: ci", f'name: "c{ch}i"')], 1, RD))
+wh += [
+    ("reader/bom-at-start", [("name: ci", "\ufeffname: ci")], 1, RD),
+    ("reader/lone-cr", [("name: ci", "name: ci\ron: [pull_request_target]")], 1, RD),
+    ("reader/crlf-passes", [(BASE, BASE.replace("\n", "\r\n"))], 0, ""),
+    ("reader/tab-before-colon", [(ON, "on\t: [pull_request_target]\n")], 2, (RD, WH1_READ)),
+    ("reader/tab-in-value", [("runs-on: ubuntu-24.04", "runs-on: ubuntu-24.04\t")], 1, RD),
+    ("reader/document-start-passes", [("name: ci", "---\nname: ci")], 0, ""),
+    ("reader/second-document", [("permissions:", "---\npermissions:")], 1, RD),
+    ("reader/document-end", [("permissions:", "...\npermissions:")], 1, RD),
+    ("reader/directive", [("name: ci", "%YAML 1.2\nname: ci")], 1, RD),
+    ("reader/anchor-top-level-key", [(ON, ON + "&a on: [pull_request_target]\n")], 1, RD),
+    ("reader/top-level-key-twice", [("permissions:", "name: x\npermissions:")], 1, RD),
+    ("reader/multi-line-double-quoted", [("name: ci", 'name: "ci\nx: y"')], 1, RD),
+    ("reader/multi-line-single-quoted", [("name: ci", "name: 'ci\nx: y'")], 1, RD),
+    ("reader/plain-continuation", [("runs-on: ubuntu-24.04", "runs-on: ubuntu-24.04\n      x")],
+     1, RD),
+    ("reader/flow-mapping-value-passes", [("permissions:\n  contents: read",
+                                           "permissions: {}")], 0, ""),
+    ("reader/alias-after-block-scalar", [(WITH, WITH + "          path: |\n            a\n"
+                                          "          ref: *x\n")], 2, RD),
+    ("reader/uses-flow-list", [(STEP, f"      - uses: [actions/checkout@{sha}]\n")], 1,
+     "WH reader: uses: without a scalar value"),
+    ("reader/block-scalar-passes", [(WITH, WITH + "          path: |\n            a: b\n")],
+     0, ""),
+    ("reader/review-bom-and-line-separator", [(BASE, '\ufeffon: [pull_request_target]\nname: '
+     '"ci\u2028on: push\u2028x: y"\n' + REVIEW_TAIL)], 3, (RD, WH1_READ)),
+    ("reader/review-bom-and-newlines", [(BASE, '\ufeffon: [pull_request_target]\nname: '
+     '"ci\non: push\nx: y"\n' + REVIEW_TAIL)], 2, RD),
+    ("reader/review-tab-and-line-separator", [(BASE, 'name: "ci\u2028on: push\u2028x: y"\n'
+     'on\t: [pull_request_target]\n' + REVIEW_TAIL)], 3, (RD, WH1_READ)),
+    ("reader/review-with-line-separator", [("          persist-credentials: false\n",
+     '          path: "src\u2028          persist-credentials: false\u2028          clean: '
+     'true"\n')], 2, (RD, WH2)),
+    ("reader/review-with-newlines", [("          persist-credentials: false\n",
+     '          path: "src\n          persist-credentials: false\n          clean: true"\n')],
+     1, RD),
+    ("reader/alias-uses", [(STEP, f"      - name: &co actions/checkout@{sha}\n"
+     "        run: bash tools/check.sh\n      - uses: *co\n")], 4, RD),
+    ("reader/escaped-uses", [(STEP, '      - uses: "actions/c\\x68eckout@' + sha + '"\n')], 2, RD),
+    ("reader/block-scalar-uses", [(STEP, f"      - uses: >-\n          actions/checkout@{sha}\n")],
+     1, "WH reader: uses: as a block scalar"),
+    ("reader/escaped-secrets", [("        shell: bash\n",
+     '        shell: bash\n        name: "${{ s\\x65crets.X }}"\n')], 2, RD),
+    # R8: QA's rows.
+    ("persist/with-nested-decoy", [(WITH, "        with:\n          x:\n"
+                                    "            persist-credentials: false\n")], 1, WH2),
+    ("persist/with-block-scalar-decoy", [(WITH, "        with:\n          ref: |\n"
+                                          "            persist-credentials: false\n")], 1, WH2),
+    ("persist/one-line-step-above-hardened", [(STEP, f"      - uses: actions/checkout@{sha}\n"
+                                               f"      - name: x\n{WITH}")], 1, WH2),
+    ("persist/siblings-before-uses-below-hardened", [(STEP, STEP + "      - name: n\n"
+     f"        id: i\n        uses: actions/checkout@{sha}\n")], 1, WH2),
+    ("trigger-forms/unterminated-double", [(ON, 'on: "push\n')], 2, (RD, WH1_READ)),
+    ("trigger-forms/unterminated-single", [(ON, "on: 'push\n")], 2, (RD, WH1_READ)),
+    ("credential/comment-mention-passes", [(WITH, WITH + "          # token: x\n")], 0, ""),
+]
 for name, edits, count, expect in wh:
     if edits is None:
         ok = tuple(sitecheck.WORKFLOW_TRIGGERS_ALLOWED) == ALLOWED
@@ -1471,7 +1653,10 @@ for name, edits, count, expect in wh:
         findings = sitecheck.Findings()
         sitecheck.guard_workflow_hardening(".github/workflows/w.yml", text, findings)
         items = findings.items
-        ok = len(items) == count and all(expect in item for item in items)
+        if isinstance(expect, tuple):
+            ok = len(items) == count and all(any(e in item for item in items) for e in expect)
+        else:
+            ok = len(items) == count and all(expect in item for item in items)
         report("guard-wf", name, ok,
                ("passed as expected" if not count else
                 f"failed as expected: {count} x {expect}") if ok else
