@@ -114,7 +114,10 @@ import threading
 import time
 import tomllib
 import unicodedata
+import ssl
+import urllib.error
 import urllib.parse
+import urllib.request
 import zlib
 from pathlib import Path
 
@@ -6575,7 +6578,11 @@ PINNED_ALLOWLISTS = LITERALS_PASSING_SETS + (
     # The public-tree guard and the workflow hardening (ADR-0007 part 4):
     # the allowed triggers and the two exemptions.
     "WORKFLOW_TRIGGERS_ALLOWED", "PUBLIC_TREE_EXEMPT", "PUBLIC_IMAGE_DIRS",
-    "PUBLIC_FIXTURE_MEDIA", "PUBLIC_FIXTURE_MEDIA_DIRS", "PUBLIC_LINK_EXEMPT")
+    "PUBLIC_FIXTURE_MEDIA", "PUBLIC_FIXTURE_MEDIA_DIRS", "PUBLIC_LINK_EXEMPT",
+    # Records mode (ADR-0007 part 5): the records repo's closed layout and
+    # the closed key sets of its workflows.
+    "RECORDS_TOP", "RECORDS_WORKFLOWS", "RECORDS_TOP_KEYS", "RECORDS_JOB_KEYS",
+    "RECORDS_STEP_KEYS")
 # L5: the CSS properties and @counter-style descriptors whose strings the
 # browser draws as text.
 CSS_TEXT_PROPERTIES = {"content", "list-style", "list-style-type", "quotes",
@@ -14040,8 +14047,15 @@ def action_pins(root, findings):
     return pins
 
 
-def guard_workflows(root, files, findings):
-    pins = action_pins(root, findings)
+def guard_workflows(root, files, findings, pins_root=None, records_sha=None):
+    """The workflow rules of the guard. In records mode (records_sha set,
+    ADR-0007 part 5, Replikanti/interviewscam#38 PR C) root is the private
+    records repo and pins_root the public checkout at the pin, whose
+    tools/pins.env allowlists the actions; a run step may then only start
+    check.sh in records mode or lighthouse.sh --records, env: is left to
+    records_workflow_rules, which allows exactly one form, and those rules
+    run on top."""
+    pins = action_pins(pins_root or root, findings)
     for rel in files:
         if not rel.startswith(".github/workflows/"):
             continue
@@ -14068,7 +14082,13 @@ def guard_workflows(root, files, findings):
                                  "SHA from a fork network resolves under actions/ "
                                  "too)")
             match = RUN_KEY.search(line)
-            if match and not RUN_ALLOWED.fullmatch(match.group(1)):
+            if match and records_sha is not None:
+                if not any(form.fullmatch(match.group(1)) for form in RECORDS_RUN_ALLOWED):
+                    findings.add(f"{rel}:{n}", f"run step {match.group(1).strip()!r}: a "
+                                 "records repo workflow may only run `bash site/tools/check.sh "
+                                 "--records records [--external]` or, in the job lighthouse, "
+                                 f"`bash tools/lighthouse.sh --records` ({RECORDS_WHY})")
+            elif match and not RUN_ALLOWED.fullmatch(match.group(1)):
                 findings.add(f"{rel}:{n}", f"run step {match.group(1).strip()!r}: a "
                              "workflow may only run `bash tools/<name>.sh [--flag]` "
                              "(D3; the tool scan covers tools/)")
@@ -14077,7 +14097,9 @@ def guard_workflows(root, files, findings):
                 findings.add(f"{rel}:{n}", f"shell {match.group(1).strip()!r}: "
                              "only bash is allowed")
             match = EXEC_KEYS.search(line)
-            if match:
+            # Records mode: records_workflow_rules allows env: in one form
+            # and fails every other env: line with the same pattern.
+            if match and not (records_sha is not None and match.group(1) == "env"):
                 findings.add(f"{rel}:{n}", f"{match.group(1)}: not allowed in a "
                              "workflow (a container, service, working directory "
                              "or environment can run code the tool scan never "
@@ -14107,6 +14129,8 @@ def guard_workflows(root, files, findings):
                              "of a run with that job can hold what registry code "
                              "wrote (ADR-0003 part 2)")
         guard_workflow_hardening(rel, text, findings)
+        if records_sha is not None:
+            records_workflow_rules(rel, text, records_sha, findings)
 
 
 # Workflow hardening (ADR-0007 part 4, Replikanti/interviewscam#38 PR B): one
@@ -14484,7 +14508,8 @@ LIGHTHOUSE_CREDENTIALS = [
     (re.compile(r"(?i)(?<![\w-])secrets(?![\w-])"), "a secrets reference"),
     (re.compile(r"""(?i)(?<![\w-])github\s*(?:\.\s*|\[\s*['"]?)token(?![\w-])"""),
      "a github.token reference"),
-    (re.compile(r"""(?i)(?<![\w-])['"]?(github-token|run-id|repository)['"]?\s*:"""),
+    (LIGHTHOUSE_REPOSITORY := re.compile(
+        r"""(?i)(?<![\w-])['"]?(github-token|run-id|repository)['"]?\s*:"""),
      "a download input that reads another run or repository"),
 ]
 NEEDS_KEY = re.compile(r"\s*needs\s*:(.*)$")
@@ -14533,11 +14558,16 @@ def workflow_jobs(lines):
     return jobs
 
 
-def guard_lighthouse_workflow(root, files, findings):
+def guard_lighthouse_workflow(root, files, findings, records_mode=False):
     """The job that runs tools/lighthouse.sh holds no token permission and
     no other credential, has no checkout, uploads nothing and is a leaf; only
     it downloads an artifact; the workflow never builds the Pages artifact
-    (ADR-0003 part 2)."""
+    (ADR-0003 part 2). In records mode (the private records repo, ADR-0007
+    part 5) the job build checks out the public repo, so a line
+    `repository: Replikanti/interviewscam-site` outside the job that runs
+    tools/lighthouse.sh passes the credential rule; records_workflow_rules
+    holds it to a checkout's with: block. Every other credential form stays
+    refused file-wide."""
     if LIGHTHOUSE_WORKFLOW not in files:
         return
     rel = LIGHTHOUSE_WORKFLOW
@@ -14547,8 +14577,24 @@ def guard_lighthouse_workflow(root, files, findings):
         findings.add(rel, f"cannot read: {exc}")
         return
     lines = text.splitlines()
+    public_checkout_lines = set()
+    if records_mode:
+        jobs = workflow_jobs(lines)
+        for job, body in (jobs or {}).items():
+            if any((m := RUN_KEY.search(line)) and LIGHTHOUSE_REFERENCE.search(m.group(1))
+                   for _, line in body):
+                continue
+            for n, line in body:
+                parsed = yaml_line(line)
+                if (parsed and parsed[3] == "repository"
+                        and yaml_scalar(parsed[4]) in (("plain", PUBLIC_REPO),
+                                                       ("double", PUBLIC_REPO),
+                                                       ("single", PUBLIC_REPO))):
+                    public_checkout_lines.add(n)
     for n, line in enumerate(lines, 1):
         for rule, label in LIGHTHOUSE_CREDENTIALS:
+            if rule is LIGHTHOUSE_REPOSITORY and n in public_checkout_lines:
+                continue
             if rule.search(line):
                 findings.add(f"{rel}:{n}", f"{label} in {LIGHTHOUSE_WORKFLOW}; no "
                              "credential may reach the job that runs registry "
@@ -15167,6 +15213,601 @@ def cmd_guard(args):
 
 
 # ---------------------------------------------------------------------------
+# Records mode and the pin rule (ADR-0007 part 5, Replikanti/interviewscam#38
+# PR C). `check.sh --records <dir>` builds the site from a checkout of this
+# repo at a pinned commit and the records of the private records repo in
+# <dir>. Two subcommands guard it: `pin` (network) proves the checked-out
+# commit is a valid pin, `records-repo` (no network) holds the records repo
+# to its closed layout and its workflows to the records forms.
+
+RECORDS_WHY = "ADR-0007 part 5"
+PUBLIC_REPO = "Replikanti/interviewscam-site"
+# The GitHub Actions app, which reports the job `check`; the required
+# context of both repos' protection carries the same app_id (ADR-0007
+# Numbers). Any other app could post a status named check.
+ACTIONS_APP_ID = 15368
+PIN_SHA = re.compile(r"[0-9a-f]{40}")
+# The records repo's closed layout (ADR-0007 part 1): its top level, its
+# workflows and its one schema file. Every other input of the build comes
+# from the public repo at the pin, so the records repo cannot ship a
+# template, a schema, copy or config.
+RECORDS_TOP = (".git", ".github", ".gitignore", "CLAUDE.md", "README.md", "content", "schema")
+RECORDS_WORKFLOWS = ("ci.yml", "lighthouse.yml", "links-external.yml", "deploy.yml")
+# The run steps of a records repo workflow: check.sh in records mode, from
+# the public checkout in site/ on the records checkout in records/, and in
+# the job lighthouse of lighthouse.yml only the Lighthouse run on the
+# production pages.
+RECORDS_RUN_ALLOWED = (
+    re.compile(r" bash site/tools/check\.sh --records records(?: --external)?"),
+    re.compile(r" bash tools/lighthouse\.sh --records"),
+)
+RECORDS_CHECK_RUN, RECORDS_LIGHTHOUSE_RUN = RECORDS_RUN_ALLOWED
+RECORDS_LIGHTHOUSE_JOB = "lighthouse"
+# Closed key sets of a records repo workflow. Not in them, on purpose: if:
+# and continue-on-error (a skipped or tolerated job reports success to a
+# required check), strategy (a matrix), env and defaults (EXEC_KEYS), and
+# any key GitHub may add later.
+RECORDS_TOP_KEYS = ("name", "on", "permissions", "concurrency", "jobs")
+RECORDS_JOB_KEYS = ("runs-on", "timeout-minutes", "permissions", "needs", "steps")
+RECORDS_STEP_KEYS = ("name", "uses", "with", "shell", "env", "run")
+RECORDS_RUNNER = "ubuntu-24.04"
+# The one env: a records workflow may hold, on a check.sh step outside
+# lighthouse.yml: the job token for the pin rule's two API reads (check.sh
+# unsets it right after the pin step).
+RECORDS_ENV = ("GH_TOKEN", "${{ github.token }}")
+# The two checkouts of a job that runs check.sh: the records repo itself,
+# and the public repo at the pin.
+RECORDS_SELF_CHECKOUT = {"persist-credentials": "false", "path": "records"}
+RECORDS_PUBLIC_CHECKOUT = {"persist-credentials": "false", "repository": PUBLIC_REPO,
+                           "ref": None, "path": "site"}
+# The pin rule's API reads (ADR-0007 Numbers, "Pin requests"): 20 s per
+# request, 24 times the slowest measured call (0.83 s); 3 tries 5 s apart on
+# a connection error or a 5xx only, because a 4xx (a 404, a rate limit) does
+# not clear in seconds; worst case 3 x 20 + 2 x 5 = 70 s, inside the private
+# job's 600 s cap.
+GITHUB_API = "https://api.github.com"
+PIN_API_OVERRIDE = re.compile(r"http://127\.0\.0\.1:[0-9]{1,5}")
+PIN_TIMEOUT = 20
+PIN_TRIES = 3
+PIN_RETRY_DELAY = 5
+
+
+def git_out(root, *args):
+    """(exit code, stdout) of a git command in root, never raising."""
+    try:
+        proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True,
+                              timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 1, str(exc)
+    return proc.returncode, proc.stdout.decode("utf-8", "replace")
+
+
+def records_root_state(root, sha, findings):
+    """The public checkout is clean and at the pin (no local edit can ride
+    along with a green check of another tree)."""
+    rc, status = git_out(root, "status", "--porcelain", "--untracked-files=all")
+    if rc != 0:
+        findings.add(str(root), f"the public checkout is not a git work tree ({RECORDS_WHY})")
+        return
+    if status.strip():
+        findings.add(str(root), "the public checkout has uncommitted or untracked changes; "
+                     "records mode runs only on a clean checkout of the pinned commit "
+                     f"({RECORDS_WHY})")
+    rc, head = git_out(root, "rev-parse", "--verify", "HEAD^{commit}")
+    if rc != 0 or head.strip() != sha:
+        findings.add(str(root), f"HEAD is {head.strip()[:12] or 'unreadable'}, not the pin "
+                     f"{sha[:12]} ({RECORDS_WHY})")
+
+
+def records_listing(rdir, findings):
+    """git's listing of the records repo (tracked plus untracked, not
+    ignored), or None when rdir is not the top of a git work tree."""
+    rc, top = git_out(rdir, "rev-parse", "--show-toplevel")
+    if rc != 0 or not top.strip():
+        findings.add(str(rdir), f"the records repo is not a git work tree ({RECORDS_WHY})")
+        return None
+    if Path(top.strip()).resolve() != rdir:
+        findings.add(str(rdir), "the records repo is not the top of its git work tree "
+                     f"(the top is elsewhere); give its root ({RECORDS_WHY})")
+        return None
+    rc, out = git_out(rdir, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    if rc != 0:
+        findings.add(str(rdir), f"git cannot list the records repo ({RECORDS_WHY})")
+        return None
+    return sorted({p for p in out.split("\0") if p})
+
+
+def records_layout(rdir, files, findings):
+    """The closed layout (ADR-0007 parts 1 and 5); returns the number of
+    records."""
+    n_records = 0
+    for rel in files:
+        parts = rel.split("/")
+        where = f"records repo: {rel}"
+        links = ["/".join(parts[:i]) for i in range(1, len(parts) + 1)
+                 if (rdir / "/".join(parts[:i])).is_symlink()]
+        if links:
+            findings.add(where, f"a symlink ({links[0]}); nothing in the records repo may be "
+                         f"one, the build reads what it points to ({RECORDS_WHY})")
+            continue
+        if not (rdir / rel).is_file():
+            findings.add(where, f"listed by git but not a regular file on disk ({RECORDS_WHY})")
+            continue
+        top = parts[0]
+        if top not in RECORDS_TOP:
+            findings.add(where, f"{json.dumps(top)} is not a member of the records repo's "
+                         f"top level ({', '.join(RECORDS_TOP)}); templates, schemas, copy and "
+                         f"config come only from the public repo at the pin ({RECORDS_WHY})")
+        elif top in (".gitignore", "CLAUDE.md", "README.md"):
+            if len(parts) != 1:
+                findings.add(where, f"{top} must be a file at the top level ({RECORDS_WHY})")
+        elif top == "content":
+            if len(parts) == 2:
+                findings.add(where, "a page directly in content/; the static pages come only "
+                             f"from the public repo ({RECORDS_WHY})")
+            elif parts[1] not in RECORD_SCHEMAS:
+                findings.add(where, f"{json.dumps(parts[1])} is not a record section "
+                             f"({', '.join(RECORD_SCHEMAS)}) ({RECORDS_WHY})")
+            elif len(parts) != 3:
+                findings.add(where, "a subdirectory in a record section; a section holds "
+                             f"only its *.md records ({RECORDS_WHY})")
+            elif parts[2].startswith("."):
+                findings.add(where, f"a dot file in a record section ({RECORDS_WHY})")
+            elif not parts[2].endswith(".md"):
+                findings.add(where, f"not a *.md record in a record section ({RECORDS_WHY})")
+            elif parts[2] != "_index.md":
+                n_records += 1
+        elif top == "schema":
+            if rel != f"schema/{RECORD_POLICY}":
+                findings.add(where, f"schema/ holds only {RECORD_POLICY}; every schema comes "
+                             f"from the public repo at the pin ({RECORDS_WHY})")
+        elif top == ".github":
+            if len(parts) != 3 or parts[1] != "workflows" or parts[2] not in RECORDS_WORKFLOWS:
+                findings.add(where, ".github/ holds only workflows/{"
+                             f"{','.join(RECORDS_WORKFLOWS)}}} ({RECORDS_WHY})")
+        else:
+            findings.add(where, f"a file inside {top} ({RECORDS_WHY})")
+    return n_records
+
+
+def mapping_children(lines, idx, end, findings, where_prefix, what):
+    """{key: (index, value)} of the block mapping under the key on line idx
+    (up to end), or None after a finding when the reader cannot follow it."""
+    parsed = yaml_line(lines[idx])
+    base = parsed[1] if parsed[2] else parsed[0]
+    if yaml_scalar(parsed[4])[0] != "empty":
+        findings.add(f"{where_prefix}:{idx + 1}", f"{what} must be a block mapping the guard "
+                     f"reads (fails closed, {RECORDS_WHY})")
+        return None
+    children, child = {}, None
+    for j in range(idx + 1, end):
+        below = yaml_line(lines[j])
+        if below is None:
+            continue
+        indent, _, dash, key, value = below
+        if indent <= base:
+            break
+        if child is None:
+            child = indent
+        if indent != child or dash or not isinstance(key, str) or key in children:
+            findings.add(f"{where_prefix}:{j + 1}", f"a line of {what} the guard cannot read "
+                         f"(nested, a list, a repeated key; fails closed, {RECORDS_WHY})")
+            return None
+        children[key] = (j, value)
+    return children
+
+
+def scalar_of(value):
+    """The scalar of a value written on its line, or None."""
+    kind, text = yaml_scalar(value)
+    return text if kind in ("plain", "double", "single") else None
+
+
+def job_layout(lines, body, rel, job, findings):
+    """({key: (index, value)} of a job, [(start, end, column)] of its steps),
+    or None after a finding when the reader cannot follow the job."""
+    parsed = [(n - 1, p) for n, line in body if (p := yaml_line(line)) is not None]
+    if not parsed:
+        findings.add(f"{rel}: job {job}", f"an empty job (fails closed, {RECORDS_WHY})")
+        return None
+    child = parsed[0][1][0]
+    keys = {}
+    for i, (indent, column, dash, key, value) in parsed:
+        if indent > child:
+            continue
+        if indent < child or dash or not isinstance(key, str) or key in keys:
+            findings.add(f"{rel}:{i + 1}", f"a line of job {job} the guard cannot read "
+                         f"(fails closed, {RECORDS_WHY})")
+            return None
+        keys[key] = (i, value)
+    if "steps" not in keys:
+        findings.add(f"{rel}: job {job}", f"no steps (fails closed, {RECORDS_WHY})")
+        return None
+    steps_at = keys["steps"][0]
+    if yaml_scalar(keys["steps"][1])[0] != "empty":
+        findings.add(f"{rel}:{steps_at + 1}", f"steps: must be a block list (fails closed, "
+                     f"{RECORDS_WHY})")
+        return None
+    after = [(i, p) for i, p in parsed if i > steps_at]
+    if not after or not after[0][1][2]:
+        findings.add(f"{rel}:{steps_at + 1}", f"steps: holds no list item the guard reads "
+                     f"(fails closed, {RECORDS_WHY})")
+        return None
+    item = after[0][1][0]
+    steps, end = [], body[-1][0]  # one past the job's last line
+    for i, (indent, column, dash, key, value) in after:
+        if indent < item or (indent == item and not dash):
+            if indent > child:
+                findings.add(f"{rel}:{i + 1}", f"a line of steps the guard cannot read "
+                             f"(fails closed, {RECORDS_WHY})")
+                return None
+            end = i
+            break
+        if indent == item and dash:
+            steps.append([i, None, column])
+    bounds = [s[0] for s in steps] + [end]
+    for k, step in enumerate(steps):
+        step[1] = bounds[k + 1]
+    return keys, [tuple(s) for s in steps]
+
+
+def step_keys(lines, step, rel, findings):
+    """{key: (index, value)} of one step, or None after a finding."""
+    start, end, column = step
+    keys = {}
+    for j in range(start, end):
+        parsed = yaml_line(lines[j])
+        if parsed is None:
+            continue
+        indent, col, dash, key, value = parsed
+        at_step = (j == start and col == column) or (j > start and indent == column and not dash)
+        if not at_step:
+            if j > start and indent <= column:
+                findings.add(f"{rel}:{j + 1}", "a line of a step the guard cannot read "
+                             f"(fails closed, {RECORDS_WHY})")
+                return None
+            continue
+        if not isinstance(key, str) or key in keys:
+            findings.add(f"{rel}:{j + 1}", "a step line the guard cannot read or a repeated "
+                         f"key (fails closed, {RECORDS_WHY})")
+            return None
+        keys[key] = (j, value)
+    return keys
+
+
+def records_checkout(rel, lines, step, keys, sha, findings):
+    """'self', 'public' or None (with a finding) for one actions/checkout
+    step of a records repo workflow (ADR-0007 part 5)."""
+    if set(keys) - {"name", "uses", "with"}:
+        findings.add(f"{rel}:{step[0] + 1}", "a checkout step may hold only name, uses and "
+                     f"with ({RECORDS_WHY})")
+        return None
+    if "with" not in keys:
+        return None  # WH2 names the missing persist-credentials
+    inputs = mapping_children(lines, keys["with"][0], step[1], findings, rel,
+                              "with: of actions/checkout")
+    if inputs is None:
+        return None
+    values = {k: scalar_of(v) for k, (_, v) in inputs.items()}
+    want = RECORDS_PUBLIC_CHECKOUT if "repository" in inputs else RECORDS_SELF_CHECKOUT
+    kind = "public" if want is RECORDS_PUBLIC_CHECKOUT else "self"
+    ok = True
+    for key in sorted(set(inputs) - set(want)):
+        findings.add(f"{rel}:{inputs[key][0] + 1}", f"checkout input {json.dumps(key)}: the "
+                     f"{kind} checkout of a records workflow takes exactly "
+                     f"{', '.join(want)} (compared exactly; fails closed, {RECORDS_WHY})")
+        ok = False
+    for key in want:
+        if key not in inputs:
+            findings.add(f"{rel}:{step[0] + 1}", f"the {kind} checkout lacks {key}: "
+                         f"({RECORDS_WHY})")
+            ok = False
+        elif key == "ref":
+            ref = values[key]
+            line = f"{rel}:{inputs[key][0] + 1}"
+            if ref is None or not PIN_SHA.fullmatch(ref):
+                findings.add(line, f"ref: of the public checkout is {json.dumps(ref)}, not 40 "
+                             "lowercase hex characters (a branch, a tag or an expression "
+                             f"moves without a private PR; {RECORDS_WHY})")
+                ok = False
+            elif ref != sha:
+                findings.add(line, f"ref: {ref[:12]} is not the pin {sha[:12]}, the commit "
+                             f"this check runs from; every ref: moves together ({RECORDS_WHY})")
+                ok = False
+        elif key != "persist-credentials" and values[key] != want[key]:
+            findings.add(f"{rel}:{inputs[key][0] + 1}", f"{key}: of the {kind} checkout must "
+                         f"be exactly {json.dumps(want[key])}, not {json.dumps(values[key])} "
+                         f"({RECORDS_WHY})")
+            ok = False
+    return kind if ok else None
+
+
+def records_workflow_rules(rel, text, sha, findings):
+    """The records forms of one records repo workflow (ADR-0007 part 5), on
+    top of guard_workflows and the hardening: closed top-level, job and step
+    keys, the GitHub-hosted runner, a timeout on every job, run steps only in
+    their job, the one env: form, and in every job that runs check.sh
+    exactly one checkout of the records repo and one of the public repo at
+    the pin."""
+    lines = workflow_lines(text)
+    lighthouse_file = rel == LIGHTHOUSE_WORKFLOW
+    for i, line in enumerate(lines):
+        parsed = yaml_line(line)
+        if parsed and parsed[0] == 0 and not parsed[2] and isinstance(parsed[3], str) \
+                and parsed[3] not in RECORDS_TOP_KEYS:
+            findings.add(f"{rel}:{i + 1}", f"top-level key {json.dumps(parsed[3])}: a records "
+                         f"workflow holds only {', '.join(RECORDS_TOP_KEYS)} ({RECORDS_WHY})")
+    jobs = workflow_jobs(lines)
+    if jobs is None:
+        findings.add(rel, f"cannot read the jobs block by indentation (fails closed, "
+                     f"{RECORDS_WHY})")
+        return
+    if rel == ".github/workflows/ci.yml" and "check" not in jobs:
+        findings.add(rel, "no job `check`: the private protection requires exactly that "
+                     f"context ({RECORDS_WHY})")
+    env_ok = set()
+    for job, body in jobs.items():
+        layout = job_layout(lines, body, rel, job, findings)
+        if layout is None:
+            continue
+        keys, steps = layout
+        for key, (i, value) in keys.items():
+            if key not in RECORDS_JOB_KEYS:
+                findings.add(f"{rel}:{i + 1}", f"job key {json.dumps(key)}: a records job "
+                             f"holds only {', '.join(RECORDS_JOB_KEYS)} (no if: or "
+                             "continue-on-error, which report a skipped or failed check as "
+                             f"success; {RECORDS_WHY})")
+        runner = scalar_of(keys["runs-on"][1]) if "runs-on" in keys else None
+        if runner != RECORDS_RUNNER:
+            findings.add(f"{rel}: job {job}", f"runs-on must be exactly {RECORDS_RUNNER}, a "
+                         "GitHub-hosted runner (a self-hosted one runs the checks on a "
+                         f"machine of its own; ADR-0007 part 1)")
+        timeout = scalar_of(keys["timeout-minutes"][1]) if "timeout-minutes" in keys else None
+        if timeout is None or not re.fullmatch(r"[1-9][0-9]*", timeout):
+            findings.add(f"{rel}: job {job}", "no timeout-minutes as a plain whole number; the "
+                         "default of 360 minutes would let a hung job spend the metered "
+                         "budget (ADR-0007 part 6)")
+        checkouts, check_runs = [], 0
+        lighthouse_job = lighthouse_file and job == RECORDS_LIGHTHOUSE_JOB
+        for step in steps:
+            skeys = step_keys(lines, step, rel, findings)
+            if skeys is None:
+                continue
+            for key, (i, _) in skeys.items():
+                if key not in RECORDS_STEP_KEYS:
+                    findings.add(f"{rel}:{i + 1}", f"step key {json.dumps(key)}: a records "
+                                 f"step holds only {', '.join(RECORDS_STEP_KEYS)} ({RECORDS_WHY})")
+            uses = scalar_of(skeys["uses"][1]) if "uses" in skeys else None
+            if "run" in skeys:
+                run = RUN_KEY.search(lines[skeys["run"][0]])
+                form = RECORDS_LIGHTHOUSE_RUN if lighthouse_job else RECORDS_CHECK_RUN
+                if not run or not form.fullmatch(run.group(1)):
+                    findings.add(f"{rel}:{skeys['run'][0] + 1}", "in this job a run step may only "
+                                 + ("be `bash tools/lighthouse.sh --records`" if lighthouse_job
+                                    else "start `bash site/tools/check.sh --records records"
+                                    " [--external]`") + f" ({RECORDS_WHY})")
+                else:
+                    check_runs += not lighthouse_job
+                if "uses" in skeys or "with" in skeys:
+                    findings.add(f"{rel}:{step[0] + 1}", "a step with both run and uses or "
+                                 f"with (fails closed, {RECORDS_WHY})")
+                if "env" in skeys:
+                    env = mapping_children(lines, skeys["env"][0], step[1], findings, rel, "env:")
+                    good = (not lighthouse_file and run and RECORDS_CHECK_RUN.fullmatch(run.group(1))
+                            and env is not None and len(env) == 1 and RECORDS_ENV[0] in env
+                            and yaml_scalar(env[RECORDS_ENV[0]][1]) == ("plain", RECORDS_ENV[1]))
+                    if good:
+                        env_ok.add(skeys["env"][0])
+                        env_ok.add(env[RECORDS_ENV[0]][0])
+            elif uses is not None and CHECKOUT_ACTION.match(uses):
+                kind = records_checkout(rel, lines, step, skeys, sha, findings)
+                checkouts.append(kind or "bad")
+            elif uses is None:
+                findings.add(f"{rel}:{step[0] + 1}", "a step with neither run nor uses "
+                             f"(fails closed, {RECORDS_WHY})")
+            elif "env" in skeys or "shell" in skeys:
+                findings.add(f"{rel}:{step[0] + 1}", f"env: or shell: on a uses step "
+                             f"({RECORDS_WHY})")
+        if check_runs:
+            for kind in ("self", "public"):
+                n = checkouts.count(kind)
+                if n != 1:
+                    findings.add(f"{rel}: job {job}", f"runs check.sh with {n} {kind} "
+                                 "checkout(s); it needs exactly one checkout of the records "
+                                 "repo (path records) and one of the public repo at the pin "
+                                 f"(path site) ({RECORDS_WHY})")
+        elif checkouts:
+            findings.add(f"{rel}: job {job}", "a checkout in a job that does not run check.sh "
+                         f"({RECORDS_WHY})")
+    for i, line in enumerate(lines):
+        match = EXEC_KEYS.search(line)
+        if match and match.group(1) == "env" and i not in env_ok:
+            findings.add(f"{rel}:{i + 1}", "env: only as `GH_TOKEN: ${{ github.token }}` on "
+                         "the check.sh step, and never in lighthouse.yml (the job that runs "
+                         f"registry code holds no credential; {RECORDS_WHY})")
+
+
+def cmd_records_repo(args):
+    """The records repo's closed layout and its workflows (ADR-0007 part 5),
+    against the public checkout at the pin: no network."""
+    root = Path(args.root).resolve()
+    rdir = Path(args.dir).resolve()
+    sha = args.sha
+    if not PIN_SHA.fullmatch(sha):
+        raise UsageError(f"--sha {sha!r} is not 40 lowercase hex characters")
+    for flag, path in (("--root", root), ("--dir", rdir)):
+        if not path.is_dir():
+            raise UsageError(f"{flag} {path} is not a directory")
+    findings = Findings()
+    records_root_state(root, sha, findings)
+    files = records_listing(rdir, findings)
+    n_records = n_workflows = 0
+    if files is not None:
+        n_records = records_layout(rdir, files, findings)
+        workflows = [f for f in files if f.startswith(".github/workflows/")
+                     and (rdir / f).is_file() and not (rdir / f).is_symlink()]
+        n_workflows = len(workflows)
+        guard_workflows(rdir, workflows, findings, pins_root=root, records_sha=sha)
+        guard_lighthouse_workflow(rdir, workflows, findings, records_mode=True)
+    return findings.report(f"records-repo checked: {len(files or ())} files, {n_records} "
+                           f"records, {n_workflows} workflows, against the pin {sha[:12]}")
+
+
+class PinNoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None  # a redirect is an error answer, never followed with the token
+
+
+def pin_api_base():
+    base = os.environ.get("SITECHECK_GITHUB_API", "")
+    if not base:
+        return GITHUB_API
+    if not PIN_API_OVERRIDE.fullmatch(base):
+        raise UsageError("SITECHECK_GITHUB_API may only name the self-test's stub API on "
+                         "loopback (http://127.0.0.1:<port>); unset it to reach GitHub")
+    return base
+
+
+def pin_get(opener, url, token, label):
+    """(status, parsed JSON or None, problem) of one GET with the pin rule's
+    tries; never raises, never prints the token."""
+    for attempt in range(1, PIN_TRIES + 1):
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("Accept", "application/vnd.github+json")
+        req.add_header("X-GitHub-Api-Version", "2022-11-28")
+        req.add_header("User-Agent", "interviewscam-sitecheck")
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        status, data, problem = None, b"", None
+        try:
+            with opener.open(req, timeout=PIN_TIMEOUT) as resp:
+                status, data = resp.status, resp.read()
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            try:
+                data = exc.read()
+            except OSError:
+                data = b""
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            reason = getattr(exc, "reason", exc)
+            problem = f"no answer ({type(reason).__name__})"
+        if status is not None and status < 500:
+            break
+        if status is not None:
+            problem = f"HTTP {status}"
+        if attempt < PIN_TRIES:
+            print(f"pin: {label}: {problem} on try {attempt} of {PIN_TRIES}; trying again in "
+                  f"{PIN_RETRY_DELAY} s")
+            time.sleep(PIN_RETRY_DELAY)
+    if status is None or status >= 500:
+        return status, None, f"{problem} after {PIN_TRIES} tries"
+    if status != 200:
+        why = {404: "not found: the commit is not in this repo (a SHA of the old history, or "
+                    "a typo)",
+               422: "unprocessable: the commit is not in this repo (GitHub's check-runs "
+                    "answer for an unknown SHA)",
+               403: "refused, probably the API rate limit (not retried)",
+               429: "rate limited (not retried)"}.get(
+            status, "a redirect, never followed" if 300 <= status < 400 else "not retried")
+        return status, None, f"HTTP {status}, {why}"
+    try:
+        return status, json.loads(data.decode("utf-8")), None
+    except (UnicodeDecodeError, ValueError):
+        return status, None, "the answer is not JSON"
+
+
+def cmd_pin(args):
+    """The pin rule (ADR-0007 part 5): the commit has a completed, successful
+    `check` run from the GitHub Actions app, the latest such run by id, and
+    it is on public main by the compare API. Both, because a fork PR's head
+    commit can carry a green check in this repo. GH_TOKEN, when set, goes
+    only to the API host and is never printed."""
+    sha = args.sha
+    if not PIN_SHA.fullmatch(sha):
+        raise UsageError(f"--sha {sha!r} is not 40 lowercase hex characters")
+    base = pin_api_base()
+    token = os.environ.get("GH_TOKEN", "")
+    handlers = [urllib.request.ProxyHandler({}), PinNoRedirect()]
+    if base.startswith("https://"):
+        handlers.append(urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+    opener = urllib.request.build_opener(*handlers)
+    findings = Findings()
+    where = f"pin {sha[:12]}"
+    repo = f"{base}/repos/{PUBLIC_REPO}"
+    _, runs, problem = pin_get(opener, f"{repo}/commits/{sha}/check-runs"
+                               "?check_name=check&per_page=100", token, "check-runs")
+    run_id = None
+    if problem:
+        findings.add(where, f"check-runs: {problem} ({RECORDS_WHY})")
+    elif not (isinstance(runs, dict) and type(runs.get("total_count")) is int
+              and isinstance(runs.get("check_runs"), list)):
+        findings.add(where, f"check-runs: the answer lacks total_count or check_runs "
+                     f"(fails closed, {RECORDS_WHY})")
+    elif runs["total_count"] != len(runs["check_runs"]):
+        findings.add(where, f"check-runs: {runs['total_count']} runs, {len(runs['check_runs'])} "
+                     f"returned; the rule reads one page only (fails closed, {RECORDS_WHY})")
+    else:
+        mine = [r for r in runs["check_runs"] if isinstance(r, dict)
+                and r.get("name") == "check" and r.get("head_sha") == sha
+                and isinstance(r.get("app"), dict) and type(r["app"].get("id")) is int
+                and r["app"]["id"] == ACTIONS_APP_ID and type(r.get("id")) is int]
+        if not mine:
+            findings.add(where, f"no check run named exactly `check` from app {ACTIONS_APP_ID} "
+                         f"on this commit ({RECORDS_WHY})")
+        else:
+            latest = max(mine, key=lambda r: r["id"])
+            run_id = latest["id"]
+            if (latest.get("status"), latest.get("conclusion")) != ("completed", "success"):
+                findings.add(where, f"the latest check run {run_id} is "
+                             f"{latest.get('status')}/{latest.get('conclusion')}, not "
+                             f"completed/success ({RECORDS_WHY})")
+    _, compare, problem = pin_get(opener, f"{repo}/compare/{sha}...main", token, "compare")
+    state = None
+    if problem:
+        findings.add(where, f"compare: {problem} ({RECORDS_WHY})")
+    elif not isinstance(compare, dict):
+        findings.add(where, f"compare: the answer is no object (fails closed, {RECORDS_WHY})")
+    else:
+        state = compare.get("status")
+        behind = compare.get("behind_by")
+        if state not in ("ahead", "identical") or type(behind) is not int or behind != 0:
+            findings.add(where, f"compare with main is {json.dumps(state)} (behind_by "
+                         f"{json.dumps(behind)}): the commit is not on public main, so no "
+                         f"review merged it; a fork PR's head can carry a green check too "
+                         f"({RECORDS_WHY})")
+    return findings.report(f"pin checked: {sha[:12]}, check run {run_id}, compare with main "
+                           f"{state}")
+
+
+def lighthouse_pages(public):
+    """The production pages Lighthouse audits, as paths: every directory
+    with an index.html, except the record pages below /reports/ and
+    /campaigns/ (the section pages stay), plus /404.html (ADR-0003, ADR-0004
+    part 10)."""
+    pages = []
+    for path in sorted(public.rglob("index.html")):
+        rel = "/" + path.relative_to(public).as_posix()
+        if re.match(r"/(reports|campaigns)/[^/]+/", rel):
+            continue
+        pages.append(rel[:-len("index.html")])
+    if (public / "404.html").is_file():
+        pages.append("/404.html")
+    return pages
+
+
+def cmd_lighthouse_pages(args):
+    """Print the production page set of tools/lighthouse.sh, one path a
+    line (public mode and records mode alike; the fixture pages are its own
+    list)."""
+    public = Path(args.public)
+    if not (public / "index.html").is_file():
+        raise UsageError(f"{public} has no index.html")
+    for page in lighthouse_pages(public):
+        print(page)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 
 def positive_seconds(text):
     """A finite number of seconds above 0 (argparse type: exit 2 otherwise)."""
@@ -15232,6 +15873,19 @@ def build_parser():
     p.add_argument("--root", default=".")
     p.add_argument("--hugo")
     p.set_defaults(func=cmd_guard)
+    # Records mode (ADR-0007 part 5): --dir, not --records, because
+    # site and render already read --records as the site root with content/.
+    p = sub.add_parser("records-repo", allow_abbrev=False)
+    p.add_argument("--root", required=True)
+    p.add_argument("--dir", required=True)
+    p.add_argument("--sha", required=True)
+    p.set_defaults(func=cmd_records_repo)
+    p = sub.add_parser("pin", allow_abbrev=False)
+    p.add_argument("--sha", required=True)
+    p.set_defaults(func=cmd_pin)
+    p = sub.add_parser("lighthouse-pages", allow_abbrev=False)
+    p.add_argument("public")
+    p.set_defaults(func=cmd_lighthouse_pages)
     p = sub.add_parser("lighthouse", allow_abbrev=False)
     p.add_argument("--reports", required=True)
     p.add_argument("--version", required=True)

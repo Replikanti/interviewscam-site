@@ -1,0 +1,35 @@
+name: links-external
+
+# External links of the production pages, weekly and on manual start
+# (ADR-0002 part 7). Not a required check: a third-party outage must never
+# block a removal PR.
+on:
+  schedule:
+    # Mondays 06:17 UTC; off the hour to avoid the scheduler's peak.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  links-external:
+    runs-on: ubuntu-24.04
+    # ADR-0007 Numbers, "Private timeout": 10 min.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: records
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: Replikanti/interviewscam-site
+          ref: 0123456789abcdef0123456789abcdef01234567
+          path: site
+      - name: bash site/tools/check.sh --records records --external
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash site/tools/check.sh --records records --external

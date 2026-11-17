@@ -29,7 +29,16 @@
 # It prints the setup time and the time of every run, the inputs of the
 # timeout in lighthouse.yml (ADR-0003 part 5). It uploads nothing.
 #
-# Usage: bash tools/lighthouse.sh
+# The production page set of step 4 comes from `sitecheck lighthouse-pages`,
+# so the self-test proves it (lighthouse/records-pages) without naming this
+# file.
+#
+# Usage: bash tools/lighthouse.sh [--records]
+#   --records  records mode (ADR-0007 part 5), in the private records repo's
+#              lighthouse.yml: audit only the production pages of public/,
+#              built from the real records; no public-fixtures/, no fixture
+#              pages, no second port (the fixture pages stay in this repo's
+#              own Lighthouse run)
 
 LH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tools/fetch-tools.sh
@@ -86,8 +95,16 @@ lh_npm() {
 }
 
 lighthouse_main() {
-  local start setup_ms
+  local start setup_ms records=""
   start="$(now_ms)"
+  case "$*" in
+    "") ;;
+    --records) records=1 ;;
+    *)
+      echo "usage: bash tools/lighthouse.sh [--records]" >&2
+      return 2
+      ;;
+  esac
 
   [[ "${GITHUB_ACTIONS:-}" == true ]] \
     || refuse "runs only in GitHub Actions, never on a developer machine (D3)"
@@ -100,8 +117,10 @@ lighthouse_main() {
   done
   [[ -f "$LH_ROOT/public/index.html" ]] \
     || refuse "no public/index.html: the job downloads the build artifact first"
-  [[ -f "$LH_ROOT/public-fixtures/index.html" ]] \
-    || refuse "no public-fixtures/index.html: the build artifact lacks the fixture build"
+  if [[ -z "$records" ]]; then
+    [[ -f "$LH_ROOT/public-fixtures/index.html" ]] \
+      || refuse "no public-fixtures/index.html: the build artifact lacks the fixture build"
+  fi
   [[ -n "${RUNNER_TEMP:-}" && -d "$RUNNER_TEMP" ]] || refuse "RUNNER_TEMP is not a directory"
 
   load_pins || return 1
@@ -142,18 +161,22 @@ lighthouse_main() {
   }
 
   local public="$LH_ROOT/public" fixtures="$LH_ROOT/public-fixtures"
-  local reports="$LH_WORK/reports" server_pid fixture_pid
+  local reports="$LH_WORK/reports" server_pid fixture_pid="" ports=("$LH_PORT")
   mkdir -p "$reports"
+  : >"$LH_WORK/server-fixtures.log"
   python3 -I -m http.server --bind 127.0.0.1 --directory "$public" "$LH_PORT" \
     >"$LH_WORK/server.log" 2>&1 &
   server_pid=$!
-  python3 -I -m http.server --bind 127.0.0.1 --directory "$fixtures" "$LH_FIXTURE_PORT" \
-    >"$LH_WORK/server-fixtures.log" 2>&1 &
-  fixture_pid=$!
+  if [[ -z "$records" ]]; then
+    python3 -I -m http.server --bind 127.0.0.1 --directory "$fixtures" "$LH_FIXTURE_PORT" \
+      >"$LH_WORK/server-fixtures.log" 2>&1 &
+    fixture_pid=$!
+    ports+=("$LH_FIXTURE_PORT")
+  fi
   # shellcheck disable=SC2064 # expand now: the PIDs are fixed
   trap "kill $server_pid $fixture_pid 2>/dev/null" EXIT
   local _ port
-  for port in "$LH_PORT" "$LH_FIXTURE_PORT"; do
+  for port in "${ports[@]}"; do
     for _ in $(seq 50); do
       curl --silent --fail --output /dev/null "http://127.0.0.1:$port/" && break
       sleep 0.2
@@ -165,18 +188,21 @@ lighthouse_main() {
     fi
   done
 
-  # Full URLs: the production pages, then the fixture pages.
-  local pages=() file rel
-  while IFS= read -r -d '' file; do
-    rel="${file#"$public"}"
-    # A record page (a directory below /reports/ or /campaigns/) is skipped;
-    # the section pages themselves stay.
-    [[ "$rel" =~ ^/(reports|campaigns)/[^/]+/ ]] && continue
-    pages+=("http://127.0.0.1:$LH_PORT${rel%index.html}")
-  done < <(find "$public" -name index.html -print0 | sort -z)
-  [[ -f "$public/404.html" ]] && pages+=("http://127.0.0.1:$LH_PORT/404.html")
-  local page
-  for page in "${LH_FIXTURE_PAGES[@]}"; do
+  # Full URLs: the production pages (every directory with an index.html
+  # except the record pages below /reports/ and /campaigns/, the section
+  # pages kept, plus /404.html; sitecheck lighthouse-pages), then the
+  # fixture pages, which records mode leaves out.
+  local pages=() rel listed
+  listed="$(python3 -I "$LH_ROOT/tools/sitecheck.py" lighthouse-pages "$public")" || {
+    echo "lighthouse: FAIL: could not list the production pages" >&2
+    return 1
+  }
+  while IFS= read -r rel; do
+    [[ -n "$rel" ]] && pages+=("http://127.0.0.1:$LH_PORT$rel")
+  done <<<"$listed"
+  local page fixture_pages=("${LH_FIXTURE_PAGES[@]}")
+  [[ -n "$records" ]] && fixture_pages=()
+  for page in "${fixture_pages[@]}"; do
     if [[ ! -f "$fixtures$page" ]]; then
       echo "lighthouse: FAIL: the fixture page $page is missing from public-fixtures/" >&2
       return 1

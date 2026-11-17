@@ -1,0 +1,44 @@
+name: ci
+
+# The required check of the records repo (ADR-0007 part 5): every records
+# PR and every push to main builds the site from the public code repo at
+# the pinned commit and runs every content check on the records. No path
+# filters: branch protection requires the context `check` on every PR.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Load-bearing name: branch protection requires exactly the context
+  # `check` from the GitHub Actions app.
+  check:
+    runs-on: ubuntu-24.04
+    # ADR-0007 Numbers, "Private timeout": max(2 x 300 s, 300 s + 2 x 75 s
+    # + 70 s) = 600 s, so 10 min; a hung job costs at most 10 billed
+    # minutes.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: records
+      # The public code repo at the pin. Every ref: of the four workflows
+      # moves together, in one pin bump PR.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: Replikanti/interviewscam-site
+          ref: 0123456789abcdef0123456789abcdef01234567
+          path: site
+      # The job token reads the pin's check run and compare (public data,
+      # read with the token for the higher rate limit); check.sh unsets it
+      # right after the pin step.
+      - name: bash site/tools/check.sh --records records
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash site/tools/check.sh --records records

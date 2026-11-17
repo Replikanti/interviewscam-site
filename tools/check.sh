@@ -10,11 +10,19 @@
 # loud NOT RUN line and the final line never uses all-pass wording. In CI a
 # missing container runtime, image or Chrome is FAIL.
 #
-# Usage: bash tools/check.sh [--external]
+# Usage: bash tools/check.sh [--external] [--records DIR]
 #   --external  check links online (third-party sites included) instead of
 #               the offline internal-link check (ADR-0002 part 7); the
 #               fixture build's links stay offline, because its sources
 #               and lookups are placeholders
+#   --records DIR
+#               records mode (ADR-0007 part 5): build the site from this
+#               checkout, which must be a valid pin (a green check on
+#               public main), and the records of the private records repo
+#               checked out in DIR, and run every content check on it. The
+#               machinery steps print NOT RUN (records mode): the pinned
+#               commit's green check holds them. Both flags at most once,
+#               in either order.
 #
 # The fixture build (ADR-0004 part 10): production content/ has no records
 # until milestone 5, so the record templates would meet no check before
@@ -53,8 +61,14 @@ FIXTURE_COPY=(hugo.toml layouts assets data static i18n archetypes)
 FIXTURE_CONTENT=(content)
 FIXTURE_RECORD_SECTIONS=(reports campaigns)
 FIXTURE_SKIP=(.git .github .gitignore .hugo_build.lock .tools .fixture-site
-  public public-fixtures resources worktrees CLAUDE.md README.md docs
-  lychee.toml schema tests tools worker)
+  .records-site public public-fixtures resources worktrees CLAUDE.md README.md
+  docs lychee.toml schema tests tools worker)
+# Records mode (ADR-0007 part 5): the assembled source tree of the
+# production build on the records of DIR. Like .fixture-site/ it is
+# git-ignored and rebuilt on every run; the build goes into public/, so the
+# deploy and Lighthouse artifacts keep their path.
+RECORDS_SITE="$CHECK_ROOT/.records-site"
+RECORDS_NOT_RUN_LINE="NOT RUN (records mode): machinery only, held by the pinned commit's green check"
 # shellcheck source=tools/fetch-tools.sh
 source "$CHECK_ROOT/tools/fetch-tools.sh"
 
@@ -388,6 +402,205 @@ step_links_fixtures() { links_check "$FIXTURE_PUBLIC"; }
 
 step_selftest() { bash "$CHECK_ROOT/tools/selftest.sh"; }
 
+# --- Records mode (ADR-0007 part 5) ---------------------------------------
+
+# step_pin <sha>: the pin rule, the only step that reads the network besides
+# fetch-tools and an --external link run. GH_TOKEN, when the job sets it,
+# goes only to the API; check_records_main unsets it right after this step.
+step_pin() { sitecheck pin --sha "$1"; }
+
+# step_records_repo <sha>: the records repo's closed layout and its
+# workflows, against this checkout at the pin (no network).
+step_records_repo() {
+  sitecheck records-repo --root "$CHECK_ROOT" --dir "$RECORDS_DIR" --sha "$1"
+}
+
+# step_records_assembly: assemble .records-site/ like the fixture build
+# assembles .fixture-site/: the FIXTURE_COPY entries that exist and the
+# static pages content/*.md of this checkout, the record sections of DIR
+# (only the files DIR's git listing has, so an ignored local draft is never
+# built), and schema/ of this checkout with record-policy.json taken from
+# DIR when DIR has one (the real retired_slugs). .records-site/ and public/
+# are removed first, so a failed step leaves no stale tree.
+step_records_assembly() {
+  rm -rf "$RECORDS_SITE" "$CHECK_ROOT/public" || return 1
+  mkdir -p "$RECORDS_SITE/content" "$RECORDS_SITE/schema" || return 1
+  local item listing rel section n_pages=0 n_records=0 policy="this checkout"
+  for item in "${FIXTURE_COPY[@]}"; do
+    [[ -e "$CHECK_ROOT/$item" ]] || continue
+    cp -R "$CHECK_ROOT/$item" "$RECORDS_SITE/" || return 1
+  done
+  for item in "$CHECK_ROOT"/content/*.md; do
+    [[ -e "$item" ]] || continue
+    cp "$item" "$RECORDS_SITE/content/" || return 1
+    n_pages=$((n_pages + 1))
+  done
+  cp "$CHECK_ROOT"/schema/* "$RECORDS_SITE/schema/" || return 1
+  local -a listed=()
+  listing="$(mktemp)" || return 1
+  if ! git -C "$RECORDS_DIR" ls-files -z --cached --others --exclude-standard >"$listing"; then
+    echo "FAIL: records assembly: git cannot list $RECORDS_DIR" >&2
+    rm -f "$listing"
+    return 1
+  fi
+  mapfile -d '' -t listed <"$listing"
+  rm -f "$listing"
+  for rel in "${listed[@]}"; do
+    if [[ "$rel" == "schema/record-policy.json" ]]; then
+      if [[ -L "$RECORDS_DIR/schema" || -L "$RECORDS_DIR/$rel" || ! -f "$RECORDS_DIR/$rel" ]]; then
+        echo "FAIL: records assembly: $rel in the records repo is not a regular file (or sits behind a symlink)" >&2
+        return 1
+      fi
+      cp "$RECORDS_DIR/$rel" "$RECORDS_SITE/$rel" || return 1
+      policy="the records repo"
+      continue
+    fi
+    for section in "${FIXTURE_RECORD_SECTIONS[@]}"; do
+      [[ "$rel" == "content/$section/"* ]] || continue
+      if [[ -L "$RECORDS_DIR/content" || -L "$RECORDS_DIR/content/$section" \
+          || -L "$RECORDS_DIR/$rel" || ! -f "$RECORDS_DIR/$rel" ]]; then
+        echo "FAIL: records assembly: $rel in the records repo is not a regular file (or sits behind a symlink)" >&2
+        return 1
+      fi
+      mkdir -p "$(dirname "$RECORDS_SITE/$rel")" || return 1
+      cp "$RECORDS_DIR/$rel" "$RECORDS_SITE/$rel" || return 1
+      n_records=$((n_records + 1))
+    done
+  done
+  echo "records assembly: $n_pages static pages, $n_records files of the record sections, record-policy.json from $policy"
+}
+
+step_records_records() { records_check "$RECORDS_SITE" "$RECORDS_SITE/schema"; }
+
+step_records_build() { hugo_build "$RECORDS_SITE" "$CHECK_ROOT/public"; }
+
+step_records_site() { site_check "$RECORDS_SITE" "$RECORDS_SITE/schema" "$CHECK_ROOT/public"; }
+
+# The production tree of records mode gets the fixture-leak check: no real
+# record may share a slug or name with a fixture record of this checkout.
+step_records_render() {
+  render_check "$RECORDS_SITE" "$RECORDS_SITE/schema" "$CHECK_ROOT/public" \
+    "$CHECK_ROOT/tests/fixtures"
+}
+
+step_records_reflow() { reflow_check "$CHECK_ROOT/public"; }
+
+step_records_html() { html_check "$CHECK_ROOT/public"; }
+
+# not_run_machinery <name>: a machinery step of the public run, which
+# records mode leaves to the pinned commit's green check.
+not_run_machinery() {
+  echo
+  echo "==> $1"
+  echo "$RECORDS_NOT_RUN_LINE"
+  record "$1" "NOT RUN (records mode)"
+}
+
+# ci_only_step <name> <function>: run in CI, a loud NOT RUN line elsewhere.
+ci_only_step() {
+  if in_github_actions; then
+    run_step "$1" "$2"
+  else
+    echo
+    echo "==> $1"
+    case "$2" in
+      *reflow*) echo "$REFLOW_NOT_RUN_LINE" ;;
+      *) echo "$HTML_NOT_RUN_LINE" ;;
+    esac
+    record "$1" "NOT RUN (CI only)"
+  fi
+}
+
+# check_records_main: records mode. The pin step comes first, and the job
+# token is unset right after it, so no later step (Hugo, lychee, the
+# checks) ever holds it (wiring/records-token-unset).
+check_records_main() {
+  local sha
+  if ! sha="$(git -C "$CHECK_ROOT" rev-parse --verify 'HEAD^{commit}')"; then
+    echo "FAIL: records mode: cannot read HEAD of $CHECK_ROOT" >&2
+    return 1
+  fi
+  run_step "pin (green check on public main)" step_pin "$sha"
+  unset GH_TOKEN GITHUB_TOKEN
+  run_step fetch-tools step_fetch
+  not_run_machinery shellcheck
+  run_step "guard (repo rules)" step_guard
+  not_run_machinery "worker (intake Worker and deploy tool)"
+  run_step "records repo (layout, workflows)" step_records_repo "$sha"
+  run_step "records assembly" step_records_assembly
+  run_step "records (schema, defang)" step_records_records
+  not_run_machinery "tokens (contrast, colour literals)"
+  not_run_machinery "literals (fixed copy only from data/labels.toml)"
+  run_step build step_records_build
+  run_step "site (third-party, CSP, defang)" step_records_site
+  run_step "render (D6, D7, D10, structured data)" step_records_render
+  not_run_machinery "fixture build"
+  not_run_machinery "site (fixture build)"
+  not_run_machinery "render (fixture build)"
+  ci_only_step "reflow (320 CSS px, production tree)" step_records_reflow
+  ci_only_step "html (Nu Html Checker, production tree)" step_records_html
+  if [[ -n "$EXTERNAL" ]]; then
+    run_step "links (online, external included)" step_links
+  else
+    run_step "links (offline, internal)" step_links
+  fi
+  not_run_machinery "links (fixture build, offline)"
+  not_run_machinery selftest
+  check_summary records "${sha:0:12}"
+}
+
+# parse_check_args <args...>: set EXTERNAL and RECORDS_DIR (resolved with
+# cd -P) or print the usage and return 2. RECORDS_DIR must not be this
+# checkout or lie inside it (Hugo and the guard would read the records as
+# part of the public tree); this checkout inside RECORDS_DIR is the local
+# layout, a pin worktree in the records clone's ignored worktrees/.
+parse_check_args() {
+  EXTERNAL=""
+  RECORDS_DIR=""
+  local usage="usage: bash tools/check.sh [--external] [--records DIR]" seen_records="" root
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --external)
+        if [[ -n "$EXTERNAL" ]]; then
+          echo "$usage (--external given twice)" >&2
+          return 2
+        fi
+        EXTERNAL=--external
+        shift
+        ;;
+      --records)
+        if [[ -n "$seen_records" ]]; then
+          echo "$usage (--records given twice)" >&2
+          return 2
+        fi
+        seen_records=1
+        if [[ $# -lt 2 || -z "$2" ]]; then
+          echo "$usage (--records needs a directory)" >&2
+          return 2
+        fi
+        if [[ ! -d "$2" ]]; then
+          echo "check.sh: --records $2 is not a directory" >&2
+          return 2
+        fi
+        RECORDS_DIR="$(cd -P -- "$2" && pwd)" || return 2
+        shift 2
+        ;;
+      *)
+        echo "$usage" >&2
+        return 2
+        ;;
+    esac
+  done
+  if [[ -n "$RECORDS_DIR" ]]; then
+    root="$(cd -P -- "$CHECK_ROOT" && pwd)" || return 2
+    if [[ "$RECORDS_DIR" == "$root" || "$RECORDS_DIR" == "$root"/* ]]; then
+      echo "check.sh: --records $RECORDS_DIR is this checkout or lies inside it; give the records repo's own checkout" >&2
+      return 2
+    fi
+  fi
+  return 0
+}
+
 # require_work_tree: the guard reads git (tracked and untracked files), and
 # so do its self-test cases, so outside a git work tree (a git archive
 # export) every guard result would be a phantom failure. Fail once, early,
@@ -400,25 +613,18 @@ require_work_tree() {
 }
 
 check_main() {
-  EXTERNAL=""
-  case "${1:-}" in
-    "") ;;
-    --external) EXTERNAL=--external ;;
-    *)
-      echo "usage: bash tools/check.sh [--external]" >&2
-      return 2
-      ;;
-  esac
-  if [[ $# -gt 1 ]]; then
-    echo "usage: bash tools/check.sh [--external]" >&2
-    return 2
-  fi
+  parse_check_args "$@" || return 2
 
   cd "$CHECK_ROOT" || return 1
   require_work_tree || return 1
   if ! load_pins; then
     echo "FAIL: tools/pins.env could not be read" >&2
     return 1
+  fi
+
+  if [[ -n "$RECORDS_DIR" ]]; then
+    check_records_main
+    return
   fi
 
   run_step fetch-tools step_fetch
@@ -482,6 +688,13 @@ check_main() {
     fi
   fi
 
+  check_summary public
+}
+
+# check_summary <public|records> [<sha12>]: the step table and the final
+# line. Records mode never prints the public all-pass wording: its machinery
+# steps did not run here.
+check_summary() {
   local i failed_steps=() skipped_steps=() not_run=0
   echo
   echo "==> Summary"
@@ -490,7 +703,7 @@ check_main() {
     case "${STEP_RESULTS[$i]}" in
       FAIL) failed_steps+=("${STEP_NAMES[$i]}") ;;
       SKIPPED) skipped_steps+=("${STEP_NAMES[$i]}") ;;
-      "NOT RUN"*) not_run=1 ;;
+      "NOT RUN (CI only)") not_run=1 ;;
     esac
   done
   echo
@@ -499,7 +712,11 @@ check_main() {
     return 1
   fi
   local line
-  if [[ $not_run -eq 1 ]]; then
+  if [[ "$1" == records && $not_run -eq 1 ]]; then
+    line="RECORDS LOCAL PASS on $2, HTML validation and reflow not run (CI only)"
+  elif [[ "$1" == records ]]; then
+    line="RECORDS PASS on $2: every content check ran and passed"
+  elif [[ $not_run -eq 1 ]]; then
     line="LOCAL PASS, HTML validation and reflow not run (CI only)"
   else
     line="PASS: every step ran and passed, HTML validation and reflow included"

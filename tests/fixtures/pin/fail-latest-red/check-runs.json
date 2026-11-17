@@ -1,0 +1,29 @@
+{
+  "total_count": 2,
+  "check_runs": [
+    {
+      "id": 10,
+      "name": "check",
+      "head_sha": "0123456789abcdef0123456789abcdef01234567",
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-17T10:00:00Z",
+      "app": {
+        "id": 15368,
+        "slug": "github-actions"
+      }
+    },
+    {
+      "id": 11,
+      "name": "check",
+      "head_sha": "0123456789abcdef0123456789abcdef01234567",
+      "status": "completed",
+      "conclusion": "failure",
+      "completed_at": "2026-11-17T10:00:00Z",
+      "app": {
+        "id": 15368,
+        "slug": "github-actions"
+      }
+    }
+  ]
+}

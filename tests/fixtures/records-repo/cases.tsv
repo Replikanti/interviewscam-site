@@ -1,0 +1,90 @@
+# records-repo/<row> of tools/selftest.sh (records_repo_runner, ADR-0007 part 5):
+# each row edits one file of a copy of pass-shapes/ and runs the real
+# `sitecheck records-repo`, which must fail with the row's text (or PASS).
+# file: a path of the case, or @symlink (find: the link, replace: its
+# target), @root (find: dirty or head: the public checkout is dirty or
+# its HEAD is not the pin), @nested (find: run on that subdirectory).
+# find: + creates the file with replace as its content, * deletes it;
+# otherwise it must occur exactly once in the file. \n is a newline;
+# {PIN} is the fixture pin, which the runner sets to the public
+# checkout's HEAD after the edit ({PIN39}: its first 39 characters,
+# {PINUP}: upper case). An empty expect on a row that deletes a file
+# means a FAIL with any finding.
+# name	file	find	replace	expect
+layout/top-hugo-toml	hugo.toml	+	baseURL = "https://interviewscam.com/"\n	"hugo.toml" is not a member
+layout/top-layouts	layouts/home.html	+	<p></p>\n	"layouts" is not a member
+layout/top-assets	assets/css/site.css	+	p{}\n	"assets" is not a member
+layout/top-data	data/labels.toml	+	x = "y"\n	"data" is not a member
+layout/top-static	static/robots.txt	+	User-agent: *\n	"static" is not a member
+layout/top-i18n	i18n/en.toml	+	x = "y"\n	"i18n" is not a member
+layout/top-archetypes	archetypes/default.md	+	+++\ndate = 2026-11-01\n+++\nA page.\n	"archetypes" is not a member
+layout/top-tools	tools/check.sh	+	exit 0\n	"tools" is not a member
+layout/top-docs	docs/SPEC.md	+	# SPEC\n	"docs" is not a member
+layout/top-unknown-file	notes.txt	+	notes\n	"notes.txt" is not a member
+layout/top-case-variant	Content/reports/x.md	+	+++\ndate = 2026-11-01\n+++\nA page.\n	"Content" is not a member
+layout/top-symlinked-entry	@symlink	linked.md	README.md	a symlink (linked.md)
+layout/content-top-page	content/about.md	+	+++\ndate = 2026-11-01\n+++\nA page.\n	a page directly in content/
+layout/content-other-section	content/drafts/x.md	+	+++\ndate = 2026-11-01\n+++\nA page.\n	"drafts" is not a record section
+layout/content-section-case	content/Reports/x.md	+	+++\ndate = 2026-11-01\n+++\nA page.\n	"Reports" is not a record section
+layout/section-subdir	content/reports/sub/x.md	+	+++\ndate = 2026-11-01\n+++\nA page.\n	a subdirectory in a record section
+layout/section-non-md	content/reports/x.toml	+	x = "y"\n	not a *.md record
+layout/section-dotfile	content/reports/.draft.md	+	+++\ndate = 2026-11-01\n+++\nA page.\n	a dot file in a record section
+layout/section-symlink	@symlink	content/reports/linked.md	shapes-fixture-name.md	a symlink (content/reports/linked.md)
+layout/section-dir-symlink	@symlink	content/campaigns	reports	a symlink (content/campaigns)
+layout/schema-report-schema	schema/report.schema.json	+	{}\n	schema/ holds only record-policy.json
+layout/schema-extra	schema/notes.json	+	{}\n	schema/ holds only record-policy.json
+layout/github-extra-file	.github/CODEOWNERS	+	* @x\n	.github/ holds only workflows/
+layout/workflow-unknown-name	.github/workflows/extra.yml	+	name: x\n	.github/ holds only workflows/
+layout/workflow-nested	.github/workflows/sub/ci.yml	+	name: x\n	.github/ holds only workflows/
+layout/not-repo-top	@nested	content		not the top of its git work tree
+root/dirty	@root	dirty		uncommitted or untracked changes
+root/head-not-sha	@root	head		HEAD is
+wf/ref-mismatch	.github/workflows/ci.yml	          ref: {PIN}	          ref: 1111111111111111111111111111111111111111	is not the pin
+wf/ref-short	.github/workflows/ci.yml	          ref: {PIN}	          ref: {PIN39}	not 40 lowercase hex characters
+wf/ref-long	.github/workflows/ci.yml	          ref: {PIN}	          ref: {PIN}0	not 40 lowercase hex characters
+wf/ref-uppercase	.github/workflows/ci.yml	          ref: {PIN}	          ref: {PINUP}	not 40 lowercase hex characters
+wf/ref-branch	.github/workflows/ci.yml	          ref: {PIN}	          ref: main	not 40 lowercase hex characters
+wf/ref-expression	.github/workflows/ci.yml	          ref: {PIN}	          ref: ${{ github.sha }}	not 40 lowercase hex characters
+wf/ref-missing	.github/workflows/ci.yml	          ref: {PIN}\n		the public checkout lacks ref:
+wf/ref-quoted-passes	.github/workflows/ci.yml	          ref: {PIN}	          ref: "{PIN}"	PASS
+wf/ref-single-quoted-passes	.github/workflows/ci.yml	          ref: {PIN}	          ref: '{PIN}'	PASS
+wf/two-refs-differ	.github/workflows/deploy.yml	          ref: {PIN}	          ref: 1111111111111111111111111111111111111111	deploy.yml:37: ref: 111111111111 is not the pin
+wf/missing-public-checkout	.github/workflows/ci.yml	\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false\n          repository: Replikanti/interviewscam-site\n          ref: {PIN}\n          path: site		0 public checkout(s)
+wf/missing-self-checkout	.github/workflows/ci.yml	      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false\n          path: records\n		0 self checkout(s)
+wf/two-self-checkouts	.github/workflows/ci.yml	          repository: Replikanti/interviewscam-site\n          ref: {PIN}\n          path: site	          path: records	2 self checkout(s)
+wf/other-repository	.github/workflows/ci.yml	repository: Replikanti/interviewscam-site	repository: someone/interviewscam-site	repository: of the public checkout must be exactly
+wf/repository-lookalike	.github/workflows/ci.yml	repository: Replikanti/interviewscam-site	repository: Replikanti/intervіewscam-site	repository: of the public checkout must be exactly
+wf/repository-case-variant	.github/workflows/ci.yml	repository: Replikanti/interviewscam-site	repository: replikanti/interviewscam-site	repository: of the public checkout must be exactly
+wf/public-path-other	.github/workflows/ci.yml	          path: site	          path: public-site	path: of the public checkout must be exactly
+wf/self-path-other	.github/workflows/ci.yml	          path: records	          path: rec	path: of the self checkout must be exactly
+wf/checkout-extra-with-key	.github/workflows/ci.yml	          path: site	          path: site\n          fetch-depth: 0	checkout input "fetch-depth"
+wf/checkout-input-case-variant	.github/workflows/ci.yml	          path: site	          Path: site	checkout input "Path"
+wf/checkout-step-if	.github/workflows/ci.yml	          path: records	          path: records\n        if: false	step key "if"
+wf/checkout-in-job-without-check	.github/workflows/lighthouse.yml	      - uses: actions/download-artifact	      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false\n          path: records\n      - uses: actions/download-artifact	a checkout in a job that does not run check.sh
+wf/pull-request-target	.github/workflows/ci.yml	  pull_request:\n	  pull_request_target:\n	WH1: trigger
+wf/persist-credentials-missing	.github/workflows/ci.yml	          persist-credentials: false\n          path: records	          path: records	WH2: actions/checkout needs exactly one
+wf/checkout-token-input	.github/workflows/ci.yml	          path: records	          path: records\n          token: x	WH3: a credential input
+wf/run-not-allowed	.github/workflows/ci.yml	        run: bash site/tools/check.sh --records records	        run: bash site/tools/check.sh	a records repo workflow may only run
+wf/run-flag-order	.github/workflows/links-external.yml	        run: bash site/tools/check.sh --records records --external	        run: bash site/tools/check.sh --external --records records	a records repo workflow may only run
+wf/run-lighthouse-in-ci	.github/workflows/ci.yml	        run: bash site/tools/check.sh --records records	        run: bash tools/lighthouse.sh --records	in this job a run step may only start
+wf/run-check-in-lighthouse-job	.github/workflows/lighthouse.yml	        run: bash tools/lighthouse.sh --records	        run: bash site/tools/check.sh --records records	in this job a run step may only be
+wf/env-other-name	.github/workflows/ci.yml	          GH_TOKEN: ${{ github.token }}	          GITHUB_TOKEN: ${{ github.token }}	env: only as
+wf/env-second-key	.github/workflows/ci.yml	          GH_TOKEN: ${{ github.token }}	          GH_TOKEN: ${{ github.token }}\n          BASH_ENV: x	env: only as
+wf/env-secret	.github/workflows/ci.yml	          GH_TOKEN: ${{ github.token }}	          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}	WH4: a secrets reference
+wf/env-quoted	.github/workflows/ci.yml	          GH_TOKEN: ${{ github.token }}	          GH_TOKEN: "${{ github.token }}"	env: only as
+wf/env-other-step	.github/workflows/deploy.yml	          path: site/public	          path: site/public\n        env:\n          GH_TOKEN: ${{ github.token }}	env: only as
+wf/env-job-level	.github/workflows/ci.yml	    timeout-minutes: 10\n	    timeout-minutes: 10\n    env:\n      GH_TOKEN: ${{ github.token }}\n	job key "env"
+wf/env-top-level	.github/workflows/ci.yml	\npermissions:\n	\nenv:\n  GH_TOKEN: ${{ github.token }}\npermissions:\n	top-level key "env"
+wf/lighthouse-token	.github/workflows/lighthouse.yml	        shell: bash\n        run: bash site/tools/check.sh --records records	        shell: bash\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash site/tools/check.sh --records records	a github.token reference in .github/workflows/lighthouse.yml
+wf/lighthouse-repository-in-registry-job	.github/workflows/lighthouse.yml	          name: built-site\n      - name: bash tools/lighthouse.sh --records	          name: built-site\n          repository: Replikanti/interviewscam-site\n      - name: bash tools/lighthouse.sh --records	a download input that reads another run or repository
+wf/no-check-job	.github/workflows/ci.yml	\n  check:\n	\n  checks:\n	no job `check`
+wf/job-if	.github/workflows/ci.yml	    runs-on: ubuntu-24.04	    if: false\n    runs-on: ubuntu-24.04	job key "if"
+wf/job-continue-on-error	.github/workflows/ci.yml	    runs-on: ubuntu-24.04	    continue-on-error: true\n    runs-on: ubuntu-24.04	job key "continue-on-error"
+wf/step-continue-on-error	.github/workflows/ci.yml	        shell: bash	        shell: bash\n        continue-on-error: true	step key "continue-on-error"
+wf/self-hosted-runner	.github/workflows/ci.yml	    runs-on: ubuntu-24.04	    runs-on: self-hosted	runs-on must be exactly ubuntu-24.04
+wf/no-timeout	.github/workflows/ci.yml	    timeout-minutes: 10\n		no timeout-minutes
+wf/timeout-expression	.github/workflows/ci.yml	    timeout-minutes: 10	    timeout-minutes: ${{ 360 }}	no timeout-minutes
+wf/top-level-defaults	.github/workflows/ci.yml	\npermissions:\n	\ndefaults:\n  run:\n    shell: bash\npermissions:\n	top-level key "defaults"
+wf/pages-write	.github/workflows/ci.yml	  contents: read	  contents: read\n  pages: write	pages: write: Pages stays off
+wf/deploy-pages	.github/workflows/deploy.yml	          path: site/public	          path: site/public\n      - uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5	actions/deploy-pages: Pages stays off
+wf/unpinned-action	.github/workflows/deploy.yml	upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9	upload-pages-artifact@1111111111111111111111111111111111111111	is not an allowlisted ACTION_* pin
