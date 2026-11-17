@@ -2597,6 +2597,20 @@ domains = ["records-mode-selftest[.]example"]
     && grep -qE '^  step_records_records +FAIL$' "$out" && ok=1
   e2e_report policy-overlay "$ok" "exit $rc, records FAIL on R4 with the records repo's retired slug"
 
+  # cleanup-after-failure (review round 3 of interviewscam-site#12): the
+  # whole run with the same retired slug, so a content step fails after
+  # the assembly built .records-site/. The run fails, and the cleanup step
+  # still removes .records-site/ (a cleanup that ran only after an all-pass
+  # run would leave it).
+  rm -rf "$root/.records-site"
+  e2e_run
+  ok=0
+  [[ $rc -ne 0 && ! -e "$root/.records-site" && ! -L "$root/.records-site" ]] \
+    && grep -qE '^  records assembly +PASS$' "$out" \
+    && grep -qE '^  records \(schema, defang\) +FAIL$' "$out" \
+    && grep -qE '^  records cleanup \(\.records-site/ removed\) +PASS$' "$out" && ok=1
+  e2e_report cleanup-after-failure "$ok" "exit $rc, records FAIL after the assembly, cleanup PASS, no .records-site/"
+
   # assembly-only-sections: what the records repo may not ship (a template,
   # a static page, a schema, config) never reaches .records-site/, even when
   # git lists it: the assembly copies only the record sections and the
@@ -3841,7 +3855,7 @@ PY
   sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
   n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
   n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if [[ $(grep -c '^ok   records-mode/' "$out") -ne 14 ]]; then
+  if [[ $(grep -c '^ok   records-mode/' "$out") -ne 15 ]]; then
     echo "FAIL records-mode/e2e: not every e2e case passed; output:"
     sed 's/^/     | /' "$out"
     n_failed=$((n_failed + 1))
