@@ -2140,12 +2140,15 @@ PY
 # check-runs.json and compare.json, with the statuses of its status.txt
 # (`<check-runs|compare> <status>...`: one per request, the last one
 # repeated; `closed`: a port nothing listens on), and 404 for any other
-# path. Every tests/fixtures/pin/<pass|fail>-<case>/ runs the real cmd_pin
+# path. The compare read is the one against heads/main; a case's
+# compare-bare-main.json answers the bare name main, which the rule must
+# never ask (a tag named main would make it ambiguous; fail-bare-main-is-a-
+# tag). Every tests/fixtures/pin/<pass|fail>-<case>/ runs the real cmd_pin
 # in this process (the fixture loop skips the directory), judged as the
 # loop judges a case (exit 0 and the expect.txt text, or a failure with
 # it), with PIN_RETRY_DELAY patched to 0 so a retry costs no wall time;
-# its requests.txt (`<check-runs|compare|redirected> <count>`) pins how
-# often the stub was asked. pin-extra/numbers pins the real request
+# its requests.txt (`<check-runs|compare|compare-bare-main|redirected>
+# <count>`) pins how often the stub was asked. pin-extra/numbers pins the real request
 # numbers (ADR-0007 Numbers), and the other pin-extra lines run the
 # command line: the override refusal, the token kept out of the output and
 # sent only as the header, no header without a token, the SHA form.
@@ -2167,7 +2170,8 @@ SITECHECK, FIXTURES = sys.argv[1], Path(sys.argv[2])
 PIN = "0123456789abcdef0123456789abcdef01234567"  # RECORDS_FIXTURE_PIN
 REPO = "/repos/Replikanti/interviewscam-site"
 PATHS = {f"{REPO}/commits/{PIN}/check-runs?check_name=check&per_page=100": "check-runs",
-         f"{REPO}/compare/{PIN}...main": "compare", "/redirected": "redirected"}
+         f"{REPO}/compare/{PIN}...heads/main": "compare", "/redirected": "redirected",
+         f"{REPO}/compare/{PIN}...main": "compare-bare-main"}
 spec = importlib.util.spec_from_file_location("sitecheck", SITECHECK)
 sitecheck = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sitecheck)
@@ -2207,6 +2211,8 @@ class Stub:
                 if code in (301, 302, 307, 308):
                     return self.answer(code, b"{}", {"Location": "/redirected"})
                 body = b'{"message": "stub error"}'
+                if code == 200 and not (stub.case / f"{name}.json").is_file():
+                    code = 404  # compare-bare-main: only the case that has it
                 if code == 200:
                     body = (stub.case / f"{name}.json").read_bytes()
                 return self.answer(code, body)
@@ -2396,7 +2402,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = {"total_count": 1, "check_runs": [{
                 "id": 1, "name": "check", "head_sha": m.group(1), "status": "completed",
                 "conclusion": "success", "app": {"id": 15368}}]}
-        elif re.fullmatch(r"/repos/Replikanti/interviewscam-site/compare/[0-9a-f]{40}\.\.\.main",
+        elif re.fullmatch(r"/repos/Replikanti/interviewscam-site/compare/[0-9a-f]{40}\.\.\.heads/main",
                           self.path):
             body = {"status": "identical", "ahead_by": 0, "behind_by": 0}
         else:
@@ -2451,6 +2457,13 @@ PY
       for step in "$@"; do run_step "$step" "$step"; done
       check_summary records "$sha12"' e2e-steps "$root" "$records" "${sha:0:12}" "$@" >"$out" 2>&1
     rc=$?
+  }
+  # e2e_ere <text>: text as an ERE that matches it literally (the step
+  # names hold brackets, parentheses and dots).
+  e2e_ere() {
+    local s="$1" c
+    for c in '[' ']' '(' ')' '.' '*'; do s="${s//"$c"/\\"$c"}"; done
+    printf '%s' "$s"
   }
   # e2e_report <name> <ok?> <detail>
   e2e_report() {
@@ -2513,14 +2526,14 @@ domains = ["records-mode-selftest[.]example"]
   for line in shellcheck "worker (intake Worker and deploy tool)" "tokens (contrast, colour literals)" \
       "literals (fixed copy only from data/labels.toml)" "fixture build" "site (fixture build)" \
       "render (fixture build)" "links (fixture build, offline)" selftest; do
-    grep -qE "^  $(sed 's/[][().*/]/\\&/g' <<<"$line") +NOT RUN \(records mode\)\$" "$out" || ok=0
+    grep -qE "^  $(e2e_ere "$line") +NOT RUN \(records mode\)\$" "$out" || ok=0
   done
   n="$(grep -c "^NOT RUN (records mode): machinery only, held by the pinned commit's green check\$" "$out")"
   [[ "$n" == 9 ]] || ok=0
   for line in "pin (green check on public main)" fetch-tools "guard (repo rules)" \
       "records repo (layout, workflows)" "records assembly" "records (schema, defang)" build \
       "site (third-party, CSP, defang)" "render (D6, D7, D10, structured data)" "links (offline, internal)"; do
-    grep -qE "^  $(sed 's/[][().*/]/\\&/g' <<<"$line") +PASS\$" "$out" || ok=0
+    grep -qE "^  $(e2e_ere "$line") +PASS\$" "$out" || ok=0
   done
   e2e_report not-run-lines "$ok" "9 machinery steps NOT RUN (records mode), 10 content steps PASS"
 
@@ -2579,6 +2592,44 @@ domains = ["records-mode-selftest[.]example"]
     && cmp -s "$root/.records-site/schema/report.schema.json" "$root/schema/report.schema.json" \
     && cmp -s "$root/.records-site/hugo.toml" "$root/hugo.toml" && ok=1
   e2e_report assembly-only-sections "$ok" "exit $rc, no template, page, schema or config of the records repo in .records-site/"
+
+  # assembly-only-records: in a record section the assembly takes only
+  # records (content/<section>/<name>.md, no dot file), and anything else
+  # git lists there fails the step before it copies a file, even with the
+  # records-repo step left out (a Hugo content adapter, _content.gotmpl,
+  # would run template code in the build). One case per branch and section.
+  rm -rf "$records/layouts" "$records/content/injected.md" "$records/schema/report.schema.json" \
+    "$records/hugo.toml"
+  for line in reports/_content.gotmpl campaigns/_content.gotmpl reports/x.html \
+      reports/sub/x.md reports/.draft.md; do
+    mkdir -p "$(dirname "$records/content/$line")"
+    printf '{{ $.AddPage (dict "path" "injected" "title" "Injected" "kind" "page") }}\n' \
+      >"$records/content/$line"
+    e2e_steps step_records_assembly
+    ok=0
+    [[ $rc -ne 0 && ! -e "$root/.records-site" ]] \
+      && grep -qF "records assembly: content/$line is not a record" "$out" && ok=1
+    e2e_report "assembly-only-records $line" "$ok" "exit $rc, refused before any copy"
+    rm -f "$records/content/$line"
+    rmdir "$records/content/reports/sub" 2>/dev/null
+  done
+
+  # records-repo-fail-closed: when the records-repo step fails, nothing of
+  # the records repo is copied, built or checked. The eight content steps
+  # print NOT RUN (records repo failed), and .records-site/ and public/ (a
+  # stale one included) are gone.
+  printf '{{ $.AddPage (dict "path" "injected" "title" "Injected" "kind" "page") }}\n' \
+    >"$records/content/reports/_content.gotmpl"
+  mkdir -p "$root/public" && printf 'stale\n' >"$root/public/stale.html"
+  e2e_run
+  ok=0
+  n="$(grep -cE '^  .* +NOT RUN \(records repo failed\)$' "$out")"
+  [[ $rc -ne 0 && "$n" == 8 && ! -e "$root/.records-site" && ! -e "$root/public" ]] \
+    && grep -qE '^  records repo \(layout, workflows\) +FAIL$' "$out" \
+    && grep -qE '^  records assembly +NOT RUN \(records repo failed\)$' "$out" \
+    && ! grep -q '^records assembly: ' "$out" && ok=1
+  e2e_report records-repo-fail-closed "$ok" "exit $rc, $n content steps NOT RUN (records repo failed), no .records-site/ or public/"
+  rm -f "$records/content/reports/_content.gotmpl"
 
   kill "$stub_pid" 2>/dev/null
   wait "$stub_pid" 2>/dev/null
@@ -3768,7 +3819,7 @@ PY
   sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
   n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
   n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if [[ $(grep -c '^ok   records-mode/' "$out") -ne 7 ]]; then
+  if [[ $(grep -c '^ok   records-mode/' "$out") -ne 13 ]]; then
     echo "FAIL records-mode/e2e: not every e2e case passed; output:"
     sed 's/^/     | /' "$out"
     n_failed=$((n_failed + 1))

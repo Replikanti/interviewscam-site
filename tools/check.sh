@@ -417,26 +417,18 @@ step_records_repo() {
 
 # step_records_assembly: assemble .records-site/ like the fixture build
 # assembles .fixture-site/: the FIXTURE_COPY entries that exist and the
-# static pages content/*.md of this checkout, the record sections of DIR
-# (only the files DIR's git listing has, so an ignored local draft is never
-# built), and schema/ of this checkout with record-policy.json taken from
-# DIR when DIR has one (the real retired_slugs). .records-site/ and public/
-# are removed first, so a failed step leaves no stale tree.
+# static pages content/*.md of this checkout, the records of DIR's record
+# sections (only the files DIR's git listing has, so an ignored local draft
+# is never built), and schema/ of this checkout with record-policy.json
+# taken from DIR when DIR has one (the real retired_slugs). .records-site/
+# and public/ are removed first, so a failed step leaves no stale tree. The
+# listing is judged whole before the first copy: in a record section only
+# content/<section>/<name>.md that is no dot file, never a template such as
+# a Hugo content adapter (_content.gotmpl), whose code the build would run.
 step_records_assembly() {
   rm -rf "$RECORDS_SITE" "$CHECK_ROOT/public" || return 1
-  mkdir -p "$RECORDS_SITE/content" "$RECORDS_SITE/schema" || return 1
-  local item listing rel section n_pages=0 n_records=0 policy="this checkout"
-  for item in "${FIXTURE_COPY[@]}"; do
-    [[ -e "$CHECK_ROOT/$item" ]] || continue
-    cp -R "$CHECK_ROOT/$item" "$RECORDS_SITE/" || return 1
-  done
-  for item in "$CHECK_ROOT"/content/*.md; do
-    [[ -e "$item" ]] || continue
-    cp "$item" "$RECORDS_SITE/content/" || return 1
-    n_pages=$((n_pages + 1))
-  done
-  cp "$CHECK_ROOT"/schema/* "$RECORDS_SITE/schema/" || return 1
-  local -a listed=()
+  local item listing rel section name n_pages=0 n_records=0 policy="this checkout"
+  local -a listed=() copy=()
   listing="$(mktemp)" || return 1
   if ! git -C "$RECORDS_DIR" ls-files -z --cached --others --exclude-standard >"$listing"; then
     echo "FAIL: records assembly: git cannot list $RECORDS_DIR" >&2
@@ -451,23 +443,42 @@ step_records_assembly() {
         echo "FAIL: records assembly: $rel in the records repo is not a regular file (or sits behind a symlink)" >&2
         return 1
       fi
-      cp "$RECORDS_DIR/$rel" "$RECORDS_SITE/$rel" || return 1
+      copy+=("$rel")
       policy="the records repo"
       continue
     fi
     for section in "${FIXTURE_RECORD_SECTIONS[@]}"; do
       [[ "$rel" == "content/$section/"* ]] || continue
+      name="${rel#"content/$section/"}"
+      if [[ "$name" == */* || "$name" == .* || "$name" != *.md ]]; then
+        echo "FAIL: records assembly: $rel is not a record (content/$section/<name>.md, no dot file, no subdirectory); nothing was copied" >&2
+        return 1
+      fi
       if [[ -L "$RECORDS_DIR/content" || -L "$RECORDS_DIR/content/$section" \
           || -L "$RECORDS_DIR/$rel" || ! -f "$RECORDS_DIR/$rel" ]]; then
         echo "FAIL: records assembly: $rel in the records repo is not a regular file (or sits behind a symlink)" >&2
         return 1
       fi
-      mkdir -p "$(dirname "$RECORDS_SITE/$rel")" || return 1
-      cp "$RECORDS_DIR/$rel" "$RECORDS_SITE/$rel" || return 1
+      copy+=("$rel")
       n_records=$((n_records + 1))
     done
   done
-  echo "records assembly: $n_pages static pages, $n_records files of the record sections, record-policy.json from $policy"
+  mkdir -p "$RECORDS_SITE/content" "$RECORDS_SITE/schema" || return 1
+  for item in "${FIXTURE_COPY[@]}"; do
+    [[ -e "$CHECK_ROOT/$item" ]] || continue
+    cp -R "$CHECK_ROOT/$item" "$RECORDS_SITE/" || return 1
+  done
+  for item in "$CHECK_ROOT"/content/*.md; do
+    [[ -e "$item" ]] || continue
+    cp "$item" "$RECORDS_SITE/content/" || return 1
+    n_pages=$((n_pages + 1))
+  done
+  cp "$CHECK_ROOT"/schema/* "$RECORDS_SITE/schema/" || return 1
+  for rel in "${copy[@]}"; do
+    mkdir -p "$(dirname "$RECORDS_SITE/$rel")" || return 1
+    cp "$RECORDS_DIR/$rel" "$RECORDS_SITE/$rel" || return 1
+  done
+  echo "records assembly: $n_pages static pages, $n_records records of the record sections, record-policy.json from $policy"
 }
 
 step_records_records() { records_check "$RECORDS_SITE" "$RECORDS_SITE/schema"; }
@@ -511,9 +522,27 @@ ci_only_step() {
   fi
 }
 
+# records_step <run_step|ci_only_step> <name> <function>: a content step of
+# records mode. After a failed records-repo step it does not run (fail
+# closed: nothing of the records repo is copied, built or checked), and it
+# is recorded NOT RUN (records repo failed); the records-repo FAIL already
+# fails the run.
+records_step() {
+  if [[ -n "$RECORDS_REPO_FAILED" ]]; then
+    echo
+    echo "==> $2"
+    echo "NOT RUN: the records repo step failed, so nothing of the records repo is copied, built or checked"
+    record "$2" "NOT RUN (records repo failed)"
+  else
+    "$@"
+  fi
+}
+
 # check_records_main: records mode. The pin step comes first, and the job
 # token is unset right after it, so no later step (Hugo, lychee, the
-# checks) ever holds it (wiring/records-token-unset).
+# checks) ever holds it (wiring/records-token-unset). A failed records-repo
+# step stops every step that reads the records repo (records_step), and
+# .records-site/ and public/ are removed, so no stale tree stays behind.
 check_records_main() {
   local sha
   if ! sha="$(git -C "$CHECK_ROOT" rev-parse --verify 'HEAD^{commit}')"; then
@@ -526,23 +555,28 @@ check_records_main() {
   not_run_machinery shellcheck
   run_step "guard (repo rules)" step_guard
   not_run_machinery "worker (intake Worker and deploy tool)"
+  RECORDS_REPO_FAILED=""
   run_step "records repo (layout, workflows)" step_records_repo "$sha"
-  run_step "records assembly" step_records_assembly
-  run_step "records (schema, defang)" step_records_records
+  if [[ "${STEP_RESULTS[-1]}" != PASS ]]; then
+    RECORDS_REPO_FAILED=1
+    rm -rf "$RECORDS_SITE" "$CHECK_ROOT/public"
+  fi
+  records_step run_step "records assembly" step_records_assembly
+  records_step run_step "records (schema, defang)" step_records_records
   not_run_machinery "tokens (contrast, colour literals)"
   not_run_machinery "literals (fixed copy only from data/labels.toml)"
-  run_step build step_records_build
-  run_step "site (third-party, CSP, defang)" step_records_site
-  run_step "render (D6, D7, D10, structured data)" step_records_render
+  records_step run_step build step_records_build
+  records_step run_step "site (third-party, CSP, defang)" step_records_site
+  records_step run_step "render (D6, D7, D10, structured data)" step_records_render
   not_run_machinery "fixture build"
   not_run_machinery "site (fixture build)"
   not_run_machinery "render (fixture build)"
-  ci_only_step "reflow (320 CSS px, production tree)" step_records_reflow
-  ci_only_step "html (Nu Html Checker, production tree)" step_records_html
+  records_step ci_only_step "reflow (320 CSS px, production tree)" step_records_reflow
+  records_step ci_only_step "html (Nu Html Checker, production tree)" step_records_html
   if [[ -n "$EXTERNAL" ]]; then
-    run_step "links (online, external included)" step_links
+    records_step run_step "links (online, external included)" step_links
   else
-    run_step "links (offline, internal)" step_links
+    records_step run_step "links (offline, internal)" step_links
   fi
   not_run_machinery "links (fixture build, offline)"
   not_run_machinery selftest

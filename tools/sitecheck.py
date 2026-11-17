@@ -6582,7 +6582,8 @@ PINNED_ALLOWLISTS = LITERALS_PASSING_SETS + (
     # Records mode (ADR-0007 part 5): the records repo's closed layout and
     # the closed key sets of its workflows.
     "RECORDS_TOP", "RECORDS_WORKFLOWS", "RECORDS_TOP_KEYS", "RECORDS_JOB_KEYS",
-    "RECORDS_STEP_KEYS")
+    "RECORDS_STEP_KEYS", "RECORDS_JOB_STEPS", "RECORDS_NEEDS", "RECORDS_PAGES_UPLOAD",
+    "RECORDS_EXPRESSIONS")
 # L5: the CSS properties and @counter-style descriptors whose strings the
 # browser draws as text.
 CSS_TEXT_PROPERTIES = {"content", "list-style", "list-style-type", "quotes",
@@ -14506,7 +14507,8 @@ DOWNLOAD_ARTIFACT = re.compile(r"(?i)actions/download-artifact(?![\w-])")
 # comments included, so no quoting or comment trick hides one.
 LIGHTHOUSE_CREDENTIALS = [
     (re.compile(r"(?i)(?<![\w-])secrets(?![\w-])"), "a secrets reference"),
-    (re.compile(r"""(?i)(?<![\w-])github\s*(?:\.\s*|\[\s*['"]?)token(?![\w-])"""),
+    (LIGHTHOUSE_TOKEN := re.compile(
+        r"""(?i)(?<![\w-])github\s*(?:\.\s*|\[\s*['"]?)token(?![\w-])"""),
      "a github.token reference"),
     (LIGHTHOUSE_REPOSITORY := re.compile(
         r"""(?i)(?<![\w-])['"]?(github-token|run-id|repository)['"]?\s*:"""),
@@ -14563,11 +14565,13 @@ def guard_lighthouse_workflow(root, files, findings, records_mode=False):
     no other credential, has no checkout, uploads nothing and is a leaf; only
     it downloads an artifact; the workflow never builds the Pages artifact
     (ADR-0003 part 2). In records mode (the private records repo, ADR-0007
-    part 5) the job build checks out the public repo, so a line
-    `repository: Replikanti/interviewscam-site` outside the job that runs
-    tools/lighthouse.sh passes the credential rule; records_workflow_rules
-    holds it to a checkout's with: block. Every other credential form stays
-    refused file-wide."""
+    part 5) the job build checks out the public repo and reads the pin rule's
+    API with its own job token, so outside the job that runs
+    tools/lighthouse.sh two lines pass the credential rule: `repository:
+    Replikanti/interviewscam-site`, and `GH_TOKEN: ${{ github.token }}`
+    (plain) right below a block `env:`. records_workflow_rules holds the
+    first to a checkout's with: block and the second to the env: of the
+    check.sh step. Every other credential form stays refused file-wide."""
     if LIGHTHOUSE_WORKFLOW not in files:
         return
     rel = LIGHTHOUSE_WORKFLOW
@@ -14577,13 +14581,14 @@ def guard_lighthouse_workflow(root, files, findings, records_mode=False):
         findings.add(rel, f"cannot read: {exc}")
         return
     lines = text.splitlines()
-    public_checkout_lines = set()
+    public_checkout_lines, token_env_lines = set(), set()
     if records_mode:
         jobs = workflow_jobs(lines)
         for job, body in (jobs or {}).items():
             if any((m := RUN_KEY.search(line)) and LIGHTHOUSE_REFERENCE.search(m.group(1))
                    for _, line in body):
                 continue
+            above = None  # the parsed line above, comments and blanks skipped
             for n, line in body:
                 parsed = yaml_line(line)
                 if (parsed and parsed[3] == "repository"
@@ -14591,9 +14596,18 @@ def guard_lighthouse_workflow(root, files, findings, records_mode=False):
                                                        ("double", PUBLIC_REPO),
                                                        ("single", PUBLIC_REPO))):
                     public_checkout_lines.add(n)
+                if (parsed and above and parsed[3] == RECORDS_ENV[0]
+                        and yaml_scalar(parsed[4]) == ("plain", RECORDS_ENV[1])
+                        and above[3] == "env" and not above[2]
+                        and yaml_scalar(above[4])[0] == "empty" and parsed[0] > above[0]):
+                    token_env_lines.add(n)
+                if parsed:
+                    above = parsed
     for n, line in enumerate(lines, 1):
         for rule, label in LIGHTHOUSE_CREDENTIALS:
             if rule is LIGHTHOUSE_REPOSITORY and n in public_checkout_lines:
+                continue
+            if rule is LIGHTHOUSE_TOKEN and n in token_env_lines:
                 continue
             if rule.search(line):
                 findings.add(f"{rel}:{n}", f"{label} in {LIGHTHOUSE_WORKFLOW}; no "
@@ -15251,10 +15265,44 @@ RECORDS_TOP_KEYS = ("name", "on", "permissions", "concurrency", "jobs")
 RECORDS_JOB_KEYS = ("runs-on", "timeout-minutes", "permissions", "needs", "steps")
 RECORDS_STEP_KEYS = ("name", "uses", "with", "shell", "env", "run")
 RECORDS_RUNNER = "ubuntu-24.04"
-# The one env: a records workflow may hold, on a check.sh step outside
-# lighthouse.yml: the job token for the pin rule's two API reads (check.sh
+# The canonical jobs of the records workflows (the set in
+# tests/fixtures/records-repo/pass-shapes/), keyed "<workflow> <job>", each
+# with the kinds of its steps in order (records_step_kind). Pinned whole:
+# the required job check must run the two checkouts and check.sh, not a
+# no-op that reports success; the Pages artifact is uploaded after check.sh,
+# from the build it checked; an extra job can neither gate a canonical one
+# nor upload a second artifact. Any other shape is a public, reviewed PR
+# that changes this table.
+RECORDS_JOB_STEPS = {
+    "ci.yml check": ("checkout records", "checkout site", "check.sh"),
+    "deploy.yml pages-artifact": ("checkout records", "checkout site", "check.sh",
+                                  "upload-pages-artifact"),
+    "lighthouse.yml build": ("checkout records", "checkout site", "check.sh",
+                             "upload-artifact"),
+    "lighthouse.yml lighthouse": ("download-artifact", "lighthouse.sh"),
+    "links-external.yml links-external": ("checkout records", "checkout site",
+                                          "check.sh --external"),
+}
+# The whole needs: graph of the records workflows. When a needed job fails
+# or is skipped, GitHub skips the job that needs it, and branch protection
+# takes a skipped required check as a pass, so no other job may need one.
+RECORDS_NEEDS = {"lighthouse.yml lighthouse": "build"}
+# The exact with: of actions/upload-pages-artifact: the build that check.sh
+# checked, never the records checkout or another tree.
+RECORDS_PAGES_UPLOAD = {"path": "site/public"}
+# The one env: a records workflow may hold, on a check.sh step outside the
+# job lighthouse: the job token for the pin rule's two API reads (check.sh
 # unsets it right after the pin step).
 RECORDS_ENV = ("GH_TOKEN", "${{ github.token }}")
+# The only other expressions of a records workflow, each only as (part of)
+# the value of a concurrency group: they read no credential. Every other
+# ${{ }} fails, in a with: input, a name or a comment alike, because an
+# expression there can write the token or the whole github context where
+# the run shows it (an artifact name, a step name).
+RECORDS_EXPRESSIONS = (
+    "${{ github.ref }}",
+    "${{ github.event_name == 'push' && 'pages' || format('pages-pr-{0}', github.ref) }}",
+)
 # The two checkouts of a job that runs check.sh: the records repo itself,
 # and the public repo at the pin.
 RECORDS_SELF_CHECKOUT = {"persist-credentials": "false", "path": "records"}
@@ -15522,15 +15570,38 @@ def records_checkout(rel, lines, step, keys, sha, findings):
     return kind if ok else None
 
 
+def records_step_kind(skeys, run, uses, checkout):
+    """The kind of one step of a records workflow, as RECORDS_JOB_STEPS
+    names it."""
+    if skeys is None:
+        return "unreadable step"
+    if "run" in skeys:
+        if run and RECORDS_CHECK_RUN.fullmatch(run.group(1)):
+            return "check.sh --external" if run.group(1).endswith(" --external") else "check.sh"
+        if run and RECORDS_LIGHTHOUSE_RUN.fullmatch(run.group(1)):
+            return "lighthouse.sh"
+        return "other run"
+    if checkout is not None:
+        return {"self": "checkout records", "public": "checkout site"}.get(checkout,
+                                                                           "bad checkout")
+    if uses is None:
+        return "step without run or uses"
+    return uses.split("@", 1)[0].rsplit("/", 1)[-1]
+
+
 def records_workflow_rules(rel, text, sha, findings):
     """The records forms of one records repo workflow (ADR-0007 part 5), on
     top of guard_workflows and the hardening: closed top-level, job and step
     keys, the GitHub-hosted runner, a timeout on every job, run steps only in
     their job, the one env: form, and in every job that runs check.sh
     exactly one checkout of the records repo and one of the public repo at
-    the pin."""
+    the pin. The jobs are exactly the canonical ones, each with its canonical
+    step kinds in order and its canonical needs: (RECORDS_JOB_STEPS,
+    RECORDS_NEEDS), the Pages upload takes exactly RECORDS_PAGES_UPLOAD, and
+    no ${{ }} expression stands outside its canonical place."""
     lines = workflow_lines(text)
     lighthouse_file = rel == LIGHTHOUSE_WORKFLOW
+    name = rel.rsplit("/", 1)[-1]
     for i, line in enumerate(lines):
         parsed = yaml_line(line)
         if parsed and parsed[0] == 0 and not parsed[2] and isinstance(parsed[3], str) \
@@ -15545,12 +15616,32 @@ def records_workflow_rules(rel, text, sha, findings):
     if rel == ".github/workflows/ci.yml" and "check" not in jobs:
         findings.add(rel, "no job `check`: the private protection requires exactly that "
                      f"context ({RECORDS_WHY})")
+    canonical = [key.split(" ", 1)[1] for key in RECORDS_JOB_STEPS
+                 if key.split(" ", 1)[0] == name]
+    for job in jobs:
+        if job not in canonical:
+            findings.add(f"{rel}: job {job}", f"not a job of the canonical {name} "
+                         f"({', '.join(canonical)}); an extra job could gate a canonical one "
+                         f"or upload a second artifact ({RECORDS_WHY})")
+    for job in canonical:
+        if job not in jobs:
+            findings.add(f"{rel}: job {job}", f"missing; {name} holds exactly the canonical "
+                         f"jobs {', '.join(canonical)} ({RECORDS_WHY})")
     env_ok = set()
     for job, body in jobs.items():
         layout = job_layout(lines, body, rel, job, findings)
         if layout is None:
             continue
         keys, steps = layout
+        want_needs = RECORDS_NEEDS.get(f"{name} {job}")
+        needs = scalar_of(keys["needs"][1]) if "needs" in keys else None
+        if ("needs" in keys) != (want_needs is not None) or needs != want_needs:
+            got = keys["needs"][1].strip() if "needs" in keys else "missing"
+            findings.add(f"{rel}: job {job}", f"needs: {json.dumps(got)}; in the records "
+                         "workflows only the job lighthouse of lighthouse.yml needs a job, "
+                         "exactly build (when a needed job fails or is skipped, GitHub skips "
+                         "the job, and branch protection takes a skipped required check as a "
+                         f"pass; {RECORDS_WHY})")
         for key, (i, value) in keys.items():
             if key not in RECORDS_JOB_KEYS:
                 findings.add(f"{rel}:{i + 1}", f"job key {json.dumps(key)}: a records job "
@@ -15567,19 +15658,21 @@ def records_workflow_rules(rel, text, sha, findings):
             findings.add(f"{rel}: job {job}", "no timeout-minutes as a plain whole number; the "
                          "default of 360 minutes would let a hung job spend the metered "
                          "budget (ADR-0007 part 6)")
-        checkouts, check_runs = [], 0
+        checkouts, check_runs, kinds = [], 0, []
         lighthouse_job = lighthouse_file and job == RECORDS_LIGHTHOUSE_JOB
         for step in steps:
             skeys = step_keys(lines, step, rel, findings)
             if skeys is None:
+                kinds.append(records_step_kind(None, None, None, None))
                 continue
             for key, (i, _) in skeys.items():
                 if key not in RECORDS_STEP_KEYS:
                     findings.add(f"{rel}:{i + 1}", f"step key {json.dumps(key)}: a records "
                                  f"step holds only {', '.join(RECORDS_STEP_KEYS)} ({RECORDS_WHY})")
             uses = scalar_of(skeys["uses"][1]) if "uses" in skeys else None
+            run = RUN_KEY.search(lines[skeys["run"][0]]) if "run" in skeys else None
+            checkout = None
             if "run" in skeys:
-                run = RUN_KEY.search(lines[skeys["run"][0]])
                 form = RECORDS_LIGHTHOUSE_RUN if lighthouse_job else RECORDS_CHECK_RUN
                 if not run or not form.fullmatch(run.group(1)):
                     findings.add(f"{rel}:{skeys['run'][0] + 1}", "in this job a run step may only "
@@ -15593,21 +15686,39 @@ def records_workflow_rules(rel, text, sha, findings):
                                  f"with (fails closed, {RECORDS_WHY})")
                 if "env" in skeys:
                     env = mapping_children(lines, skeys["env"][0], step[1], findings, rel, "env:")
-                    good = (not lighthouse_file and run and RECORDS_CHECK_RUN.fullmatch(run.group(1))
+                    good = (not lighthouse_job and run and RECORDS_CHECK_RUN.fullmatch(run.group(1))
                             and env is not None and len(env) == 1 and RECORDS_ENV[0] in env
                             and yaml_scalar(env[RECORDS_ENV[0]][1]) == ("plain", RECORDS_ENV[1]))
                     if good:
                         env_ok.add(skeys["env"][0])
                         env_ok.add(env[RECORDS_ENV[0]][0])
             elif uses is not None and CHECKOUT_ACTION.match(uses):
-                kind = records_checkout(rel, lines, step, skeys, sha, findings)
-                checkouts.append(kind or "bad")
+                checkout = records_checkout(rel, lines, step, skeys, sha, findings) or "bad"
+                checkouts.append(checkout)
             elif uses is None:
                 findings.add(f"{rel}:{step[0] + 1}", "a step with neither run nor uses "
                              f"(fails closed, {RECORDS_WHY})")
             elif "env" in skeys or "shell" in skeys:
                 findings.add(f"{rel}:{step[0] + 1}", f"env: or shell: on a uses step "
                              f"({RECORDS_WHY})")
+            kinds.append(records_step_kind(skeys, run, uses, checkout))
+            if kinds[-1] == "upload-pages-artifact":
+                inputs = (mapping_children(lines, skeys["with"][0], step[1], findings, rel,
+                                           "with: of upload-pages-artifact")
+                          if "with" in skeys else None)
+                values = (None if inputs is None
+                          else {k: scalar_of(v) for k, (_, v) in inputs.items()})
+                if values != RECORDS_PAGES_UPLOAD:
+                    findings.add(f"{rel}:{step[0] + 1}", "with: of upload-pages-artifact must "
+                                 "be exactly `path: site/public`, the build check.sh checked "
+                                 "(another path or input would upload another tree as the "
+                                 f"Pages artifact; {RECORDS_WHY})")
+        want_steps = RECORDS_JOB_STEPS.get(f"{name} {job}")
+        if want_steps is not None and tuple(kinds) != want_steps:
+            findings.add(f"{rel}: job {job}", f"steps {', '.join(kinds) or 'none'}, not the "
+                         f"canonical {', '.join(want_steps)} in that order (the required job "
+                         "check must run the check, and the Pages artifact is uploaded only "
+                         f"after check.sh checked it; {RECORDS_WHY})")
         if check_runs:
             for kind in ("self", "public"):
                 n = checkouts.count(kind)
@@ -15623,8 +15734,26 @@ def records_workflow_rules(rel, text, sha, findings):
         match = EXEC_KEYS.search(line)
         if match and match.group(1) == "env" and i not in env_ok:
             findings.add(f"{rel}:{i + 1}", "env: only as `GH_TOKEN: ${{ github.token }}` on "
-                         "the check.sh step, and never in lighthouse.yml (the job that runs "
-                         f"registry code holds no credential; {RECORDS_WHY})")
+                         "the check.sh step, and never in the job lighthouse of lighthouse.yml "
+                         f"(the job that runs registry code holds no credential; {RECORDS_WHY})")
+        if "${{" not in line:
+            continue
+        found = YAML_EXPRESSION.findall(line)
+        parsed = yaml_line(line)
+        if len(found) != line.count("${{"):
+            ok = False
+        elif i in env_ok:
+            ok = found == [RECORDS_ENV[1]]
+        else:
+            ok = (parsed is not None and parsed[3] == "group" and not parsed[2]
+                  and all(e in RECORDS_EXPRESSIONS for e in found))
+        if not ok:
+            findings.add(f"{rel}:{i + 1}", "an expression outside its canonical place: a "
+                         "records workflow holds `${{ github.token }}` only as the GH_TOKEN env "
+                         "of a check.sh step, and only the RECORDS_EXPRESSIONS as a "
+                         "concurrency group (an expression in a with: input, a name or a "
+                         "comment can write the token or the github context where the run "
+                         f"shows it; {RECORDS_WHY})")
 
 
 def cmd_records_repo(args):
@@ -15761,7 +15890,10 @@ def cmd_pin(args):
                 findings.add(where, f"the latest check run {run_id} is "
                              f"{latest.get('status')}/{latest.get('conclusion')}, not "
                              f"completed/success ({RECORDS_WHY})")
-    _, compare, problem = pin_get(opener, f"{repo}/compare/{sha}...main", token, "compare")
+    # heads/main, not main: a tag named main would make the bare name
+    # ambiguous, and GitHub may resolve it to the tag.
+    _, compare, problem = pin_get(opener, f"{repo}/compare/{sha}...heads/main", token,
+                                  "compare")
     state = None
     if problem:
         findings.add(where, f"compare: {problem} ({RECORDS_WHY})")

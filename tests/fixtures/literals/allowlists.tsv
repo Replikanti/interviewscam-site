@@ -702,3 +702,12 @@ RECORDS_STEP_KEYS	with
 RECORDS_STEP_KEYS	shell
 RECORDS_STEP_KEYS	env
 RECORDS_STEP_KEYS	run
+RECORDS_JOB_STEPS	ci.yml check	checkout records	checkout site	check.sh
+RECORDS_JOB_STEPS	deploy.yml pages-artifact	checkout records	checkout site	check.sh	upload-pages-artifact
+RECORDS_JOB_STEPS	lighthouse.yml build	checkout records	checkout site	check.sh	upload-artifact
+RECORDS_JOB_STEPS	lighthouse.yml lighthouse	download-artifact	lighthouse.sh
+RECORDS_JOB_STEPS	links-external.yml links-external	checkout records	checkout site	check.sh --external
+RECORDS_NEEDS	lighthouse.yml lighthouse	build
+RECORDS_PAGES_UPLOAD	path	site/public
+RECORDS_EXPRESSIONS	${{ github.ref }}
+RECORDS_EXPRESSIONS	${{ github.event_name == 'push' && 'pages' || format('pages-pr-{0}', github.ref) }}
