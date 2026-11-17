@@ -708,6 +708,10 @@ RECORDS_JOB_STEPS	lighthouse.yml build	checkout records	checkout site	check.sh	u
 RECORDS_JOB_STEPS	lighthouse.yml lighthouse	download-artifact	lighthouse.sh
 RECORDS_JOB_STEPS	links-external.yml links-external	checkout records	checkout site	check.sh --external
 RECORDS_NEEDS	lighthouse.yml lighthouse	build
-RECORDS_PAGES_UPLOAD	path	site/public
+RECORDS_WITH	upload-pages-artifact	{"path": "site/public"}
+RECORDS_WITH	upload-artifact	{"name": "built-site", "path": ["site/public", "site/tools"], "if-no-files-found": "error", "retention-days": "1"}
+RECORDS_WITH	download-artifact	{"name": "built-site"}
+RECORDS_PERMISSIONS	contents	read
+RECORDS_JOB_PERMISSIONS	lighthouse.yml lighthouse	{}
 RECORDS_EXPRESSIONS	${{ github.ref }}
 RECORDS_EXPRESSIONS	${{ github.event_name == 'push' && 'pages' || format('pages-pr-{0}', github.ref) }}

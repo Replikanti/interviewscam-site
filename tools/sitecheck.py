@@ -6582,8 +6582,8 @@ PINNED_ALLOWLISTS = LITERALS_PASSING_SETS + (
     # Records mode (ADR-0007 part 5): the records repo's closed layout and
     # the closed key sets of its workflows.
     "RECORDS_TOP", "RECORDS_WORKFLOWS", "RECORDS_TOP_KEYS", "RECORDS_JOB_KEYS",
-    "RECORDS_STEP_KEYS", "RECORDS_JOB_STEPS", "RECORDS_NEEDS", "RECORDS_PAGES_UPLOAD",
-    "RECORDS_EXPRESSIONS")
+    "RECORDS_STEP_KEYS", "RECORDS_JOB_STEPS", "RECORDS_NEEDS", "RECORDS_WITH",
+    "RECORDS_PERMISSIONS", "RECORDS_JOB_PERMISSIONS", "RECORDS_EXPRESSIONS")
 # L5: the CSS properties and @counter-style descriptors whose strings the
 # browser draws as text.
 CSS_TEXT_PROPERTIES = {"content", "list-style", "list-style-type", "quotes",
@@ -15287,9 +15287,31 @@ RECORDS_JOB_STEPS = {
 # or is skipped, GitHub skips the job that needs it, and branch protection
 # takes a skipped required check as a pass, so no other job may need one.
 RECORDS_NEEDS = {"lighthouse.yml lighthouse": "build"}
-# The exact with: of actions/upload-pages-artifact: the build that check.sh
-# checked, never the records checkout or another tree.
-RECORDS_PAGES_UPLOAD = {"path": "site/public"}
+# The exact with: of every uses: step of the records workflows besides the
+# two checkouts (records_checkout pins those), keyed by step kind
+# (records_step_kind); a literal block (`path: |`) is the tuple of its
+# lines. Compared exactly: no input more or less, no other value. The Pages
+# upload takes the build that check.sh checked, never the records checkout
+# or another tree. The upload of lighthouse.yml build takes the checked
+# build and the check scripts only: one more path (a hidden one with
+# include-hidden-files: true, say .records-site/ with the real
+# retired_slugs) would reach the job lighthouse, which runs the registry
+# code with network access (ADR-0003 part 2). The download takes that one
+# artifact into the job's work directory.
+RECORDS_WITH = {
+    "upload-pages-artifact": {"path": "site/public"},
+    "upload-artifact": {"name": "built-site", "path": ("site/public", "site/tools"),
+                        "if-no-files-found": "error", "retention-days": "1"},
+    "download-artifact": {"name": "built-site"},
+}
+# The exact permissions: of every records workflow (the job token reads the
+# repo, nothing else), and of each job: only the job lighthouse of
+# lighthouse.yml holds one, `permissions: {}` (no token permission where
+# the registry code runs); every other job takes the workflow's. A job-level
+# contents: write or actions: write would hand a write token to every step
+# of the job.
+RECORDS_PERMISSIONS = {"contents": "read"}
+RECORDS_JOB_PERMISSIONS = {"lighthouse.yml lighthouse": "{}"}
 # The one env: a records workflow may hold, on a check.sh step outside the
 # job lighthouse: the job token for the pin rule's two API reads (check.sh
 # unsets it right after the pin step).
@@ -15445,6 +15467,64 @@ def mapping_children(lines, idx, end, findings, where_prefix, what):
     return children
 
 
+def records_mapping(lines, idx, end, findings, where_prefix, what):
+    """{key: value} of the block mapping under the key on line idx (up to
+    end), for the exact pins of RECORDS_WITH and RECORDS_PERMISSIONS: a
+    value is the scalar written on its line, or for a literal block (`key:
+    |`, no indicator, no comment) the tuple of its lines without the block's
+    indentation (a deeper line keeps its extra spaces, a comment-like line
+    is content). None after a finding when the reader cannot follow it: a
+    nested or repeated key, a list, a value it cannot read, a blank line
+    inside a literal block."""
+    parsed = yaml_line(lines[idx])
+    base = parsed[1] if parsed[2] else parsed[0]
+    if yaml_scalar(parsed[4])[0] != "empty":
+        findings.add(f"{where_prefix}:{idx + 1}", f"{what} must be a block mapping the guard "
+                     f"reads (fails closed, {RECORDS_WHY})")
+        return None
+    values, child, block, at, blank = {}, None, None, None, None
+
+    def unreadable(j):
+        findings.add(f"{where_prefix}:{j + 1}", f"a line of {what} the guard cannot read "
+                     f"(nested, a list, a repeated key, a blank line in a literal block; "
+                     f"fails closed, {RECORDS_WHY})")
+
+    for j in range(idx + 1, end):
+        line = lines[j]
+        if block is not None:
+            if not line.strip():
+                blank = j if blank is None else blank
+                continue
+            if indent_of(line) > child:
+                at = indent_of(line) if at is None else at
+                if blank is not None or indent_of(line) < at:
+                    unreadable(j if blank is None else blank)
+                    return None
+                values[block] += (line[at:],)
+                continue
+            block = None
+        below = yaml_line(line)
+        if below is None:
+            continue
+        indent, _, dash, key, value = below
+        if indent <= base:
+            break
+        if child is None:
+            child = indent
+        if indent != child or dash or not isinstance(key, str) or key in values:
+            unreadable(j)
+            return None
+        if value.strip() == "|":
+            values[key], block, at, blank = (), key, None, None
+            continue
+        text = scalar_of(value)
+        if text is None:
+            unreadable(j)
+            return None
+        values[key] = text
+    return values
+
+
 def scalar_of(value):
     """The scalar of a value written on its line, or None."""
     kind, text = yaml_scalar(value)
@@ -15597,8 +15677,10 @@ def records_workflow_rules(rel, text, sha, findings):
     exactly one checkout of the records repo and one of the public repo at
     the pin. The jobs are exactly the canonical ones, each with its canonical
     step kinds in order and its canonical needs: (RECORDS_JOB_STEPS,
-    RECORDS_NEEDS), the Pages upload takes exactly RECORDS_PAGES_UPLOAD, and
-    no ${{ }} expression stands outside its canonical place."""
+    RECORDS_NEEDS), every uses: step other than a checkout takes exactly its
+    RECORDS_WITH, the workflow and each job hold exactly their permissions
+    (RECORDS_PERMISSIONS, RECORDS_JOB_PERMISSIONS), and no ${{ }}
+    expression stands outside its canonical place."""
     lines = workflow_lines(text)
     lighthouse_file = rel == LIGHTHOUSE_WORKFLOW
     name = rel.rsplit("/", 1)[-1]
@@ -15608,6 +15690,16 @@ def records_workflow_rules(rel, text, sha, findings):
                 and parsed[3] not in RECORDS_TOP_KEYS:
             findings.add(f"{rel}:{i + 1}", f"top-level key {json.dumps(parsed[3])}: a records "
                          f"workflow holds only {', '.join(RECORDS_TOP_KEYS)} ({RECORDS_WHY})")
+    tops = [i for i, line in enumerate(lines)
+            if (parsed := yaml_line(line)) and parsed[0] == 0 and not parsed[2]
+            and parsed[3] == "permissions"]
+    perms = (records_mapping(lines, tops[0], len(lines), findings, rel, "permissions:")
+             if len(tops) == 1 else None)
+    if perms != RECORDS_PERMISSIONS:
+        findings.add(f"{rel}:{tops[0] + 1}" if tops else rel, "permissions: of a records "
+                     "workflow must be exactly `contents: read`, one block at the top level "
+                     "(another permission hands a write or wider token to every job; "
+                     f"{RECORDS_WHY})")
     jobs = workflow_jobs(lines)
     if jobs is None:
         findings.add(rel, f"cannot read the jobs block by indentation (fails closed, "
@@ -15648,6 +15740,16 @@ def records_workflow_rules(rel, text, sha, findings):
                              f"holds only {', '.join(RECORDS_JOB_KEYS)} (no if: or "
                              "continue-on-error, which report a skipped or failed check as "
                              f"success; {RECORDS_WHY})")
+        want_perms = RECORDS_JOB_PERMISSIONS.get(f"{name} {job}")
+        perms = (YAML_COMMENT.sub("", keys["permissions"][1]).strip()
+                 if "permissions" in keys else None)
+        if perms != want_perms:
+            shown = "missing" if perms is None else perms or "a block mapping"
+            findings.add(f"{rel}: job {job}", f"job-level permissions: {shown}; in the "
+                         "records workflows only the job lighthouse of lighthouse.yml holds "
+                         "one, exactly `permissions: {}`, and every other job takes the "
+                         "workflow's contents: read (a job-level write permission hands a "
+                         f"write token to every step of the job; {RECORDS_WHY})")
         runner = scalar_of(keys["runs-on"][1]) if "runs-on" in keys else None
         if runner != RECORDS_RUNNER:
             findings.add(f"{rel}: job {job}", f"runs-on must be exactly {RECORDS_RUNNER}, a "
@@ -15702,17 +15804,18 @@ def records_workflow_rules(rel, text, sha, findings):
                 findings.add(f"{rel}:{step[0] + 1}", f"env: or shell: on a uses step "
                              f"({RECORDS_WHY})")
             kinds.append(records_step_kind(skeys, run, uses, checkout))
-            if kinds[-1] == "upload-pages-artifact":
-                inputs = (mapping_children(lines, skeys["with"][0], step[1], findings, rel,
-                                           "with: of upload-pages-artifact")
+            want_with = RECORDS_WITH.get(kinds[-1])
+            if want_with is not None:
+                values = (records_mapping(lines, skeys["with"][0], step[1], findings, rel,
+                                          f"with: of {kinds[-1]}")
                           if "with" in skeys else None)
-                values = (None if inputs is None
-                          else {k: scalar_of(v) for k, (_, v) in inputs.items()})
-                if values != RECORDS_PAGES_UPLOAD:
-                    findings.add(f"{rel}:{step[0] + 1}", "with: of upload-pages-artifact must "
-                                 "be exactly `path: site/public`, the build check.sh checked "
-                                 "(another path or input would upload another tree as the "
-                                 f"Pages artifact; {RECORDS_WHY})")
+                if values != want_with:
+                    shown = "; ".join(f"{k}: " + (" | ".join(v) if isinstance(v, tuple) else v)
+                                      for k, v in want_with.items())
+                    findings.add(f"{rel}:{step[0] + 1}", f"with: of {kinds[-1]} must be "
+                                 f"exactly `{shown}` (compared exactly: another path, name or "
+                                 "input would upload or download another tree, a hidden "
+                                 f"records copy included; {RECORDS_WHY})")
         want_steps = RECORDS_JOB_STEPS.get(f"{name} {job}")
         if want_steps is not None and tuple(kinds) != want_steps:
             findings.add(f"{rel}: job {job}", f"steps {', '.join(kinds) or 'none'}, not the "

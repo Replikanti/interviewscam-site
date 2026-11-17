@@ -2502,13 +2502,16 @@ domains = ["records-mode-selftest[.]example"]
     && grep -q '^records checked: 0 ' "$out" && grep -q '^pin checked: ' "$out" && ok=1
   e2e_report e2e-empty "$ok" "exit $rc, records checked: 0, RECORDS LOCAL PASS on ${sha:0:12}"
 
-  # e2e: one record, the canonical workflows at the pin, the policy.
+  # e2e: one record, the canonical workflows at the pin, the policy. The
+  # policy retires a slug made up here (no file of the copy holds it), the
+  # canary of no-records-copy below.
+  local canary="records-mode-retired-$RANDOM$RANDOM"
   rm -rf "$records" && mkdir -p "$records/content/reports" "$records/content/campaigns" "$records/schema"
   cp -R "$fx/records-repo/pass-shapes/.github" "$records/"
   sed -i "s/0123456789abcdef0123456789abcdef01234567/$sha/" "$records"/.github/workflows/*.yml
   printf 'worktrees/\n' >"$records/.gitignore"
   printf '# records\n' >"$records/README.md"
-  printf '{"retired_slugs": []}\n' >"$records/schema/record-policy.json"
+  printf '{"retired_slugs": ["%s"]}\n' "$canary" >"$records/schema/record-policy.json"
   cp "$fx/records/pass-fixture-site/content/reports/_index.md" "$records/content/reports/"
   cp "$fx/records/pass-fixture-site/content/campaigns/_index.md" "$records/content/campaigns/"
   printf '%s' "$report" >"$records/content/reports/records-mode-selftest-name.md"
@@ -2519,6 +2522,21 @@ domains = ["records-mode-selftest[.]example"]
     && grep -q '^records-repo checked: .* 1 records, 4 workflows' "$out" \
     && grep -q '^render checked: 1 records' "$out" && [[ -f "$root/public/reports/records-mode-selftest-name/index.html" ]] && ok=1
   e2e_report e2e "$ok" "exit $rc, 1 record built and checked, 4 workflows, RECORDS LOCAL PASS"
+
+  # no-records-copy (fix round 2 of interviewscam-site#12): a passing run
+  # leaves no copy of the records repo where an artifact upload could take
+  # it. .records-site/ is gone, the cleanup step passed, no file under
+  # public/ or tools/ (the two upload paths) equals a file of the records
+  # repo, and none holds the retired slug of its policy.
+  ok=0
+  [[ $rc -eq 0 && ! -e "$root/.records-site" && ! -L "$root/.records-site" ]] \
+    && grep -qE '^  records cleanup \(\.records-site/ removed\) +PASS$' "$out" \
+    && ! grep -rqF -- "$canary" "$root/public" "$root/tools" \
+    && [[ -z "$(comm -12 \
+      <(find "$records" -path "$records/.git" -prune -o -type f -exec sha256sum {} + | cut -d' ' -f1 | sort -u) \
+      <(find "$root/public" "$root/tools" -type f -exec sha256sum {} + | cut -d' ' -f1 | sort -u))" ]] \
+    && ok=1
+  e2e_report no-records-copy "$ok" "exit $rc, no .records-site/, no records file or retired slug under public/ or tools/"
 
   # not-run-lines: every machinery step prints the records-mode NOT RUN line
   # and records it, and every content step ran.
@@ -2532,13 +2550,17 @@ domains = ["records-mode-selftest[.]example"]
   [[ "$n" == 9 ]] || ok=0
   for line in "pin (green check on public main)" fetch-tools "guard (repo rules)" \
       "records repo (layout, workflows)" "records assembly" "records (schema, defang)" build \
-      "site (third-party, CSP, defang)" "render (D6, D7, D10, structured data)" "links (offline, internal)"; do
+      "site (third-party, CSP, defang)" "render (D6, D7, D10, structured data)" "links (offline, internal)" \
+      "records cleanup (.records-site/ removed)"; do
     grep -qE "^  $(e2e_ere "$line") +PASS\$" "$out" || ok=0
   done
-  e2e_report not-run-lines "$ok" "9 machinery steps NOT RUN (records mode), 10 content steps PASS"
+  e2e_report not-run-lines "$ok" "9 machinery steps NOT RUN (records mode), 10 content steps and the cleanup PASS"
 
-  # assembly: .records-site/ against its sources, per input class.
+  # assembly: .records-site/ against its sources, per input class (the
+  # assembly step alone: the whole run removes .records-site/ at its end).
+  e2e_steps step_records_assembly
   ok=1
+  [[ $rc -eq 0 ]] || ok=0
   diff -r "$root/.records-site/content/reports" "$records/content/reports" >/dev/null || ok=0
   diff -r "$root/.records-site/content/campaigns" "$records/content/campaigns" >/dev/null || ok=0
   for line in "$root"/content/*.md; do
@@ -3819,7 +3841,7 @@ PY
   sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
   n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
   n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if [[ $(grep -c '^ok   records-mode/' "$out") -ne 13 ]]; then
+  if [[ $(grep -c '^ok   records-mode/' "$out") -ne 14 ]]; then
     echo "FAIL records-mode/e2e: not every e2e case passed; output:"
     sed 's/^/     | /' "$out"
     n_failed=$((n_failed + 1))

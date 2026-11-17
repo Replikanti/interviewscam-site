@@ -127,3 +127,39 @@ wf/lighthouse-token-in-with	.github/workflows/lighthouse.yml	          name: bui
 wf/group-expression-in-with	.github/workflows/lighthouse.yml	          name: built-site\n          path: |	          name: ${{ github.ref }}\n          path: |	an expression
 wf/lighthouse-token-first-in-with	.github/workflows/lighthouse.yml	        with:\n          name: built-site\n          path: |	        with:\n          GH_TOKEN: ${{ github.token }}\n          name: built-site\n          path: |	a github.token reference in .github/workflows/lighthouse.yml
 wf/env-in-registry-job	.github/workflows/lighthouse.yml	        shell: bash\n        run: bash tools/lighthouse.sh --records	        shell: bash\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash site/tools/check.sh --records records	env: only as
+wf/upload-records-site-hidden	.github/workflows/lighthouse.yml	            site/tools\n          if-no-files-found: error\n          retention-days: 1\n	            site/tools\n            site/.records-site/schema\n            site/.records-site/content\n          if-no-files-found: error\n          retention-days: 1\n          include-hidden-files: true\n	with: of upload-artifact must be exactly
+wf/upload-extra-path	.github/workflows/lighthouse.yml	            site/tools\n	            site/tools\n            records\n	with: of upload-artifact must be exactly
+wf/upload-include-hidden-files	.github/workflows/lighthouse.yml	          retention-days: 1\n	          retention-days: 1\n          include-hidden-files: true\n	with: of upload-artifact must be exactly
+wf/upload-other-name	.github/workflows/lighthouse.yml	          name: built-site\n          path: |	          name: built-site-2\n          path: |	with: of upload-artifact must be exactly
+wf/upload-retention-days	.github/workflows/lighthouse.yml	          retention-days: 1	          retention-days: 90	with: of upload-artifact must be exactly
+wf/upload-if-no-files-found	.github/workflows/lighthouse.yml	if-no-files-found: error	if-no-files-found: ignore	with: of upload-artifact must be exactly
+wf/upload-path-one-line	.github/workflows/lighthouse.yml	          path: |\n            site/public\n            site/tools\n	          path: site/public\n	with: of upload-artifact must be exactly
+wf/upload-path-only-public	.github/workflows/lighthouse.yml	            site/public\n            site/tools\n	            site/public\n	with: of upload-artifact must be exactly
+wf/upload-path-strip-chomp	.github/workflows/lighthouse.yml	          path: |\n	          path: |-\n	with: of upload-artifact must be exactly
+wf/upload-path-folded	.github/workflows/lighthouse.yml	          path: |\n	          path: >\n	with: of upload-artifact must be exactly
+wf/upload-path-deeper-line	.github/workflows/lighthouse.yml	            site/tools\n	              site/tools\n	with: of upload-artifact must be exactly
+wf/upload-path-blank-line	.github/workflows/lighthouse.yml	            site/public\n            site/tools\n	            site/public\n\n            site/tools\n	with: of upload-artifact must be exactly
+wf/upload-path-comment-line	.github/workflows/lighthouse.yml	            site/tools\n	            site/tools\n            # site/.records-site\n	with: of upload-artifact must be exactly
+wf/upload-no-with	.github/workflows/lighthouse.yml	        with:\n          name: built-site\n          path: |\n            site/public\n            site/tools\n          if-no-files-found: error\n          retention-days: 1\n		with: of upload-artifact must be exactly
+wf/upload-input-case-variant	.github/workflows/lighthouse.yml	          retention-days: 1	          Retention-days: 1	with: of upload-artifact must be exactly
+wf/upload-name-quoted-passes	.github/workflows/lighthouse.yml	          name: built-site\n          path: |	          name: "built-site"\n          path: |	PASS
+wf/upload-inputs-reordered-passes	.github/workflows/lighthouse.yml	          name: built-site\n          path: |\n            site/public\n            site/tools\n          if-no-files-found: error\n          retention-days: 1\n	          retention-days: 1\n          if-no-files-found: error\n          path: |\n            site/public\n            site/tools\n          name: built-site\n	PASS
+wf/download-path	.github/workflows/lighthouse.yml	          name: built-site\n      - name: bash tools	          name: built-site\n          path: ..\n      - name: bash tools	with: of download-artifact must be exactly
+wf/download-merge-multiple	.github/workflows/lighthouse.yml	          name: built-site\n      - name: bash tools	          name: built-site\n          merge-multiple: true\n      - name: bash tools	with: of download-artifact must be exactly
+wf/download-other-name	.github/workflows/lighthouse.yml	          name: built-site\n      - name: bash tools	          name: built-site-2\n      - name: bash tools	with: of download-artifact must be exactly
+wf/download-no-with	.github/workflows/lighthouse.yml	        with:\n          name: built-site\n      - name: bash tools	      - name: bash tools	with: of download-artifact must be exactly
+wf/pages-upload-name-input	.github/workflows/deploy.yml	          path: site/public	          path: site/public\n          name: github-pages-2	with: of upload-pages-artifact must be exactly
+wf/persist-credentials-true	.github/workflows/ci.yml	          persist-credentials: false\n          path: records	          persist-credentials: true\n          path: records	WH2: actions/checkout needs exactly one
+wf/top-permissions-contents-write	.github/workflows/ci.yml	\npermissions:\n  contents: read\n	\npermissions:\n  contents: write\n	permissions: of a records workflow must be exactly
+wf/top-permissions-actions-write	.github/workflows/links-external.yml	\npermissions:\n  contents: read\n	\npermissions:\n  contents: read\n  actions: write\n	permissions: of a records workflow must be exactly
+wf/top-permissions-id-token	.github/workflows/deploy.yml	\npermissions:\n  contents: read\n	\npermissions:\n  contents: read\n  id-token: write\n	permissions: of a records workflow must be exactly
+wf/top-permissions-read-all	.github/workflows/deploy.yml	\npermissions:\n  contents: read\n	\npermissions: read-all\n	permissions: of a records workflow must be exactly
+wf/top-permissions-empty	.github/workflows/lighthouse.yml	\npermissions:\n  contents: read\n	\npermissions: {}\n	permissions: of a records workflow must be exactly
+wf/top-permissions-quoted-passes	.github/workflows/ci.yml	\npermissions:\n  contents: read\n	\npermissions:\n  contents: "read"\n	PASS
+wf/job-permissions-build-write	.github/workflows/lighthouse.yml	  build:\n    runs-on: ubuntu-24.04\n	  build:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: write\n      actions: write\n	job-level permissions:
+wf/job-permissions-check-read	.github/workflows/ci.yml	    timeout-minutes: 10\n	    timeout-minutes: 10\n    permissions:\n      contents: read\n	job-level permissions:
+wf/job-permissions-check-empty	.github/workflows/ci.yml	    timeout-minutes: 10\n	    timeout-minutes: 10\n    permissions: {}\n	job-level permissions:
+wf/job-permissions-pages-artifact-write	.github/workflows/deploy.yml	    timeout-minutes: 10\n	    timeout-minutes: 10\n    permissions:\n      contents: write\n	job-level permissions:
+wf/job-permissions-links-actions-write	.github/workflows/links-external.yml	    timeout-minutes: 10\n	    timeout-minutes: 10\n    permissions:\n      actions: write\n	job-level permissions:
+wf/lighthouse-job-permissions-read	.github/workflows/lighthouse.yml	    permissions: {}\n	    permissions:\n      contents: read\n	job-level permissions:
+wf/lighthouse-job-permissions-missing	.github/workflows/lighthouse.yml	    permissions: {}\n		job-level permissions:

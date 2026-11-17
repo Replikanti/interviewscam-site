@@ -66,7 +66,10 @@ FIXTURE_SKIP=(.git .github .gitignore .hugo_build.lock .tools .fixture-site
 # Records mode (ADR-0007 part 5): the assembled source tree of the
 # production build on the records of DIR. Like .fixture-site/ it is
 # git-ignored and rebuilt on every run; the build goes into public/, so the
-# deploy and Lighthouse artifacts keep their path.
+# deploy and Lighthouse artifacts keep their path. It holds the records
+# repo's sources (the real retired_slugs among them), so every records-mode
+# run removes it at its end (step_records_cleanup): no later step of the
+# job, such as an artifact upload, can find it.
 RECORDS_SITE="$CHECK_ROOT/.records-site"
 RECORDS_NOT_RUN_LINE="NOT RUN (records mode): machinery only, held by the pinned commit's green check"
 # shellcheck source=tools/fetch-tools.sh
@@ -498,6 +501,20 @@ step_records_reflow() { reflow_check "$CHECK_ROOT/public"; }
 
 step_records_html() { html_check "$CHECK_ROOT/public"; }
 
+# step_records_cleanup: remove .records-site/, the assembled copy of the
+# records repo's sources, after every records-mode run, pass or fail. The
+# next step of a job uploads an artifact, and the guard pins its paths
+# (RECORDS_WITH), but a run that leaves no copy behind holds even when a
+# path is widened. The build in public/ stays: it is the artifact.
+step_records_cleanup() {
+  rm -rf "$RECORDS_SITE" || return 1
+  if [[ -e "$RECORDS_SITE" || -L "$RECORDS_SITE" ]]; then
+    echo "FAIL: records cleanup: $RECORDS_SITE is still there" >&2
+    return 1
+  fi
+  echo "records cleanup: .records-site/ removed"
+}
+
 # not_run_machinery <name>: a machinery step of the public run, which
 # records mode leaves to the pinned commit's green check.
 not_run_machinery() {
@@ -543,6 +560,7 @@ records_step() {
 # checks) ever holds it (wiring/records-token-unset). A failed records-repo
 # step stops every step that reads the records repo (records_step), and
 # .records-site/ and public/ are removed, so no stale tree stays behind.
+# The last step removes .records-site/ after every run (step_records_cleanup).
 check_records_main() {
   local sha
   if ! sha="$(git -C "$CHECK_ROOT" rev-parse --verify 'HEAD^{commit}')"; then
@@ -580,6 +598,7 @@ check_records_main() {
   fi
   not_run_machinery "links (fixture build, offline)"
   not_run_machinery selftest
+  run_step "records cleanup (.records-site/ removed)" step_records_cleanup
   check_summary records "${sha:0:12}"
 }
 
