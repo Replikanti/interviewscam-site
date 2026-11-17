@@ -6575,7 +6575,7 @@ PINNED_ALLOWLISTS = LITERALS_PASSING_SETS + (
     # The public-tree guard and the workflow hardening (ADR-0007 part 4):
     # the allowed triggers and the two exemptions.
     "WORKFLOW_TRIGGERS_ALLOWED", "PUBLIC_TREE_EXEMPT", "PUBLIC_IMAGE_DIRS",
-    "PUBLIC_FIXTURE_MEDIA", "PUBLIC_FIXTURE_MEDIA_DIRS")
+    "PUBLIC_FIXTURE_MEDIA", "PUBLIC_FIXTURE_MEDIA_DIRS", "PUBLIC_LINK_EXEMPT")
 # L5: the CSS properties and @counter-style descriptors whose strings the
 # browser draws as text.
 CSS_TEXT_PROPERTIES = {"content", "list-style", "list-style-type", "quotes",
@@ -14719,6 +14719,8 @@ PUBLIC_TREE_EXEMPT = ("tests/fixtures/",)
 # under tests/fixtures/ fails.
 PUBLIC_FIXTURE_MEDIA = ("tests/fixtures/guard/",)
 PUBLIC_FIXTURE_MEDIA_DIRS = ("static", "assets", "public")
+# Symlinks: only the guard's own fixtures hold one (fix round 3).
+PUBLIC_LINK_EXEMPT = ("tests/fixtures/guard/",)
 # PT4: images under these two are content-PR review surfaces already (the
 # routing rule: an image under assets/ or static/ is a content PR).
 PUBLIC_IMAGE_DIRS = ("assets/", "static/")
@@ -14909,9 +14911,9 @@ def staged_blobs(root):
     blobs = {}
     for rel, (mode, sha) in sorted(index.items()):
         if mode == "120000" or on_disk.get(rel) == sha:
-            continue  # a symlink is read through its target; an equal blob adds nothing
+            continue  # a symlink fails on its own (guard_public_tree); an equal blob adds nothing
         blobs[rel] = git("cat-file", "blob", sha)
-    return blobs
+    return blobs, {rel for rel, (mode, _) in index.items() if mode == "120000"}
 
 
 YAML_LINE_KEY = re.compile(r"""[ ]*(?:-[ ]+)*["']?([^\s"'#:][^"'#:]*?)["']?[ ]*:(?:[ ]|$)""")
@@ -14920,11 +14922,12 @@ YAML_LINE_KEY = re.compile(r"""[ ]*(?:-[ ]+)*["']?([^\s"'#:][^"'#:]*?)["']?[ ]*:
 def yaml_record_keys(data):
     """The folded record keys a YAML text holds as line keys, at any indent
     (PT2a, fix round 2, delta review: fenceless YAML; no YAML parser in the
-    standard library, so the keys are read line by line)."""
+    standard library, so the keys are read line by line), or None for a
+    text that is not UTF-8 (fails closed, fix round 3)."""
     try:
         text = data.removeprefix(UTF8_BOM).decode("utf-8")
     except UnicodeDecodeError:
-        return set()
+        return None
     keys = set()
     for line in text.split("\n"):
         match = YAML_LINE_KEY.match(line)
@@ -14943,7 +14946,7 @@ def guard_public_tree(root, files, findings):
     """PT1 to PT4 (ADR-0007 part 4)."""
     listed = list(files)
     files = [rel for rel in listed if not rel.startswith(PUBLIC_TREE_EXEMPT)]
-    staged = staged_blobs(root)
+    staged, index_links = staged_blobs(root)
 
     def versions(rel, what):
         """[(label, bytes)]: the working-tree copy and, where it differs, the
@@ -14962,6 +14965,17 @@ def guard_public_tree(root, files, findings):
             out.append((" (staged)", staged[rel]))
         return out
 
+    # Symlinks (fix round 3, delta review 2 finding 2): the public tree holds
+    # none outside the guard's own fixtures (PUBLIC_LINK_EXEMPT: the two
+    # worker-pin fixtures and the PT1 symlink fixtures), so a symlink in the
+    # index (mode 120000) or a listed path that is a symlink on disk fails
+    # closed: its blob is a target path no blob check reads, which can carry a
+    # record as a file name, and the checks read what it points to.
+    links = index_links | {rel for rel in listed if (root / rel).is_symlink()}
+    for rel in sorted(links):
+        if not rel.startswith(PUBLIC_LINK_EXEMPT):
+            findings.add(rel, "PT1: a symlink in the tree; this repo holds none outside "
+                         f"{PUBLIC_LINK_EXEMPT[0]}, so it fails closed ({PUBLIC_WHY})")
     content = root / "content"
     # PT1: structural, so a record section, a page bundle, a case variant or
     # a look-alike or zero-width name all fail without a list of names.
@@ -15092,7 +15106,10 @@ def guard_public_tree(root, files, findings):
                                  f"({PUBLIC_WHY})")
                 yaml_keys = (yaml_record_keys(data) if name.endswith((".yml", ".yaml"))
                              and not rel.startswith(".github/workflows/") else set())
-                if len(yaml_keys) >= RECORD_SHAPE_MIN_KEYS:
+                if yaml_keys is None:
+                    findings.add(where, "PT2a: a YAML file that is not UTF-8; the record "
+                                 f"check cannot read it (fails closed, {PUBLIC_WHY})")
+                elif len(yaml_keys) >= RECORD_SHAPE_MIN_KEYS:
                     findings.add(where, "PT2a: a record in YAML form (the record keys "
                                  f"{', '.join(sorted(yaml_keys))} as line keys); records live "
                                  f"only in the private records repo ({PUBLIC_WHY})")

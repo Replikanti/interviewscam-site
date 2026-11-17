@@ -1323,7 +1323,7 @@ rows += [
      ("--assume-unchanged", {"docs/acme.md": "hello\n"})),
     ("staged/skip-worktree-record", {"docs/acme.json": REC_JSON}, (),
      "docs/acme.json (staged): " + PT2A_SHAPE, ("--skip-worktree", {"docs/acme.json": "{}"})),
-    ("staged/symlink-passes", {"docs/target.txt": "x"}, (), "PASS", "symlink"),
+    ("staged/symlink-fails", {"docs/target.txt": "x"}, (), "PT1: a symlink in the tree", "symlink"),
     ("staged/disk-record-over-clean-blob", {"docs/acme.md": "hello\n"}, (),
      "docs/acme.md: PT2a: a front-matter document",
      {"docs/acme.md": "+++\n" + REC_TOML + "+++\n"}),
@@ -1396,6 +1396,42 @@ rows += [
      "+++\n" + REC_TOML + "+++\n"}, (), "PT2a: a front-matter document"),
 ]
 
+# Fix round 3 (delta review 2, QA): symlinks, the YAML BOM, YAML forms and
+# git index states.
+PT1_LINK = "PT1: a symlink in the tree"
+PT6_NAME = ('{"params":{"name":"Acme Hiring Ltd","name_type":"company","state":"front",'
+            '"summary":"x","evidence":"y"}}')
+rows += [
+    ("symlink/review-pt6-file-name-record", {f"docs/{PT6_NAME}": "hello\n"}, (), PT1_LINK,
+     [("staged", "docs/linkrec", PT6_NAME)]),
+    ("symlink/untracked", {"docs/target.txt": "x"}, (), PT1_LINK,
+     [("untracked", "docs/link", "target.txt")]),
+    ("symlink/staged-deleted-on-disk", {"docs/target.txt": "x"}, (),
+     [PT1_LINK, "PT2a: cannot read: missing"],
+     [("index-only", "docs/link", "target.txt")]),
+    ("symlink/to-directory", {"docs/sub/x.txt": "x"}, (), PT1_LINK,
+     [("untracked", "docs/link", "sub")]),
+    ("symlink/dangling", {"docs/x.txt": "x"}, (), [PT1_LINK, "PT2a: cannot read: missing"],
+     [("untracked", "docs/link", "nowhere")]),
+    ("symlink/guard-fixture-passes", {"tests/fixtures/guard/fail-x/target.txt": "x"}, (), "PASS",
+     [("staged", "tests/fixtures/guard/fail-x/link", "target.txt")]),
+    ("symlink/other-fixture-fails", {"tests/fixtures/x/target.txt": "x"}, (), PT1_LINK,
+     [("staged", "tests/fixtures/x/link", "target.txt")]),
+    ("yaml/bom-then-quoted-key", {"data/acme.yml": "﻿\"name\": Acme\n" + "".join(
+     f"{k}: x\n" for k in FLAT[1:])}, (), "PT2a: a record in YAML form"),
+    ("yaml/block-valued-keys", {"data/acme.yml": "sources:\n  - a\n  - b\nname: x\n"
+     "state: front\nsummary: x\nevidence:\n  y\n"}, (), "PT2a: a record in YAML form"),
+    ("yaml/space-before-colon", {"data/acme.yml": "".join(f"{k} : x\n" for k in FLAT)}, (),
+     "PT2a: a record in YAML form"),
+    ("yaml/not-utf8-fails-closed", {"data/acme.yml": b"name: \xff\n"}, (),
+     "PT2a: a YAML file that is not UTF-8"),
+    ("git/committed-record-one-finding", {"docs/acme.md": "+++\n" + REC_TOML + "+++\n"}, (),
+     ["docs/acme.md: PT2a: a front-matter document"], "committed"),
+    ("git/conflicted-index-entry-passes", {"docs/acme.md": "hello\n"}, (), "PASS", "conflict"),
+    ("git/submodule-entry-fails-closed", {"docs/x.txt": "x"}, (), "sub: PT2a: cannot read: missing",
+     "submodule"),
+]
+
 for row in rows:
     name, files, dirs, expect = row[:4]
     use_git = len(row) > 4 and row[4]
@@ -1409,7 +1445,37 @@ for row in rows:
             (root / rel).mkdir(parents=True, exist_ok=True)
         # The guard reads git (git's listing, the staged blobs), as in production.
         subprocess.run(["git", "init", "-q", str(root)], check=True)
-        if isinstance(use_git, tuple):
+        if isinstance(use_git, list):
+            # Symlinks (fix round 3): [(how, link, target)], how one of
+            # untracked, staged or index-only (staged, then deleted on disk).
+            for how, link, target in use_git:
+                (root / link).parent.mkdir(parents=True, exist_ok=True)
+                (root / link).symlink_to(target)
+                if how != "untracked":
+                    subprocess.run(["git", "-C", str(root), "add", link], check=True)
+                if how == "index-only":
+                    (root / link).unlink()
+            listed = sitecheck.git_files(root)
+        elif use_git in ("committed", "conflict", "submodule"):
+            subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+            git_id = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+            if use_git == "committed":
+                subprocess.run(["git", "-C", str(root), *git_id, "commit", "-q", "-m", "x"],
+                               check=True)
+            elif use_git == "conflict":
+                # The record only in the unmerged stages 1 to 3; git refuses a
+                # commit while they exist, so nothing can carry it.
+                sha = subprocess.run(["git", "-C", str(root), "hash-object", "-w", "--stdin"],
+                                     input=("+++\n" + REC_TOML + "+++\n").encode(),
+                                     capture_output=True, check=True).stdout.decode().strip()
+                info = "".join(f"100644 {sha} {n}\tdocs/acme.md\n" for n in (1, 2, 3))
+                subprocess.run(["git", "-C", str(root), "update-index", "--index-info"],
+                               input=info.encode(), check=True)
+            else:
+                subprocess.run(["git", "-C", str(root), "update-index", "--add", "--cacheinfo",
+                                "160000," + "1" * 40 + ",sub"], check=True)
+            listed = sitecheck.git_files(root)
+        elif isinstance(use_git, tuple):
             # Staged, marked with a git index flag that hides the path from
             # git diff (--assume-unchanged, --skip-worktree), then overwritten
             # on disk (fix round 2, delta review).
@@ -1686,6 +1752,18 @@ wh += [
     # block scalar, at the key's column, ends the block and is read.
     ("reader/form-problem-after-block-scalar", [(WITH, WITH + "          path: |\n            a\n"
      "          &x ref: y\n")], 2, (RD, "WH2: a with: line of actions/checkout")),
+    # Fix round 3 (delta review 2 finding 1): what the form check misses
+    # today, and that the WH readers still fail closed on the same tricks.
+    ("reader/known-limit-apostrophe-masks-flow", [("permissions:", "concurrency: {group: it's, "
+     "x: {y: z}, c: b'}\npermissions:")], 0, ""),
+    ("reader/known-limit-apostrophe-masks-anchor", [("permissions:", "concurrency: {group: "
+     "it's, x: &g y, z: b'}\npermissions:")], 0, ""),
+    ("reader/known-limit-adjacent-anchor", [("permissions:", 'concurrency: {"group":&g ci, '
+     'cancel-in-progress: true}\npermissions:')], 0, ""),
+    ("trigger-forms/apostrophe-masked-alias", [(ON, "on: [push, it's, *t, b']\n")], 1, WH1_READ),
+    ("trigger-forms/adjacent-alias", [(ON, 'on: ["push",*t]\n')], 2, (RD, WH1_READ)),
+    ("persist/apostrophe-masked-flow-step", [(STEP, "      - {name: it's, uses: actions/"
+     f"checkout@{sha}, x: b'}}\n")], 1, "WH2: actions/checkout in a form the guard cannot read"),
     ("reader/block-scalar-passes", [(WITH, WITH + "          path: |\n            a: b\n")],
      0, ""),
     ("reader/review-bom-and-line-separator", [(BASE, '\ufeffon: [pull_request_target]\nname: '
