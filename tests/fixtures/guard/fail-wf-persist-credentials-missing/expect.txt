@@ -1,0 +1,1 @@
+.github/workflows/ci.yml:16: WH2: actions/checkout needs exactly one `persist-credentials: false`

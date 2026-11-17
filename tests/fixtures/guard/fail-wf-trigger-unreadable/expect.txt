@@ -1,0 +1,1 @@
+.github/workflows/ci.yml: WH1: cannot read the triggers (line 3: on: as a flow mapping, anchor, alias

@@ -1,0 +1,1 @@
+docs/notes.md: PT2a: a front-matter document outside content/*.md: it starts with a JSON object followed by more text

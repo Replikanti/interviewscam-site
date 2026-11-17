@@ -1,0 +1,1 @@
+content/about.md: PT2b: the front matter of a static page must be TOML

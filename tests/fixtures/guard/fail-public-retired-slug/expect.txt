@@ -1,0 +1,1 @@
+schema/record-policy.json: PT3: must be exactly {"retired_slugs": []}

@@ -1,0 +1,1 @@
+docs/notes.md: PT2a: a front-matter document outside content/*.md: its first line is the front-matter fence +++

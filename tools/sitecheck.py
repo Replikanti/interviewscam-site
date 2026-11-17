@@ -6571,7 +6571,11 @@ PINNED_ALLOWLISTS = LITERALS_PASSING_SETS + (
     # its reveal.
     "RESOURCE_PATH_CHARS", "VH_DEFINITION_DECLARATIONS", "VH_REVEAL_DECLARATIONS",
     # and the T2 name regex (QA on PR #33: no net saw its text).
-    "LITERALS_TEMPLATE_NAME")
+    "LITERALS_TEMPLATE_NAME",
+    # The public-tree guard and the workflow hardening (ADR-0007 part 4):
+    # the allowed triggers and the two exemptions.
+    "WORKFLOW_TRIGGERS_ALLOWED", "PUBLIC_TREE_EXEMPT", "PUBLIC_IMAGE_DIRS",
+    "PUBLIC_FIXTURE_MEDIA", "PUBLIC_FIXTURE_MEDIA_DIRS", "PUBLIC_LINK_EXEMPT")
 # L5: the CSS properties and @counter-style descriptors whose strings the
 # browser draws as text.
 CSS_TEXT_PROPERTIES = {"content", "list-style", "list-style-type", "quotes",
@@ -14102,6 +14106,363 @@ def guard_workflows(root, files, findings):
                              f"lighthouse job of {LIGHTHOUSE_WORKFLOW}; an artifact "
                              "of a run with that job can hold what registry code "
                              "wrote (ADR-0003 part 2)")
+        guard_workflow_hardening(rel, text, findings)
+
+
+# Workflow hardening (ADR-0007 part 4, Replikanti/interviewscam#38 PR B): one
+# rule set for every workflow of either repo. guard_workflows calls it for
+# every workflow file, and PR C reaches the private records repo's workflows
+# through guard_workflows too; it is also safe to call alone, because it
+# refuses on its own every form its reader could take differently from a
+# YAML parser (workflow_form_problems, fix round 1 of interviewscam-site#11).
+# Read by indentation, line by line, split on "\n" only.
+#
+# WH1: the triggers a workflow may use. Rejected: pull_request_target (runs in
+# the base repo with a write-capable token and secrets, so a checkout of the
+# PR head runs fork code with them); issue_comment, pull_request_review,
+# pull_request_review_comment and discussion_comment (an outsider can fire
+# them, and they run on the default branch with the repo's token);
+# workflow_call and repository_dispatch (their input comes from outside the
+# repo's own events); every case variant or look-alike of an allowed name
+# (compared exactly).
+WORKFLOW_TRIGGERS_ALLOWED = ("pull_request", "push", "schedule", "workflow_dispatch")
+# WH2 and WH3: the checkout action (GitHub resolves owner and name in any
+# case) and its credential inputs (input names are case-insensitive).
+CHECKOUT_ACTION = re.compile(r"(?i)actions/checkout(?:@|$)")
+CHECKOUT_CREDENTIAL_INPUT = re.compile(
+    r"""(?i)(?<![\w-])['"]?(token|ssh-key)['"]?\s*:(?:\s|$)""")
+# WH4: matched on the raw line, comments included, as LIGHTHOUSE_CREDENTIALS
+# does, so no quoting or comment trick hides one.
+WORKFLOW_SECRETS = re.compile(r"(?i)(?<![\w-])secrets(?![\w-])")
+HARDENING_WHY = "ADR-0007 part 4"
+YAML_PLAIN_KEY = re.compile(r"([^\s'\"#\[\]{},&*!|>%@`?-][^#]*?|-[^\s#][^#]*?)[ ]*:(?=[ ]|$)")
+YAML_DQ_KEY = re.compile(r'"([^"\\]*)"[ ]*:(?=[ ]|$)')
+YAML_SQ_KEY = re.compile(r"'((?:[^']|'')*)'[ ]*:(?=[ ]|$)")
+YAML_DASH = re.compile(r"-(?:[ ]+|$)")
+# The reader's own fail-closed forms (fix round 1, review finding 1): a
+# character a YAML parser reads as a line break or that the reader cannot
+# place (C0 and C1 controls but tab, LF and CR, U+0085, U+2028, U+2029, a
+# byte-order mark anywhere), a CR not before an LF, a tab anywhere (YAML
+# forbids it in indentation, and before a key's colon it moved the key out of
+# the reader's sight), a block scalar opener, a one-line flow mapping, an
+# anchor, alias or tag at the start of a token.
+WORKFLOW_BAD_CHARS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u2028\u2029\ufeff]")
+YAML_BLOCK_SCALAR = re.compile(r"[|>][-+0-9]*[ ]*(?:#.*)?")
+YAML_FLOW_MAPPING = re.compile(r"\{[^{}\[\]#\n]*\}[ ]*(?:#.*)?")
+# An anchor &, alias * or tag ! exists only where a YAML value starts:
+# at the start of the line's content, after a list dash, after a key's ": ",
+# or after "[", "{" or "," in a flow collection (fix round 2, delta review
+# finding 2). Inside a plain scalar they are text: `a != 'b'`, `x && y`,
+# `!cancelled()` after `||`, `CI *main*`.
+YAML_NODE_PROPERTY = re.compile(r"(?:^[ ]*(?:-[ ]+)*|:[ ]+(?:-[ ]+)*|[\[{,][ ]*)[&*!][^\s,\]}]")
+
+
+def workflow_lines(text):
+    """The lines of a workflow, split on LF only, a CR before the LF dropped:
+    U+0085, U+2028 and U+2029 are no line break here (workflow_form_problems
+    refuses them), unlike str.splitlines()."""
+    return [line[:-1] if line.endswith("\r") else line for line in text.split("\n")]
+
+
+def workflow_form_problems(text):
+    """[(line number, reason)] for every form the line reader could read
+    differently from a YAML parser; each fails closed."""
+    problems = []
+    lines = workflow_lines(text)
+    for n, line in enumerate(lines, 1):
+        bad = sorted({f"U+{ord(c):04X}" for c in WORKFLOW_BAD_CHARS.findall(line)}
+                     | ({"a CR not before an LF"} if "\r" in line else set())
+                     | ({"a tab outside a comment or quoted string"}
+                        if "\t" in yaml_bare(line) else set()))
+        if bad:
+            problems.append((n, f"the line holds {', '.join(bad)}, which a YAML parser can "
+                                "read as a line break, an indent or a key the reader does not see"))
+    block, first = None, True
+    seen_top = set()
+    for n, line in enumerate(lines, 1):
+        if block is not None:
+            if not line.strip() or indent_of(line) > block:
+                continue  # block scalar content
+            block = None
+        parsed = yaml_line(line)
+        if parsed is None:
+            continue
+        if first and line.rstrip() == "---":
+            first = False
+            continue  # the document start marker on the first line
+        first = False
+        indent, column, dash, key, value = parsed
+        if key is False:
+            problems.append((n, "a line that is neither a key nor a list item (a "
+                                "multi-line scalar, a document marker, a directive, a "
+                                "complex key or a flow collection)"))
+            continue
+        if ESCAPED_KEY.search(line):
+            problems.append((n, "a double-quoted string with a backslash escape"))
+        if YAML_NODE_PROPERTY.search(yaml_bare(line)):
+            problems.append((n, "an anchor, alias or tag"))
+        kind, _ = yaml_scalar(value)
+        if kind == "unreadable":
+            stripped = value.strip()
+            if YAML_BLOCK_SCALAR.fullmatch(stripped):
+                if key == "uses":
+                    problems.append((n, "uses: as a block scalar"))
+                block = column if isinstance(key, str) else indent
+            elif not YAML_FLOW_MAPPING.fullmatch(yaml_bare(stripped)):
+                problems.append((n, "a value that does not end on its line (an "
+                                    "unterminated quote or flow collection) or starts "
+                                    "with an anchor, alias, tag or reserved character"))
+        elif key == "uses" and kind not in ("plain", "double", "single"):
+            problems.append((n, "uses: without a scalar value"))
+        if indent == 0 and not dash and isinstance(key, str):
+            if key in seen_top:
+                problems.append((n, f"the top-level key {json.dumps(key)} twice"))
+            seen_top.add(key)
+    return problems
+
+
+def yaml_scalar(text):
+    """(kind, value) of a YAML value as written on its line: empty, plain,
+    double, single, flowseq, or unreadable (a flow mapping, anchor, alias,
+    tag, block scalar or an unterminated quote)."""
+    text = text.strip()
+    if not text or text.startswith("#"):
+        return "empty", ""
+    if text[0] == '"':
+        match = re.fullmatch(r'"([^"\\]*)"[ ]*(?:#.*)?', text)
+        return ("double", match.group(1)) if match else ("unreadable", text)
+    if text[0] == "'":
+        match = re.fullmatch(r"'((?:[^']|'')*)'[ ]*(?:#.*)?", text)
+        return ("single", match.group(1).replace("''", "'")) if match else ("unreadable", text)
+    if text[0] == "[":
+        match = re.fullmatch(r"(\[[^\[\]{}#]*\])[ ]*(?:#.*)?", text)
+        return ("flowseq", match.group(1)) if match else ("unreadable", text)
+    if text[0] in "{&*!|>%@`":
+        return "unreadable", text
+    return "plain", re.sub(r"[ \t]+#.*$", "", text).rstrip()
+
+
+def yaml_line(line):
+    """None for a blank or comment line, else (indent, column, dash, key,
+    value): column is where the content starts after a list dash, key is
+    None for a list item without a key, and key is False when the line is
+    neither a key nor a scalar the reader can follow."""
+    if not line.strip() or line.lstrip().startswith("#"):
+        return None
+    lead = line[:len(line) - len(line.lstrip(" \t"))]
+    if "\t" in lead:
+        return len(lead), len(lead), False, False, ""
+    indent = len(lead)
+    rest, column, dash = line[indent:], indent, False
+    match = YAML_DASH.match(rest)
+    if match:
+        dash, column, rest = True, indent + match.end(), rest[match.end():]
+    for pattern in (YAML_DQ_KEY, YAML_SQ_KEY, YAML_PLAIN_KEY):
+        match = pattern.match(rest)
+        if match:
+            key = match.group(1)
+            if pattern is YAML_SQ_KEY:
+                key = key.replace("''", "'")
+            return indent, column, dash, key, rest[match.end():]
+    if dash:
+        return indent, column, dash, None, rest
+    return indent, column, dash, False, rest
+
+
+def workflow_triggers(lines):
+    """[(line number, trigger name)] of the top-level on:, or a reason the
+    reader cannot follow it (WH1)."""
+    tops = [(i, parsed) for i, line in enumerate(lines)
+            if (parsed := yaml_line(line)) and parsed[0] == 0]
+    for i, (_, _, dash, key, _) in tops:
+        if key == "<<":
+            return None, f"line {i + 1}: a top-level merge key can bring in on:"
+        if key is False and lines[i].lstrip()[:1] in ("?", "{"):
+            return None, f"line {i + 1}: a complex key or flow mapping at the top level"
+    ons = [(i, parsed) for i, parsed in tops if parsed[3] == "on" and not parsed[2]]
+    if not ons:
+        return None, "no top-level on: key in a form the guard reads"
+    if len(ons) > 1:
+        return None, "more than one top-level on: key"
+    start, (_, _, _, _, value) = ons[0]
+    kind, text = yaml_scalar(value)
+    if kind in ("plain", "double", "single"):
+        return [(start + 1, text)], None
+    if kind == "flowseq":
+        items = [item.strip() for item in text[1:-1].split(",")]
+        if items and not items[-1]:
+            items.pop()  # a trailing comma
+        triggers = []
+        for item in items:
+            item_kind, name = yaml_scalar(item)
+            if item_kind not in ("plain", "double", "single") or not name:
+                return None, f"line {start + 1}: a flow list item the guard cannot read"
+            triggers.append((start + 1, name))
+        return triggers, None
+    if kind != "empty":
+        return None, (f"line {start + 1}: on: as a flow mapping, anchor, alias, tag, "
+                      "block scalar or multi-line flow list")
+    triggers, child, forms = [], None, set()
+    for i in range(start + 1, len(lines)):
+        parsed = yaml_line(lines[i])
+        if parsed is None:
+            continue
+        indent, _, dash, key, rest = parsed
+        if indent == 0:
+            break
+        if child is None:
+            child = indent
+        if indent < child or key is False:
+            return None, f"line {i + 1}: a line under on: the guard cannot read"
+        if indent > child:
+            continue  # the settings of a trigger (branches, paths, cron)
+        if dash:
+            item_kind, name = yaml_scalar(rest)
+            if key is not None or item_kind not in ("plain", "double", "single") or not name:
+                return None, f"line {i + 1}: a list item under on: the guard cannot read"
+            forms.add("list")
+            triggers.append((i + 1, name))
+        else:
+            forms.add("mapping")
+            triggers.append((i + 1, key))
+    if not triggers:
+        return None, f"line {start + 1}: on: holds nothing the guard reads"
+    if len(forms) > 1:
+        return None, f"line {start + 1}: on: mixes a list and a mapping"
+    return triggers, None
+
+
+def checkout_step(lines, i):
+    """(first line, end line, key column) of the step mapping that holds
+    line i, or None when the reader cannot place it."""
+    parsed = yaml_line(lines[i])
+    if parsed is None or parsed[3] is False:
+        return None
+    indent, column, dash, _, _ = parsed
+    if dash:
+        start, k = i, column
+    else:
+        start, k = None, indent
+        for j in range(i - 1, -1, -1):
+            above = yaml_line(lines[j])
+            if above is None or above[0] > k:
+                continue
+            if above[0] == k and not above[2]:
+                continue
+            if above[2] and above[1] == k and above[0] < k:
+                start = j
+            break
+        if start is None:
+            return None
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        below = yaml_line(lines[j])
+        if below is None:
+            continue
+        if below[0] < k or (below[0] == k and below[2]):
+            end = j
+            break
+    return start, end, k
+
+
+def guard_workflow_hardening(rel, text, findings):
+    """WH1 to WH4 (ADR-0007 part 4) on one workflow file, plus the reader's
+    own fail-closed forms, so it is safe to call alone."""
+    for n, reason in workflow_form_problems(text):
+        findings.add(f"{rel}:{n}", f"WH reader: {reason}; the guard reads a workflow line "
+                     "by line and fails closed on a form a YAML parser could read "
+                     f"differently ({HARDENING_WHY})")
+    lines = workflow_lines(text)
+    triggers, problem = workflow_triggers(lines)
+    if problem:
+        findings.add(rel, f"WH1: cannot read the triggers ({problem}); the guard reads on: "
+                     "only as a scalar, a flow list on one line or a block list or mapping "
+                     f"(fails closed, {HARDENING_WHY})")
+    for n, name in triggers or ():
+        if name not in WORKFLOW_TRIGGERS_ALLOWED:
+            findings.add(f"{rel}:{n}", f"WH1: trigger {json.dumps(name)} is not one of "
+                         f"{', '.join(WORKFLOW_TRIGGERS_ALLOWED)} (compared exactly): the "
+                         "others run with a write-capable token on code or input an outsider "
+                         f"controls, or take input from outside the repo ({HARDENING_WHY})")
+    for i, line in enumerate(lines):
+        refs = [m.group(2) for m in ACTION_REF.finditer(line)]
+        if not any(CHECKOUT_ACTION.match(ref) for ref in refs):
+            continue
+        parsed = yaml_line(line)
+        if parsed is None:
+            continue  # a comment
+        _, _, _, key, value = parsed
+        kind, ref = yaml_scalar(value) if isinstance(key, str) else ("", "")
+        step = checkout_step(lines, i) if key == "uses" and kind in (
+            "plain", "double", "single") and CHECKOUT_ACTION.match(ref) else None
+        if step is None:
+            findings.add(f"{rel}:{i + 1}", "WH2: actions/checkout in a form the guard cannot "
+                         f"read as one step (fails closed, {HARDENING_WHY})")
+            continue
+        hardening_checkout(rel, lines, step, findings)
+    for n, line in enumerate(lines, 1):
+        if WORKFLOW_SECRETS.search(line):
+            findings.add(f"{rel}:{n}", "WH4: a secrets reference (comments included); no "
+                         f"workflow of either repo needs one ({HARDENING_WHY})")
+
+
+def hardening_checkout(rel, lines, step, findings):
+    """WH2 and WH3 on one actions/checkout step."""
+    start, end, k = step
+    keys, inputs, with_line = {}, [], None
+    for j in range(start, end):
+        parsed = yaml_line(lines[j])
+        if parsed is None:
+            continue
+        indent, column, dash, key, value = parsed
+        bare = YAML_COMMENT.sub("", lines[j])
+        if CHECKOUT_CREDENTIAL_INPUT.search(bare):
+            findings.add(f"{rel}:{j + 1}", "WH3: a credential input (token, ssh-key) on "
+                         f"actions/checkout ({HARDENING_WHY})")
+        at_step = (j == start and column == k) or (j > start and indent == k)
+        if not at_step:
+            continue
+        if not isinstance(key, str):
+            findings.add(f"{rel}:{j + 1}", "WH2: a line of the checkout step the guard cannot "
+                         f"read (fails closed, {HARDENING_WHY})")
+            continue
+        if key in keys or key == "<<":
+            findings.add(f"{rel}:{j + 1}", f"WH2: the key {json.dumps(key)} twice or as a "
+                         f"merge key in the checkout step (fails closed, {HARDENING_WHY})")
+        keys[key] = j
+        if key == "with":
+            with_line = j
+            if yaml_scalar(value)[0] != "empty":
+                findings.add(f"{rel}:{j + 1}", "WH2: with: of actions/checkout must be a block "
+                             f"mapping the guard reads (fails closed, {HARDENING_WHY})")
+                with_line = None
+    if with_line is not None:
+        child = None
+        for j in range(with_line + 1, end):
+            parsed = yaml_line(lines[j])
+            if parsed is None:
+                continue
+            indent, _, dash, key, value = parsed
+            if indent <= k:
+                break
+            if child is None:
+                child = indent
+            if indent > child:
+                continue
+            if indent < child or dash or not isinstance(key, str) or key == "<<":
+                findings.add(f"{rel}:{j + 1}", "WH2: a with: line of actions/checkout the "
+                             f"guard cannot read (fails closed, {HARDENING_WHY})")
+                continue
+            inputs.append((j, key, value))
+    persist = [(j, key, value) for j, key, value in inputs
+               if key.lower() == "persist-credentials"]
+    good = (len(persist) == 1 and persist[0][1] == "persist-credentials"
+            and yaml_scalar(persist[0][2]) == ("plain", "false"))
+    if not good:
+        where = f"{rel}:{(persist[0][0] if persist else start) + 1}"
+        findings.add(where, "WH2: actions/checkout needs exactly one `persist-credentials: "
+                     "false` in its with: block, bare and lowercase; otherwise the job token "
+                     f"stays in .git/config for every later step ({HARDENING_WHY})")
 
 
 # lighthouse.yml is read by indentation, so every YAML form that can move a
@@ -14341,6 +14702,449 @@ def guard_worker_pins(root, findings):
                          "ADR-0006 part 10)")
 
 
+# The public-tree guard (ADR-0007 part 4, Replikanti/interviewscam#38 PR B):
+# the public code repo holds no record, draft, intake material or removal
+# entry; those live only in the private records repo and the operator's
+# mailbox (D4, D5). Fixture records live under tests/fixtures/, which PT1 to
+# PT3 exempt, compared exactly (a case variant such as Tests/fixtures/ is no
+# exemption). PT2a and PT4 read git's listing (tracked plus untracked, not
+# ignored); PT1 and PT2b read content/ from the disk too, as Hugo does, so an
+# ignored local draft fails as well. Every rule reads both the working-tree
+# copy and, where it differs, the staged blob (fix round 1, review finding
+# 3), because the next commit carries the blob.
+PUBLIC_TREE_EXEMPT = ("tests/fixtures/",)
+# PT4 under tests/fixtures/ (fix round 1, review Known limit): only the
+# guard's own fixtures and a fixture tree's static/, assets/ or public/ may
+# hold an image or a mail file; a screenshot or saved mail anywhere else
+# under tests/fixtures/ fails.
+PUBLIC_FIXTURE_MEDIA = ("tests/fixtures/guard/",)
+PUBLIC_FIXTURE_MEDIA_DIRS = ("static", "assets", "public")
+# Symlinks: only the guard's own fixtures hold one (fix round 3).
+PUBLIC_LINK_EXEMPT = ("tests/fixtures/guard/",)
+# PT4: images under these two are content-PR review surfaces already (the
+# routing rule: an image under assets/ or static/ is a content PR).
+PUBLIC_IMAGE_DIRS = ("assets/", "static/")
+# PT4: the forms saved mail arrives in (RFC 5322 message, Apple Mail
+# message, mbox mailbox in its two suffixes, Outlook message).
+PUBLIC_MAIL_SUFFIXES = (".eml", ".emlx", ".mbox", ".mbx", ".msg")
+# PT4: the other forms evidence is saved in (STOP 2 of interviewscam-site#11,
+# the operator's decision on Known limit 4), by magic bytes, whatever the
+# name, with the same exemptions as the intake images: a PDF ("%PDF-"), a ZIP
+# archive (a local file header, or the end record of an empty archive), and
+# the ISO base media file formats of phone photos, HEIF/HEIC and AVIF, by
+# the "ftyp" box at offset 4 and its major brand at offset 8.
+PUBLIC_EVIDENCE_TYPES = (
+    ("application/pdf", ((0, "255044462d"),)),
+    ("application/zip", ((0, "504b0304"),)),
+    ("application/zip", ((0, "504b0506"),)),
+    *((f"image/heif ({brand})", ((4, "66747970"), (8, brand.encode().hex())))
+      for brand in ("heic", "heix", "heim", "heis", "hevc", "hevx", "mif1", "msf1")),
+    *((f"image/avif ({brand})", ((4, "66747970"), (8, brand.encode().hex())))
+      for brand in ("avif", "avis")),
+)
+PUBLIC_POLICY = "schema/" + RECORD_POLICY
+PUBLIC_WHY = "D4, ADR-0007 part 4"
+UTF8_BOM = b"\xef\xbb\xbf"
+# The record keys: params.required of the two record schemas (15 today).
+# Pinned here for the record-shape rule of PT2a, which also reads roots
+# without schema/; when the schemas are readable their union must equal the
+# pin, so a schema change updates it in the same reviewed tools/ change.
+RECORD_KEYS = frozenset({
+    "artifacts", "delivery", "evidence", "first_seen", "independent_reports",
+    "last_reviewed", "last_seen", "name", "name_type", "sources", "state",
+    "state_basis", "steals", "summary", "targeted_os"})
+# PT2a, record shape: a mapping that holds this many record keys with values
+# that are not mappings is a record without its params wrapper. 5 because
+# the smallest record, a campaign, requires 8 keys, all of them strings,
+# dates or lists, while the most any mapping of the real tree holds is 3
+# (data/labels.toml, a table of label strings per record field); at 4 one
+# more label would fail a legitimate labels change, at 8 a partial record
+# with 5 to 7 keys would pass.
+RECORD_SHAPE_MIN_KEYS = 5
+
+
+def guard_fold(text):
+    """A name or key as the public-tree rules compare it: NFKC, every
+    Default_Ignorable_Code_Point stripped (NFKC again, so a letter and its
+    accent split by one compose), casefold."""
+    text = unicodedata.normalize("NFKC", text).translate(INVISIBLE)
+    return unicodedata.normalize("NFKC", text).casefold()
+
+
+def hugo_ignores(name):
+    """Names Hugo skips under content/ (measured with the pinned Hugo
+    0.169.0: a name that starts with . or # or ends with ~, a directory
+    too): an editor's swap, lock or backup file on the disk alone is no
+    page."""
+    return name.startswith((".", "#")) or name.endswith("~")
+
+
+def front_matter_shape(data):
+    """Why bytes look like a front-matter document (PT2a), or None. Hugo
+    skips a BOM and leading whitespace before the front matter, so this
+    does too. A first-line +++ counts on its own; a first-line --- only
+    with its closing fence, so a YAML file that starts with the document
+    marker --- alone passes (fix rounds 1 and 2)."""
+    head = data.removeprefix(UTF8_BOM).lstrip(b" \t\r\n")
+    lines = [line.rstrip(b" \t\r") for line in head.split(b"\n")]
+    if lines[0] == b"+++":
+        # TOML's fence is no YAML or Markdown idiom, so it counts on its own:
+        # a record whose closing fence was lost still fails (fix round 2,
+        # delta review finding 1).
+        return "its first line is the front-matter fence +++"
+    if lines[0] == b"---" and b"---" in lines[1:]:
+        # YAML's document marker opens a plain YAML file too; only a closed
+        # fence is front matter (fix round 1, review finding 4).
+        return "its first line is the front-matter fence ---, closed later"
+    if not head.startswith(b"{"):
+        return None
+    try:
+        text = head.decode("utf-8")
+        _, end = json.JSONDecoder().raw_decode(text)
+    except (UnicodeDecodeError, ValueError):
+        return None  # not a JSON object: a template such as {{ define }}
+    if text[end:].strip():
+        return "it starts with a JSON object followed by more text (JSON front matter)"
+    return None
+
+
+def structured_value(data):
+    """The value of bytes that parse whole as JSON or as TOML, or None."""
+    try:
+        text = data.removeprefix(UTF8_BOM).decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+    try:
+        return tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return None
+
+
+def record_shape(value, path="$"):
+    """Where a JSON or TOML value holds a record (PT2a, fix round 1, review
+    finding 2): a mapping with a params key (folded) whose mapping holds a
+    record key, or a mapping with RECORD_SHAPE_MIN_KEYS record keys whose
+    values are not mappings. None when it holds neither."""
+    if isinstance(value, list):
+        for i, item in enumerate(value):
+            if (found := record_shape(item, f"{path}[{i}]")):
+                return found
+        return None
+    if not isinstance(value, dict):
+        return None
+    flat = [k for k, v in value.items() if guard_fold(k) in RECORD_KEYS
+            and not isinstance(v, dict)]
+    if len(flat) >= RECORD_SHAPE_MIN_KEYS:
+        return f"{path} holds the record keys {', '.join(sorted(flat))}"
+    for key, inner in value.items():
+        if guard_fold(key) == "params":
+            for table in inner if isinstance(inner, list) else [inner]:
+                if isinstance(table, dict) and any(guard_fold(k) in RECORD_KEYS for k in table):
+                    return f"{path}.{key} holds a record key"
+    for key, inner in value.items():
+        if (found := record_shape(inner, f"{path}.{key}")):
+            return found
+    return None
+
+
+def nested_keys(value, path=""):
+    """Every key of a front-matter value, at any depth, with its path."""
+    if isinstance(value, list):
+        for item in value:
+            yield from nested_keys(item, path)
+    elif isinstance(value, dict):
+        for key, inner in value.items():
+            yield key, f"{path}{key}"
+            yield from nested_keys(inner, f"{path}{key}.")
+
+
+def image_type(head, types=None):
+    """The MIME type of INTAKE_IMAGE_TYPES (or of the given (MIME type,
+    signature) pairs) whose signature the bytes carry."""
+    pairs = types if types is not None else [(m, s) for m, _, s in INTAKE_IMAGE_TYPES]
+    for mime, signature in pairs:
+        if all(head[offset:offset + len(bytes.fromhex(magic))] == bytes.fromhex(magic)
+               for offset, magic in signature):
+            return mime
+    return None
+
+
+def record_keys(root):
+    """The folded union of params.required of the record schemas (PT2b), or
+    the reason it cannot be read."""
+    keys = set()
+    for name in RECORD_SCHEMAS.values():
+        try:
+            schema = json.loads((root / "schema" / name).read_text(encoding="utf-8"))
+            required = schema["properties"]["params"]["required"]
+        except (OSError, UnicodeDecodeError, ValueError, KeyError, TypeError) as exc:
+            return None, f"schema/{name}: {type(exc).__name__}: {exc}"
+        if not (isinstance(required, list) and required
+                and all(isinstance(key, str) for key in required)):
+            return None, f"schema/{name}: properties.params.required is not a list of keys"
+        keys.update(guard_fold(key) for key in required)
+    return keys, None
+
+
+def no_duplicate_keys(pairs):
+    keys = [key for key, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError(f"a key appears twice: {keys}")
+    return dict(pairs)
+
+
+def staged_blobs(root):
+    """{path: bytes} of the staged blob of every listed path whose working-tree
+    copy differs from the index, a deleted one included; the next commit
+    carries the blob. Compared by hash, every index entry against the bytes
+    on disk (git ls-files -s and git hash-object), not through git diff,
+    which a path marked --assume-unchanged or --skip-worktree hides (fix
+    round 2, delta review)."""
+    def git(*args, data=None):
+        try:
+            return subprocess.run(["git", "-C", str(root), *args], input=data, check=True,
+                                  capture_output=True, timeout=120).stdout
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise UsageError(f"guard needs git at {root}: {exc}") from exc
+    index = {}
+    for entry in git("ls-files", "-s", "-z").decode("utf-8", "replace").split("\0"):
+        if not entry:
+            continue
+        meta, _, rel = entry.partition("\t")
+        mode, sha, stage = meta.split()
+        if stage == "0" and mode != "160000":
+            index[rel] = (mode, sha)
+    regular = [rel for rel, (mode, _) in index.items() if mode != "120000"
+               and (root / rel).is_file() and not (root / rel).is_symlink()]
+    # --stdin-paths reads a relative path from the repository's top, not
+    # from root, so every path goes in absolute.
+    hashes = git("hash-object", "--no-filters", "--stdin-paths",
+                 data="".join(f"{root / rel}\n" for rel in regular).encode()).decode().split()
+    on_disk = dict(zip(regular, hashes))
+    blobs = {}
+    for rel, (mode, sha) in sorted(index.items()):
+        if mode == "120000" or on_disk.get(rel) == sha:
+            continue  # a symlink fails on its own (guard_public_tree); an equal blob adds nothing
+        blobs[rel] = git("cat-file", "blob", sha)
+    return blobs, {rel for rel, (mode, _) in index.items() if mode == "120000"}
+
+
+YAML_LINE_KEY = re.compile(r"""[ ]*(?:-[ ]+)*["']?([^\s"'#:][^"'#:]*?)["']?[ ]*:(?:[ ]|$)""")
+
+
+def yaml_record_keys(data):
+    """The folded record keys a YAML text holds as line keys, at any indent
+    (PT2a, fix round 2, delta review: fenceless YAML; no YAML parser in the
+    standard library, so the keys are read line by line), or None for a
+    text that is not UTF-8 (fails closed, fix round 3)."""
+    try:
+        text = data.removeprefix(UTF8_BOM).decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    keys = set()
+    for line in text.split("\n"):
+        match = YAML_LINE_KEY.match(line)
+        if match and guard_fold(match.group(1)) in RECORD_KEYS:
+            keys.add(guard_fold(match.group(1)))
+    return keys
+
+
+def fixture_media_exempt(rel):
+    parts = rel.split("/")
+    return rel.startswith(PUBLIC_FIXTURE_MEDIA) or any(
+        part in PUBLIC_FIXTURE_MEDIA_DIRS for part in parts[2:-1])
+
+
+def guard_public_tree(root, files, findings):
+    """PT1 to PT4 (ADR-0007 part 4)."""
+    listed = list(files)
+    files = [rel for rel in listed if not rel.startswith(PUBLIC_TREE_EXEMPT)]
+    staged, index_links = staged_blobs(root)
+
+    def versions(rel, what):
+        """[(label, bytes)]: the working-tree copy and, where it differs, the
+        staged blob; a finding when neither can be read."""
+        out = []
+        path = root / rel
+        if not path.is_dir():  # a symlink to a directory: git lists what is behind it
+            try:
+                out.append(("", path.read_bytes()))
+            except FileNotFoundError:
+                if rel not in staged:
+                    findings.add(rel, f"{what}: cannot read: missing (fails closed, {PUBLIC_WHY})")
+            except OSError as exc:
+                findings.add(rel, f"{what}: cannot read: {exc} (fails closed, {PUBLIC_WHY})")
+        if rel in staged:
+            out.append((" (staged)", staged[rel]))
+        return out
+
+    # Symlinks (fix round 3, delta review 2 finding 2): the public tree holds
+    # none outside the guard's own fixtures (PUBLIC_LINK_EXEMPT: the two
+    # worker-pin fixtures and the PT1 symlink fixtures), so a symlink in the
+    # index (mode 120000) or a listed path that is a symlink on disk fails
+    # closed: its blob is a target path no blob check reads, which can carry a
+    # record as a file name, and the checks read what it points to.
+    links = index_links | {rel for rel in listed if (root / rel).is_symlink()}
+    for rel in sorted(links):
+        if not rel.startswith(PUBLIC_LINK_EXEMPT):
+            findings.add(rel, "PT1: a symlink in the tree; this repo holds none outside "
+                         f"{PUBLIC_LINK_EXEMPT[0]}, so it fails closed ({PUBLIC_WHY})")
+    content = root / "content"
+    # PT1: structural, so a record section, a page bundle, a case variant or
+    # a look-alike or zero-width name all fail without a list of names.
+    subdirs, pages, others = set(), set(), set()
+    if content.is_symlink():
+        findings.add("content", "PT1: content/ is a symlink; Hugo builds whatever it "
+                     f"points to, so it fails closed ({PUBLIC_WHY})")
+    elif content.is_dir():
+        try:
+            entries = list(os.scandir(content))
+        except OSError as exc:
+            findings.add("content/", f"PT1: cannot list content/: {exc} ({PUBLIC_WHY})")
+            entries = []
+        for entry in entries:
+            if hugo_ignores(entry.name):
+                continue  # Hugo skips it; git's listing below still counts it
+            if entry.is_symlink() or entry.is_dir(follow_symlinks=False):
+                subdirs.add(entry.name)
+            elif entry.name.endswith(".md"):
+                pages.add(f"content/{entry.name}")
+            else:
+                others.add(f"content/{entry.name}")
+    for rel in files:
+        parts = rel.split("/")
+        if parts[0] == "content" and len(parts) > 2:
+            subdirs.add(parts[1])
+        elif parts[0] == "content" and len(parts) == 2 and parts[1].endswith(".md"):
+            pages.add(rel)
+        elif parts[0] == "content" and len(parts) == 2:
+            others.add(rel)
+    for name in sorted(subdirs):
+        findings.add(f"content/{json.dumps(name)}", "PT1: a directory or symlink in "
+                     "content/; records and drafts live only in the private records repo, "
+                     f"and this repo's content/ holds only the static pages ({PUBLIC_WHY})")
+    # PT2a, in content/: Hugo reads front matter from every content format
+    # (Org's #+ lines, AsciiDoc, HTML and the rest), so content/ holds only
+    # the *.md static pages, whatever a file's first line.
+    for rel in sorted(others):
+        findings.add(f"content/{json.dumps(rel[len('content/'):])}", "PT2a: a file in content/ "
+                     "that is not a static page (*.md); Hugo builds every content format, "
+                     f"so this repo's content/ holds only the *.md pages ({PUBLIC_WHY})")
+    # PT2b: a record pasted into a static page would pass PT1. Every key of
+    # the front matter counts, at any depth (fix round 1, review finding 2:
+    # [cascade.params] and [params.report] carried record keys).
+    keys, keys_error = None, None
+    for rel in sorted(pages):
+        for label, data in versions(rel, "PT2b"):
+            where = rel + label
+            try:
+                text = data.decode("utf-8").removeprefix("﻿")
+            except UnicodeDecodeError as exc:
+                findings.add(where, f"PT2b: cannot read the page: {exc} ({PUBLIC_WHY})")
+                continue
+            match = FRONT_MATTER.match(text)
+            if not match:
+                findings.add(where, "PT2b: the front matter of a static page must be TOML "
+                             f"between +++ lines at the top (fails closed, {PUBLIC_WHY})")
+                continue
+            try:
+                front = tomllib.loads(match.group(1))
+            except tomllib.TOMLDecodeError as exc:
+                findings.add(where, f"PT2b: the front matter is not valid TOML: {exc} "
+                             f"(fails closed, {PUBLIC_WHY})")
+                continue
+            if keys is None and keys_error is None:
+                keys, keys_error = record_keys(root)
+                if keys_error:
+                    findings.add("schema/", f"PT2b: cannot read the record keys ({keys_error}); "
+                                 f"the static pages cannot be checked (fails closed, {PUBLIC_WHY})")
+                elif keys != {guard_fold(key) for key in RECORD_KEYS}:
+                    findings.add("schema/", "PT2b: params.required of the record schemas "
+                                 "differs from RECORD_KEYS in tools/sitecheck.py; a schema "
+                                 f"change updates the pin ({PUBLIC_WHY})")
+            if keys_error:
+                continue
+            for key, path in nested_keys(front):
+                if guard_fold(key) in keys:
+                    findings.add(f"{where}: {json.dumps(path)}", "PT2b: a record key "
+                                 "(params.required of the record schemas) in the front matter "
+                                 "of a static page, at any depth; records live only in the "
+                                 f"private records repo ({PUBLIC_WHY})")
+    # PT3: a public retired slug names a removed record.
+    policy = root / PUBLIC_POLICY
+    if policy.exists() or policy.is_symlink() or PUBLIC_POLICY in staged:
+        for label, data in versions(PUBLIC_POLICY, "PT3"):
+            try:
+                value = json.loads(data.decode("utf-8"), object_pairs_hook=no_duplicate_keys)
+            except (UnicodeDecodeError, ValueError) as exc:
+                findings.add(PUBLIC_POLICY + label, f"PT3: cannot read: {exc} (fails closed, "
+                             f"{PUBLIC_WHY})")
+                continue
+            if not same_json(value, {"retired_slugs": []}):
+                findings.add(PUBLIC_POLICY + label, "PT3: must be exactly {\"retired_slugs\": []} "
+                             "in the public repo; a retired slug names a removed record, and "
+                             f"removals live only in the private records repo ({PUBLIC_WHY})")
+    for rel in files:
+        name = rel.rsplit("/", 1)[-1]
+        if guard_fold(name) == RECORD_POLICY and rel != PUBLIC_POLICY:
+            findings.add(rel, f"PT3: a second file named {RECORD_POLICY}; the only one is "
+                         f"{PUBLIC_POLICY} with no retired slug ({PUBLIC_WHY})")
+    # PT2a and PT4, one read per file and version.
+    exempt = set(listed) - set(files)
+    for rel in listed:
+        tree_rule = rel not in exempt
+        image_rule = tree_rule or not fixture_media_exempt(rel)
+        # Mail under tests/fixtures/ is exempt only in the guard's own
+        # fixtures, not in a fixture tree's static/, assets/ or public/ (fix
+        # round 2, delta review): no fixture needs a mail file there.
+        mail_rule = tree_rule or not rel.startswith(PUBLIC_FIXTURE_MEDIA)
+        parts = rel.split("/")
+        name = guard_fold(parts[-1])
+        if mail_rule and "." in name and "." + name.rsplit(".", 1)[1] in PUBLIC_MAIL_SUFFIXES:
+            findings.add(rel, "PT4: a saved mail file (by its suffix); raw evidence stays in "
+                         f"the operator's mailbox (D5, {PUBLIC_WHY})")
+        is_page = parts[0] == "content" and len(parts) == 2  # PT2b's pages, others above
+        for label, data in versions(rel, "PT2a"):
+            where = rel + label
+            if tree_rule and not is_page:
+                shape = front_matter_shape(data)
+                if shape:
+                    findings.add(where, f"PT2a: a front-matter document outside content/*.md: "
+                                 f"{shape}; that is the shape of a record under any name, and "
+                                 f"records live only in the private records repo ({PUBLIC_WHY})")
+                found = record_shape(structured_value(data))
+                if found:
+                    findings.add(where, f"PT2a: a record in JSON or TOML form ({found}); "
+                                 "records live only in the private records repo "
+                                 f"({PUBLIC_WHY})")
+                yaml_keys = (yaml_record_keys(data) if name.endswith((".yml", ".yaml"))
+                             and not rel.startswith(".github/workflows/") else set())
+                if yaml_keys is None:
+                    findings.add(where, "PT2a: a YAML file that is not UTF-8; the record "
+                                 f"check cannot read it (fails closed, {PUBLIC_WHY})")
+                elif len(yaml_keys) >= RECORD_SHAPE_MIN_KEYS:
+                    findings.add(where, "PT2a: a record in YAML form (the record keys "
+                                 f"{', '.join(sorted(yaml_keys))} as line keys); records live "
+                                 f"only in the private records repo ({PUBLIC_WHY})")
+            if not image_rule:
+                continue
+            mime = None if rel.startswith(PUBLIC_IMAGE_DIRS) else image_type(data[:16])
+            if mime:
+                findings.add(where, f"PT4: a raster image ({mime}, by its magic bytes) outside "
+                             "assets/ and static/; screenshots and other evidence stay in the "
+                             f"operator's mailbox (D5, {PUBLIC_WHY})")
+            kind = None if rel.startswith(PUBLIC_IMAGE_DIRS) else image_type(
+                data[:16], PUBLIC_EVIDENCE_TYPES)
+            if kind:
+                findings.add(where, f"PT4: an evidence file ({kind}, by its magic bytes) outside "
+                             "assets/ and static/; evidence stays in the operator's mailbox "
+                             f"(D5, {PUBLIC_WHY})")
+
+
 def cmd_guard(args):
     root = Path(args.root).resolve()
     if not root.is_dir():
@@ -14349,6 +15153,7 @@ def cmd_guard(args):
     findings = Findings()
     files = git_files(root)
     guard_package_files(files, findings)
+    guard_public_tree(root, files, findings)
     guard_tool_invocations(root, files, findings)
     guard_hugo_config(root, hugo_bin, findings)
     guard_hugo_env_names(root, files, findings)

@@ -1,0 +1,1 @@
+schema/record-policy.json: PT3: cannot read: a key appears twice
