@@ -14727,6 +14727,21 @@ PUBLIC_IMAGE_DIRS = ("assets/", "static/")
 # PT4: the forms saved mail arrives in (RFC 5322 message, Apple Mail
 # message, mbox mailbox in its two suffixes, Outlook message).
 PUBLIC_MAIL_SUFFIXES = (".eml", ".emlx", ".mbox", ".mbx", ".msg")
+# PT4: the other forms evidence is saved in (STOP 2 of interviewscam-site#11,
+# the operator's decision on Known limit 4), by magic bytes, whatever the
+# name, with the same exemptions as the intake images: a PDF ("%PDF-"), a ZIP
+# archive (a local file header, or the end record of an empty archive), and
+# the ISO base media file formats of phone photos, HEIF/HEIC and AVIF, by
+# the "ftyp" box at offset 4 and its major brand at offset 8.
+PUBLIC_EVIDENCE_TYPES = (
+    ("application/pdf", ((0, "255044462d"),)),
+    ("application/zip", ((0, "504b0304"),)),
+    ("application/zip", ((0, "504b0506"),)),
+    *((f"image/heif ({brand})", ((4, "66747970"), (8, brand.encode().hex())))
+      for brand in ("heic", "heix", "heim", "heis", "hevc", "hevx", "mif1", "msf1")),
+    *((f"image/avif ({brand})", ((4, "66747970"), (8, brand.encode().hex())))
+      for brand in ("avif", "avis")),
+)
 PUBLIC_POLICY = "schema/" + RECORD_POLICY
 PUBLIC_WHY = "D4, ADR-0007 part 4"
 UTF8_BOM = b"\xef\xbb\xbf"
@@ -14847,9 +14862,11 @@ def nested_keys(value, path=""):
             yield from nested_keys(inner, f"{path}{key}.")
 
 
-def image_type(head):
-    """The MIME type of INTAKE_IMAGE_TYPES whose signature the bytes carry."""
-    for mime, _, signature in INTAKE_IMAGE_TYPES:
+def image_type(head, types=None):
+    """The MIME type of INTAKE_IMAGE_TYPES (or of the given (MIME type,
+    signature) pairs) whose signature the bytes carry."""
+    pairs = types if types is not None else [(m, s) for m, _, s in INTAKE_IMAGE_TYPES]
+    for mime, signature in pairs:
         if all(head[offset:offset + len(bytes.fromhex(magic))] == bytes.fromhex(magic)
                for offset, magic in signature):
             return mime
@@ -15120,6 +15137,12 @@ def guard_public_tree(root, files, findings):
                 findings.add(where, f"PT4: a raster image ({mime}, by its magic bytes) outside "
                              "assets/ and static/; screenshots and other evidence stay in the "
                              f"operator's mailbox (D5, {PUBLIC_WHY})")
+            kind = None if rel.startswith(PUBLIC_IMAGE_DIRS) else image_type(
+                data[:16], PUBLIC_EVIDENCE_TYPES)
+            if kind:
+                findings.add(where, f"PT4: an evidence file ({kind}, by its magic bytes) outside "
+                             "assets/ and static/; evidence stays in the operator's mailbox "
+                             f"(D5, {PUBLIC_WHY})")
 
 
 def cmd_guard(args):

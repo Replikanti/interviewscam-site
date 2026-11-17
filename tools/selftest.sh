@@ -1254,6 +1254,41 @@ for kind, magic in IMAGES.items():
                  PT4_IMAGE))
     rows.append((f"image-magic/{kind}/assets", {"assets/evidence.dat": data}, (), "PASS"))
     rows.append((f"image-magic/{kind}/static", {"static/evidence.dat": data}, (), "PASS"))
+# STOP 2 of interviewscam-site#11 (Known limit 4): the other evidence types,
+# written out as bytes, one row per member and placement.
+EVIDENCE = {
+    "pdf": b"%PDF-1.7\n",
+    "zip-local-header": b"PK\x03\x04\x14\x00",
+    "zip-empty-archive": b"PK\x05\x06\x00\x00",
+    **{f"heif-{b}": b"\x00\x00\x00\x18ftyp" + b.encode() for b in
+       ("heic", "heix", "heim", "heis", "hevc", "hevx", "mif1", "msf1")},
+    **{f"avif-{b}": b"\x00\x00\x00\x1cftyp" + b.encode() for b in ("avif", "avis")},
+}
+PT4_EVIDENCE = "PT4: an evidence file"
+for kind, magic in EVIDENCE.items():
+    data = magic + b"\x00" * 8 + b"padding"
+    rows.append((f"evidence-magic/{kind}/outside", {"docs/evidence.dat": data}, (), PT4_EVIDENCE))
+    rows.append((f"evidence-magic/{kind}/assets", {"assets/evidence.dat": data}, (), "PASS"))
+    rows.append((f"evidence-magic/{kind}/static", {"static/evidence.dat": data}, (), "PASS"))
+    rows.append((f"evidence-magic/{kind}/fixture-elsewhere", {"tests/fixtures/x/e.dat": data}, (),
+                 PT4_EVIDENCE))
+    rows.append((f"evidence-magic/{kind}/fixture-static", {"tests/fixtures/x/static/e.dat": data},
+                 (), "PASS"))
+rows += [
+    ("evidence-magic/ftyp-other-brand-passes", {"docs/e.dat": b"\x00\x00\x00\x18ftypisom" +
+     b"\x00" * 8}, (), "PASS"),
+    ("evidence-magic/heif-brand-without-ftyp-passes", {"docs/e.dat": b"\x00\x00\x00\x18abcdheic"
+     + b"\x00" * 8}, (), "PASS"),
+    ("evidence-magic/avif-brand-without-ftyp-passes", {"docs/e.dat": b"\x00\x00\x00\x1cabcdavif"
+     + b"\x00" * 8}, (), "PASS"),
+    ("evidence-magic/ftyp-at-offset-0-passes", {"docs/e.dat": b"ftypheic" + b"\x00" * 8}, (),
+     "PASS"),
+    ("evidence-magic/pdf-later-passes", {"docs/e.txt": b"See %PDF-1.7\n"}, (), "PASS"),
+    ("evidence-magic/zip-spanned-marker-passes", {"docs/e.dat": b"PK\x07\x08\x00\x00"}, (),
+     "PASS"),
+    ("evidence-magic/pdf-staged-overwritten", {"docs/e.pdf": b"%PDF-1.7\n"}, (),
+     "docs/e.pdf (staged): " + PT4_EVIDENCE, {"docs/e.pdf": "x"}),
+]
 rows.append(("image-magic/truncated-webp-passes", {"docs/evidence.dat": b"RIFF\x00\x00"}, (),
              "PASS"))
 
