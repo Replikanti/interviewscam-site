@@ -1,0 +1,17 @@
+{
+  "total_count": 1,
+  "check_runs": [
+    {
+      "id": 4242,
+      "name": "check",
+      "head_sha": "0123456789abcdef0123456789abcdef01234567",
+      "status": "in_progress",
+      "conclusion": null,
+      "completed_at": null,
+      "app": {
+        "id": 15368,
+        "slug": "github-actions"
+      }
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+compare 1
+compare-bare-main 0

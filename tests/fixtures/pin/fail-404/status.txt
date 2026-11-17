@@ -1,0 +1,2 @@
+check-runs 422
+compare 404

@@ -1911,6 +1911,767 @@ print(f"ok   wiring/guard-workflow-hardening-called (guard_workflows passes each
 PY
 }
 
+# records_repo_runner <sitecheck.py> <pins.env> case <dir> | table <tsv>
+# <base dir> | wiring <base dir> (ADR-0007 part 5, Replikanti/interviewscam#38
+# PR C): `sitecheck records-repo` on a fake records repo. Every run gets a
+# throwaway public checkout (a git work tree holding tools/pins.env, one
+# commit) and a copy of the case in its own git work tree, untracked (the
+# rule reads git's listing, tracked and untracked alike). The fixture pin
+# RECORDS_FIXTURE_PIN in the case's workflows is set to that checkout's
+# HEAD, so pass-shapes/ stays the canonical set of the private workflows
+# that PR D copies with the real pin. case: prints the output and exits
+# with the check's exit code (the fixture loop judges it). table: one line
+# per row of tests/fixtures/records-repo/cases.tsv on a copy of the base
+# case, each row one edit; a find string absent or present twice fails the
+# row. wiring: cmd_records_repo must hand every workflow of the records repo
+# to guard_workflows in records mode, which calls guard_workflow_hardening
+# (PR B's shared rules) and records_workflow_rules on each, and
+# guard_lighthouse_workflow in records mode. -B: no tools/__pycache__.
+records_repo_runner() {
+  python3 -I -B - "$@" <<'PY'
+import argparse
+import contextlib
+import importlib.util
+import io
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+SITECHECK, PINS, MODE = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
+PIN = "0123456789abcdef0123456789abcdef01234567"  # RECORDS_FIXTURE_PIN
+GIT = ["git", "-c", "user.name=selftest", "-c", "user.email=selftest@example.invalid",
+       "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"]
+MARKERS = ("expect.txt",)
+
+
+def git(*args):
+    subprocess.run([*GIT, *args], check=True, capture_output=True)
+
+
+def public_root(tmp):
+    root = tmp / "public"
+    (root / "tools").mkdir(parents=True)
+    shutil.copy(PINS, root / "tools" / "pins.env")
+    git("-C", str(root), "init", "-q")
+    git("-C", str(root), "add", "-A")
+    git("-C", str(root), "commit", "-q", "-m", "fixture public checkout")
+    sha = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], check=True,
+                         capture_output=True, text=True).stdout.strip()
+    return root, sha
+
+
+def records_dir(tmp, case):
+    rdir = tmp / "records"
+    shutil.copytree(case, rdir, symlinks=True)
+    for name in MARKERS:
+        (rdir / name).unlink(missing_ok=True)
+    return rdir
+
+
+def set_pin(rdir, sha):
+    workflows = rdir / ".github" / "workflows"
+    if workflows.is_dir():
+        for path in workflows.iterdir():
+            if path.is_file() and not path.is_symlink():
+                path.write_text(path.read_text(encoding="utf-8").replace(PIN, sha),
+                                encoding="utf-8")
+
+
+def run(root, rdir, sha):
+    proc = subprocess.run([sys.executable, "-I", "-B", SITECHECK, "records-repo", "--root",
+                           str(root), "--dir", str(rdir), "--sha", sha],
+                          capture_output=True, text=True)
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def unescape(text):
+    return text.replace("\\n", "\n").replace("{PIN39}", PIN[:39]).replace(
+        "{PINUP}", PIN.upper()).replace("{PIN}", PIN)
+
+
+_module = []
+
+
+def run_inline(root, rdir, sha):
+    """The real cmd_records_repo in this process (the module loaded once);
+    the case mode and the fixture loop run the command line."""
+    if not _module:
+        spec = importlib.util.spec_from_file_location("sitecheck", SITECHECK)
+        _module.append(importlib.util.module_from_spec(spec))
+        spec.loader.exec_module(_module[0])
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+        try:
+            rc = _module[0].cmd_records_repo(argparse.Namespace(
+                root=str(root), dir=str(rdir), sha=sha))
+        except _module[0].UsageError as exc:
+            print(f"sitecheck: ERROR: {exc}")
+            rc = 2
+    return rc, buffer.getvalue()
+
+
+if MODE == "case":
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        root, sha = public_root(tmp)
+        rdir = records_dir(tmp, Path(sys.argv[4]))
+        set_pin(rdir, sha)
+        git("-C", str(rdir), "init", "-q")
+        rc, out = run(root, rdir, sha)
+    print(out, end="")
+    sys.exit(rc)
+
+if MODE == "wiring":
+    spec = importlib.util.spec_from_file_location("sitecheck", SITECHECK)
+    sitecheck = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sitecheck)
+    calls = {"hardening": [], "records": [], "lighthouse": []}
+    sitecheck.guard_workflow_hardening = lambda rel, text, findings: calls["hardening"].append(rel)
+    sitecheck.records_workflow_rules = (
+        lambda rel, text, sha, findings: calls["records"].append((rel, sha)))
+    sitecheck.guard_lighthouse_workflow = (
+        lambda root, files, findings, records_mode=False: calls["lighthouse"].append(
+            (sorted(files), records_mode)))
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        root, sha = public_root(tmp)
+        rdir = records_dir(tmp, Path(sys.argv[4]))
+        set_pin(rdir, sha)
+        git("-C", str(rdir), "init", "-q")
+        with contextlib.redirect_stdout(io.StringIO()):
+            sitecheck.cmd_records_repo(argparse.Namespace(root=str(root), dir=str(rdir), sha=sha))
+    want = sorted(f".github/workflows/{name}" for name in sitecheck.RECORDS_WORKFLOWS)
+    ok = sorted(calls["hardening"]) == want
+    print("ok   wiring/records-repo-workflow-hardening-called (every records workflow gets "
+          "WH1 to WH4)" if ok else
+          f"FAIL wiring/records-repo-workflow-hardening-called: calls {calls['hardening']}")
+    ok = sorted(calls["records"]) == [(w, sha) for w in want]
+    print("ok   wiring/records-repo-workflow-rules-called (every records workflow gets the "
+          "records forms with the pin)" if ok else
+          f"FAIL wiring/records-repo-workflow-rules-called: calls {calls['records']}")
+    ok = calls["lighthouse"] == [(want, True)]
+    print("ok   wiring/records-repo-lighthouse-called (guard_lighthouse_workflow in records "
+          "mode)" if ok else
+          f"FAIL wiring/records-repo-lighthouse-called: calls {calls['lighthouse']}")
+    sys.exit(0)
+
+table, base = Path(sys.argv[4]), Path(sys.argv[5])
+n = 0
+shared = Path(tempfile.mkdtemp())
+public, public_sha = public_root(shared)  # one public checkout for every row
+for line in table.read_text(encoding="utf-8").splitlines():
+    if not line or line.startswith("#"):
+        continue
+    n += 1
+    cols = line.split("\t")
+    if len(cols) != 5:
+        print(f"FAIL records-repo/row-{n}: {len(cols)} columns, not 5")
+        continue
+    name, rel, find, replace, expect = cols
+    find, replace = unescape(find), unescape(replace)
+    stray = public / "stray.txt"
+    stray.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        root, sha = public, public_sha
+        rdir = records_dir(tmp, base)
+        target, bad = rdir, None
+        if rel == "@symlink":
+            link = rdir / find
+            if link.exists() or link.is_symlink():
+                shutil.rmtree(link) if link.is_dir() and not link.is_symlink() else link.unlink()
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(replace)
+        elif rel == "@root":
+            if find == "dirty":
+                stray.write_text("x\n")
+            elif find == "head":
+                sha = "1" * 40
+            else:
+                bad = f"unknown @root form {find!r}"
+        elif rel == "@nested":
+            target = rdir / find
+        elif find == "+":
+            path = rdir / rel
+            if path.exists():
+                bad = f"{rel} exists already"
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(replace, encoding="utf-8")
+        elif find == "*":
+            (rdir / rel).unlink()
+        else:
+            path = rdir / rel
+            text = path.read_text(encoding="utf-8")
+            if text.count(find) != 1:
+                bad = f"the find string occurs {text.count(find)} times in {rel}, not once"
+            else:
+                path.write_text(text.replace(find, replace), encoding="utf-8")
+        if bad:
+            print(f"FAIL records-repo/{name}: {bad}")
+            continue
+        set_pin(rdir, sha)
+        git("-C", str(rdir), "init", "-q")
+        rc, out = run_inline(root, target, sha)
+    if expect == "PASS":
+        ok = rc == 0
+    else:
+        ok = rc == 1 and expect in out
+    if ok:
+        print(f"ok   records-repo/{name} ({'passed' if expect == 'PASS' else expect})")
+    else:
+        print(f"FAIL records-repo/{name}: exit {rc}, expected "
+              f"{'a pass' if expect == 'PASS' else repr(expect)}; output:")
+        for out_line in out.splitlines():
+            print(f"     | {out_line}")
+shutil.rmtree(shared)
+print(f"ok   records-repo/table ({n} rows)" if n else "FAIL records-repo/table: no rows")
+PY
+}
+
+# pin_runner <sitecheck.py> <fixtures/pin> (ADR-0007 part 5,
+# Replikanti/interviewscam#38 PR C): `sitecheck pin` against a stub of the
+# GitHub API on loopback (SITECHECK_GITHUB_API), in the manner of the stub
+# API of tests/worker/. The stub answers exactly the two reads of the pin
+# rule for the fixture pin RECORDS_FIXTURE_PIN, from the case's
+# check-runs.json and compare.json, with the statuses of its status.txt
+# (`<check-runs|compare> <status>...`: one per request, the last one
+# repeated; `closed`: a port nothing listens on), and 404 for any other
+# path. The compare read is the one against heads/main; a case's
+# compare-bare-main.json answers the bare name main, which the rule must
+# never ask (a tag named main would make it ambiguous; fail-bare-main-is-a-
+# tag). Every tests/fixtures/pin/<pass|fail>-<case>/ runs the real cmd_pin
+# in this process (the fixture loop skips the directory), judged as the
+# loop judges a case (exit 0 and the expect.txt text, or a failure with
+# it), with PIN_RETRY_DELAY patched to 0 so a retry costs no wall time;
+# its requests.txt (`<check-runs|compare|compare-bare-main|redirected>
+# <count>`) pins how often the stub was asked. pin-extra/numbers pins the real request
+# numbers (ADR-0007 Numbers), and the other pin-extra lines run the
+# command line: the override refusal, the token kept out of the output and
+# sent only as the header, no header without a token, the SHA form.
+pin_runner() {
+  python3 -I -B - "$@" <<'PY'
+import argparse
+import contextlib
+import http.server
+import importlib.util
+import io
+import os
+import socket
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+SITECHECK, FIXTURES = sys.argv[1], Path(sys.argv[2])
+PIN = "0123456789abcdef0123456789abcdef01234567"  # RECORDS_FIXTURE_PIN
+REPO = "/repos/Replikanti/interviewscam-site"
+PATHS = {f"{REPO}/commits/{PIN}/check-runs?check_name=check&per_page=100": "check-runs",
+         f"{REPO}/compare/{PIN}...heads/main": "compare", "/redirected": "redirected",
+         f"{REPO}/compare/{PIN}...main": "compare-bare-main"}
+spec = importlib.util.spec_from_file_location("sitecheck", SITECHECK)
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+REAL_NUMBERS = (sitecheck.PIN_TIMEOUT, sitecheck.PIN_TRIES, sitecheck.PIN_RETRY_DELAY,
+                sitecheck.ACTIONS_APP_ID, sitecheck.GITHUB_API, sitecheck.PUBLIC_REPO)
+sitecheck.PIN_RETRY_DELAY = 0
+
+
+class Stub:
+    def __init__(self, case):
+        self.case = case
+        self.statuses = {}
+        status = case / "status.txt"
+        for line in (status.read_text().splitlines() if status.is_file() else ()):
+            parts = line.split()
+            if parts and parts[0] != "closed":
+                self.statuses[parts[0]] = [int(p) for p in parts[1:]]
+        self.closed = status.is_file() and status.read_text().strip() == "closed"
+        self.counts = {name: 0 for name in set(PATHS.values())}
+        self.auth = []
+        self.unexpected = []
+        stub = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                name = PATHS.get(self.path)
+                stub.auth.append(self.headers.get("Authorization"))
+                if name is None:
+                    stub.unexpected.append(self.path)
+                    return self.answer(404, b'{"message": "unexpected request"}')
+                stub.counts[name] += 1
+                codes = stub.statuses.get(name, [200])
+                code = codes[min(stub.counts[name], len(codes)) - 1]
+                if code in (301, 302, 307, 308):
+                    return self.answer(code, b"{}", {"Location": "/redirected"})
+                body = b'{"message": "stub error"}'
+                if code == 200 and not (stub.case / f"{name}.json").is_file():
+                    code = 404  # compare-bare-main: only the case that has it
+                if code == 200:
+                    body = (stub.case / f"{name}.json").read_bytes()
+                return self.answer(code, body)
+
+            def answer(self, code, body, headers=None):
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                for key, value in (headers or {}).items():
+                    self.send_header(key, value)
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05},
+                         daemon=True).start()
+        if self.closed:
+            sock = socket.socket()
+            sock.bind(("127.0.0.1", 0))
+            self.port = sock.getsockname()[1]
+            sock.close()  # nothing listens there now
+        else:
+            self.port = self.server.server_address[1]
+        self.base = f"http://127.0.0.1:{self.port}"
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def pin_inline(base, sha=PIN):
+    os.environ.pop("GH_TOKEN", None)
+    os.environ["SITECHECK_GITHUB_API"] = base
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        try:
+            rc = sitecheck.cmd_pin(argparse.Namespace(sha=sha))
+        except sitecheck.UsageError as exc:
+            print(f"sitecheck: ERROR: {exc}")
+            rc = 2
+    return rc, buffer.getvalue()
+
+
+def pin_cli(base, sha=PIN, token=None):
+    env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
+    env["SITECHECK_GITHUB_API"] = base
+    if token is not None:
+        env["GH_TOKEN"] = token
+    proc = subprocess.run([sys.executable, "-I", "-B", SITECHECK, "pin", "--sha", sha],
+                          capture_output=True, text=True, env=env)
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def report(name, ok, detail, out=""):
+    if ok:
+        print(f"ok   {name} ({detail})")
+    else:
+        print(f"FAIL {name}: {detail}" + ("; output:" if out else ""))
+        for line in out.splitlines():
+            print(f"     | {line}")
+
+
+n_cases = 0
+for case in sorted(p for p in FIXTURES.iterdir() if p.is_dir()):
+    n_cases += 1
+    name = f"pin/{case.name}"
+    expect_file = case / "expect.txt"
+    expect = expect_file.read_text().splitlines()[0] if expect_file.is_file() else ""
+    stub = Stub(case)
+    rc, out = pin_inline(stub.base)
+    stub.close()
+    want = {}
+    requests = case / "requests.txt"
+    for line in (requests.read_text().splitlines() if requests.is_file() else ()):
+        key, count = line.split()
+        want[key] = int(count)
+    got = {key: stub.counts[key] for key in want}
+    if got != want or stub.unexpected:
+        report(name, False, f"stub requests {got}, want {want}; unexpected paths "
+               f"{stub.unexpected}", out)
+    elif case.name.startswith("pass-"):
+        report(name, rc == 0 and (not expect or expect in out),
+               f"passed with: {expect}" if rc == 0 else f"expected exit 0, got {rc}", out)
+    elif case.name.startswith("fail-"):
+        report(name, rc == 1 and bool(expect) and expect in out,
+               f"failed as expected: {expect}", out)
+    else:
+        report(name, False, "fixture name must start with pass- or fail-")
+report("pin-extra/numbers", REAL_NUMBERS == (20, 3, 5, 15368, "https://api.github.com",
+                                             "Replikanti/interviewscam-site"),
+       f"timeout, tries, delay, app, API, repo: {REAL_NUMBERS}")
+for base in ("https://127.0.0.1:1", "http://127.0.0.1:1/x", "http://localhost:1",
+             "http://127.0.0.2:1", "http://example.invalid", "http://127.0.0.1:1 "):
+    rc, out = pin_cli(base)
+    report(f"pin-extra/refuse-override {base!r}",
+           rc == 2 and "SITECHECK_GITHUB_API may only name" in out, f"exit {rc}")
+SENTINEL = "selftest-token-SENTINEL-4c9d"
+for case, want_rc in ((FIXTURES / "pass-ahead", 0), (FIXTURES / "fail-404", 1)):
+    stub = Stub(case)
+    rc, out = pin_cli(stub.base, token=SENTINEL)
+    stub.close()
+    ok = (rc == want_rc and SENTINEL not in out and len(stub.auth) >= 2
+          and all(a == f"Bearer {SENTINEL}" for a in stub.auth))
+    report(f"pin-extra/token-not-printed/{case.name}", ok,
+           f"exit {rc}, sentinel in output: {SENTINEL in out}, {len(stub.auth)} requests, "
+           f"all with the header: {all(a == f'Bearer {SENTINEL}' for a in stub.auth)}")
+stub = Stub(FIXTURES / "pass-ahead")
+rc, out = pin_cli(stub.base)
+stub.close()
+report("pin-extra/no-token-no-header", rc == 0 and bool(stub.auth)
+       and all(a is None for a in stub.auth), f"exit {rc}, headers {stub.auth}")
+for sha in (PIN.upper(), PIN[:39], PIN + "0", "main"):
+    rc, out = pin_inline("http://127.0.0.1:1", sha=sha)
+    report(f"pin-extra/sha-form {len(sha)} chars {sha[:6]}",
+           rc == 2 and "is not 40 lowercase hex" in out, f"exit {rc}")
+report("pin/cases", n_cases > 0, f"{n_cases} cases")
+PY
+}
+
+# records_mode_e2e <root> <fixtures> (ADR-0007 part 5,
+# Replikanti/interviewscam#38 PR C): check.sh --records end to end, outside
+# CI (GITHUB_ACTIONS unset, so reflow and the Nu Html Checker print NOT RUN
+# and the run ends RECORDS LOCAL PASS). <root> is copied with git's listing
+# of its working tree into a fresh git work tree with one commit, so the
+# pin is that commit and the clean-tree rule holds whatever the developer's
+# tree holds; its .tools/cache is the real one, so nothing is downloaded. A
+# stub of the GitHub API on loopback answers every pin with a green check
+# on main. The records repo is generated here, with slugs and names no
+# fixture uses, plus the canonical workflows of records-repo/pass-shapes
+# at that pin. Prints one ok/FAIL line per case.
+records_mode_e2e() {
+  local src="$1" fx="$2" tmp root records port_file stub_pid port sha out rc
+  tmp="$(mktemp -d)" || { echo "FAIL records-mode/e2e: mktemp failed"; return; }
+  root="$tmp/public"
+  records="$tmp/records"
+  out="$tmp/out.txt"
+  port_file="$tmp/port"
+  if ! python3 -I -B - "$src" "$root" <<'PY'
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+src, dst = Path(sys.argv[1]), Path(sys.argv[2])
+listing = subprocess.run(["git", "-C", str(src), "ls-files", "-z", "--cached", "--others",
+                          "--exclude-standard"], check=True, capture_output=True).stdout
+for rel in sorted({p for p in listing.decode("utf-8", "surrogateescape").split("\0") if p}):
+    path, target = src / rel, dst / rel
+    if not (path.is_symlink() or path.is_file()):
+        continue  # staged, then deleted on disk
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        os.symlink(os.readlink(path), target)
+    else:
+        shutil.copy2(path, target)
+PY
+  then
+    echo "FAIL records-mode/e2e: copying the work tree failed"
+    rm -rf "$tmp"
+    return
+  fi
+  mkdir -p "$root/.tools" && ln -s "$src/.tools/cache" "$root/.tools/cache"
+  local -a git_id=(-c user.name=selftest -c user.email=selftest@example.invalid
+    -c commit.gpgsign=false -c init.defaultBranch=main)
+  if ! { git "${git_id[@]}" -C "$root" init -q && git "${git_id[@]}" -C "$root" add -A \
+      && git "${git_id[@]}" -C "$root" commit -q -m "records mode e2e"; }; then
+    echo "FAIL records-mode/e2e: git could not commit the copy"
+    rm -rf "$tmp"
+    return
+  fi
+  sha="$(git -C "$root" rev-parse HEAD)"
+  python3 -I -B - "$port_file" <<'PY' &
+import http.server
+import json
+import re
+import sys
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        m = re.fullmatch(r"/repos/Replikanti/interviewscam-site/commits/([0-9a-f]{40})"
+                         r"/check-runs\?check_name=check&per_page=100", self.path)
+        if m:
+            body = {"total_count": 1, "check_runs": [{
+                "id": 1, "name": "check", "head_sha": m.group(1), "status": "completed",
+                "conclusion": "success", "app": {"id": 15368}}]}
+        elif re.fullmatch(r"/repos/Replikanti/interviewscam-site/compare/[0-9a-f]{40}\.\.\.heads/main",
+                          self.path):
+            body = {"status": "identical", "ahead_by": 0, "behind_by": 0}
+        else:
+            self.send_response(404)
+            self.end_headers()
+            return
+        data = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+with open(sys.argv[1] + ".part", "w") as f:
+    f.write(str(server.server_address[1]))
+import os
+os.rename(sys.argv[1] + ".part", sys.argv[1])
+server.serve_forever()
+PY
+  stub_pid=$!
+  local _
+  for _ in $(seq 100); do
+    [[ -s "$port_file" ]] && break
+    sleep 0.05
+  done
+  port="$(cat "$port_file" 2>/dev/null)"
+  if [[ -z "$port" ]]; then
+    echo "FAIL records-mode/e2e: the stub API did not start"
+    kill "$stub_pid" 2>/dev/null
+    rm -rf "$tmp"
+    return
+  fi
+
+  # e2e_run <case>: check.sh --records on $records, output in $out.
+  e2e_run() {
+    git "${git_id[@]}" -C "$records" init -q >/dev/null 2>&1
+    env -u GITHUB_ACTIONS -u CI -u GH_TOKEN -u GITHUB_TOKEN \
+      SITECHECK_GITHUB_API="http://127.0.0.1:$port" \
+      bash "$root/tools/check.sh" --records "$records" >"$out" 2>&1
+    rc=$?
+  }
+  # e2e_steps <step...>: only the named records-mode steps of the copy's
+  # check.sh (sourced, so CHECK_ROOT is the copy), output in $out. The
+  # two content cases below need no pin, fetch, guard or link run.
+  e2e_steps() {
+    # shellcheck disable=SC2016 # the script expands its own arguments
+    bash -c 'source "$1/tools/check.sh" || exit 2
+      cd "$1" && load_pins || exit 2
+      RECORDS_DIR="$2"
+      sha12="$3"
+      shift 3
+      for step in "$@"; do run_step "$step" "$step"; done
+      check_summary records "$sha12"' e2e-steps "$root" "$records" "${sha:0:12}" "$@" >"$out" 2>&1
+    rc=$?
+  }
+  # e2e_ere <text>: text as an ERE that matches it literally (the step
+  # names hold brackets, parentheses and dots).
+  e2e_ere() {
+    local s="$1" c
+    for c in '[' ']' '(' ')' '.' '*'; do s="${s//"$c"/\\"$c"}"; done
+    printf '%s' "$s"
+  }
+  # e2e_report <name> <ok?> <detail>
+  e2e_report() {
+    if [[ "$2" == 1 ]]; then
+      echo "ok   records-mode/$1 ($3)"
+    else
+      echo "FAIL records-mode/$1: $3; output:"
+      sed 's/^/     | /' "$out"
+    fi
+  }
+  local report='+++
+date = 2026-11-01
+[params]
+name = "Records Mode Selftest Name"
+name_type = "company"
+state = "front"
+state_basis = ["No company of this name could be found."]
+summary = "A generated record of the records-mode self-test."
+evidence = "One generated submission."
+first_seen = 2026-10-01
+last_seen = 2026-10-02
+last_reviewed = 2026-11-01
+independent_reports = 1
+
+[params.artifacts]
+domains = ["records-mode-selftest[.]example"]
++++
+'
+  local ok line n
+
+  # e2e-empty: a records repo with no content/ at all.
+  mkdir -p "$records" && printf '# records\n' >"$records/README.md"
+  e2e_run
+  ok=0
+  [[ $rc -eq 0 ]] && grep -qx "RECORDS LOCAL PASS on ${sha:0:12}, HTML validation and reflow not run (CI only)" "$out" \
+    && grep -q '^records checked: 0 ' "$out" && grep -q '^pin checked: ' "$out" && ok=1
+  e2e_report e2e-empty "$ok" "exit $rc, records checked: 0, RECORDS LOCAL PASS on ${sha:0:12}"
+
+  # e2e: one record, the canonical workflows at the pin, the policy. The
+  # policy retires a slug made up here (no file of the copy holds it), the
+  # canary of no-records-copy below.
+  local canary="records-mode-retired-$RANDOM$RANDOM"
+  rm -rf "$records" && mkdir -p "$records/content/reports" "$records/content/campaigns" "$records/schema"
+  cp -R "$fx/records-repo/pass-shapes/.github" "$records/"
+  sed -i "s/0123456789abcdef0123456789abcdef01234567/$sha/" "$records"/.github/workflows/*.yml
+  printf 'worktrees/\n' >"$records/.gitignore"
+  printf '# records\n' >"$records/README.md"
+  printf '{"retired_slugs": ["%s"]}\n' "$canary" >"$records/schema/record-policy.json"
+  cp "$fx/records/pass-fixture-site/content/reports/_index.md" "$records/content/reports/"
+  cp "$fx/records/pass-fixture-site/content/campaigns/_index.md" "$records/content/campaigns/"
+  printf '%s' "$report" >"$records/content/reports/records-mode-selftest-name.md"
+  e2e_run
+  ok=0
+  [[ $rc -eq 0 ]] && grep -qx "RECORDS LOCAL PASS on ${sha:0:12}, HTML validation and reflow not run (CI only)" "$out" \
+    && grep -q '^records checked: 1 (reports 1, campaigns 0)' "$out" \
+    && grep -q '^records-repo checked: .* 1 records, 4 workflows' "$out" \
+    && grep -q '^render checked: 1 records' "$out" && [[ -f "$root/public/reports/records-mode-selftest-name/index.html" ]] && ok=1
+  e2e_report e2e "$ok" "exit $rc, 1 record built and checked, 4 workflows, RECORDS LOCAL PASS"
+
+  # no-records-copy (fix round 2 of interviewscam-site#12): a passing run
+  # leaves no copy of the records repo where an artifact upload could take
+  # it. .records-site/ is gone, the cleanup step passed, no file under
+  # public/ or tools/ (the two upload paths) equals a file of the records
+  # repo, and none holds the retired slug of its policy.
+  ok=0
+  [[ $rc -eq 0 && ! -e "$root/.records-site" && ! -L "$root/.records-site" ]] \
+    && grep -qE '^  records cleanup \(\.records-site/ removed\) +PASS$' "$out" \
+    && ! grep -rqF -- "$canary" "$root/public" "$root/tools" \
+    && [[ -z "$(comm -12 \
+      <(find "$records" -path "$records/.git" -prune -o -type f -exec sha256sum {} + | cut -d' ' -f1 | sort -u) \
+      <(find "$root/public" "$root/tools" -type f -exec sha256sum {} + | cut -d' ' -f1 | sort -u))" ]] \
+    && ok=1
+  e2e_report no-records-copy "$ok" "exit $rc, no .records-site/, no records file or retired slug under public/ or tools/"
+
+  # not-run-lines: every machinery step prints the records-mode NOT RUN line
+  # and records it, and every content step ran.
+  ok=1
+  for line in shellcheck "worker (intake Worker and deploy tool)" "tokens (contrast, colour literals)" \
+      "literals (fixed copy only from data/labels.toml)" "fixture build" "site (fixture build)" \
+      "render (fixture build)" "links (fixture build, offline)" selftest; do
+    grep -qE "^  $(e2e_ere "$line") +NOT RUN \(records mode\)\$" "$out" || ok=0
+  done
+  n="$(grep -c "^NOT RUN (records mode): machinery only, held by the pinned commit's green check\$" "$out")"
+  [[ "$n" == 9 ]] || ok=0
+  for line in "pin (green check on public main)" fetch-tools "guard (repo rules)" \
+      "records repo (layout, workflows)" "records assembly" "records (schema, defang)" build \
+      "site (third-party, CSP, defang)" "render (D6, D7, D10, structured data)" "links (offline, internal)" \
+      "records cleanup (.records-site/ removed)"; do
+    grep -qE "^  $(e2e_ere "$line") +PASS\$" "$out" || ok=0
+  done
+  e2e_report not-run-lines "$ok" "9 machinery steps NOT RUN (records mode), 10 content steps and the cleanup PASS"
+
+  # assembly: .records-site/ against its sources, per input class (the
+  # assembly step alone: the whole run removes .records-site/ at its end).
+  e2e_steps step_records_assembly
+  ok=1
+  [[ $rc -eq 0 ]] || ok=0
+  diff -r "$root/.records-site/content/reports" "$records/content/reports" >/dev/null || ok=0
+  diff -r "$root/.records-site/content/campaigns" "$records/content/campaigns" >/dev/null || ok=0
+  for line in "$root"/content/*.md; do
+    cmp -s "$line" "$root/.records-site/content/${line##*/}" || ok=0
+  done
+  [[ "$(find "$root/.records-site/content" -maxdepth 1 -type f | wc -l)" == \
+     "$(find "$root/content" -maxdepth 1 -type f -name '*.md' | wc -l)" ]] || ok=0
+  diff -r -x record-policy.json "$root/.records-site/schema" "$root/schema" >/dev/null || ok=0
+  cmp -s "$root/.records-site/schema/record-policy.json" "$records/schema/record-policy.json" || ok=0
+  for line in "${FIXTURE_COPY[@]}"; do
+    if [[ -e "$root/$line" ]]; then
+      diff -r "$root/$line" "$root/.records-site/$line" >/dev/null || ok=0
+    fi
+  done
+  e2e_report assembly "$ok" "the record sections, the static pages, schema/ with the records repo's policy and FIXTURE_COPY match their sources"
+
+  # fixture-leak: a record with a fixture record's slug and name.
+  printf '%s' "${report//Records Mode Selftest Name/Example Abused Company}" \
+    >"$records/content/reports/example-abused-company.md"
+  rm -f "$records/content/reports/records-mode-selftest-name.md"
+  e2e_steps step_records_assembly step_records_build step_records_render
+  ok=0
+  [[ $rc -ne 0 ]] && grep -q 'shares its slug and name with the fixture record' "$out" \
+    && grep -qE '^  step_records_render +FAIL$' "$out" && ok=1
+  e2e_report fixture-leak "$ok" "exit $rc, render FAIL: a fixture record's slug and name"
+  rm -f "$records/content/reports/example-abused-company.md"
+
+  # policy-overlay: the records repo's policy retires its own record's slug.
+  printf '%s' "$report" >"$records/content/reports/records-mode-selftest-name.md"
+  printf '{"retired_slugs": ["records-mode-selftest-name"]}\n' >"$records/schema/record-policy.json"
+  e2e_steps step_records_assembly step_records_records
+  ok=0
+  [[ $rc -ne 0 ]] && grep -q "slug 'records-mode-selftest-name' is retired" "$out" \
+    && grep -qE '^  step_records_records +FAIL$' "$out" && ok=1
+  e2e_report policy-overlay "$ok" "exit $rc, records FAIL on R4 with the records repo's retired slug"
+
+  # cleanup-after-failure (review round 3 of interviewscam-site#12): the
+  # whole run with the same retired slug, so a content step fails after
+  # the assembly built .records-site/. The run fails, and the cleanup step
+  # still removes .records-site/ (a cleanup that ran only after an all-pass
+  # run would leave it).
+  rm -rf "$root/.records-site"
+  e2e_run
+  ok=0
+  [[ $rc -ne 0 && ! -e "$root/.records-site" && ! -L "$root/.records-site" ]] \
+    && grep -qE '^  records assembly +PASS$' "$out" \
+    && grep -qE '^  records \(schema, defang\) +FAIL$' "$out" \
+    && grep -qE '^  records cleanup \(\.records-site/ removed\) +PASS$' "$out" && ok=1
+  e2e_report cleanup-after-failure "$ok" "exit $rc, records FAIL after the assembly, cleanup PASS, no .records-site/"
+
+  # assembly-only-sections: what the records repo may not ship (a template,
+  # a static page, a schema, config) never reaches .records-site/, even when
+  # git lists it: the assembly copies only the record sections and the
+  # policy (the records-repo step reports the files themselves).
+  printf '{"retired_slugs": []}\n' >"$records/schema/record-policy.json"
+  mkdir -p "$records/layouts/_partials"
+  printf '<p>injected</p>\n' >"$records/layouts/_partials/injected.html"
+  printf '+++\ntitle = "Injected"\n+++\n' >"$records/content/injected.md"
+  printf '{}\n' >"$records/schema/report.schema.json"
+  printf 'title = "Injected"\n' >"$records/hugo.toml"
+  e2e_steps step_records_assembly
+  ok=0
+  [[ $rc -eq 0 && ! -e "$root/.records-site/layouts/_partials/injected.html" \
+      && ! -e "$root/.records-site/content/injected.md" ]] \
+    && cmp -s "$root/.records-site/schema/report.schema.json" "$root/schema/report.schema.json" \
+    && cmp -s "$root/.records-site/hugo.toml" "$root/hugo.toml" && ok=1
+  e2e_report assembly-only-sections "$ok" "exit $rc, no template, page, schema or config of the records repo in .records-site/"
+
+  # assembly-only-records: in a record section the assembly takes only
+  # records (content/<section>/<name>.md, no dot file), and anything else
+  # git lists there fails the step before it copies a file, even with the
+  # records-repo step left out (a Hugo content adapter, _content.gotmpl,
+  # would run template code in the build). One case per branch and section.
+  rm -rf "$records/layouts" "$records/content/injected.md" "$records/schema/report.schema.json" \
+    "$records/hugo.toml"
+  for line in reports/_content.gotmpl campaigns/_content.gotmpl reports/x.html \
+      reports/sub/x.md reports/.draft.md; do
+    mkdir -p "$(dirname "$records/content/$line")"
+    printf '{{ $.AddPage (dict "path" "injected" "title" "Injected" "kind" "page") }}\n' \
+      >"$records/content/$line"
+    e2e_steps step_records_assembly
+    ok=0
+    [[ $rc -ne 0 && ! -e "$root/.records-site" ]] \
+      && grep -qF "records assembly: content/$line is not a record" "$out" && ok=1
+    e2e_report "assembly-only-records $line" "$ok" "exit $rc, refused before any copy"
+    rm -f "$records/content/$line"
+    rmdir "$records/content/reports/sub" 2>/dev/null
+  done
+
+  # records-repo-fail-closed: when the records-repo step fails, nothing of
+  # the records repo is copied, built or checked. The eight content steps
+  # print NOT RUN (records repo failed), and .records-site/ and public/ (a
+  # stale one included) are gone.
+  printf '{{ $.AddPage (dict "path" "injected" "title" "Injected" "kind" "page") }}\n' \
+    >"$records/content/reports/_content.gotmpl"
+  mkdir -p "$root/public" && printf 'stale\n' >"$root/public/stale.html"
+  e2e_run
+  ok=0
+  n="$(grep -cE '^  .* +NOT RUN \(records repo failed\)$' "$out")"
+  [[ $rc -ne 0 && "$n" == 8 && ! -e "$root/.records-site" && ! -e "$root/public" ]] \
+    && grep -qE '^  records repo \(layout, workflows\) +FAIL$' "$out" \
+    && grep -qE '^  records assembly +NOT RUN \(records repo failed\)$' "$out" \
+    && ! grep -q '^records assembly: ' "$out" && ok=1
+  e2e_report records-repo-fail-closed "$ok" "exit $rc, $n content steps NOT RUN (records repo failed), no .records-site/ or public/"
+  rm -f "$records/content/reports/_content.gotmpl"
+
+  kill "$stub_pid" 2>/dev/null
+  wait "$stub_pid" 2>/dev/null
+  rm -rf "$tmp"
+}
+
 selftest_main() {
   require_work_tree || return 1
   load_pins || return 1
@@ -2064,6 +2825,18 @@ selftest_main() {
         sitecheck tree-digest "$dir/lock.json" \
           --expect "$(head -n 1 "$dir/pin.txt" 2>/dev/null)" >"$out" 2>&1
         rc=$?
+        ;;
+      records-repo)
+        # <dir> is a fake records repo (ADR-0007 part 5): run in its own git
+        # work tree against a throwaway public checkout, with the fixture
+        # pin of its workflows set to that checkout's HEAD.
+        records_repo_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+          "$SELFTEST_ROOT/tools/pins.env" case "$dir" >"$out" 2>&1
+        rc=$?
+        ;;
+      pin)
+        # Run as one batch below (pin_runner): every case in one process.
+        continue
         ;;
       guard)
         # <dir> stands in for the repo root. An optional env.txt holds
@@ -2934,6 +3707,156 @@ PY
   n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
   if [[ $(grep -c '^ok   wiring/guard-' "$out") -ne 2 ]]; then
     echo "FAIL wiring/guard-public-tree: the wiring runner did not pass both lines; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+
+  # Records mode and the pin rule (ADR-0007 part 5,
+  # Replikanti/interviewscam#38 PR C): the records-repo rows on pass-shapes,
+  # the wiring of the shared workflow rules, the pin rule's extra cases,
+  # check.sh's flags, the token unset after the pin step, the classified
+  # .records-site/, the Lighthouse page set of records mode, and the e2e
+  # runs of check.sh --records.
+  local family runner_out
+  for family in table wiring extra; do
+    case "$family" in
+      table)
+        records_repo_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$SELFTEST_ROOT/tools/pins.env" \
+          table "$FIXTURES/records-repo/cases.tsv" "$FIXTURES/records-repo/pass-shapes" >"$out" 2>&1
+        ;;
+      wiring)
+        records_repo_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$SELFTEST_ROOT/tools/pins.env" \
+          wiring "$FIXTURES/records-repo/pass-shapes" >"$out" 2>&1
+        ;;
+      extra)
+        pin_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/pin" >"$out" 2>&1
+        ;;
+    esac
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    runner_out=0
+    case "$family" in
+      table) grep -qE '^ok   records-repo/table' "$out" && runner_out=1 ;;
+      wiring) [[ $(grep -c '^ok   wiring/records-repo-' "$out") -eq 3 ]] && runner_out=1 ;;
+      extra) [[ $(grep -c '^ok   pin-extra/' "$out") -eq 14 ]] \
+        && grep -q '^ok   pin/cases' "$out" && runner_out=1 ;;
+    esac
+    if [[ $runner_out -eq 0 ]]; then
+      echo "FAIL records-mode/$family: the runner did not finish with every line; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  done
+
+  # records-mode/usage: check.sh's flags, through parse_check_args (the
+  # function check_main calls first): --records at most once and with a
+  # directory, --external at most once, both orders, the directory resolved
+  # with cd -P, refused when it is this checkout or inside it (also through
+  # a symlink), allowed when this checkout lies inside it.
+  local usage_tmp usage_bad=() usage_n=0 got
+  usage_tmp="$(mktemp -d)"
+  mkdir -p "$usage_tmp/records/sub" && : >"$usage_tmp/file"
+  ln -s "$SELFTEST_ROOT/tools" "$usage_tmp/inside-link"
+  ln -s "$usage_tmp/records" "$usage_tmp/outside-link"
+  # usage_case <want rc> <want RECORDS_DIR or -> <want EXTERNAL or -> <args...>
+  usage_case() {
+    local want_rc="$1" want_dir="$2" want_ext="$3" rc_got
+    shift 3
+    usage_n=$((usage_n + 1))
+    got="$(cd "$usage_tmp" && parse_check_args "$@" 2>&1 && printf '%s|%s' "$RECORDS_DIR" "$EXTERNAL")"
+    rc_got=$?
+    if [[ $rc_got -ne $want_rc ]] \
+        || { [[ $want_rc -eq 0 ]] && [[ "$got" != "$want_dir|$want_ext" ]]; }; then
+      usage_bad+=("[$*]: exit $rc_got, got '$got'")
+    fi
+  }
+  local real
+  real="$(cd -P "$usage_tmp/records" && pwd)"
+  usage_case 0 "" "" 
+  usage_case 0 "" --external --external
+  usage_case 0 "$real" "" --records records
+  usage_case 0 "$real" "" --records records/
+  usage_case 0 "$real" "" --records records/sub/..
+  usage_case 0 "$real" "" --records "$usage_tmp/records"
+  usage_case 0 "$real" "" --records outside-link
+  usage_case 0 "$real" --external --records records --external
+  usage_case 0 "$real" --external --external --records records
+  usage_case 0 "$(cd -P "$SELFTEST_ROOT/.." && pwd)" "" --records "$SELFTEST_ROOT/.."
+  usage_case 2 - - --records
+  usage_case 2 - - --records ""
+  usage_case 2 - - --records missing
+  usage_case 2 - - --records file
+  usage_case 2 - - --records "$SELFTEST_ROOT"
+  usage_case 2 - - --records "$SELFTEST_ROOT/tools"
+  usage_case 2 - - --records inside-link
+  usage_case 2 - - --records records --records records
+  usage_case 2 - - --external --external
+  usage_case 2 - - --records records --external --external
+  usage_case 2 - - --other
+  rm -rf "$usage_tmp"
+  if [[ ${#usage_bad[@]} -eq 0 ]]; then
+    echo "ok   records-mode/usage ($usage_n flag forms)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL records-mode/usage: ${usage_bad[*]}"
+    n_failed=$((n_failed + 1))
+  fi
+
+  # wiring/records-token-unset: in check_records_main the pin step is the
+  # first step, and `unset GH_TOKEN GITHUB_TOKEN` is the very next line, so
+  # no later step (Hugo, lychee, the checks) holds the job token.
+  if awk 'found == 1 { if ($0 ~ /^ *unset GH_TOKEN GITHUB_TOKEN;?$/) found = 2; else found = -1 }
+          /run_step/ && !seen { seen = 1; if ($0 ~ /^ *run_step "pin \(green check on public main\)" step_pin "\$sha";?$/) found = 1 }
+          END { exit found != 2 }' <<<"$(declare -f check_records_main)"; then
+    echo "ok   wiring/records-token-unset (the pin step comes first, the token is unset right after it)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL wiring/records-token-unset: check_records_main in tools/check.sh does not run the pin step first with \`unset GH_TOKEN GITHUB_TOKEN\` right after it"
+    n_failed=$((n_failed + 1))
+  fi
+
+  # wiring/fixture-skip-records-site: .records-site/ is classified for the
+  # fixture build and git-ignored, so a public run after a records run
+  # neither fails on an unclassified path nor offers it to git add.
+  if [[ " ${FIXTURE_SKIP[*]} " == *" .records-site "* ]] \
+      && grep -qx '/.records-site/' "$SELFTEST_ROOT/.gitignore"; then
+    echo "ok   wiring/fixture-skip-records-site (in FIXTURE_SKIP and .gitignore)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL wiring/fixture-skip-records-site: .records-site is not in FIXTURE_SKIP of tools/check.sh or not /.records-site/ in .gitignore"
+    n_failed=$((n_failed + 1))
+  fi
+
+  # lighthouse/records-pages: the production page set of the Lighthouse run
+  # (sitecheck lighthouse-pages, both modes): every directory with an
+  # index.html except a record page, the section pages kept, plus /404.html,
+  # with no public-fixtures/ anywhere.
+  local lh_tmp lh_got
+  lh_tmp="$(mktemp -d)"
+  mkdir -p "$lh_tmp/public/about" "$lh_tmp/public/reports/x" "$lh_tmp/public/campaigns/y/amp" \
+    "$lh_tmp/public/campaigns/y"
+  for line in index.html about/index.html reports/index.html reports/x/index.html \
+      campaigns/y/index.html campaigns/y/amp/index.html 404.html; do
+    : >"$lh_tmp/public/$line"
+  done
+  lh_got="$(sitecheck lighthouse-pages "$lh_tmp/public" 2>&1 | tr '\n' ' ')"
+  if [[ "$lh_got" == "/about/ / /reports/ /404.html " ]] \
+      && ! sitecheck lighthouse-pages "$lh_tmp/public/about/missing" >/dev/null 2>&1; then
+    echo "ok   lighthouse/records-pages (production pages only: $lh_got)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL lighthouse/records-pages: got '$lh_got'"
+    n_failed=$((n_failed + 1))
+  fi
+  rm -rf "$lh_tmp"
+
+  records_mode_e2e "$SELFTEST_ROOT" "$FIXTURES" >"$out" 2>&1
+  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+  if [[ $(grep -c '^ok   records-mode/' "$out") -ne 15 ]]; then
+    echo "FAIL records-mode/e2e: not every e2e case passed; output:"
     sed 's/^/     | /' "$out"
     n_failed=$((n_failed + 1))
   fi

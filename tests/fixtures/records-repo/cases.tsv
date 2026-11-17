@@ -1,0 +1,165 @@
+# records-repo/<row> of tools/selftest.sh (records_repo_runner, ADR-0007 part 5):
+# each row edits one file of a copy of pass-shapes/ and runs the real
+# `sitecheck records-repo`, which must fail with the row's text (or PASS).
+# file: a path of the case, or @symlink (find: the link, replace: its
+# target), @root (find: dirty or head: the public checkout is dirty or
+# its HEAD is not the pin), @nested (find: run on that subdirectory).
+# find: + creates the file with replace as its content, * deletes it;
+# otherwise it must occur exactly once in the file. \n is a newline;
+# {PIN} is the fixture pin, which the runner sets to the public
+# checkout's HEAD after the edit ({PIN39}: its first 39 characters,
+# {PINUP}: upper case). An empty expect on a row that deletes a file
+# means a FAIL with any finding.
+# name	file	find	replace	expect
+layout/top-hugo-toml	hugo.toml	+	baseURL = "https://interviewscam.com/"\n	"hugo.toml" is not a member
+layout/top-layouts	layouts/home.html	+	<p></p>\n	"layouts" is not a member
+layout/top-assets	assets/css/site.css	+	p{}\n	"assets" is not a member
+layout/top-data	data/labels.toml	+	x = "y"\n	"data" is not a member
+layout/top-static	static/robots.txt	+	User-agent: *\n	"static" is not a member
+layout/top-i18n	i18n/en.toml	+	x = "y"\n	"i18n" is not a member
+layout/top-archetypes	archetypes/default.md	+	+++\ndate = 2026-11-01\n+++\nA page.\n	"archetypes" is not a member
+layout/top-tools	tools/check.sh	+	exit 0\n	"tools" is not a member
+layout/top-docs	docs/SPEC.md	+	# SPEC\n	"docs" is not a member
+layout/top-unknown-file	notes.txt	+	notes\n	"notes.txt" is not a member
+layout/top-case-variant	Content/reports/x.md	+	+++\ndate = 2026-11-01\n+++\nA page.\n	"Content" is not a member
+layout/top-symlinked-entry	@symlink	linked.md	README.md	a symlink (linked.md)
+layout/content-top-page	content/about.md	+	+++\ndate = 2026-11-01\n+++\nA page.\n	a page directly in content/
+layout/content-other-section	content/drafts/x.md	+	+++\ndate = 2026-11-01\n+++\nA page.\n	"drafts" is not a record section
+layout/content-section-case	content/Reports/x.md	+	+++\ndate = 2026-11-01\n+++\nA page.\n	"Reports" is not a record section
+layout/section-subdir	content/reports/sub/x.md	+	+++\ndate = 2026-11-01\n+++\nA page.\n	a subdirectory in a record section
+layout/section-non-md	content/reports/x.toml	+	x = "y"\n	not a *.md record
+layout/section-dotfile	content/reports/.draft.md	+	+++\ndate = 2026-11-01\n+++\nA page.\n	a dot file in a record section
+layout/section-symlink	@symlink	content/reports/linked.md	shapes-fixture-name.md	a symlink (content/reports/linked.md)
+layout/section-dir-symlink	@symlink	content/campaigns	reports	a symlink (content/campaigns)
+layout/schema-report-schema	schema/report.schema.json	+	{}\n	schema/ holds only record-policy.json
+layout/schema-extra	schema/notes.json	+	{}\n	schema/ holds only record-policy.json
+layout/github-extra-file	.github/CODEOWNERS	+	* @x\n	.github/ holds only workflows/
+layout/workflow-unknown-name	.github/workflows/extra.yml	+	name: x\n	.github/ holds only workflows/
+layout/workflow-nested	.github/workflows/sub/ci.yml	+	name: x\n	.github/ holds only workflows/
+layout/not-repo-top	@nested	content		not the top of its git work tree
+root/dirty	@root	dirty		uncommitted or untracked changes
+root/head-not-sha	@root	head		HEAD is
+wf/ref-mismatch	.github/workflows/ci.yml	          ref: {PIN}	          ref: 1111111111111111111111111111111111111111	is not the pin
+wf/ref-short	.github/workflows/ci.yml	          ref: {PIN}	          ref: {PIN39}	not 40 lowercase hex characters
+wf/ref-long	.github/workflows/ci.yml	          ref: {PIN}	          ref: {PIN}0	not 40 lowercase hex characters
+wf/ref-uppercase	.github/workflows/ci.yml	          ref: {PIN}	          ref: {PINUP}	not 40 lowercase hex characters
+wf/ref-branch	.github/workflows/ci.yml	          ref: {PIN}	          ref: main	not 40 lowercase hex characters
+wf/ref-expression	.github/workflows/ci.yml	          ref: {PIN}	          ref: ${{ github.sha }}	not 40 lowercase hex characters
+wf/ref-missing	.github/workflows/ci.yml	          ref: {PIN}\n		the public checkout lacks ref:
+wf/ref-quoted-passes	.github/workflows/ci.yml	          ref: {PIN}	          ref: "{PIN}"	PASS
+wf/ref-single-quoted-passes	.github/workflows/ci.yml	          ref: {PIN}	          ref: '{PIN}'	PASS
+wf/two-refs-differ	.github/workflows/deploy.yml	          ref: {PIN}	          ref: 1111111111111111111111111111111111111111	deploy.yml:37: ref: 111111111111 is not the pin
+wf/missing-public-checkout	.github/workflows/ci.yml	\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false\n          repository: Replikanti/interviewscam-site\n          ref: {PIN}\n          path: site		0 public checkout(s)
+wf/missing-self-checkout	.github/workflows/ci.yml	      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false\n          path: records\n		0 self checkout(s)
+wf/two-self-checkouts	.github/workflows/ci.yml	          repository: Replikanti/interviewscam-site\n          ref: {PIN}\n          path: site	          path: records	2 self checkout(s)
+wf/other-repository	.github/workflows/ci.yml	repository: Replikanti/interviewscam-site	repository: someone/interviewscam-site	repository: of the public checkout must be exactly
+wf/repository-lookalike	.github/workflows/ci.yml	repository: Replikanti/interviewscam-site	repository: Replikanti/intervіewscam-site	repository: of the public checkout must be exactly
+wf/repository-case-variant	.github/workflows/ci.yml	repository: Replikanti/interviewscam-site	repository: replikanti/interviewscam-site	repository: of the public checkout must be exactly
+wf/public-path-other	.github/workflows/ci.yml	          path: site	          path: public-site	path: of the public checkout must be exactly
+wf/self-path-other	.github/workflows/ci.yml	          path: records	          path: rec	path: of the self checkout must be exactly
+wf/checkout-extra-with-key	.github/workflows/ci.yml	          path: site	          path: site\n          fetch-depth: 0	checkout input "fetch-depth"
+wf/checkout-input-case-variant	.github/workflows/ci.yml	          path: site	          Path: site	checkout input "Path"
+wf/checkout-step-if	.github/workflows/ci.yml	          path: records	          path: records\n        if: false	step key "if"
+wf/checkout-in-job-without-check	.github/workflows/lighthouse.yml	      - uses: actions/download-artifact	      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false\n          path: records\n      - uses: actions/download-artifact	a checkout in a job that does not run check.sh
+wf/pull-request-target	.github/workflows/ci.yml	  pull_request:\n	  pull_request_target:\n	WH1: trigger
+wf/persist-credentials-missing	.github/workflows/ci.yml	          persist-credentials: false\n          path: records	          path: records	WH2: actions/checkout needs exactly one
+wf/checkout-token-input	.github/workflows/ci.yml	          path: records	          path: records\n          token: x	WH3: a credential input
+wf/run-not-allowed	.github/workflows/ci.yml	        run: bash site/tools/check.sh --records records	        run: bash site/tools/check.sh	a records repo workflow may only run
+wf/run-flag-order	.github/workflows/links-external.yml	        run: bash site/tools/check.sh --records records --external	        run: bash site/tools/check.sh --external --records records	a records repo workflow may only run
+wf/run-lighthouse-in-ci	.github/workflows/ci.yml	        run: bash site/tools/check.sh --records records	        run: bash tools/lighthouse.sh --records	in this job a run step may only start
+wf/run-check-in-lighthouse-job	.github/workflows/lighthouse.yml	        run: bash tools/lighthouse.sh --records	        run: bash site/tools/check.sh --records records	in this job a run step may only be
+wf/env-other-name	.github/workflows/ci.yml	          GH_TOKEN: ${{ github.token }}	          GITHUB_TOKEN: ${{ github.token }}	env: only as
+wf/env-second-key	.github/workflows/ci.yml	          GH_TOKEN: ${{ github.token }}	          GH_TOKEN: ${{ github.token }}\n          BASH_ENV: x	env: only as
+wf/env-secret	.github/workflows/ci.yml	          GH_TOKEN: ${{ github.token }}	          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}	WH4: a secrets reference
+wf/env-quoted	.github/workflows/ci.yml	          GH_TOKEN: ${{ github.token }}	          GH_TOKEN: "${{ github.token }}"	env: only as
+wf/env-other-step	.github/workflows/deploy.yml	          path: site/public	          path: site/public\n        env:\n          GH_TOKEN: ${{ github.token }}	env: only as
+wf/env-job-level	.github/workflows/ci.yml	    timeout-minutes: 10\n	    timeout-minutes: 10\n    env:\n      GH_TOKEN: ${{ github.token }}\n	job key "env"
+wf/env-top-level	.github/workflows/ci.yml	\npermissions:\n	\nenv:\n  GH_TOKEN: ${{ github.token }}\npermissions:\n	top-level key "env"
+wf/lighthouse-token-in-registry-job	.github/workflows/lighthouse.yml	        shell: bash\n        run: bash tools/lighthouse.sh --records	        shell: bash\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash tools/lighthouse.sh --records	a github.token reference in .github/workflows/lighthouse.yml
+wf/lighthouse-repository-in-registry-job	.github/workflows/lighthouse.yml	          name: built-site\n      - name: bash tools/lighthouse.sh --records	          name: built-site\n          repository: Replikanti/interviewscam-site\n      - name: bash tools/lighthouse.sh --records	a download input that reads another run or repository
+wf/no-check-job	.github/workflows/ci.yml	\n  check:\n	\n  checks:\n	no job `check`
+wf/job-if	.github/workflows/ci.yml	    runs-on: ubuntu-24.04	    if: false\n    runs-on: ubuntu-24.04	job key "if"
+wf/job-continue-on-error	.github/workflows/ci.yml	    runs-on: ubuntu-24.04	    continue-on-error: true\n    runs-on: ubuntu-24.04	job key "continue-on-error"
+wf/step-continue-on-error	.github/workflows/ci.yml	        shell: bash	        shell: bash\n        continue-on-error: true	step key "continue-on-error"
+wf/self-hosted-runner	.github/workflows/ci.yml	    runs-on: ubuntu-24.04	    runs-on: self-hosted	runs-on must be exactly ubuntu-24.04
+wf/no-timeout	.github/workflows/ci.yml	    timeout-minutes: 10\n		no timeout-minutes
+wf/timeout-expression	.github/workflows/ci.yml	    timeout-minutes: 10	    timeout-minutes: ${{ 360 }}	no timeout-minutes
+wf/top-level-defaults	.github/workflows/ci.yml	\npermissions:\n	\ndefaults:\n  run:\n    shell: bash\npermissions:\n	top-level key "defaults"
+wf/pages-write	.github/workflows/ci.yml	  contents: read	  contents: read\n  pages: write	pages: write: Pages stays off
+wf/deploy-pages	.github/workflows/deploy.yml	          path: site/public	          path: site/public\n      - uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5	actions/deploy-pages: Pages stays off
+wf/unpinned-action	.github/workflows/deploy.yml	upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9	upload-pages-artifact@1111111111111111111111111111111111111111	is not an allowlisted ACTION_* pin
+wf/needs-check-on-failing-job	.github/workflows/ci.yml	  check:\n    runs-on: ubuntu-24.04	  gate:\n    runs-on: ubuntu-24.04\n    timeout-minutes: 1\n    steps:\n      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2\n        with:\n          name: gate\n          path: does-not-exist\n          if-no-files-found: error\n  check:\n    needs: gate\n    runs-on: ubuntu-24.04	job check: needs:
+wf/needs-on-pages-artifact	.github/workflows/deploy.yml	    runs-on: ubuntu-24.04	    needs: nonexistent\n    runs-on: ubuntu-24.04	job pages-artifact: needs:
+wf/needs-on-build	.github/workflows/lighthouse.yml	  build:\n    runs-on: ubuntu-24.04	  build:\n    needs: lighthouse\n    runs-on: ubuntu-24.04	job build: needs:
+wf/needs-on-links-external	.github/workflows/links-external.yml	    runs-on: ubuntu-24.04	    needs: links-external\n    runs-on: ubuntu-24.04	job links-external: needs:
+wf/needs-lighthouse-other	.github/workflows/lighthouse.yml	    needs: build	    needs: built	job lighthouse: needs:
+wf/needs-lighthouse-flow-list	.github/workflows/lighthouse.yml	    needs: build	    needs: [build]	job lighthouse: needs:
+wf/needs-lighthouse-missing	.github/workflows/lighthouse.yml	    needs: build\n		job lighthouse: needs:
+wf/needs-lighthouse-quoted-passes	.github/workflows/lighthouse.yml	    needs: build	    needs: "build"	PASS
+wf/extra-job	.github/workflows/ci.yml	  check:\n    runs-on: ubuntu-24.04	  gate:\n    runs-on: ubuntu-24.04\n    timeout-minutes: 1\n    steps:\n      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2\n        with:\n          name: gate\n          path: does-not-exist\n          if-no-files-found: error\n  check:\n    runs-on: ubuntu-24.04	job gate: not a job of the canonical ci.yml
+wf/job-renamed	.github/workflows/deploy.yml	  pages-artifact:\n	  pages:\n	job pages-artifact: missing
+wf/check-noop-upload	.github/workflows/ci.yml	      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false\n          path: records\n      # The public code repo at the pin. Every ref: of the four workflows\n      # moves together, in one pin bump PR.\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false\n          repository: Replikanti/interviewscam-site\n          ref: {PIN}\n          path: site\n      # The job token reads the pin's check run and compare (public data,\n      # read with the token for the higher rate limit); check.sh unsets it\n      # right after the pin step.\n      - name: bash site/tools/check.sh --records records\n        shell: bash\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash site/tools/check.sh --records records\n	      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2\n        with:\n          name: nothing\n          path: nothing\n	job check: steps upload-artifact, not the canonical
+wf/check-steps-order	.github/workflows/ci.yml	      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false\n          path: records\n      # The public code repo at the pin. Every ref: of the four workflows\n      # moves together, in one pin bump PR.\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false\n          repository: Replikanti/interviewscam-site\n          ref: {PIN}\n          path: site\n      # The job token reads the pin's check run and compare (public data,\n      # read with the token for the higher rate limit); check.sh unsets it\n      # right after the pin step.\n      - name: bash site/tools/check.sh --records records\n        shell: bash\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash site/tools/check.sh --records records\n	      - name: bash site/tools/check.sh --records records\n        shell: bash\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash site/tools/check.sh --records records\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false\n          path: records\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false\n          repository: Replikanti/interviewscam-site\n          ref: {PIN}\n          path: site\n	job check: steps check.sh, checkout records, checkout site, not the canonical
+wf/check-external-in-ci	.github/workflows/ci.yml	        run: bash site/tools/check.sh --records records	        run: bash site/tools/check.sh --records records --external	job check: steps checkout records, checkout site, check.sh --external, not the canonical
+wf/check-extra-step	.github/workflows/ci.yml	        run: bash site/tools/check.sh --records records\n	        run: bash site/tools/check.sh --records records\n      - name: bash site/tools/check.sh --records records\n        shell: bash\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash site/tools/check.sh --records records\n	job check: steps checkout records, checkout site, check.sh, check.sh, not the canonical
+wf/deploy-no-upload	.github/workflows/deploy.yml	      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0\n        with:\n          path: site/public\n		job pages-artifact: steps checkout records, checkout site, check.sh, not the canonical
+wf/build-no-upload	.github/workflows/lighthouse.yml	      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2\n        with:\n          name: built-site\n          path: |\n            site/public\n            site/tools\n          if-no-files-found: error\n          retention-days: 1\n		job build: steps checkout records, checkout site, check.sh, not the canonical
+wf/links-external-without-external	.github/workflows/links-external.yml	        run: bash site/tools/check.sh --records records --external	        run: bash site/tools/check.sh --records records	job links-external: steps checkout records, checkout site, check.sh, not the canonical
+wf/pages-upload-in-ci	.github/workflows/ci.yml	        run: bash site/tools/check.sh --records records\n	        run: bash site/tools/check.sh --records records\n      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0\n        with:\n          path: site/public\n	job check: steps checkout records, checkout site, check.sh, upload-pages-artifact, not the canonical
+wf/deploy-path-records	.github/workflows/deploy.yml	          path: site/public	          path: records	with: of upload-pages-artifact
+wf/deploy-path-records-content	.github/workflows/deploy.yml	          path: site/public	          path: records/content	with: of upload-pages-artifact
+wf/deploy-path-trailing-slash	.github/workflows/deploy.yml	          path: site/public	          path: site/public/	with: of upload-pages-artifact
+wf/deploy-path-quoted-passes	.github/workflows/deploy.yml	          path: site/public	          path: "site/public"	PASS
+wf/deploy-upload-extra-input	.github/workflows/deploy.yml	          path: site/public	          path: site/public\n          retention-days: 90	with: of upload-pages-artifact
+wf/deploy-upload-no-with	.github/workflows/deploy.yml	        with:\n          path: site/public\n		with: of upload-pages-artifact
+wf/deploy-upload-first	.github/workflows/deploy.yml	      # The same records-mode check as the job check, so the uploaded\n      # artifact is the checked build.\n      - name: bash site/tools/check.sh --records records\n        shell: bash\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash site/tools/check.sh --records records\n      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0\n        with:\n          path: site/public\n	      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0\n        with:\n          path: site/public\n      # The same records-mode check as the job check, so the uploaded\n      # artifact is the checked build.\n      - name: bash site/tools/check.sh --records records\n        shell: bash\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash site/tools/check.sh --records records\n	job pages-artifact: steps checkout records, checkout site, upload-pages-artifact, check.sh, not the canonical
+wf/token-in-artifact-name	.github/workflows/deploy.yml	          path: site/public	          path: site/public\n          name: ${{ github.token }}	an expression
+wf/tojson-github-in-with	.github/workflows/lighthouse.yml	          name: built-site\n          path: |	          name: ${{ toJSON(github) }}\n          path: |	an expression
+wf/expression-in-retention	.github/workflows/lighthouse.yml	          retention-days: 1	          retention-days: ${{ github.run_attempt }}	an expression
+wf/token-in-step-name	.github/workflows/ci.yml	      - name: bash site/tools/check.sh --records records	      - name: ${{ github.token }}	an expression
+wf/token-in-concurrency-group	.github/workflows/deploy.yml	  group: ${{ github.event_name == 'push' && 'pages' || format('pages-pr-{0}', github.ref) }}	  group: ${{ github.token }}	an expression
+wf/group-expression-elsewhere	.github/workflows/ci.yml	      - name: bash site/tools/check.sh --records records	      - name: ${{ github.ref }}	an expression
+wf/secret-in-with	.github/workflows/deploy.yml	          path: site/public	          path: site/public\n          name: ${{ secrets.X }}	WH4: a secrets reference
+wf/lighthouse-token-on-upload	.github/workflows/lighthouse.yml	          retention-days: 1\n	          retention-days: 1\n        env:\n          GH_TOKEN: ${{ github.token }}\n	env: only as
+wf/lighthouse-token-quoted	.github/workflows/lighthouse.yml	          GH_TOKEN: ${{ github.token }}	          GH_TOKEN: "${{ github.token }}"	a github.token reference in .github/workflows/lighthouse.yml
+wf/lighthouse-token-other-name	.github/workflows/lighthouse.yml	          GH_TOKEN: ${{ github.token }}	          GITHUB_TOKEN: ${{ github.token }}	a github.token reference in .github/workflows/lighthouse.yml
+wf/lighthouse-token-in-with	.github/workflows/lighthouse.yml	          name: built-site\n          path: |	          name: built-site\n          GH_TOKEN: ${{ github.token }}\n          path: |	a github.token reference in .github/workflows/lighthouse.yml
+wf/group-expression-in-with	.github/workflows/lighthouse.yml	          name: built-site\n          path: |	          name: ${{ github.ref }}\n          path: |	an expression
+wf/lighthouse-token-first-in-with	.github/workflows/lighthouse.yml	        with:\n          name: built-site\n          path: |	        with:\n          GH_TOKEN: ${{ github.token }}\n          name: built-site\n          path: |	a github.token reference in .github/workflows/lighthouse.yml
+wf/env-in-registry-job	.github/workflows/lighthouse.yml	        shell: bash\n        run: bash tools/lighthouse.sh --records	        shell: bash\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash site/tools/check.sh --records records	env: only as
+wf/upload-records-site-hidden	.github/workflows/lighthouse.yml	            site/tools\n          if-no-files-found: error\n          retention-days: 1\n	            site/tools\n            site/.records-site/schema\n            site/.records-site/content\n          if-no-files-found: error\n          retention-days: 1\n          include-hidden-files: true\n	with: of upload-artifact must be exactly
+wf/upload-extra-path	.github/workflows/lighthouse.yml	            site/tools\n	            site/tools\n            records\n	with: of upload-artifact must be exactly
+wf/upload-include-hidden-files	.github/workflows/lighthouse.yml	          retention-days: 1\n	          retention-days: 1\n          include-hidden-files: true\n	with: of upload-artifact must be exactly
+wf/upload-other-name	.github/workflows/lighthouse.yml	          name: built-site\n          path: |	          name: built-site-2\n          path: |	with: of upload-artifact must be exactly
+wf/upload-retention-days	.github/workflows/lighthouse.yml	          retention-days: 1	          retention-days: 90	with: of upload-artifact must be exactly
+wf/upload-if-no-files-found	.github/workflows/lighthouse.yml	if-no-files-found: error	if-no-files-found: ignore	with: of upload-artifact must be exactly
+wf/upload-path-one-line	.github/workflows/lighthouse.yml	          path: |\n            site/public\n            site/tools\n	          path: site/public\n	with: of upload-artifact must be exactly
+wf/upload-path-only-public	.github/workflows/lighthouse.yml	            site/public\n            site/tools\n	            site/public\n	with: of upload-artifact must be exactly
+wf/upload-path-strip-chomp	.github/workflows/lighthouse.yml	          path: |\n	          path: |-\n	with: of upload-artifact must be exactly
+wf/upload-path-folded	.github/workflows/lighthouse.yml	          path: |\n	          path: >\n	with: of upload-artifact must be exactly
+wf/upload-path-deeper-line	.github/workflows/lighthouse.yml	            site/tools\n	              site/tools\n	with: of upload-artifact must be exactly
+wf/upload-path-blank-line	.github/workflows/lighthouse.yml	            site/public\n            site/tools\n	            site/public\n\n            site/tools\n	with: of upload-artifact must be exactly
+wf/upload-path-comment-line	.github/workflows/lighthouse.yml	            site/tools\n	            site/tools\n            # site/.records-site\n	with: of upload-artifact must be exactly
+wf/upload-no-with	.github/workflows/lighthouse.yml	        with:\n          name: built-site\n          path: |\n            site/public\n            site/tools\n          if-no-files-found: error\n          retention-days: 1\n		with: of upload-artifact must be exactly
+wf/upload-input-case-variant	.github/workflows/lighthouse.yml	          retention-days: 1	          Retention-days: 1	with: of upload-artifact must be exactly
+wf/upload-name-quoted-passes	.github/workflows/lighthouse.yml	          name: built-site\n          path: |	          name: "built-site"\n          path: |	PASS
+wf/upload-inputs-reordered-passes	.github/workflows/lighthouse.yml	          name: built-site\n          path: |\n            site/public\n            site/tools\n          if-no-files-found: error\n          retention-days: 1\n	          retention-days: 1\n          if-no-files-found: error\n          path: |\n            site/public\n            site/tools\n          name: built-site\n	PASS
+wf/download-path	.github/workflows/lighthouse.yml	          name: built-site\n      - name: bash tools	          name: built-site\n          path: ..\n      - name: bash tools	with: of download-artifact must be exactly
+wf/download-merge-multiple	.github/workflows/lighthouse.yml	          name: built-site\n      - name: bash tools	          name: built-site\n          merge-multiple: true\n      - name: bash tools	with: of download-artifact must be exactly
+wf/download-other-name	.github/workflows/lighthouse.yml	          name: built-site\n      - name: bash tools	          name: built-site-2\n      - name: bash tools	with: of download-artifact must be exactly
+wf/download-no-with	.github/workflows/lighthouse.yml	        with:\n          name: built-site\n      - name: bash tools	      - name: bash tools	with: of download-artifact must be exactly
+wf/pages-upload-name-input	.github/workflows/deploy.yml	          path: site/public	          path: site/public\n          name: github-pages-2	with: of upload-pages-artifact must be exactly
+wf/persist-credentials-true	.github/workflows/ci.yml	          persist-credentials: false\n          path: records	          persist-credentials: true\n          path: records	WH2: actions/checkout needs exactly one
+wf/top-permissions-contents-write	.github/workflows/ci.yml	\npermissions:\n  contents: read\n	\npermissions:\n  contents: write\n	permissions: of a records workflow must be exactly
+wf/top-permissions-actions-write	.github/workflows/links-external.yml	\npermissions:\n  contents: read\n	\npermissions:\n  contents: read\n  actions: write\n	permissions: of a records workflow must be exactly
+wf/top-permissions-id-token	.github/workflows/deploy.yml	\npermissions:\n  contents: read\n	\npermissions:\n  contents: read\n  id-token: write\n	permissions: of a records workflow must be exactly
+wf/top-permissions-read-all	.github/workflows/deploy.yml	\npermissions:\n  contents: read\n	\npermissions: read-all\n	permissions: of a records workflow must be exactly
+wf/top-permissions-empty	.github/workflows/lighthouse.yml	\npermissions:\n  contents: read\n	\npermissions: {}\n	permissions: of a records workflow must be exactly
+wf/top-permissions-quoted-passes	.github/workflows/ci.yml	\npermissions:\n  contents: read\n	\npermissions:\n  contents: "read"\n	PASS
+wf/job-permissions-build-write	.github/workflows/lighthouse.yml	  build:\n    runs-on: ubuntu-24.04\n	  build:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: write\n      actions: write\n	job-level permissions:
+wf/job-permissions-check-read	.github/workflows/ci.yml	    timeout-minutes: 10\n	    timeout-minutes: 10\n    permissions:\n      contents: read\n	job-level permissions:
+wf/job-permissions-check-empty	.github/workflows/ci.yml	    timeout-minutes: 10\n	    timeout-minutes: 10\n    permissions: {}\n	job-level permissions:
+wf/job-permissions-pages-artifact-write	.github/workflows/deploy.yml	    timeout-minutes: 10\n	    timeout-minutes: 10\n    permissions:\n      contents: write\n	job-level permissions:
+wf/job-permissions-links-actions-write	.github/workflows/links-external.yml	    timeout-minutes: 10\n	    timeout-minutes: 10\n    permissions:\n      actions: write\n	job-level permissions:
+wf/lighthouse-job-permissions-read	.github/workflows/lighthouse.yml	    permissions: {}\n	    permissions:\n      contents: read\n	job-level permissions:
+wf/lighthouse-job-permissions-missing	.github/workflows/lighthouse.yml	    permissions: {}\n		job-level permissions:

@@ -675,3 +675,43 @@ PUBLIC_FIXTURE_MEDIA_DIRS	assets
 PUBLIC_FIXTURE_MEDIA_DIRS	public
 PUBLIC_FIXTURE_MEDIA_DIRS	static
 PUBLIC_LINK_EXEMPT	tests/fixtures/guard/
+RECORDS_TOP	.git
+RECORDS_TOP	.github
+RECORDS_TOP	.gitignore
+RECORDS_TOP	CLAUDE.md
+RECORDS_TOP	README.md
+RECORDS_TOP	content
+RECORDS_TOP	schema
+RECORDS_WORKFLOWS	ci.yml
+RECORDS_WORKFLOWS	lighthouse.yml
+RECORDS_WORKFLOWS	links-external.yml
+RECORDS_WORKFLOWS	deploy.yml
+RECORDS_TOP_KEYS	name
+RECORDS_TOP_KEYS	on
+RECORDS_TOP_KEYS	permissions
+RECORDS_TOP_KEYS	concurrency
+RECORDS_TOP_KEYS	jobs
+RECORDS_JOB_KEYS	runs-on
+RECORDS_JOB_KEYS	timeout-minutes
+RECORDS_JOB_KEYS	permissions
+RECORDS_JOB_KEYS	needs
+RECORDS_JOB_KEYS	steps
+RECORDS_STEP_KEYS	name
+RECORDS_STEP_KEYS	uses
+RECORDS_STEP_KEYS	with
+RECORDS_STEP_KEYS	shell
+RECORDS_STEP_KEYS	env
+RECORDS_STEP_KEYS	run
+RECORDS_JOB_STEPS	ci.yml check	checkout records	checkout site	check.sh
+RECORDS_JOB_STEPS	deploy.yml pages-artifact	checkout records	checkout site	check.sh	upload-pages-artifact
+RECORDS_JOB_STEPS	lighthouse.yml build	checkout records	checkout site	check.sh	upload-artifact
+RECORDS_JOB_STEPS	lighthouse.yml lighthouse	download-artifact	lighthouse.sh
+RECORDS_JOB_STEPS	links-external.yml links-external	checkout records	checkout site	check.sh --external
+RECORDS_NEEDS	lighthouse.yml lighthouse	build
+RECORDS_WITH	upload-pages-artifact	{"path": "site/public"}
+RECORDS_WITH	upload-artifact	{"name": "built-site", "path": ["site/public", "site/tools"], "if-no-files-found": "error", "retention-days": "1"}
+RECORDS_WITH	download-artifact	{"name": "built-site"}
+RECORDS_PERMISSIONS	contents	read
+RECORDS_JOB_PERMISSIONS	lighthouse.yml lighthouse	{}
+RECORDS_EXPRESSIONS	${{ github.ref }}
+RECORDS_EXPRESSIONS	${{ github.event_name == 'push' && 'pages' || format('pages-pr-{0}', github.ref) }}
