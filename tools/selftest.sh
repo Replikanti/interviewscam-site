@@ -1318,6 +1318,12 @@ rows += [
     ("staged/page-key-overwritten", {**SCHEMAS, "content/about.md":
      PAGE.format(extra='summary = "x"\n')}, (), 'content/about.md (staged): "summary": PT2b',
      {"content/about.md": PAGE.format(extra="")}),
+    ("staged/assume-unchanged-record", {"docs/acme.md": "+++\n" + REC_TOML + "+++\n"}, (),
+     "docs/acme.md (staged): PT2a: a front-matter document",
+     ("--assume-unchanged", {"docs/acme.md": "hello\n"})),
+    ("staged/skip-worktree-record", {"docs/acme.json": REC_JSON}, (),
+     "docs/acme.json (staged): " + PT2A_SHAPE, ("--skip-worktree", {"docs/acme.json": "{}"})),
+    ("staged/symlink-passes", {"docs/target.txt": "x"}, (), "PASS", "symlink"),
     ("staged/disk-record-over-clean-blob", {"docs/acme.md": "hello\n"}, (),
      "docs/acme.md: PT2a: a front-matter document",
      {"docs/acme.md": "+++\n" + REC_TOML + "+++\n"}),
@@ -1325,7 +1331,13 @@ rows += [
     ("pt2a/workflow-document-marker-passes", {".github/workflows/x.yml":
      "---\nname: x\non: push\n"}, (), "PASS"),
     ("pt2a/yaml-fence-unclosed-passes", {"docs/x.yml": "---\ntitle: x\n"}, (), "PASS"),
-    ("pt2a/toml-fence-unclosed-passes", {"docs/x.md": "+++\ntitle\n"}, (), "PASS"),
+    # Fix round 2 (delta review finding 1): a first-line +++ counts on its
+    # own, so a record whose closing fence was lost still fails.
+    ("pt2a/toml-fence-unclosed-fails", {"docs/x.md": "+++\ntitle\n"}, (),
+     "PT2a: a front-matter document"),
+    ("pt2a/unclosed-toml-record-fails", {"docs/acme.md": "+++\n" + REC_TOML + "\nA draft.\n"},
+     (), "PT2a: a front-matter document"),
+    ("pt2a/plus-fence-later-line-passes", {"docs/x.md": "Intro\n+++\n"}, (), "PASS"),
     ("content/editor-files-ignored-pass", {".gitignore": (REPO_ROOT / ".gitignore").read_bytes(),
      **SCHEMAS, "content/about.md": PAGE.format(extra=""), "content/.about.md.swp": b"b0VIM",
      "content/about.md~": "x", "content/#about.md#": "x"}, (), "PASS", True),
@@ -1344,10 +1356,35 @@ rows += [
     ("fixtures-media/assets-passes", {"tests/fixtures/x/assets/a.dat": IMAGES["png"]}, (), "PASS"),
     ("fixtures-media/public-passes", {"tests/fixtures/x/public/a.dat": IMAGES["png"]}, (), "PASS"),
     ("fixtures-media/guard-passes", {"tests/fixtures/guard/fail-x/a.eml": "x"}, (), "PASS"),
+    ("fixtures-media/guard-image-passes", {"tests/fixtures/guard/fail-x/a.dat": IMAGES["png"]},
+     (), "PASS"),
     ("fixtures-media/static-as-name-fails", {"tests/fixtures/x/static.eml": "x"}, (), PT4_MAIL),
     # R8: QA's rows.
     ("mail-suffix/two-dots", {"docs/saved.2024.eml": "x"}, (), PT4_MAIL),
     ("mail-suffix/three-dots-mbox", {"docs/a.b.c.mbox": "x"}, (), PT4_MAIL),
+    # Fix round 2 (delta review): YAML records by line keys, and mail under a
+    # fixture tree's static/, assets/ or public/.
+    ("yaml/record-5-keys", {"data/acme.yml": "".join(f"{k}: x\n" for k in FLAT)}, (),
+     "PT2a: a record in YAML form"),
+    ("yaml/record-nested-under-params", {"docs/acme.yaml": "params:\n" + "".join(
+     f"  {k}: x\n" for k in FLAT)}, (), "PT2a: a record in YAML form"),
+    ("yaml/record-quoted-and-listed", {"docs/acme.yml": "- 'name': x\n" + "".join(
+     f'  "{k}": x\n' for k in FLAT[1:])}, (), "PT2a: a record in YAML form"),
+    ("yaml/record-upper-suffix", {"docs/acme.YML": "".join(f"{k}: x\n" for k in FLAT)}, (),
+     "PT2a: a record in YAML form"),
+    ("yaml/record-fullwidth-key", {"docs/acme.yml": "\uff4e\uff41\uff4d\uff45: x\n" + "".join(
+     f"{k}: x\n" for k in FLAT[1:])}, (), "PT2a: a record in YAML form"),
+    ("yaml/4-keys-passes", {"data/acme.yml": "".join(f"{k}: x\n" for k in FLAT[:4])}, (),
+     "PASS"),
+    ("yaml/keys-in-values-pass", {"data/acme.yml": "".join(f"x{i}: {k}: y\n" for i, k in
+     enumerate(FLAT))}, (), "PASS"),
+    ("yaml/workflow-dir-passes", {".github/workflows/x.yml": "".join(f"{k}: x\n" for k in FLAT)},
+     (), "PASS"),
+    ("yaml/other-suffix-passes", {"docs/acme.txt": "".join(f"{k}: x\n" for k in FLAT)}, (),
+     "PASS"),
+    ("fixtures-media/mail-in-static-fails", {"tests/fixtures/x/static/a.eml": "x"}, (), PT4_MAIL),
+    ("fixtures-media/mail-in-public-fails", {"tests/fixtures/x/public/a.msg": "x"}, (), PT4_MAIL),
+    ("fixtures-media/mail-in-assets-fails", {"tests/fixtures/x/assets/a.mbox": "x"}, (), PT4_MAIL),
     # Rows from the fix round 1 mutation sweep (each killed a surviving mutant).
     ("shape/json-record-with-bom", {"docs/acme.json": b"\xef\xbb\xbf" + REC_JSON.encode()},
      (), PT2A_SHAPE),
@@ -1372,13 +1409,35 @@ for row in rows:
             (root / rel).mkdir(parents=True, exist_ok=True)
         # The guard reads git (git's listing, the staged blobs), as in production.
         subprocess.run(["git", "init", "-q", str(root)], check=True)
-        if isinstance(use_git, dict):
+        if isinstance(use_git, tuple):
+            # Staged, marked with a git index flag that hides the path from
+            # git diff (--assume-unchanged, --skip-worktree), then overwritten
+            # on disk (fix round 2, delta review).
+            flag, overwrite = use_git
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+            for rel, data in overwrite.items():
+                subprocess.run(["git", "-C", str(root), "update-index", flag, rel], check=True)
+                (root / rel).write_bytes(data if isinstance(data, bytes) else data.encode("utf-8"))
+            hidden = subprocess.run(["git", "-C", str(root), "diff", "--name-only"],
+                                    capture_output=True, text=True).stdout
+            if hidden.strip():
+                report("guard-public", name, False, f"git diff still shows {hidden!r}, so the "
+                       "row does not prove the hash comparison")
+                continue
+            listed = sitecheck.git_files(root)
+        elif isinstance(use_git, dict):
             # Staged, then the working-tree copy overwritten: the next commit
             # carries the staged blob, which the rules must read.
             subprocess.run(["git", "init", "-q", str(root)], check=True)
             subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
             for rel, data in use_git.items():
                 (root / rel).write_bytes(data if isinstance(data, bytes) else data.encode("utf-8"))
+            listed = sitecheck.git_files(root)
+        elif use_git == "symlink":
+            # A staged symlink is read through its target, never as a blob.
+            (root / "docs" / "link").symlink_to("target.txt")
+            subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
             listed = sitecheck.git_files(root)
         elif use_git == "listed":
             listed = sitecheck.git_files(root)  # the swap file is untracked, not ignored
@@ -1586,7 +1645,8 @@ wh += [
     ("reader/lone-cr", [("name: ci", "name: ci\ron: [pull_request_target]")], 1, RD),
     ("reader/crlf-passes", [(BASE, BASE.replace("\n", "\r\n"))], 0, ""),
     ("reader/tab-before-colon", [(ON, "on\t: [pull_request_target]\n")], 2, (RD, WH1_READ)),
-    ("reader/tab-in-value", [("runs-on: ubuntu-24.04", "runs-on: ubuntu-24.04\t")], 1, RD),
+    ("reader/trailing-tab-passes", [("runs-on: ubuntu-24.04", "runs-on: ubuntu-24.04\t")], 0, ""),
+    ("reader/tab-in-value", [("runs-on: ubuntu-24.04", "runs-on: ubuntu\t-24.04")], 1, RD),
     ("reader/document-start-passes", [("name: ci", "---\nname: ci")], 0, ""),
     ("reader/second-document", [("permissions:", "---\npermissions:")], 1, RD),
     ("reader/document-end", [("permissions:", "...\npermissions:")], 1, RD),
@@ -1603,6 +1663,29 @@ wh += [
                                           "          ref: *x\n")], 2, RD),
     ("reader/uses-flow-list", [(STEP, f"      - uses: [actions/checkout@{sha}]\n")], 1,
      "WH reader: uses: without a scalar value"),
+    # Fix round 2 (delta review finding 2): &, * and ! are anchor, alias or
+    # tag only where a YAML value starts.
+    ("reader/not-equal-in-if-passes", [("        shell: bash\n",
+     "        shell: bash\n        if: github.event_name != 'schedule'\n")], 0, ""),
+    ("reader/and-in-if-passes", [("        shell: bash\n",
+     "        shell: bash\n        if: a == 'x' && b == 'y'\n")], 0, ""),
+    ("reader/not-call-in-if-passes", [("        shell: bash\n",
+     "        shell: bash\n        if: success() || !cancelled()\n")], 0, ""),
+    ("reader/star-in-name-passes", [("name: ci", "name: CI *main*")], 0, ""),
+    ("reader/bang-in-name-passes", [("name: ci", "name: Build !fast")], 0, ""),
+    ("reader/tag-at-value-start", [("name: ci", "name: !fast build")], 2, RD),
+    ("reader/alias-list-item", [(STEP, STEP + "      - *other\n")], 2, RD),
+    ("reader/alias-after-dash-in-value", [("runs-on: ubuntu-24.04", "runs-on: - *x")], 1, RD),
+    ("reader/tab-in-comment-passes", [("permissions:", "# a\tcomment\npermissions:")], 0, ""),
+    ("reader/tab-in-quoted-passes", [("name: ci", 'name: "c\ti"')], 0, ""),
+    ("reader/flow-mapping-with-expression-passes", [("permissions:", "concurrency: {group: "
+     '"${{ github.workflow }}", cancel-in-progress: true}\npermissions:')], 0, ""),
+    ("reader/flow-mapping-nested-fails", [("permissions:", "concurrency: {group: {a: b}}\n"
+     "permissions:")], 1, RD),
+    # QA residual (fix round 2): a form problem on the line right after a
+    # block scalar, at the key's column, ends the block and is read.
+    ("reader/form-problem-after-block-scalar", [(WITH, WITH + "          path: |\n            a\n"
+     "          &x ref: y\n")], 2, (RD, "WH2: a with: line of actions/checkout")),
     ("reader/block-scalar-passes", [(WITH, WITH + "          path: |\n            a: b\n")],
      0, ""),
     ("reader/review-bom-and-line-separator", [(BASE, '\ufeffon: [pull_request_target]\nname: '

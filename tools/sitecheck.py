@@ -14149,7 +14149,12 @@ YAML_DASH = re.compile(r"-(?:[ ]+|$)")
 WORKFLOW_BAD_CHARS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u2028\u2029\ufeff]")
 YAML_BLOCK_SCALAR = re.compile(r"[|>][-+0-9]*[ ]*(?:#.*)?")
 YAML_FLOW_MAPPING = re.compile(r"\{[^{}\[\]#\n]*\}[ ]*(?:#.*)?")
-YAML_NODE_PROPERTY = re.compile(r"(?:^|[\s\[,{])[&*!][^\s,\]}]")
+# An anchor &, alias * or tag ! exists only where a YAML value starts:
+# at the start of the line's content, after a list dash, after a key's ": ",
+# or after "[", "{" or "," in a flow collection (fix round 2, delta review
+# finding 2). Inside a plain scalar they are text: `a != 'b'`, `x && y`,
+# `!cancelled()` after `||`, `CI *main*`.
+YAML_NODE_PROPERTY = re.compile(r"(?:^[ ]*(?:-[ ]+)*|:[ ]+(?:-[ ]+)*|[\[{,][ ]*)[&*!][^\s,\]}]")
 
 
 def workflow_lines(text):
@@ -14167,7 +14172,8 @@ def workflow_form_problems(text):
     for n, line in enumerate(lines, 1):
         bad = sorted({f"U+{ord(c):04X}" for c in WORKFLOW_BAD_CHARS.findall(line)}
                      | ({"a CR not before an LF"} if "\r" in line else set())
-                     | ({"a tab"} if "\t" in line else set()))
+                     | ({"a tab outside a comment or quoted string"}
+                        if "\t" in yaml_bare(line) else set()))
         if bad:
             problems.append((n, f"the line holds {', '.join(bad)}, which a YAML parser can "
                                 "read as a line break, an indent or a key the reader does not see"))
@@ -14202,7 +14208,7 @@ def workflow_form_problems(text):
                 if key == "uses":
                     problems.append((n, "uses: as a block scalar"))
                 block = column if isinstance(key, str) else indent
-            elif not YAML_FLOW_MAPPING.fullmatch(stripped):
+            elif not YAML_FLOW_MAPPING.fullmatch(yaml_bare(stripped)):
                 problems.append((n, "a value that does not end on its line (an "
                                     "unterminated quote or flow collection) or starts "
                                     "with an anchor, alias, tag or reserved character"))
@@ -14721,10 +14727,6 @@ PUBLIC_IMAGE_DIRS = ("assets/", "static/")
 PUBLIC_MAIL_SUFFIXES = (".eml", ".emlx", ".mbox", ".mbx", ".msg")
 PUBLIC_POLICY = "schema/" + RECORD_POLICY
 PUBLIC_WHY = "D4, ADR-0007 part 4"
-# PT2a: the front-matter fences Hugo reads on a file's first line (TOML,
-# YAML), each closed by the same fence on a later line; JSON front matter is
-# an object followed by more text.
-FRONT_MATTER_FENCES = (b"+++", b"---")
 UTF8_BOM = b"\xef\xbb\xbf"
 # The record keys: params.required of the two record schemas (15 today).
 # Pinned here for the record-shape rule of PT2a, which also reads roots
@@ -14763,13 +14765,20 @@ def hugo_ignores(name):
 def front_matter_shape(data):
     """Why bytes look like a front-matter document (PT2a), or None. Hugo
     skips a BOM and leading whitespace before the front matter, so this
-    does too, and it needs the closing fence, so a YAML file that starts
-    with the document marker --- alone passes (fix round 1, review
-    finding 4)."""
+    does too. A first-line +++ counts on its own; a first-line --- only
+    with its closing fence, so a YAML file that starts with the document
+    marker --- alone passes (fix rounds 1 and 2)."""
     head = data.removeprefix(UTF8_BOM).lstrip(b" \t\r\n")
     lines = [line.rstrip(b" \t\r") for line in head.split(b"\n")]
-    if lines[0] in FRONT_MATTER_FENCES and lines[0] in lines[1:]:
-        return f"its first line is the front-matter fence {lines[0].decode()}, closed later"
+    if lines[0] == b"+++":
+        # TOML's fence is no YAML or Markdown idiom, so it counts on its own:
+        # a record whose closing fence was lost still fails (fix round 2,
+        # delta review finding 1).
+        return "its first line is the front-matter fence +++"
+    if lines[0] == b"---" and b"---" in lines[1:]:
+        # YAML's document marker opens a plain YAML file too; only a closed
+        # fence is front matter (fix round 1, review finding 4).
+        return "its first line is the front-matter fence ---, closed later"
     if not head.startswith(b"{"):
         return None
     try:
@@ -14870,25 +14879,58 @@ def no_duplicate_keys(pairs):
 
 
 def staged_blobs(root):
-    """{path: bytes} of the staged blob of every path whose working-tree copy
-    differs from the index (git diff, index against the work tree), a
-    deleted one included; the next commit carries the blob."""
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(root), "diff", "--name-only", "-z", "--relative",
-             "--no-renames"], check=True, capture_output=True, timeout=60).stdout
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise UsageError(f"guard needs git at {root}: {exc}") from exc
-    blobs = {}
-    for rel in sorted({p for p in out.decode("utf-8", "replace").split("\0") if p}):
+    """{path: bytes} of the staged blob of every listed path whose working-tree
+    copy differs from the index, a deleted one included; the next commit
+    carries the blob. Compared by hash, every index entry against the bytes
+    on disk (git ls-files -s and git hash-object), not through git diff,
+    which a path marked --assume-unchanged or --skip-worktree hides (fix
+    round 2, delta review)."""
+    def git(*args, data=None):
         try:
-            result = subprocess.run(["git", "-C", str(root), "cat-file", "blob", f":./{rel}"],
-                                    capture_output=True, timeout=60)
+            return subprocess.run(["git", "-C", str(root), *args], input=data, check=True,
+                                  capture_output=True, timeout=120).stdout
         except (OSError, subprocess.SubprocessError) as exc:
-            raise UsageError(f"guard cannot read the staged {rel}: {exc}") from exc
-        if result.returncode == 0:
-            blobs[rel] = result.stdout
+            raise UsageError(f"guard needs git at {root}: {exc}") from exc
+    index = {}
+    for entry in git("ls-files", "-s", "-z").decode("utf-8", "replace").split("\0"):
+        if not entry:
+            continue
+        meta, _, rel = entry.partition("\t")
+        mode, sha, stage = meta.split()
+        if stage == "0" and mode != "160000":
+            index[rel] = (mode, sha)
+    regular = [rel for rel, (mode, _) in index.items() if mode != "120000"
+               and (root / rel).is_file() and not (root / rel).is_symlink()]
+    # --stdin-paths reads a relative path from the repository's top, not
+    # from root, so every path goes in absolute.
+    hashes = git("hash-object", "--no-filters", "--stdin-paths",
+                 data="".join(f"{root / rel}\n" for rel in regular).encode()).decode().split()
+    on_disk = dict(zip(regular, hashes))
+    blobs = {}
+    for rel, (mode, sha) in sorted(index.items()):
+        if mode == "120000" or on_disk.get(rel) == sha:
+            continue  # a symlink is read through its target; an equal blob adds nothing
+        blobs[rel] = git("cat-file", "blob", sha)
     return blobs
+
+
+YAML_LINE_KEY = re.compile(r"""[ ]*(?:-[ ]+)*["']?([^\s"'#:][^"'#:]*?)["']?[ ]*:(?:[ ]|$)""")
+
+
+def yaml_record_keys(data):
+    """The folded record keys a YAML text holds as line keys, at any indent
+    (PT2a, fix round 2, delta review: fenceless YAML; no YAML parser in the
+    standard library, so the keys are read line by line)."""
+    try:
+        text = data.removeprefix(UTF8_BOM).decode("utf-8")
+    except UnicodeDecodeError:
+        return set()
+    keys = set()
+    for line in text.split("\n"):
+        match = YAML_LINE_KEY.match(line)
+        if match and guard_fold(match.group(1)) in RECORD_KEYS:
+            keys.add(guard_fold(match.group(1)))
+    return keys
 
 
 def fixture_media_exempt(rel):
@@ -15024,12 +15066,14 @@ def guard_public_tree(root, files, findings):
     exempt = set(listed) - set(files)
     for rel in listed:
         tree_rule = rel not in exempt
-        media_rule = tree_rule or not fixture_media_exempt(rel)
-        if not media_rule:
-            continue
+        image_rule = tree_rule or not fixture_media_exempt(rel)
+        # Mail under tests/fixtures/ is exempt only in the guard's own
+        # fixtures, not in a fixture tree's static/, assets/ or public/ (fix
+        # round 2, delta review): no fixture needs a mail file there.
+        mail_rule = tree_rule or not rel.startswith(PUBLIC_FIXTURE_MEDIA)
         parts = rel.split("/")
         name = guard_fold(parts[-1])
-        if "." in name and "." + name.rsplit(".", 1)[1] in PUBLIC_MAIL_SUFFIXES:
+        if mail_rule and "." in name and "." + name.rsplit(".", 1)[1] in PUBLIC_MAIL_SUFFIXES:
             findings.add(rel, "PT4: a saved mail file (by its suffix); raw evidence stays in "
                          f"the operator's mailbox (D5, {PUBLIC_WHY})")
         is_page = parts[0] == "content" and len(parts) == 2  # PT2b's pages, others above
@@ -15046,6 +15090,14 @@ def guard_public_tree(root, files, findings):
                     findings.add(where, f"PT2a: a record in JSON or TOML form ({found}); "
                                  "records live only in the private records repo "
                                  f"({PUBLIC_WHY})")
+                yaml_keys = (yaml_record_keys(data) if name.endswith((".yml", ".yaml"))
+                             and not rel.startswith(".github/workflows/") else set())
+                if len(yaml_keys) >= RECORD_SHAPE_MIN_KEYS:
+                    findings.add(where, "PT2a: a record in YAML form (the record keys "
+                                 f"{', '.join(sorted(yaml_keys))} as line keys); records live "
+                                 f"only in the private records repo ({PUBLIC_WHY})")
+            if not image_rule:
+                continue
             mime = None if rel.startswith(PUBLIC_IMAGE_DIRS) else image_type(data[:16])
             if mime:
                 findings.add(where, f"PT4: a raster image ({mime}, by its magic bytes) outside "
