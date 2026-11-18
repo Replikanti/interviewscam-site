@@ -2878,20 +2878,34 @@ selftest_parse_args() {
   fi
 }
 
-# selftest_signal_traps <file>...: on HUP, INT or TERM remove the files
-# (the run's temp files) and exit 128 plus the signal number, so a run
-# stopped by a sweep's budget or by hand leaves no temp file behind (the
-# RETURN trap of selftest_main covers every normal return; nothing covers
-# SIGKILL).
-selftest_signal_traps() {
-  local files="" file sig
-  for file in "$@"; do
-    files+=" '$file'"
-  done
-  for sig in HUP:129 INT:130 TERM:143; do
-    # shellcheck disable=SC2064 # expand now: the paths are fixed
-    trap "rm -f$files; exit ${sig#*:}" "${sig%:*}"
-  done
+# The run's temp directory ($out, and under --only the log and the FIFO to
+# tee) and the tee job, in globals, so the signal trap reads them when it
+# runs: a block's own local named out cannot shadow them, and a trap set
+# before the directory exists still finds it.
+SELFTEST_TMP_DIR=""
+SELFTEST_TEE_FD=""
+SELFTEST_TEE_PID=""
+
+# selftest_on_signal <signal>: the trap for HUP, INT and TERM. It stops
+# tee and waits for it, so tee cannot write the log after the removal (it
+# is killed, not waited out: the trap can run inside a block whose
+# redirections hold saved copies of the FIFO descriptor, so closing the
+# shell's own copy gives tee no end of input), removes the temp
+# directory, and then raises the same
+# signal again with its default action, so the shell dies of it and a
+# calling script sees a death by signal (bash then stops on SIGINT as it
+# did before the trap, instead of reading an ordinary exit 130 and going
+# on). The RETURN trap of selftest_main covers every normal return;
+# nothing covers SIGKILL.
+selftest_on_signal() {
+  local sig="$1"
+  if [[ -n "$SELFTEST_TEE_PID" ]]; then
+    kill "$SELFTEST_TEE_PID" 2>/dev/null
+    wait "$SELFTEST_TEE_PID" 2>/dev/null
+  fi
+  [[ -n "$SELFTEST_TMP_DIR" ]] && rm -rf "$SELFTEST_TMP_DIR"
+  trap - "$sig"
+  kill -s "$sig" "$$"
 }
 
 # selftest_wants <suite>...: true when no --only is given or it names one
@@ -3203,62 +3217,83 @@ selftest_only_rows() {
   # partner-*: the "runner did not finish" checks of the two-suite runners
   # count only the selected suites (selftest_ok_count), so a failure only
   # the partner suite sees leaves the selected one green, as guard-public
-  # and guard-wf do. Synthetic runner output with one partner row failed
-  # (pin-extra/sha-form, the row a widened PIN_SHA fails; the
-  # render-intake coverage line): under --only pin and --only site-intake
-  # the finished check holds and only the selected rows print and count;
-  # without --only the same output fails the check, as before.
-  so_log="$(mktemp)"
+  # and guard-wf do. Each row runs the real selftest_blocks under a
+  # selection, with stubs in place of the runners (pin_runner, and
+  # intake_coverage with site_intake_runner), so the rows hold the call
+  # sites themselves. The stubs print one partner row failed (pin-extra/
+  # sha-form, the row a widened PIN_SHA fails; the render-intake coverage
+  # line): under --only pin and --only site-intake the selected rows pass
+  # and nothing fails; under --only pin,pin-extra the failed row and the
+  # finished check both fail, as in a full run.
+  # so_partner_blocks <suites>: selftest_blocks under that selection with
+  # the stub runners, its rows cut to their names, then its counters. Only
+  # ever called in $(...): the stubs replace the real runners for good.
+  so_partner_blocks() {
+    # shellcheck disable=SC2329 # selftest_blocks calls the stubs
+    pin_runner() {
+      local i
+      echo 'ok   pin/pass-a'
+      echo 'FAIL pin-extra/sha-form 40 chars abcdef: exit 1'
+      for i in $(seq 1 13); do
+        echo "ok   pin-extra/x-$i"
+      done
+      echo 'ok   pin/cases (1 cases)'
+    }
+    # shellcheck disable=SC2329 # selftest_blocks calls the stubs
+    site_intake_runner() { echo 'ok   site-intake/table (1 rows)'; }
+    # shellcheck disable=SC2329 # selftest_blocks calls the stubs
+    intake_coverage() {
+      if [[ $# -ge 4 ]]; then
+        echo "FAIL $kind-intake/coverage: 1 member(s) without a row: $4"
+      else
+        echo 'FAIL render-intake/coverage: 1 member(s) without a row: x'
+        echo 'ok   site-intake/coverage (3 member rows)'
+      fi
+    }
+    local n_passed=0 n_failed=0 html_total=0 html_run=0 reflow_total=0 reflow_run=0 out
+    local -a SELFTEST_ONLY
+    IFS=, read -ra SELFTEST_ONLY <<<"$1"
+    out="$(mktemp)"
+    selftest_blocks >"$out.rows"
+    grep -E '^(ok   |FAIL )' "$out.rows" | sed -E 's/^(ok   |FAIL )([^ :]*).*/\1\2/'
+    rm -f "$out" "$out.rows"
+    echo "counts $n_passed $n_failed"
+  }
   so_partner_case() {
-    local row="$1" suites="$2" want_done="$3" want_rows="$4" done_rc rows
-    shift 4
-    printf '%s\n' "$@" >"$so_log"
-    done_rc=0
-    case "$row" in
-      partner-pin|partner-full)
-        so_with "$suites" selftest_ok_count "$so_log" pin-extra 'pin-extra/' 14 \
-          && so_with "$suites" selftest_ok_count "$so_log" pin 'pin/cases' 1 || done_rc=1 ;;
-      partner-intake)
-        so_with "$suites" selftest_ok_count "$so_log" render-intake 'render-intake/coverage' 1 \
-          && so_with "$suites" selftest_ok_count "$so_log" site-intake 'site-intake/coverage' 1 \
-          || done_rc=1 ;;
-    esac
-    rows="$(so_with "$suites" so_rows_counts details)"
-    if [[ $done_rc -eq $want_done && "$rows" == "$want_rows" ]]; then
-      echo "ok   selftest-only/$row (finished check exit $done_rc)"
+    local row="$1" suites="$2" want="$3" got
+    got="$(so_partner_blocks "$suites")"
+    if [[ "$got" == "$want" ]]; then
+      echo "ok   selftest-only/$row (${got##*$'\n'})"
       n_passed=$((n_passed + 1))
     else
-      echo "FAIL selftest-only/$row: finished check exit $done_rc, want $want_done; rows:"
-      printf '%s\n' "$rows" | sed 's/^/     | /'
+      echo "FAIL selftest-only/$row: got:"
+      printf '%s\n' "$got" | sed 's/^/     | /'
+      echo "     | want:"
+      printf '%s\n' "$want" | sed 's/^/     | /'
       n_failed=$((n_failed + 1))
     fi
   }
-  local -a so_pin=('ok   pin/pass-a' 'FAIL pin-extra/sha-form 40 chars abcdef: x')
-  for so_n in $(seq 1 13); do
-    so_pin+=("ok   pin-extra/x-$so_n")
-  done
-  so_pin+=('ok   pin/cases (1 cases)')
-  so_partner_case partner-pin pin 0 \
-    $'ok   pin/pass-a\nok   pin/cases (1 cases)\ncounts 2 0' "${so_pin[@]}"
-  so_partner_case partner-full "" 1 \
-    "$(printf '%s\n' "${so_pin[@]}")"$'\ncounts 15 1' "${so_pin[@]}"
-  so_partner_case partner-intake site-intake 0 \
-    $'ok   site-intake/coverage (3 member rows)\ncounts 1 0' \
-    'FAIL render-intake/coverage: 1 member(s) without a row: x' \
-    'ok   site-intake/coverage (3 member rows)'
-  rm -f "$so_log"
+  so_partner_case partner-pin pin \
+    $'ok   pin/pass-a\nok   pin/cases\ncounts 2 0'
+  so_partner_case partner-intake site-intake \
+    $'ok   site-intake/table\nok   site-intake/coverage\nok   site-intake/coverage-fails-on-missing-row\nok   site-intake/coverage-fails-on-missing-row\nok   site-intake/coverage-fails-on-missing-row\nok   site-intake/coverage-fails-on-missing-row\ncounts 6 0'
+  so_partner_case partner-both pin,pin-extra \
+    "$(printf '%s\n' 'ok   pin/pass-a' 'FAIL pin-extra/sha-form'; for so_n in $(seq 1 13); do echo "ok   pin-extra/x-$so_n"; done; printf '%s\n' 'ok   pin/cases' 'FAIL pin/extra')"$'\ncounts 15 2'
 
   # streams-rows: under --only the rows reach stdout as they finish, and a
   # run stopped with TERM removes its temp files. A nested --only tokens
   # run writes to a file with its own TMPDIR and is stopped once its first
   # row is there: it must have printed fewer rows than there are tokens
   # cases (rows held back to the end arrive all at once), no summary line,
-  # exit 143, and leave its TMPDIR empty. 1200 polls of 0.1 s bound the
-  # wait for the first row (fetch-tools runs before it).
+  # exit 143 (death by TERM), and leave its TMPDIR empty. 1200 polls of
+  # 0.1 s bound the wait for the first row (fetch-tools runs before it).
+  # The run has its own session (setsid), and after it ends whatever is
+  # left of that session is killed, so a run that hung before its traps
+  # leaves no child behind that could hold this run's descriptors.
   local so_tmp so_pid so_i so_seen=0
   so_tmp="$(mktemp -d)"
   mkdir "$so_tmp/tmp"
-  TMPDIR="$so_tmp/tmp" bash "$so_sh" --only tokens >"$so_tmp/out" 2>&1 &
+  TMPDIR="$so_tmp/tmp" setsid bash "$so_sh" --only tokens >"$so_tmp/out" 2>&1 &
   so_pid=$!
   for (( so_i = 0; so_i < 1200; so_i++ )); do
     so_seen="$(grep -c '^ok   tokens/' "$so_tmp/out")"
@@ -3269,6 +3304,7 @@ selftest_only_rows() {
   kill -TERM "$so_pid" 2>/dev/null
   wait "$so_pid"
   so_rc=$?
+  kill -KILL -- "-$so_pid" 2>/dev/null
   so_n="$(find "$FIXTURES/tokens" -mindepth 1 -maxdepth 1 -type d | wc -l)"
   so_bad=""
   if [[ "$so_seen" -lt 1 || "$so_seen" -ge "$so_n" ]]; then
@@ -3289,6 +3325,83 @@ selftest_only_rows() {
     n_failed=$((n_failed + 1))
   fi
   rm -rf "$so_tmp"
+
+  # signal-stops-parent: the signal trap raises the signal again after its
+  # cleanup, so a calling bash script stops as it did before the trap. A
+  # parent script runs a nested --only tokens run and then echoes a line;
+  # it starts in its own session with SIGINT at its default action (a
+  # background job of this shell would ignore it, and an ignored signal
+  # cannot be trapped), and once the first row is there SIGINT goes to the
+  # whole process group, as Ctrl-C sends it. The parent must die of SIGINT
+  # (130 to a shell), never reach its echo, and the nested run must print
+  # no summary and leave its TMPDIR empty. A trap that ends with exit 130
+  # lets the parent go on to its echo.
+  so_tmp="$(mktemp -d)"
+  mkdir "$so_tmp/tmp"
+  # shellcheck disable=SC2016 # the parent script expands them
+  printf 'bash "$1" --only tokens\necho "parent continued rc=$?"\n' >"$so_tmp/parent.sh"
+  so_got="$(python3 -I -B - "$so_tmp" "$so_sh" <<'PY' 2>&1
+import os
+import signal
+import subprocess
+import sys
+import time
+
+tmp, child = sys.argv[1], sys.argv[2]
+out_path = os.path.join(tmp, "out")
+env = dict(os.environ, TMPDIR=os.path.join(tmp, "tmp"))
+
+
+def default_sigint():
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
+with open(out_path, "wb") as out:
+    proc = subprocess.Popen(["bash", os.path.join(tmp, "parent.sh"), child], stdout=out,
+                            stderr=subprocess.STDOUT, env=env, start_new_session=True,
+                            preexec_fn=default_sigint)
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline and proc.poll() is None:
+        with open(out_path, "rb") as seen:
+            if b"\nok   tokens/" in b"\n" + seen.read():
+                break
+        time.sleep(0.1)
+    try:
+        os.killpg(proc.pid, signal.SIGINT)
+    except ProcessLookupError:
+        pass
+    try:
+        rc = proc.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        rc = "timeout"
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+print(f"parent: {rc}")
+PY
+)"
+  so_bad=""
+  if [[ "$so_got" != "parent: -2" ]]; then
+    so_bad="the parent ended with '$so_got', want death by SIGINT (parent: -2)"
+  elif ! grep -q '^ok   tokens/' "$so_tmp/out"; then
+    so_bad="no row before the signal"
+  elif grep -q '^parent continued' "$so_tmp/out"; then
+    so_bad="the parent went on after the nested run"
+  elif grep -q '^selftest (only' "$so_tmp/out"; then
+    so_bad="the summary line was printed, so the run had finished"
+  elif [[ -n "$(find "$so_tmp/tmp" -mindepth 1)" ]]; then
+    so_bad="temp files left: $(find "$so_tmp/tmp" -mindepth 1 | tr '\n' ' ')"
+  fi
+  if [[ -z "$so_bad" ]]; then
+    echo "ok   selftest-only/signal-stops-parent (SIGINT to the group: the parent died of it, no line after the nested run, no temp file left)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL selftest-only/signal-stops-parent: $so_bad; output:"
+    sed 's/^/     | /' "$so_tmp/out"
+    n_failed=$((n_failed + 1))
+  fi
+  rm -rf "$so_tmp"
 }
 
 selftest_main() {
@@ -3303,11 +3416,16 @@ selftest_main() {
   # The counters and $out are local here and read and written by
   # selftest_blocks (bash scopes dynamically).
   local n_passed=0 n_failed=0 html_total=0 html_run=0 reflow_total=0 reflow_run=0
-  local out log="" violations suites tee_fd tee_pid
-  out="$(mktemp)"
+  local out log fifo violations suites sig
+  # The signal traps come first, so no temp file exists before them.
+  for sig in HUP INT TERM; do
+    # shellcheck disable=SC2064 # expand now: the signal name is fixed
+    trap "selftest_on_signal $sig" "$sig"
+  done
+  SELFTEST_TMP_DIR="$(mktemp -d)" || return 1
   # shellcheck disable=SC2064 # expand now: the path is fixed
-  trap "rm -f '$out'" RETURN
-  selftest_signal_traps "$out"
+  trap "rm -rf '$SELFTEST_TMP_DIR'" RETURN
+  out="$SELFTEST_TMP_DIR/out"
   # Python exits with 120 when it cannot flush stdout at exit (ENOSPC, EDQUOT,
   # ENOMEM or a closed pipe). Probe the temp file first, so a full or
   # over-quota /tmp is named before 20 fixtures fail with empty output.
@@ -3328,18 +3446,24 @@ selftest_main() {
   # already printed every row it finished (a FAIL row before a TIMEOUT
   # among them). After the blocks the log is checked: a row of an
   # unselected suite (a block without its guard) or a selected suite
-  # without rows fails the run with exit 2. tee runs on its own descriptor
-  # and is waited for by its PID, so a background job of a block cannot
-  # change $! and the summary never overtakes a row.
-  log="$(mktemp)"
-  # shellcheck disable=SC2064 # expand now: the paths are fixed
-  trap "rm -f '$out' '$log'" RETURN
-  selftest_signal_traps "$out" "$log"
-  exec {tee_fd}> >(tee "$log")
-  tee_pid=$!
-  selftest_blocks >&"$tee_fd"
-  exec {tee_fd}>&-
-  wait "$tee_pid"
+  # without rows fails the run with exit 2. tee is an ordinary background
+  # job reading a FIFO, not a process substitution, so waiting for it by
+  # its PID works on every bash (a process substitution's PID is waitable
+  # only from bash 5.1 on) and the summary never overtakes a row. The
+  # shell opens the FIFO read-write first, so neither side blocks on the
+  # open, and tee closes its inherited copy, so the shell's close is its
+  # end of input.
+  log="$SELFTEST_TMP_DIR/log"
+  fifo="$SELFTEST_TMP_DIR/fifo"
+  mkfifo "$fifo" || return 1
+  exec {SELFTEST_TEE_FD}<>"$fifo"
+  tee "$log" <"$fifo" {SELFTEST_TEE_FD}>&- &
+  SELFTEST_TEE_PID=$!
+  selftest_blocks >&"$SELFTEST_TEE_FD"
+  exec {SELFTEST_TEE_FD}>&-
+  SELFTEST_TEE_FD=""
+  wait "$SELFTEST_TEE_PID"
+  SELFTEST_TEE_PID=""
   violations="$(selftest_selection_check "$log")"
   if [[ -n "$violations" ]]; then
     printf '%s\n' "$violations"
