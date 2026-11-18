@@ -15,7 +15,11 @@
 # ADR-0003 part 6). Outside CI they print the NOT RUN line; in CI the
 # self-test fails unless every html and every reflow fixture ran.
 #
-# Usage: bash tools/selftest.sh
+# Usage: bash tools/selftest.sh [--only SUITE[,SUITE...]]
+#
+# --only runs the named suites alone (Replikanti/interviewscam#40, ADR-0008
+# part 4); a suite is the first path segment of the rows it prints. CI
+# always runs every suite (wiring/selftest-no-args).
 
 SELFTEST_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tools/check.sh
@@ -2821,15 +2825,364 @@ domains = ["records-mode-selftest[.]example"]
   rm -rf "$tmp"
 }
 
+# The suite selection (Replikanti/interviewscam#40, ADR-0008 part 4). A
+# suite is the first path segment of the rows a block prints: the token
+# after "ok   " or "FAIL " up to a slash, a space or a colon (render,
+# render-report, wiring, site-intake-expect). SELFTEST_ONLY holds the names
+# given to --only; empty runs every suite, exactly as without the flag.
+SELFTEST_ONLY=()
+SELFTEST_USAGE='usage: bash tools/selftest.sh [--only SUITE[,SUITE...]]'
+
+# selftest_parse_args <args...>: --only SUITE[,SUITE...], at most once, into
+# SELFTEST_ONLY. A name is ^[a-z0-9][a-z0-9-]*$, matched against the
+# characters written out, not a range, so no locale lets a look-alike or a
+# zero-width character through; the whole list is matched before it is
+# split, so a newline cannot end the split early. On a missing value, an
+# empty list or name, a duplicate, a bad name, any other argument or a
+# second --only it prints the problem and the usage line and returns 2.
+selftest_parse_args() {
+  local seen="" problem="" item known
+  local -a items
+  SELFTEST_ONLY=()
+  while [[ $# -gt 0 && -z "$problem" ]]; do
+    if [[ "$1" != --only ]]; then
+      problem="unknown argument '$1'"
+    elif [[ -n "$seen" ]]; then
+      problem="--only given twice"
+    elif [[ $# -lt 2 ]]; then
+      problem="--only needs a value"
+    elif [[ -z "$2" || "$2" == ,* || "$2" == *, || "$2" == *,,* ]]; then
+      problem="--only '$2' holds an empty name"
+    elif [[ "$2" == *[!abcdefghijklmnopqrstuvwxyz0123456789,-]* ]]; then
+      problem="--only '$2' holds a character outside a-z, 0-9 and -"
+    else
+      seen=1
+      IFS=, read -ra items <<<"$2"
+      shift 2
+      for item in "${items[@]}"; do
+        if [[ "$item" != [abcdefghijklmnopqrstuvwxyz0123456789]* ]]; then
+          problem="--only: '$item' does not start with a-z or 0-9"
+        fi
+        for known in "${SELFTEST_ONLY[@]}"; do
+          [[ "$known" == "$item" ]] && problem="--only names '$item' twice"
+        done
+        [[ -n "$problem" ]] && break
+        SELFTEST_ONLY+=("$item")
+      done
+    fi
+  done
+  if [[ -n "$problem" ]]; then
+    echo "selftest: $problem" >&2
+    echo "$SELFTEST_USAGE" >&2
+    return 2
+  fi
+}
+
+# selftest_wants <suite>...: true when no --only is given or it names one
+# of the suites.
+selftest_wants() {
+  local suite want
+  [[ ${#SELFTEST_ONLY[@]} -eq 0 ]] && return 0
+  for want in "$@"; do
+    for suite in "${SELFTEST_ONLY[@]}"; do
+      [[ "$suite" == "$want" ]] && return 0
+    done
+  done
+  return 1
+}
+
+# selftest_suite <suite> <other>...: the suite a block names in a line it
+# prints outside its runner's rows (the runner did not finish): <suite>
+# without --only or when it is selected, else the first selected <other>,
+# else <suite>. So a full run prints the line as before, and under --only
+# it belongs to a selected suite instead of failing the selection check.
+selftest_suite() {
+  local suite
+  for suite in "$@"; do
+    if selftest_wants "$suite"; then
+      printf '%s' "$suite"
+      return
+    fi
+  done
+  printf '%s' "$1"
+}
+
+# selftest_rows <runner output> [details]: print the ok and FAIL rows whose
+# suite is selected (every row without --only), with the "     | " detail
+# lines after a printed row when details is given, and add them to n_passed
+# and n_failed. Without --only it prints exactly what
+# sed -n '/^ok   \|^FAIL /p' (plus '/^     | /p' with details) prints. For
+# the runners whose rows belong to two suites: guard-public and guard-wf,
+# pin and pin-extra, render-intake and site-intake.
+selftest_rows() {
+  local rows
+  rows="$(LC_ALL=C awk -v only="${SELFTEST_ONLY[*]}" -v details="${2:-}" '
+    BEGIN { n = split(only, names, " "); for (i = 1; i <= n; i++) want[names[i]] = 1 }
+    /^(ok   |FAIL )/ {
+      suite = substr($0, 6)
+      sub(/[\/ :].*/, "", suite)
+      keep = (n == 0 || (suite in want))
+      if (keep) print
+      next
+    }
+    /^     \| / { if (details != "" && (n == 0 || keep)) print }
+  ' "$1")"
+  [[ -n "$rows" ]] && printf '%s\n' "$rows"
+  n_passed=$((n_passed + $(grep -c '^ok   ' <<<"$rows")))
+  n_failed=$((n_failed + $(grep -c '^FAIL ' <<<"$rows")))
+}
+
+# selftest_selection_check <log>: under --only, every ok and FAIL row of
+# <log> must belong to a selected suite, and every selected suite must have
+# a row. "FAIL:" and "NOT RUN" lines and detail lines are no rows. Prints
+# one FAIL selftest-only line per violation and returns 1 on any.
+selftest_selection_check() {
+  LC_ALL=C awk -v only="${SELFTEST_ONLY[*]}" '
+    BEGIN { n = split(only, names, " "); for (i = 1; i <= n; i++) want[names[i]] = 1 }
+    /^(ok   |FAIL )/ {
+      suite = substr($0, 6)
+      sub(/[\/ :].*/, "", suite)
+      if (suite in want) {
+        rows[suite]++
+      } else {
+        print "FAIL selftest-only: row outside --only: " $0
+        bad = 1
+      }
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        if (!(names[i] in rows)) {
+          print "FAIL selftest-only: --only " names[i] " ran no rows"
+          bad = 1
+        }
+      }
+      exit bad
+    }
+  ' "$1"
+}
+
+# selftest_only_rows (Replikanti/interviewscam#40, ADR-0008 part 4): the
+# suite selection. The usage rows run tools/selftest.sh with a bad --only,
+# which must exit 2 with the usage line before any tool is fetched; the
+# look-alike and zero-width names are written as octal UTF-8 bytes, so the
+# case does not depend on the locale. one-suite, two-suites and
+# unknown-suite run the real selection end to end on suites whose rows do
+# not need CI; the counts come from the fixture directories. The check-*,
+# rows-* and suite-* rows run selftest_selection_check, selftest_rows and
+# selftest_suite on synthetic runner output.
+selftest_only_rows() {
+  local so_out so_rc so_bad so_case so_want so_log so_got so_n
+  local so_usage='usage: bash tools/selftest.sh [--only SUITE[,SUITE...]]'
+  local so_sh="$SELFTEST_ROOT/tools/selftest.sh"
+  # so_usage_case <row> <args...>: exit 2, the usage line, no tool fetch.
+  so_usage_case() {
+    local row="$1"
+    shift
+    so_out="$(bash "$so_sh" "$@" 2>&1)"
+    so_rc=$?
+    if [[ $so_rc -eq 2 && $'\n'"$so_out"$'\n' == *$'\n'"$so_usage"$'\n'* \
+        && "$so_out" != *fetch-tools:* && "$so_out" != *" passed, "* ]]; then
+      return 0
+    fi
+    so_bad+=" [$*]: exit $so_rc, output '$so_out';"
+    return 1
+  }
+  for so_case in missing-value empty empty-item duplicate uppercase lookalike \
+      zero-width newline unknown-flag twice; do
+    so_bad=""
+    case "$so_case" in
+      missing-value) so_usage_case "$so_case" --only ;;
+      empty) so_usage_case "$so_case" --only "" ;;
+      empty-item)
+        so_usage_case "$so_case" --only tokens,,schema
+        so_usage_case "$so_case" --only ,tokens
+        so_usage_case "$so_case" --only tokens,
+        ;;
+      duplicate) so_usage_case "$so_case" --only tokens,tokens ;;
+      uppercase) so_usage_case "$so_case" --only Tokens ;;
+      # schema with its last a as U+0430 CYRILLIC SMALL LETTER A.
+      lookalike) so_usage_case "$so_case" --only "schem"$'\320\260' ;;
+      # tokens with U+200B ZERO WIDTH SPACE after tok.
+      zero-width) so_usage_case "$so_case" --only "tok"$'\342\200\213'"ens" ;;
+      # A newline would end the comma split early and drop schema.
+      newline) so_usage_case "$so_case" --only $'tokens\nschema' ;;
+      unknown-flag)
+        so_usage_case "$so_case" --bogus
+        so_usage_case "$so_case" --only=tokens
+        so_usage_case "$so_case" tokens
+        ;;
+      twice) so_usage_case "$so_case" --only tokens --only schema ;;
+    esac
+    if [[ -z "$so_bad" ]]; then
+      echo "ok   selftest-only/usage-$so_case (exit 2 with the usage line, no tool fetched)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL selftest-only/usage-$so_case:$so_bad"
+      n_failed=$((n_failed + 1))
+    fi
+  done
+
+  # one-suite and two-suites: exit 0, only rows of the selected suites,
+  # one per fixture directory, and the selection's summary line.
+  for so_case in tokens tokens,schema; do
+    so_out="$(bash "$so_sh" --only "$so_case" 2>&1)"
+    so_rc=$?
+    so_n=0
+    so_bad=""
+    for so_want in ${so_case//,/ }; do
+      so_n=$((so_n + $(find "$FIXTURES/$so_want" -mindepth 1 -maxdepth 1 -type d | wc -l)))
+    done
+    so_want="selftest (only $so_case): $so_n passed, 0 failed, html fixtures run: 0 of 0, reflow fixtures run: 0 of 0"
+    so_got="$(grep -E '^(ok   |FAIL )' <<<"$so_out" | grep -cvE "^ok   (${so_case//,/|})/")"
+    if [[ $so_rc -ne 0 ]]; then
+      so_bad="exit $so_rc"
+    elif [[ "$so_got" != 0 ]]; then
+      so_bad="$so_got rows that are not an ok row of $so_case"
+    elif [[ "$(grep -cE '^ok   ' <<<"$so_out")" != "$so_n" ]]; then
+      so_bad="$(grep -cE '^ok   ' <<<"$so_out") ok rows, want $so_n"
+    elif [[ "$(tail -n 1 <<<"$so_out")" != "$so_want" ]]; then
+      so_bad="last line '$(tail -n 1 <<<"$so_out")', want '$so_want'"
+    fi
+    so_case="${so_case//,/-and-}"
+    [[ $so_case == tokens ]] && so_case=one-suite || so_case=two-suites
+    if [[ -z "$so_bad" ]]; then
+      echo "ok   selftest-only/$so_case ($so_n rows, exit 0)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL selftest-only/$so_case: $so_bad; output:"
+      printf '%s\n' "$so_out" | sed 's/^/     | /'
+      n_failed=$((n_failed + 1))
+    fi
+  done
+
+  # unknown-suite: a name no row carries runs nothing and exits 2.
+  so_out="$(bash "$so_sh" --only no-such-suite 2>&1)"
+  so_rc=$?
+  if [[ $so_rc -eq 2 ]] \
+      && grep -qxF 'FAIL selftest-only: --only no-such-suite ran no rows' <<<"$so_out" \
+      && ! grep -qE '^(ok   |FAIL [^s])' <<<"$so_out"; then
+    echo "ok   selftest-only/unknown-suite (exit 2: --only no-such-suite ran no rows)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL selftest-only/unknown-suite: exit $so_rc; output:"
+    printf '%s\n' "$so_out" | sed 's/^/     | /'
+    n_failed=$((n_failed + 1))
+  fi
+
+  # so_with <suites> <command...>: run the command with SELFTEST_ONLY set
+  # to the comma-separated suites (none: empty) and its own counters.
+  so_with() {
+    local n_passed=0 n_failed=0
+    local -a SELFTEST_ONLY
+    IFS=, read -ra SELFTEST_ONLY <<<"$1"
+    shift
+    "$@"
+  }
+
+  # The check on synthetic logs: <row> <suites> <want rc> <want output>
+  # <log lines...>.
+  so_log="$(mktemp)"
+  so_check_case() {
+    local row="$1" suites="$2" want_rc="$3" want="$4" got rc
+    shift 4
+    printf '%s\n' "$@" >"$so_log"
+    got="$(so_with "$suites" selftest_selection_check "$so_log" 2>&1)"
+    rc=$?
+    if [[ $rc -eq $want_rc && "$got" == "$want" ]]; then
+      echo "ok   selftest-only/$row (exit $rc)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL selftest-only/$row: exit $rc, want $want_rc; got:"
+      printf '%s\n' "$got" | sed 's/^/     | /'
+      echo "     | want:"
+      printf '%s\n' "$want" | sed 's/^/     | /'
+      n_failed=$((n_failed + 1))
+    fi
+  }
+  so_check_case check-outside tokens 1 \
+    $'FAIL selftest-only: row outside --only: ok   render/pass-b\nFAIL selftest-only: row outside --only: FAIL render/fail-c: expected a failure' \
+    'ok   tokens/pass-a' 'ok   render/pass-b' 'FAIL render/fail-c: expected a failure'
+  so_check_case check-no-rows tokens,schema 1 \
+    'FAIL selftest-only: --only schema ran no rows' \
+    'ok   tokens/pass-a' 'FAIL tokens/fail-b: failed'
+  so_check_case check-global-lines tokens 0 '' \
+    'ok   tokens/pass-a' 'FAIL: only 1 of 2 html fixtures ran in CI' 'FAIL: no html fixtures found' \
+    'NOT RUN html/pass-x (CI only)' 'NOT RUN: HTML validation was NOT run locally.' \
+    '     | ok   render/pass-b' '     | FAIL render/fail-c: x' 'selftest: 1 passed'
+  so_check_case check-prefix-boundary render 1 \
+    $'FAIL selftest-only: row outside --only: ok   render-report/x (y)\nFAIL selftest-only: row outside --only: FAIL render-search-count: 1 of 4\nFAIL selftest-only: row outside --only: ok   renderx' \
+    'ok   render/pass-a' 'ok   render-report/x (y)' 'FAIL render-search-count: 1 of 4' \
+    'ok   renderx' 'FAIL render: the runner did not finish' 'ok   render (z)'
+  so_check_case check-prefix-boundary-longer render-report,site-intake-expect,site-built-pins-missing-stem 1 \
+    $'FAIL selftest-only: row outside --only: ok   render/pass-a\nFAIL selftest-only: row outside --only: ok   site-intake/x' \
+    'ok   render/pass-a' 'ok   render-report/x' 'ok   site-intake-expect (a wrong expect)' \
+    'FAIL site-built-pins-missing-stem: x' 'ok   site-intake/x'
+
+  # rows-*: selftest_rows prints and counts the rows of the selected suites
+  # (with their detail lines when asked), and every line as the sed it
+  # replaces when nothing is selected.
+  so_rows_counts() {
+    selftest_rows "$so_log" "$1"
+    echo "counts $n_passed $n_failed"
+  }
+  printf '%s\n' 'ok   guard-public/a' '     | public detail' 'FAIL guard-wf/b: x' \
+    '     | wf detail' 'other line' 'ok   guard-wf/table (1 rows)' 'FAIL guard-public/c: y' >"$so_log"
+  for so_case in all-details all-rows guard-wf; do
+    case "$so_case" in
+      all-details) so_got="$(so_with "" so_rows_counts details)" ;;
+      all-rows) so_got="$(so_with "" so_rows_counts "")" ;;
+      guard-wf) so_got="$(so_with guard-wf so_rows_counts details)" ;;
+    esac
+    case "$so_case" in
+      all-details) so_want="$(sed -n '/^ok   \|^FAIL /p; /^     | /p' "$so_log")"$'\ncounts 2 2' ;;
+      all-rows) so_want="$(sed -n '/^ok   \|^FAIL /p' "$so_log")"$'\ncounts 2 2' ;;
+      guard-wf) so_want=$'FAIL guard-wf/b: x\n     | wf detail\nok   guard-wf/table (1 rows)\ncounts 1 1' ;;
+    esac
+    if [[ "$so_got" == "$so_want" ]]; then
+      echo "ok   selftest-only/rows-$so_case"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL selftest-only/rows-$so_case: got:"
+      printf '%s\n' "$so_got" | sed 's/^/     | /'
+      n_failed=$((n_failed + 1))
+    fi
+  done
+  rm -f "$so_log"
+
+  # suite-fallback: selftest_suite names the suite of a line a block prints
+  # outside its runner's rows: the block's own name without --only or when
+  # selected, else the first selected of the others, else its own name.
+  so_bad=""
+  for so_case in ":guard-public guard-wf:guard-public" "guard-wf:guard-public guard-wf:guard-wf" \
+      "guard-public,guard-wf:guard-public guard-wf:guard-public" \
+      "pin-extra,pin:records-mode pin pin-extra:pin" "tokens:guard-public guard-wf:guard-public"; do
+    IFS=: read -r so_want so_n so_got <<<"$so_case"
+    # shellcheck disable=SC2086 # so_n is a list of suite names
+    so_out="$(so_with "$so_want" selftest_suite $so_n)"
+    [[ "$so_out" == "$so_got" ]] || so_bad+=" --only '$so_want' and $so_n: '$so_out', want '$so_got';"
+  done
+  if [[ -z "$so_bad" ]]; then
+    echo "ok   selftest-only/suite-fallback (5 selections)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL selftest-only/suite-fallback:$so_bad"
+    n_failed=$((n_failed + 1))
+  fi
+}
+
 selftest_main() {
+  # Usage errors stop before the work tree is read or a tool is fetched.
+  selftest_parse_args "$@" || return 2
   require_work_tree || return 1
   load_pins || return 1
   # Always re-verify: the fixtures must run against the pinned binaries, not
   # whatever is in .tools/ (cheap; the archives are cached).
   bash "$SELFTEST_ROOT/tools/fetch-tools.sh" || return 1
 
+  # The counters and $out are local here and read and written by
+  # selftest_blocks (bash scopes dynamically).
   local n_passed=0 n_failed=0 html_total=0 html_run=0 reflow_total=0 reflow_run=0
-  local dir check name kind out rc expect leak_fixtures feed_mode search_mode pins_mode inputs_root
+  local out log="" violations suites
   out="$(mktemp)"
   # shellcheck disable=SC2064 # expand now: the path is fixed
   trap "rm -f '$out'" RETURN
@@ -2841,10 +3194,46 @@ selftest_main() {
     return 1
   fi
 
+  if [[ ${#SELFTEST_ONLY[@]} -eq 0 ]]; then
+    selftest_blocks
+    echo "selftest: $n_passed passed, $n_failed failed, html fixtures run: $html_run of $html_total, reflow fixtures run: $reflow_run of $reflow_total"
+    [[ $n_failed -eq 0 ]]
+    return
+  fi
+
+  # --only (ADR-0008 part 4): the rows go to a log, which is printed and
+  # then checked, so a row of an unselected suite (a block without its
+  # guard) or a selected suite without rows fails the run with exit 2.
+  log="$(mktemp)"
+  # shellcheck disable=SC2064 # expand now: the paths are fixed
+  trap "rm -f '$out' '$log'" RETURN
+  selftest_blocks >"$log"
+  cat "$log"
+  violations="$(selftest_selection_check "$log")"
+  if [[ -n "$violations" ]]; then
+    printf '%s\n' "$violations"
+    n_failed=$((n_failed + $(grep -c '' <<<"$violations")))
+  fi
+  suites="$(IFS=,; echo "${SELFTEST_ONLY[*]}")"
+  echo "selftest (only $suites): $n_passed passed, $n_failed failed, html fixtures run: $html_run of $html_total, reflow fixtures run: $reflow_run of $reflow_total"
+  [[ -z "$violations" ]] || return 2
+  [[ $n_failed -eq 0 ]]
+}
+
+# selftest_blocks: every fixture case and every block of rows, each block
+# guarded by selftest_wants with the suite its rows print (a runner whose
+# rows belong to two suites prints them through selftest_rows). Called by
+# selftest_main, whose counters and $out it updates.
+selftest_blocks() {
+  local dir check name kind rc expect leak_fixtures feed_mode search_mode pins_mode inputs_root
   for dir in "$FIXTURES"/*/*/; do
     dir="${dir%/}"
-    check="$(basename "$(dirname "$dir")")"
-    name="$(basename "$dir")"
+    # Parameter expansion, not basename and dirname: two forks per case
+    # cost about 10 s over the cases even when --only skips them all.
+    check="${dir%/*}"
+    check="${check##*/}"
+    selftest_wants "$check" || continue
+    name="${dir##*/}"
     case "$name" in
       pass-*) kind=pass ;;
       fail-*) kind=fail ;;
@@ -3059,159 +3448,160 @@ selftest_main() {
     fi
   done
 
-  # Wiring: check_main must run the production render step, and that step
-  # must run the fixture-leak check (--fixtures tests/fixtures), which no
-  # fixture can prove. declare -f prints check_main without comments, so a
-  # commented-out or deleted step line is missing; a stub sitecheck in a
-  # subshell prints the arguments step_render passes, so dropping the flag
-  # turns the self-test red too.
-  local render_args
-  render_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render)"
-  if ! grep -qE '^ *run_step "render \(D6, D7, D10, structured data\)" step_render;?$' <<<"$(declare -f check_main)"; then
-    echo "FAIL wiring/render-step: check_main in tools/check.sh does not run" \
-      "the production render step (run_step \"render (...)\" step_render)"
-    n_failed=$((n_failed + 1))
-  elif awk -v want="$CHECK_ROOT/tests/fixtures" \
-      'prev == "--fixtures" && $0 == want { found = 1 } { prev = $0 } END { exit !found }' \
-      <<<"$render_args"; then
-    echo "ok   wiring/render-fixture-leak (check_main runs step_render, which passes --fixtures tests/fixtures)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL wiring/render-fixture-leak: step_render in tools/check.sh does not pass" \
-      "--fixtures \"\$CHECK_ROOT/tests/fixtures\" to sitecheck render (the fixture-leak check)"
-    n_failed=$((n_failed + 1))
-  fi
+  if selftest_wants wiring; then
+    # Wiring: check_main must run the production render step, and that step
+    # must run the fixture-leak check (--fixtures tests/fixtures), which no
+    # fixture can prove. declare -f prints check_main without comments, so a
+    # commented-out or deleted step line is missing; a stub sitecheck in a
+    # subshell prints the arguments step_render passes, so dropping the flag
+    # turns the self-test red too.
+    local render_args
+    render_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render)"
+    if ! grep -qE '^ *run_step "render \(D6, D7, D10, structured data\)" step_render;?$' <<<"$(declare -f check_main)"; then
+      echo "FAIL wiring/render-step: check_main in tools/check.sh does not run" \
+        "the production render step (run_step \"render (...)\" step_render)"
+      n_failed=$((n_failed + 1))
+    elif awk -v want="$CHECK_ROOT/tests/fixtures" \
+        'prev == "--fixtures" && $0 == want { found = 1 } { prev = $0 } END { exit !found }' \
+        <<<"$render_args"; then
+      echo "ok   wiring/render-fixture-leak (check_main runs step_render, which passes --fixtures tests/fixtures)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL wiring/render-fixture-leak: step_render in tools/check.sh does not pass" \
+        "--fixtures \"\$CHECK_ROOT/tests/fixtures\" to sitecheck render (the fixture-leak check)"
+      n_failed=$((n_failed + 1))
+    fi
 
-  # Wiring: both builds run the feed rules (render rules 11 to 13): neither
-  # step_render nor step_render_fixtures, run against a stub sitecheck,
-  # passes --no-feed, and check_main runs the fixture-build render step.
-  local feed_args
-  feed_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render; step_render_fixtures)"
-  if ! grep -qE '^ *run_step "render \(fixture build\)" step_render_fixtures;?$' <<<"$(declare -f check_main)"; then
-    echo "FAIL wiring/render-feed-rules: check_main in tools/check.sh does not run" \
-      "the fixture-build render step (run_step \"render (fixture build)\" step_render_fixtures)"
-    n_failed=$((n_failed + 1))
-  elif [[ "$(grep -c '^render$' <<<"$feed_args")" != 2 ]] || grep -qx -- '--no-feed' <<<"$feed_args"; then
-    echo "FAIL wiring/render-feed-rules: step_render or step_render_fixtures in" \
-      "tools/check.sh does not run sitecheck render with the feed rules (it passes --no-feed)"
-    n_failed=$((n_failed + 1))
-  else
-    echo "ok   wiring/render-feed-rules (both render steps run rules 11 to 13; no --no-feed)"
-    n_passed=$((n_passed + 1))
-  fi
+    # Wiring: both builds run the feed rules (render rules 11 to 13): neither
+    # step_render nor step_render_fixtures, run against a stub sitecheck,
+    # passes --no-feed, and check_main runs the fixture-build render step.
+    local feed_args
+    feed_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render; step_render_fixtures)"
+    if ! grep -qE '^ *run_step "render \(fixture build\)" step_render_fixtures;?$' <<<"$(declare -f check_main)"; then
+      echo "FAIL wiring/render-feed-rules: check_main in tools/check.sh does not run" \
+        "the fixture-build render step (run_step \"render (fixture build)\" step_render_fixtures)"
+      n_failed=$((n_failed + 1))
+    elif [[ "$(grep -c '^render$' <<<"$feed_args")" != 2 ]] || grep -qx -- '--no-feed' <<<"$feed_args"; then
+      echo "FAIL wiring/render-feed-rules: step_render or step_render_fixtures in" \
+        "tools/check.sh does not run sitecheck render with the feed rules (it passes --no-feed)"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   wiring/render-feed-rules (both render steps run rules 11 to 13; no --no-feed)"
+      n_passed=$((n_passed + 1))
+    fi
 
-  # Wiring: both site steps check the built pins (M4 PR 3 fix round 5):
-  # check_main runs step_site and step_site_fixtures, and neither, run
-  # against a stub sitecheck, passes --no-built-pins.
-  local pins_args
-  pins_args="$(sitecheck() { printf '%s\n' "$@"; }; step_site; step_site_fixtures)"
-  if ! grep -qE '^ *run_step "site \(third-party, CSP, defang\)" step_site;?$' <<<"$(declare -f check_main)" \
-      || ! grep -qE '^ *run_step "site \(fixture build\)" step_site_fixtures;?$' <<<"$(declare -f check_main)"; then
-    echo "FAIL wiring/site-built-pins: check_main in tools/check.sh does not run" \
-      "both site steps (step_site and step_site_fixtures)"
-    n_failed=$((n_failed + 1))
-  elif [[ "$(grep -c '^site$' <<<"$pins_args")" != 2 ]] \
-      || grep -qx -- '--no-built-pins' <<<"$pins_args"; then
-    echo "FAIL wiring/site-built-pins: step_site or step_site_fixtures in tools/check.sh" \
-      "does not run sitecheck site with the built pins (it passes --no-built-pins)"
-    n_failed=$((n_failed + 1))
-  else
-    echo "ok   wiring/site-built-pins (both site steps check the built pins; no --no-built-pins)"
-    n_passed=$((n_passed + 1))
-  fi
+    # Wiring: both site steps check the built pins (M4 PR 3 fix round 5):
+    # check_main runs step_site and step_site_fixtures, and neither, run
+    # against a stub sitecheck, passes --no-built-pins.
+    local pins_args
+    pins_args="$(sitecheck() { printf '%s\n' "$@"; }; step_site; step_site_fixtures)"
+    if ! grep -qE '^ *run_step "site \(third-party, CSP, defang\)" step_site;?$' <<<"$(declare -f check_main)" \
+        || ! grep -qE '^ *run_step "site \(fixture build\)" step_site_fixtures;?$' <<<"$(declare -f check_main)"; then
+      echo "FAIL wiring/site-built-pins: check_main in tools/check.sh does not run" \
+        "both site steps (step_site and step_site_fixtures)"
+      n_failed=$((n_failed + 1))
+    elif [[ "$(grep -c '^site$' <<<"$pins_args")" != 2 ]] \
+        || grep -qx -- '--no-built-pins' <<<"$pins_args"; then
+      echo "FAIL wiring/site-built-pins: step_site or step_site_fixtures in tools/check.sh" \
+        "does not run sitecheck site with the built pins (it passes --no-built-pins)"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   wiring/site-built-pins (both site steps check the built pins; no --no-built-pins)"
+      n_passed=$((n_passed + 1))
+    fi
 
-  # Wiring: both builds run the search rules (render rules 15 and 16, ADR-0005 part
-  # 6), the --no-feed precedent: neither step_render nor
-  # step_render_fixtures, run against a stub sitecheck, passes --no-search,
-  # and check_main runs both render steps (the two lines above prove the
-  # step lines; this one repeats the check so it stands alone).
-  local search_args
-  search_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render; step_render_fixtures)"
-  if ! grep -qE '^ *run_step "render \(D6, D7, D10, structured data\)" step_render;?$' <<<"$(declare -f check_main)" \
-      || ! grep -qE '^ *run_step "render \(fixture build\)" step_render_fixtures;?$' <<<"$(declare -f check_main)"; then
-    echo "FAIL wiring/render-search-rules: check_main in tools/check.sh does not run" \
-      "both render steps (step_render and step_render_fixtures)"
-    n_failed=$((n_failed + 1))
-  elif [[ "$(grep -c '^render$' <<<"$search_args")" != 2 ]] \
-      || grep -qx -- '--no-search' <<<"$search_args"; then
-    echo "FAIL wiring/render-search-rules: step_render or step_render_fixtures in" \
-      "tools/check.sh does not run sitecheck render with the search rules (it passes --no-search)"
-    n_failed=$((n_failed + 1))
-  else
-    echo "ok   wiring/render-search-rules (both render steps run rules 15 and 16; no --no-search)"
-    n_passed=$((n_passed + 1))
-  fi
+    # Wiring: both builds run the search rules (render rules 15 and 16, ADR-0005 part
+    # 6), the --no-feed precedent: neither step_render nor
+    # step_render_fixtures, run against a stub sitecheck, passes --no-search,
+    # and check_main runs both render steps (the two lines above prove the
+    # step lines; this one repeats the check so it stands alone).
+    local search_args
+    search_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render; step_render_fixtures)"
+    if ! grep -qE '^ *run_step "render \(D6, D7, D10, structured data\)" step_render;?$' <<<"$(declare -f check_main)" \
+        || ! grep -qE '^ *run_step "render \(fixture build\)" step_render_fixtures;?$' <<<"$(declare -f check_main)"; then
+      echo "FAIL wiring/render-search-rules: check_main in tools/check.sh does not run" \
+        "both render steps (step_render and step_render_fixtures)"
+      n_failed=$((n_failed + 1))
+    elif [[ "$(grep -c '^render$' <<<"$search_args")" != 2 ]] \
+        || grep -qx -- '--no-search' <<<"$search_args"; then
+      echo "FAIL wiring/render-search-rules: step_render or step_render_fixtures in" \
+        "tools/check.sh does not run sitecheck render with the search rules (it passes --no-search)"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   wiring/render-search-rules (both render steps run rules 15 and 16; no --no-search)"
+      n_passed=$((n_passed + 1))
+    fi
 
-  # Wiring: both builds run rule 17, the exact trees of the report pages
-  # (M4 PR 4): neither render step, run against a stub sitecheck, passes
-  # --no-report-pins (check_main runs both steps, proven above).
-  local report_pins_args
-  report_pins_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render; step_render_fixtures)"
-  if [[ "$(grep -c '^render$' <<<"$report_pins_args")" != 2 ]] \
-      || grep -qx -- '--no-report-pins' <<<"$report_pins_args"; then
-    echo "FAIL wiring/render-report-pins: step_render or step_render_fixtures in" \
-      "tools/check.sh does not run sitecheck render with rule 17 (it passes --no-report-pins)"
-    n_failed=$((n_failed + 1))
-  else
-    echo "ok   wiring/render-report-pins (both render steps run rule 17; no --no-report-pins)"
-    n_passed=$((n_passed + 1))
-  fi
+    # Wiring: both builds run rule 17, the exact trees of the report pages
+    # (M4 PR 4): neither render step, run against a stub sitecheck, passes
+    # --no-report-pins (check_main runs both steps, proven above).
+    local report_pins_args
+    report_pins_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render; step_render_fixtures)"
+    if [[ "$(grep -c '^render$' <<<"$report_pins_args")" != 2 ]] \
+        || grep -qx -- '--no-report-pins' <<<"$report_pins_args"; then
+      echo "FAIL wiring/render-report-pins: step_render or step_render_fixtures in" \
+        "tools/check.sh does not run sitecheck render with rule 17 (it passes --no-report-pins)"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   wiring/render-report-pins (both render steps run rule 17; no --no-report-pins)"
+      n_passed=$((n_passed + 1))
+    fi
 
-  # Wiring: both builds run rule 18, the intake forms and their result
-  # pages (M5b PR 3): neither render step, run against a stub sitecheck,
-  # passes --no-intake (check_main runs both steps, proven above).
-  local intake_args
-  intake_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render; step_render_fixtures)"
-  if [[ "$(grep -c '^render$' <<<"$intake_args")" != 2 ]] \
-      || grep -qx -- '--no-intake' <<<"$intake_args"; then
-    echo "FAIL wiring/render-intake-rules: step_render or step_render_fixtures in" \
-      "tools/check.sh does not run sitecheck render with rule 18 (it passes --no-intake)"
-    n_failed=$((n_failed + 1))
-  else
-    echo "ok   wiring/render-intake-rules (both render steps run rule 18; no --no-intake)"
-    n_passed=$((n_passed + 1))
-  fi
+    # Wiring: both builds run rule 18, the intake forms and their result
+    # pages (M5b PR 3): neither render step, run against a stub sitecheck,
+    # passes --no-intake (check_main runs both steps, proven above).
+    local intake_args
+    intake_args="$(sitecheck() { printf '%s\n' "$@"; }; step_render; step_render_fixtures)"
+    if [[ "$(grep -c '^render$' <<<"$intake_args")" != 2 ]] \
+        || grep -qx -- '--no-intake' <<<"$intake_args"; then
+      echo "FAIL wiring/render-intake-rules: step_render or step_render_fixtures in" \
+        "tools/check.sh does not run sitecheck render with rule 18 (it passes --no-intake)"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   wiring/render-intake-rules (both render steps run rule 18; no --no-intake)"
+      n_passed=$((n_passed + 1))
+    fi
 
-  # Wiring: both reflow steps run case (8), the search outcome proof (M4 PR
-  # 4, ADR-0005 part 6): check_main runs step_reflow, and step_reflow, run
-  # against a stub sitecheck and a stub Chrome on PATH, calls sitecheck
-  # reflow twice without --no-search.
-  local reflow_args reflow_bin
-  reflow_bin="$(mktemp -d)"
-  printf '#!/bin/sh\nexit 0\n' >"$reflow_bin/google-chrome"
-  chmod +x "$reflow_bin/google-chrome"
-  reflow_args="$(sitecheck() { printf '%s\n' "$@"; }; PATH="$reflow_bin:$PATH" step_reflow)"
-  rm -rf "$reflow_bin"
-  if ! grep -qE '^ *run_step "reflow' <<<"$(declare -f check_main)" \
-      || ! grep -q 'step_reflow' <<<"$(declare -f check_main)"; then
-    echo "FAIL wiring/reflow-search-case: check_main in tools/check.sh does not run step_reflow"
-    n_failed=$((n_failed + 1))
-  elif [[ "$(grep -c '^reflow$' <<<"$reflow_args")" != 2 ]] \
-      || grep -qx -- '--no-search' <<<"$reflow_args"; then
-    echo "FAIL wiring/reflow-search-case: step_reflow in tools/check.sh does not run" \
-      "sitecheck reflow on both trees with case (8) (it passes --no-search)"
-    n_failed=$((n_failed + 1))
-  else
-    echo "ok   wiring/reflow-search-case (both reflow steps run case (8); no --no-search)"
-    n_passed=$((n_passed + 1))
-  fi
+    # Wiring: both reflow steps run case (8), the search outcome proof (M4 PR
+    # 4, ADR-0005 part 6): check_main runs step_reflow, and step_reflow, run
+    # against a stub sitecheck and a stub Chrome on PATH, calls sitecheck
+    # reflow twice without --no-search.
+    local reflow_args reflow_bin
+    reflow_bin="$(mktemp -d)"
+    printf '#!/bin/sh\nexit 0\n' >"$reflow_bin/google-chrome"
+    chmod +x "$reflow_bin/google-chrome"
+    reflow_args="$(sitecheck() { printf '%s\n' "$@"; }; PATH="$reflow_bin:$PATH" step_reflow)"
+    rm -rf "$reflow_bin"
+    if ! grep -qE '^ *run_step "reflow' <<<"$(declare -f check_main)" \
+        || ! grep -q 'step_reflow' <<<"$(declare -f check_main)"; then
+      echo "FAIL wiring/reflow-search-case: check_main in tools/check.sh does not run step_reflow"
+      n_failed=$((n_failed + 1))
+    elif [[ "$(grep -c '^reflow$' <<<"$reflow_args")" != 2 ]] \
+        || grep -qx -- '--no-search' <<<"$reflow_args"; then
+      echo "FAIL wiring/reflow-search-case: step_reflow in tools/check.sh does not run" \
+        "sitecheck reflow on both trees with case (8) (it passes --no-search)"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   wiring/reflow-search-case (both reflow steps run case (8); no --no-search)"
+      n_passed=$((n_passed + 1))
+    fi
 
-  # Wiring: sitecheck takes no abbreviated option (allow_abbrev=False on
-  # every parser), so the grep for --no-feed above sees every form that
-  # switches the feed rules off: argparse would read --no or --no-f as
-  # --no-feed (M3 PR 8 review 2). Two halves. The parsers come from the
-  # code (review2 3): the tree build_parser returns is walked, every long
-  # option of every parser (--help included, so no parser is skipped) is
-  # given cut by one character as `--opt=x` with its required flags off,
-  # and each must stay an unrecognized argument; and every
-  # ArgumentParser(...) and add_parser(...) call in tools/sitecheck.py,
-  # inside build_parser or not, must pass allow_abbrev=False. Then the real
-  # command line: render --no on a feed case, reflow --launch (for
-  # --launch-timeout) and the top-level --he (for --help, exit 0) must each
-  # be a usage error, exit 2. -B as above.
-  local abbrev_case abbrev_rc abbrev_bad="" abbrev_tree=""
-  local abbrev_dir="$FIXTURES/render/fail-feed-missing"
-  python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
+    # Wiring: sitecheck takes no abbreviated option (allow_abbrev=False on
+    # every parser), so the grep for --no-feed above sees every form that
+    # switches the feed rules off: argparse would read --no or --no-f as
+    # --no-feed (M3 PR 8 review 2). Two halves. The parsers come from the
+    # code (review2 3): the tree build_parser returns is walked, every long
+    # option of every parser (--help included, so no parser is skipped) is
+    # given cut by one character as `--opt=x` with its required flags off,
+    # and each must stay an unrecognized argument; and every
+    # ArgumentParser(...) and add_parser(...) call in tools/sitecheck.py,
+    # inside build_parser or not, must pass allow_abbrev=False. Then the real
+    # command line: render --no on a feed case, reflow --launch (for
+    # --launch-timeout) and the top-level --he (for --help, exit 0) must each
+    # be a usage error, exit 2. -B as above.
+    local abbrev_case abbrev_rc abbrev_bad="" abbrev_tree=""
+    local abbrev_dir="$FIXTURES/render/fail-feed-missing"
+    python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
 import argparse
 import ast
 import contextlib
@@ -3270,116 +3660,120 @@ for line in bad:
     print(f"bad: {line}")
 print(f"tree: {parsers} parsers, {options} long options, {calls} parser calls")
 PY
-  abbrev_tree="$(sed -n 's/^tree: //p' "$out")"
-  if grep -q '^bad: ' "$out" || [[ -z "$abbrev_tree" ]]; then
-    abbrev_bad+=" $(grep '^bad: ' "$out" | sed 's/^bad: //' | paste -sd ';' -)"
-    [[ -n "$abbrev_tree" ]] || abbrev_bad+=" (the tree walk did not finish: $(tail -n 1 "$out"))"
-  fi
-  for abbrev_case in render reflow top; do
-    case "$abbrev_case" in
-      render) sitecheck render --records "$abbrev_dir" --schemas "$SELFTEST_ROOT/schema" \
-        --no "$abbrev_dir/public" >"$out" 2>&1 ;;
-      reflow) sitecheck reflow --chrome /nonexistent --launch 1 "$abbrev_dir/public" \
-        >"$out" 2>&1 ;;
-      top) sitecheck --he >"$out" 2>&1 ;;
-    esac
-    abbrev_rc=$?
-    if [[ $abbrev_rc -ne 2 ]] || { [[ $abbrev_case != top ]] \
-        && ! grep -qF 'unrecognized arguments: --' "$out"; }; then
-      abbrev_bad+=" $abbrev_case (exit $abbrev_rc)"
+    abbrev_tree="$(sed -n 's/^tree: //p' "$out")"
+    if grep -q '^bad: ' "$out" || [[ -z "$abbrev_tree" ]]; then
+      abbrev_bad+=" $(grep '^bad: ' "$out" | sed 's/^bad: //' | paste -sd ';' -)"
+      [[ -n "$abbrev_tree" ]] || abbrev_bad+=" (the tree walk did not finish: $(tail -n 1 "$out"))"
     fi
-  done
-  if [[ -z "$abbrev_bad" ]]; then
-    echo "ok   wiring/sitecheck-no-abbreviations ($abbrev_tree, none abbreviable;" \
-      "render --no, reflow --launch and --he are usage errors)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL wiring/sitecheck-no-abbreviations: sitecheck accepted an abbreviated option:$abbrev_bad;" \
-      "every argparse parser in tools/sitecheck.py needs allow_abbrev=False"
-    n_failed=$((n_failed + 1))
-  fi
-
-  # Wiring: check_main runs the worker step (ADR-0006 part 2) on the repo
-  # root, which no fixture directory can prove, and worker_check fails on a
-  # failed, an erroring and a skipped case, an expected failure, an
-  # unexpected success and on a run of none: each branch
-  # runs on a temporary root holding one tests/worker/test_x.py.
-  # shellcheck disable=SC2016 # the patterns match a literal $CHECK_ROOT
-  if grep -qE '^ *run_step "worker \(intake Worker and deploy tool\)" step_worker;?$' <<<"$(declare -f check_main)" \
-      && grep -qE '^ *worker_check "\$CHECK_ROOT";?$' <<<"$(declare -f step_worker)"; then
-    echo "ok   wiring/worker-step (check_main runs step_worker on the repo root)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL wiring/worker-step: check_main in tools/check.sh does not run" \
-      "step_worker, or step_worker does not check \"\$CHECK_ROOT\""
-    n_failed=$((n_failed + 1))
-  fi
-  local wk_root wk_case wk_body wk_out wk_rc wk_line
-  for wk_case in pass fail error skip xfail xpass none; do
-    wk_root="$(mktemp -d)"
-    mkdir -p "$wk_root/tests/worker"
-    case "$wk_case" in
-      pass) wk_body='    def test_a(self): pass' ;;
-      fail) wk_body='    def test_a(self): self.fail("x")' ;;
-      error) wk_body='    def test_a(self): raise RuntimeError("x")' ;;
-      skip) wk_body=$'    def test_a(self): pass\n    def test_b(self): self.skipTest("x")' ;;
-      xfail) wk_body=$'    def test_a(self): pass\n    @unittest.expectedFailure\n    def test_b(self): self.fail("x")' ;;
-      xpass) wk_body=$'    def test_a(self): pass\n    @unittest.expectedFailure\n    def test_b(self): pass' ;;
-      none) wk_body='    pass' ;;
-    esac
-    printf 'import unittest\nclass T(unittest.TestCase):\n%s\n' "$wk_body" >"$wk_root/tests/worker/test_x.py"
-    wk_out="$(worker_check "$wk_root" 2>&1)"
-    wk_rc=$?
-    rm -rf "$wk_root"
-    if [[ "$wk_case" == pass && $wk_rc -eq 0 && "$wk_out" == *"worker checked: 1 cases"* ]] \
-        || [[ "$wk_case" != pass && $wk_rc -ne 0 && "$wk_out" != *"worker checked:"* ]]; then
-      echo "ok   worker-check/$wk_case (exit $wk_rc)"
+    for abbrev_case in render reflow top; do
+      case "$abbrev_case" in
+        render) sitecheck render --records "$abbrev_dir" --schemas "$SELFTEST_ROOT/schema" \
+          --no "$abbrev_dir/public" >"$out" 2>&1 ;;
+        reflow) sitecheck reflow --chrome /nonexistent --launch 1 "$abbrev_dir/public" \
+          >"$out" 2>&1 ;;
+        top) sitecheck --he >"$out" 2>&1 ;;
+      esac
+      abbrev_rc=$?
+      if [[ $abbrev_rc -ne 2 ]] || { [[ $abbrev_case != top ]] \
+          && ! grep -qF 'unrecognized arguments: --' "$out"; }; then
+        abbrev_bad+=" $abbrev_case (exit $abbrev_rc)"
+      fi
+    done
+    if [[ -z "$abbrev_bad" ]]; then
+      echo "ok   wiring/sitecheck-no-abbreviations ($abbrev_tree, none abbreviable;" \
+        "render --no, reflow --launch and --he are usage errors)"
       n_passed=$((n_passed + 1))
     else
-      echo "FAIL worker-check/$wk_case: exit $wk_rc; output:"
-      while IFS= read -r wk_line; do echo "     | $wk_line"; done <<<"$wk_out"
+      echo "FAIL wiring/sitecheck-no-abbreviations: sitecheck accepted an abbreviated option:$abbrev_bad;" \
+        "every argparse parser in tools/sitecheck.py needs allow_abbrev=False"
       n_failed=$((n_failed + 1))
     fi
-  done
 
-  # Wiring: check_main must run the literals step (ADR-0004 part 13), which
-  # the fixtures above prove only through literals_check.
-  # shellcheck disable=SC2016 # the patterns match a literal $CHECK_ROOT
-  if grep -qE '^ *run_step "literals \(fixed copy only from data/labels\.toml\)" step_literals;?$' <<<"$(declare -f check_main)" \
-      && grep -qE '^ *literals_check "\$CHECK_ROOT";?$' <<<"$(declare -f step_literals)"; then
-    echo "ok   wiring/literals-step (check_main runs step_literals on the repo root)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL wiring/literals-step: check_main in tools/check.sh does not run" \
-      "step_literals, or step_literals does not check \"\$CHECK_ROOT\""
-    n_failed=$((n_failed + 1))
+    # Wiring: check_main runs the worker step (ADR-0006 part 2) on the repo
+    # root, which no fixture directory can prove, and worker_check fails on a
+    # failed, an erroring and a skipped case, an expected failure, an
+    # unexpected success and on a run of none: each branch
+    # runs on a temporary root holding one tests/worker/test_x.py.
+    # shellcheck disable=SC2016 # the patterns match a literal $CHECK_ROOT
+    if grep -qE '^ *run_step "worker \(intake Worker and deploy tool\)" step_worker;?$' <<<"$(declare -f check_main)" \
+        && grep -qE '^ *worker_check "\$CHECK_ROOT";?$' <<<"$(declare -f step_worker)"; then
+      echo "ok   wiring/worker-step (check_main runs step_worker on the repo root)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL wiring/worker-step: check_main in tools/check.sh does not run" \
+        "step_worker, or step_worker does not check \"\$CHECK_ROOT\""
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+  if selftest_wants worker-check; then
+    local wk_root wk_case wk_body wk_out wk_rc wk_line
+    for wk_case in pass fail error skip xfail xpass none; do
+      wk_root="$(mktemp -d)"
+      mkdir -p "$wk_root/tests/worker"
+      case "$wk_case" in
+        pass) wk_body='    def test_a(self): pass' ;;
+        fail) wk_body='    def test_a(self): self.fail("x")' ;;
+        error) wk_body='    def test_a(self): raise RuntimeError("x")' ;;
+        skip) wk_body=$'    def test_a(self): pass\n    def test_b(self): self.skipTest("x")' ;;
+        xfail) wk_body=$'    def test_a(self): pass\n    @unittest.expectedFailure\n    def test_b(self): self.fail("x")' ;;
+        xpass) wk_body=$'    def test_a(self): pass\n    @unittest.expectedFailure\n    def test_b(self): pass' ;;
+        none) wk_body='    pass' ;;
+      esac
+      printf 'import unittest\nclass T(unittest.TestCase):\n%s\n' "$wk_body" >"$wk_root/tests/worker/test_x.py"
+      wk_out="$(worker_check "$wk_root" 2>&1)"
+      wk_rc=$?
+      rm -rf "$wk_root"
+      if [[ "$wk_case" == pass && $wk_rc -eq 0 && "$wk_out" == *"worker checked: 1 cases"* ]] \
+          || [[ "$wk_case" != pass && $wk_rc -ne 0 && "$wk_out" != *"worker checked:"* ]]; then
+        echo "ok   worker-check/$wk_case (exit $wk_rc)"
+        n_passed=$((n_passed + 1))
+      else
+        echo "FAIL worker-check/$wk_case: exit $wk_rc; output:"
+        while IFS= read -r wk_line; do echo "     | $wk_line"; done <<<"$wk_out"
+        n_failed=$((n_failed + 1))
+      fi
+    done
   fi
 
-  # Wiring: hugo_build passes --panicOnWarning, so a warnf message fails
-  # the build instead of rendering; literals exempts warnf arguments only
-  # because of it (and bans try, the one function that catches a warning).
-  if grep -qE '(^| )--panicOnWarning( |$)' <<<"$(declare -f hugo_build)"; then
-    echo "ok   wiring/hugo-build-panic-on-warning (hugo_build passes --panicOnWarning)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL wiring/hugo-build-panic-on-warning: hugo_build in tools/check.sh does not" \
-      "pass --panicOnWarning, so a warnf message could render (literals exempts it)"
-    n_failed=$((n_failed + 1))
-  fi
+  if selftest_wants wiring; then
+    # Wiring: check_main must run the literals step (ADR-0004 part 13), which
+    # the fixtures above prove only through literals_check.
+    # shellcheck disable=SC2016 # the patterns match a literal $CHECK_ROOT
+    if grep -qE '^ *run_step "literals \(fixed copy only from data/labels\.toml\)" step_literals;?$' <<<"$(declare -f check_main)" \
+        && grep -qE '^ *literals_check "\$CHECK_ROOT";?$' <<<"$(declare -f step_literals)"; then
+      echo "ok   wiring/literals-step (check_main runs step_literals on the repo root)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL wiring/literals-step: check_main in tools/check.sh does not run" \
+        "step_literals, or step_literals does not check \"\$CHECK_ROOT\""
+      n_failed=$((n_failed + 1))
+    fi
 
-  # Wiring (review3 A2): the build's whole command line and environment.
-  # hugo_build is compared with this pinned copy as bash itself prints both
-  # (declare -f, so the bash version does not matter and a later
-  # redefinition counts), so a flag such as --config or an assignment added
-  # to it fails here; check_main builds only through step_build, and the
-  # fixture build only through hugo_build. Then the refusal runs: a HUGO*
-  # name outside the four tool variables, a valid one and one bash cannot
-  # declare, stops hugo_build before Hugo starts, and the four pass.
-  # The two names are built at run time: the guard scans this file's text
-  # for HUGO* names.
-  local hugo_build_want hugo_build_pinned build_out_valid build_out_dot build_out_ok
-  local hx=HUGO
-  hugo_build_want="$(cat <<'PINNED'
+    # Wiring: hugo_build passes --panicOnWarning, so a warnf message fails
+    # the build instead of rendering; literals exempts warnf arguments only
+    # because of it (and bans try, the one function that catches a warning).
+    if grep -qE '(^| )--panicOnWarning( |$)' <<<"$(declare -f hugo_build)"; then
+      echo "ok   wiring/hugo-build-panic-on-warning (hugo_build passes --panicOnWarning)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL wiring/hugo-build-panic-on-warning: hugo_build in tools/check.sh does not" \
+        "pass --panicOnWarning, so a warnf message could render (literals exempts it)"
+      n_failed=$((n_failed + 1))
+    fi
+
+    # Wiring (review3 A2): the build's whole command line and environment.
+    # hugo_build is compared with this pinned copy as bash itself prints both
+    # (declare -f, so the bash version does not matter and a later
+    # redefinition counts), so a flag such as --config or an assignment added
+    # to it fails here; check_main builds only through step_build, and the
+    # fixture build only through hugo_build. Then the refusal runs: a HUGO*
+    # name outside the four tool variables, a valid one and one bash cannot
+    # declare, stops hugo_build before Hugo starts, and the four pass.
+    # The two names are built at run time: the guard scans this file's text
+    # for HUGO* names.
+    local hugo_build_want hugo_build_pinned build_out_valid build_out_dot build_out_ok
+    local hx=HUGO
+    hugo_build_want="$(cat <<'PINNED'
 hugo_build() {
   local entry name
   while IFS= read -r -d '' entry; do
@@ -3401,406 +3795,453 @@ hugo_build() {
 }
 step_build() { hugo_build "$CHECK_ROOT" "$CHECK_ROOT/public"; }
 PINNED
-)"
-  hugo_build_pinned="$(eval "$hugo_build_want"; declare -f hugo_build step_build)"
-  build_out_valid="$(export "${hx}xTITLE=x"; HUGO_BIN=/nonexistent hugo_build /nonexistent /nonexistent 2>&1)"
-  # shellcheck disable=SC2016 # $1 expands in the child bash
-  build_out_dot="$(env "${hx}.TITLE=x" HUGO_BIN=/nonexistent bash -c \
-    'source "$1"; hugo_build /nonexistent /nonexistent' _ "$SELFTEST_ROOT/tools/check.sh" 2>&1)"
-  # shellcheck disable=SC2016 # $1 expands in the child bash
-  build_out_ok="$(env HUGO_VERSION=x HUGO_URL=x HUGO_SHA256=x HUGO_BIN=/nonexistent \
-    bash -c 'source "$1"; hugo_build /nonexistent /nonexistent' _ "$SELFTEST_ROOT/tools/check.sh" 2>&1)"
-  # shellcheck disable=SC2016 # the patterns match literal variable names
-  if [[ "$(declare -f hugo_build step_build)" != "$hugo_build_pinned" ]]; then
-    echo "FAIL wiring/hugo-build-pinned: hugo_build or step_build in tools/check.sh differs from the copy pinned in tools/selftest.sh"
-    n_failed=$((n_failed + 1))
-  elif ! grep -qE '^ *run_step build step_build;?$' <<<"$(declare -f check_main)" \
-      || ! grep -qE '^ *hugo_build "\$FIXTURE_SITE" "\$FIXTURE_PUBLIC"( \|\| return 1)?;?$' <<<"$(declare -f step_fixture_build)"; then
-    echo "FAIL wiring/hugo-build-pinned: check_main does not build through step_build, or step_fixture_build not through hugo_build"
-    n_failed=$((n_failed + 1))
-  else
-    echo "ok   wiring/hugo-build-pinned (hugo_build and step_build equal the pinned copy; both trees build through them)"
-    n_passed=$((n_passed + 1))
-  fi
-  if [[ "$build_out_valid" == "hugo_build: the environment holds ${hx}xTITLE,"* \
-      && "$build_out_dot" == "hugo_build: the environment holds ${hx}.TITLE,"* \
-      && "$build_out_ok" == "hugo not found at /nonexistent;"* ]]; then
-    echo "ok   wiring/hugo-build-env (${hx}xTITLE and ${hx}.TITLE stop hugo_build; HUGO_BIN, HUGO_VERSION, HUGO_URL and HUGO_SHA256 pass)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL wiring/hugo-build-env: got '$build_out_valid', '$build_out_dot' and '$build_out_ok'"
-    n_failed=$((n_failed + 1))
-  fi
-
-  # Wiring: outside a git work tree check.sh and selftest.sh stop at once
-  # with one message (the guard reads git; QA note of review round 2).
-  local tree_root tree_out
-  tree_root="$(mktemp -d)"
-  if tree_out="$(CHECK_ROOT="$tree_root" require_work_tree 2>&1)"; then
-    echo "FAIL wiring/work-tree-required: require_work_tree passed outside a git work tree"
-    n_failed=$((n_failed + 1))
-  elif [[ "$tree_out" == "FAIL: check.sh needs a git work tree (guard reads git)"* ]] \
-      && grep -qE '^ *require_work_tree \|\| return 1;?$' <<<"$(declare -f check_main)" \
-      && grep -qE '^ *require_work_tree \|\| return 1;?$' <<<"$(declare -f selftest_main)"; then
-    echo "ok   wiring/work-tree-required (check_main and selftest_main stop outside a git work tree with one message)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL wiring/work-tree-required: require_work_tree printed '$tree_out', or check_main or selftest_main does not call it first"
-    n_failed=$((n_failed + 1))
-  fi
-  rmdir "$tree_root"
-
-  # literals-members: one fail case per member of every flagging set of
-  # sitecheck literals (attributes, CSS properties, banned names, prefixes
-  # and methods, the value-position functions) and per rule branch without
-  # a case directory, from tests/fixtures/literals/members.tsv, each in its
-  # own root through the real cmd_literals, with exactly the findings the
-  # row names. literals-members/coverage fails when a flagging set member
-  # has no row or a row names a member its set no longer has, so dropping a
-  # member turns the self-test red (M3 PR 7 QA). The flagging sets are taken
-  # from the code (every LITERALS_*/CSS_* collection not in
-  # LITERALS_PASSING_SETS) and their number is pinned; the raw-text end-tag
-  # rule's ten names (RAWTEXT_END_TAG, no such prefix) are read from its
-  # pattern and need rows too (review8 A3); an empty table or
-  # a set left with no rows fails (review2 5); the two coverage-fail lines
-  # prove that on a table without rows and on the real table without one
-  # set's rows.
-  members_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/literals/members.tsv" \
-    >"$out" 2>&1
-  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
-  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
-  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if ! grep -q '^ok   literals-members/coverage' "$out"; then
-    grep -q '^FAIL literals-members/coverage' "$out" || {
-      echo "FAIL literals-members: the runner did not finish; output:"
-      sed 's/^/     | /' "$out"
+  )"
+    hugo_build_pinned="$(eval "$hugo_build_want"; declare -f hugo_build step_build)"
+    build_out_valid="$(export "${hx}xTITLE=x"; HUGO_BIN=/nonexistent hugo_build /nonexistent /nonexistent 2>&1)"
+    # shellcheck disable=SC2016 # $1 expands in the child bash
+    build_out_dot="$(env "${hx}.TITLE=x" HUGO_BIN=/nonexistent bash -c \
+      'source "$1"; hugo_build /nonexistent /nonexistent' _ "$SELFTEST_ROOT/tools/check.sh" 2>&1)"
+    # shellcheck disable=SC2016 # $1 expands in the child bash
+    build_out_ok="$(env HUGO_VERSION=x HUGO_URL=x HUGO_SHA256=x HUGO_BIN=/nonexistent \
+      bash -c 'source "$1"; hugo_build /nonexistent /nonexistent' _ "$SELFTEST_ROOT/tools/check.sh" 2>&1)"
+    # shellcheck disable=SC2016 # the patterns match literal variable names
+    if [[ "$(declare -f hugo_build step_build)" != "$hugo_build_pinned" ]]; then
+      echo "FAIL wiring/hugo-build-pinned: hugo_build or step_build in tools/check.sh differs from the copy pinned in tools/selftest.sh"
       n_failed=$((n_failed + 1))
-    }
-  fi
-  local members_table case_name
-  members_table="$(mktemp)"
-  for case_name in empty-table set-without-rows; do
-    if [[ $case_name == empty-table ]]; then
-      grep '^#' "$FIXTURES/literals/members.tsv" >"$members_table"
+    elif ! grep -qE '^ *run_step build step_build;?$' <<<"$(declare -f check_main)" \
+        || ! grep -qE '^ *hugo_build "\$FIXTURE_SITE" "\$FIXTURE_PUBLIC"( \|\| return 1)?;?$' <<<"$(declare -f step_fixture_build)"; then
+      echo "FAIL wiring/hugo-build-pinned: check_main does not build through step_build, or step_fixture_build not through hugo_build"
+      n_failed=$((n_failed + 1))
     else
-      grep -v $'^LITERALS_TEXT_SHAPERS\t' "$FIXTURES/literals/members.tsv" >"$members_table"
+      echo "ok   wiring/hugo-build-pinned (hugo_build and step_build equal the pinned copy; both trees build through them)"
+      n_passed=$((n_passed + 1))
     fi
-    LITERALS_MEMBERS_COVERAGE_ONLY=1 members_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
-      "$members_table" >"$out" 2>&1
-    if grep -q '^FAIL literals-members/coverage' "$out" \
-        && ! grep -q '^ok   literals-members/coverage' "$out"; then
-      echo "ok   literals-members/coverage-fails-on-$case_name (failed as expected: $(grep -m1 -o 'FAIL literals-members/coverage: .\{0,80\}' "$out"))"
+    if [[ "$build_out_valid" == "hugo_build: the environment holds ${hx}xTITLE,"* \
+        && "$build_out_dot" == "hugo_build: the environment holds ${hx}.TITLE,"* \
+        && "$build_out_ok" == "hugo not found at /nonexistent;"* ]]; then
+      echo "ok   wiring/hugo-build-env (${hx}xTITLE and ${hx}.TITLE stop hugo_build; HUGO_BIN, HUGO_VERSION, HUGO_URL and HUGO_SHA256 pass)"
       n_passed=$((n_passed + 1))
     else
-      echo "FAIL literals-members/coverage-fails-on-$case_name: the coverage passed on a table it must reject; output:"
-      sed 's/^/     | /' "$out"
+      echo "FAIL wiring/hugo-build-env: got '$build_out_valid', '$build_out_dot' and '$build_out_ok'"
       n_failed=$((n_failed + 1))
     fi
-  done
-  rm -f "$members_table"
 
-  # literals-allowlists (review3 A3): the contents of every allowlist are
-  # pinned in tests/fixtures/literals/allowlists.tsv; the two fail lines
-  # prove the comparison rejects a table with one entry more and one less.
-  allowlists_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/literals/allowlists.tsv" \
-    >"$out" 2>&1
-  if grep -q '^ok   literals-allowlists' "$out"; then
-    sed -n '/^ok   /p' "$out"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL literals-allowlists: the allowlists differ from tests/fixtures/literals/allowlists.tsv; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  fi
-  local allow_table
-  allow_table="$(mktemp)"
-  for case_name in widening narrowing; do
-    if [[ $case_name == widening ]]; then
-      grep -v $'^LITERALS_MEMBERS\tTitle$' "$FIXTURES/literals/allowlists.tsv" >"$allow_table"
-    else
-      { cat "$FIXTURES/literals/allowlists.tsv"; printf 'LITERALS_MEMBERS\tSummary\n'; } >"$allow_table"
-    fi
-    allowlists_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$allow_table" >"$out" 2>&1
-    if grep -q '^FAIL literals-allowlists: ' "$out"; then
-      echo "ok   literals-allowlists/fails-on-$case_name (failed as expected: $(grep -m1 -o 'the code differs .\{0,80\}' "$out"))"
+    # Wiring: outside a git work tree check.sh and selftest.sh stop at once
+    # with one message (the guard reads git; QA note of review round 2).
+    local tree_root tree_out
+    tree_root="$(mktemp -d)"
+    if tree_out="$(CHECK_ROOT="$tree_root" require_work_tree 2>&1)"; then
+      echo "FAIL wiring/work-tree-required: require_work_tree passed outside a git work tree"
+      n_failed=$((n_failed + 1))
+    elif [[ "$tree_out" == "FAIL: check.sh needs a git work tree (guard reads git)"* ]] \
+        && grep -qE '^ *require_work_tree \|\| return 1;?$' <<<"$(declare -f check_main)" \
+        && grep -qE '^ *require_work_tree \|\| return 1;?$' <<<"$(declare -f selftest_main)"; then
+      echo "ok   wiring/work-tree-required (check_main and selftest_main stop outside a git work tree with one message)"
       n_passed=$((n_passed + 1))
     else
-      echo "FAIL literals-allowlists/fails-on-$case_name: the comparison passed on a table it must reject; output:"
-      sed 's/^/     | /' "$out"
+      echo "FAIL wiring/work-tree-required: require_work_tree printed '$tree_out', or check_main or selftest_main does not call it first"
       n_failed=$((n_failed + 1))
     fi
-  done
-  rm -f "$allow_table"
+    rmdir "$tree_root"
 
-  # literals-deterministic (M3 PR 9 fix round 2, #31 delta review 2): the
-  # print sinks once read a dict with a repeated or computed key in hash
-  # order, so a run pruned a branch another run kept. The two dict cases
-  # run under 8 fixed hash seeds (no -I here: it would ignore
-  # PYTHONHASHSEED; env -i, -s and -P keep the rest of the environment, the
-  # user site and the script directory out) and must give the same exit
-  # code 1 and the same output every time. On 8cb0d33 3 of the 8 seeds gave
-  # 1 finding and the other 5 gave 0, on both cases.
-  local det_case det_seed det_first det_got det_ok
-  for det_case in fail-dict-repeated-key fail-dict-computed-keys; do
-    det_first="" det_ok=1
-    for det_seed in 0 1 2 3 4 5 6 7; do
-      det_got="$(env -i PATH="$PATH" PYTHONHASHSEED="$det_seed" python3 -B -s -P \
-        "$SELFTEST_ROOT/tools/sitecheck.py" literals --root "$FIXTURES/literals/$det_case" 2>&1;
-        echo "exit $?")"
-      [[ $det_got == *$'\nexit 1' ]] || det_ok=0
-      if [[ $det_seed == 0 ]]; then
-        det_first="$det_got"
-      elif [[ $det_got != "$det_first" ]]; then
-        det_ok=0
+    # Wiring (Replikanti/interviewscam#40): check.sh runs the self-test
+    # without arguments, so CI never runs a --only selection and every
+    # suite stays in the check job. declare -f prints the body without
+    # comments; it must be exactly the one command.
+    # shellcheck disable=SC2016 # the pattern matches a literal $CHECK_ROOT
+    if [[ "$(declare -f step_selftest | sed '1,2d;$d' | sed 's/^ *//')" \
+        == 'bash "$CHECK_ROOT/tools/selftest.sh"' ]]; then
+      echo "ok   wiring/selftest-no-args (step_selftest runs tools/selftest.sh without arguments)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL wiring/selftest-no-args: step_selftest in tools/check.sh is not exactly" \
+        "bash \"\$CHECK_ROOT/tools/selftest.sh\"; output of declare -f:"
+      declare -f step_selftest | sed 's/^/     | /'
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+
+  if selftest_wants literals-members; then
+    # literals-members: one fail case per member of every flagging set of
+    # sitecheck literals (attributes, CSS properties, banned names, prefixes
+    # and methods, the value-position functions) and per rule branch without
+    # a case directory, from tests/fixtures/literals/members.tsv, each in its
+    # own root through the real cmd_literals, with exactly the findings the
+    # row names. literals-members/coverage fails when a flagging set member
+    # has no row or a row names a member its set no longer has, so dropping a
+    # member turns the self-test red (M3 PR 7 QA). The flagging sets are taken
+    # from the code (every LITERALS_*/CSS_* collection not in
+    # LITERALS_PASSING_SETS) and their number is pinned; the raw-text end-tag
+    # rule's ten names (RAWTEXT_END_TAG, no such prefix) are read from its
+    # pattern and need rows too (review8 A3); an empty table or
+    # a set left with no rows fails (review2 5); the two coverage-fail lines
+    # prove that on a table without rows and on the real table without one
+    # set's rows.
+    members_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/literals/members.tsv" \
+      >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -q '^ok   literals-members/coverage' "$out"; then
+      grep -q '^FAIL literals-members/coverage' "$out" || {
+        echo "FAIL literals-members: the runner did not finish; output:"
+        sed 's/^/     | /' "$out"
+        n_failed=$((n_failed + 1))
+      }
+    fi
+    local members_table case_name
+    members_table="$(mktemp)"
+    for case_name in empty-table set-without-rows; do
+      if [[ $case_name == empty-table ]]; then
+        grep '^#' "$FIXTURES/literals/members.tsv" >"$members_table"
+      else
+        grep -v $'^LITERALS_TEXT_SHAPERS\t' "$FIXTURES/literals/members.tsv" >"$members_table"
+      fi
+      LITERALS_MEMBERS_COVERAGE_ONLY=1 members_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+        "$members_table" >"$out" 2>&1
+      if grep -q '^FAIL literals-members/coverage' "$out" \
+          && ! grep -q '^ok   literals-members/coverage' "$out"; then
+        echo "ok   literals-members/coverage-fails-on-$case_name (failed as expected: $(grep -m1 -o 'FAIL literals-members/coverage: .\{0,80\}' "$out"))"
+        n_passed=$((n_passed + 1))
+      else
+        echo "FAIL literals-members/coverage-fails-on-$case_name: the coverage passed on a table it must reject; output:"
+        sed 's/^/     | /' "$out"
+        n_failed=$((n_failed + 1))
       fi
     done
-    if [[ $det_ok == 1 ]]; then
-      echo "ok   literals-deterministic/$det_case (exit 1 and the same output under 8 hash seeds)"
+    rm -f "$members_table"
+  fi
+
+  if selftest_wants literals-allowlists; then
+    # literals-allowlists (review3 A3): the contents of every allowlist are
+    # pinned in tests/fixtures/literals/allowlists.tsv; the two fail lines
+    # prove the comparison rejects a table with one entry more and one less.
+    allowlists_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/literals/allowlists.tsv" \
+      >"$out" 2>&1
+    if grep -q '^ok   literals-allowlists' "$out"; then
+      sed -n '/^ok   /p' "$out"
       n_passed=$((n_passed + 1))
     else
-      echo "FAIL literals-deterministic/$det_case: the output or exit code changed with the hash seed; last run:"
-      printf '%s\n' "$det_got" | sed 's/^/     | /'
-      n_failed=$((n_failed + 1))
-    fi
-  done
-
-  # feed-fields (M3 PR 8 review 4, #30 Known limit 3): render rule 12 field
-  # by field from tests/fixtures/render/feed-fields.tsv on the feed of
-  # render/pass-feed, its coverage of every compared field, and the
-  # field-set branch against a test-only schema (feed_fields_runner above).
-  # coverage-fails-on-field-without-row proves the coverage on the table
-  # without the reports label row.
-  feed_fields_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render/feed-fields.tsv" \
-    "$FIXTURES/render/pass-feed" "$SELFTEST_ROOT/schema" >"$out" 2>&1
-  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
-  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
-  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if ! grep -qE '^(ok   |FAIL )feed-fields/field-set-test-schema' "$out"; then
-    echo "FAIL feed-fields: the runner did not finish; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  fi
-  local fields_table
-  fields_table="$(mktemp)"
-  grep -v $'^reports\texample-front-company\tlabel\t' "$FIXTURES/render/feed-fields.tsv" \
-    >"$fields_table"
-  FEED_FIELDS_COVERAGE_ONLY=1 feed_fields_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
-    "$fields_table" "$FIXTURES/render/pass-feed" "$SELFTEST_ROOT/schema" >"$out" 2>&1
-  if grep -q '^FAIL feed-fields/coverage: reports\[\]\.label has no row' "$out" \
-      && ! grep -q '^ok   feed-fields/coverage' "$out"; then
-    echo "ok   feed-fields/coverage-fails-on-field-without-row (failed as expected: reports[].label has no row)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL feed-fields/coverage-fails-on-field-without-row: the coverage passed on a table without the label row; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  fi
-  rm -f "$fields_table"
-
-  # page-suffixes (M4 PR 3 fix round 10): site rule (n) and literals L6 for
-  # every member of HTML_SUFFIXES (page_suffixes_runner above).
-  page_suffixes_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
-    "$FIXTURES/site/pass-two-scripts" "$SELFTEST_ROOT/schema" >"$out" 2>&1
-  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
-  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
-  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if ! grep -q '^ok   page-suffixes/table' "$out"; then
-    echo "FAIL page-suffixes: the runner did not finish; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  fi
-
-  # site-head (M4 PR 3 fix rounds 7 and 8): site rule (m) row by row from
-  # tests/fixtures/site/head-cases.tsv (site_cases_runner above).
-  site_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
-    "$FIXTURES/site/head-cases.tsv" "$FIXTURES/site/pass-built-pins" \
-    "$SELFTEST_ROOT/schema" >"$out" 2>&1
-  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
-  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
-  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if ! grep -qE '^(ok   |FAIL )site-head/table' "$out"; then
-    echo "FAIL site-head: the runner did not finish; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  fi
-
-  # render-search (M4 PR 2 and PR 3, ADR-0005 part 6): render rules 15 and 16 branch by
-  # branch and member by member from tests/fixtures/render/search-cases.tsv
-  # on a copy of render/pass-search (search_cases_runner above).
-  search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
-    "$FIXTURES/render/search-cases.tsv" "$FIXTURES/render/pass-search" \
-    "$SELFTEST_ROOT/schema" >"$out" 2>&1
-  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
-  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
-  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if ! grep -qE '^(ok   |FAIL )render-search/table' "$out"; then
-    echo "FAIL render-search: the runner did not finish; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  fi
-
-  # render-report/<row> (M4 PR 4): render rule 17, the exact trees of a
-  # report page, branch by branch from tests/fixtures/render/report-cases.tsv
-  # on a copy of render/pass-report-pins, the real fixture build, with the
-  # feed rules and rule 17 on (search_cases_runner above).
-  search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
-    "$FIXTURES/render/report-cases.tsv" "$FIXTURES/render/pass-report-pins" \
-    "$SELFTEST_ROOT/schema" render-report >"$out" 2>&1
-  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
-  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
-  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if ! grep -qE '^(ok   |FAIL )render-report/table' "$out"; then
-    echo "FAIL render-report: the runner did not finish; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  fi
-
-  # render-intake/<row> and site-intake/<row> (M5b PR 3, ADR-0006 parts 3,
-  # 5, 6 and 9): render rule 18 from tests/fixtures/render/intake-cases.tsv
-  # (search_cases_runner, rule 18 on through the base's intake.txt) and site
-  # rule (a) with the CSP from tests/fixtures/site/intake-cases.tsv
-  # (site_intake_runner), both on copies of render/pass-intake, the real
-  # built intake pages; then the coverage of both tables against the member
-  # sets in the code, and its negative proof (one member row left out each).
-  search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
-    "$FIXTURES/render/intake-cases.tsv" "$FIXTURES/render/pass-intake" \
-    "$SELFTEST_ROOT/schema" render-intake >"$out" 2>&1
-  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
-  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
-  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if ! grep -qE '^(ok   |FAIL )render-intake/table' "$out"; then
-    echo "FAIL render-intake: the runner did not finish; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  fi
-  site_intake_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
-    "$FIXTURES/site/intake-cases.tsv" "$FIXTURES/render/pass-intake" \
-    "$SELFTEST_ROOT/schema" >"$out" 2>&1
-  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
-  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
-  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if ! grep -qE '^(ok   |FAIL )site-intake/table' "$out"; then
-    echo "FAIL site-intake: the runner did not finish; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  fi
-  # site-intake-expect (the negative proof of site_intake_runner's expect):
-  # a real row with an expect text the findings do not hold must fail, and
-  # a PASS row that fails must fail too.
-  local expect_table
-  expect_table=$(mktemp)
-  awk -F'\t' -v OFS='\t' '
-    $1 == "fail-input-formaction-intake" { $1 = $1 "-wrong-expect"; $5 = "(a) <form action> submits to"; print }
-    $1 == "fail-button-formaction-intake" { $1 = $1 "-as-pass"; $5 = "PASS"; print }
-  ' "$FIXTURES/site/intake-cases.tsv" >"$expect_table"
-  site_intake_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$expect_table" \
-    "$FIXTURES/render/pass-intake" "$SELFTEST_ROOT/schema" >"$out" 2>&1
-  rm -f "$expect_table"
-  if [[ "$(grep -cE '^FAIL site-intake/fail-(input|button)-formaction-intake-(wrong-expect|as-pass):' "$out")" == 2 ]]; then
-    echo "ok   site-intake-expect (a wrong expect and a failing PASS row each fail)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL site-intake-expect: a row with a wrong expect or a failing PASS row did not fail; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  fi
-  intake_coverage "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render/intake-cases.tsv" \
-    "$FIXTURES/site/intake-cases.tsv" >"$out" 2>&1
-  sed -n '/^ok   \|^FAIL /p' "$out"
-  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
-  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if [[ "$(grep -cE '^ok   (render|site)-intake/coverage' "$out")" != 2 ]]; then
-    echo "FAIL intake-coverage: the coverage lines did not both pass; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  fi
-  local drop kind
-  # One row of every case family the coverage reads, so dropping a family
-  # from intake_coverage turns its line red (fix round 1, QA): per field
-  # missing, duplicated, renamed, type, autocomplete, autocomplete=off,
-  # required, the three maxlength cases, label-for, no-label and the two
-  # rewordings; the MIME types; per result id missing, doubled, id elsewhere
-  # and the two rewordings; the sitemap; the pages and forms; the referrer
-  # tags; URL_ATTRS, FORM_ATTRS, INTAKE_FORM_PAGES and CSP_DIRECTIVES.
-  for drop in render:b-report-scam_alias-renamed render:b-correction-email-required \
-      render:b-report-headers-maxlength-above render:b-correction-request-hint-reworded \
-      render:b-correction-files-accept-without-webp render:d-error-doubled \
-      render:c-correction-referrerpolicy-input render:a-correction-page-missing \
-      render:b-correction-page_url-autocomplete-off render:d-not-sent-in-sitemap \
-      render:b-report-details-missing render:b-report-email-duplicated \
-      render:b-correction-page_url-type render:b-report-scam_alias-autocomplete \
-      render:b-report-contact_start-maxlength-below render:b-correction-request-maxlength-absent \
-      render:b-report-headers-label-for render:b-correction-email-no-label \
-      render:b-report-files-label-reworded render:d-paused-missing \
-      render:d-too-long-id-elsewhere render:d-bad-address-heading-reworded \
-      render:d-not-accepted-text-reworded render:a-report-form-missing \
-      site:fail-intake-host-in-data site:fail-input-formaction-intake \
-      site:fail-csp-form-action-missing-intake-correction site:csp-intake/worker-src; do
-    kind="${drop%%:*}"
-    intake_coverage "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render/intake-cases.tsv" \
-      "$FIXTURES/site/intake-cases.tsv" "${drop#*:}" >"$out" 2>&1
-    if grep -q "^FAIL $kind-intake/coverage: 1 member(s) without a row: ${drop#*:}\$" "$out"; then
-      echo "ok   $kind-intake/coverage-fails-on-missing-row (${drop#*:})"
-      n_passed=$((n_passed + 1))
-    else
-      echo "FAIL $kind-intake/coverage-fails-on-missing-row: without ${drop#*:} the coverage line did not fail; output:"
+      echo "FAIL literals-allowlists: the allowlists differ from tests/fixtures/literals/allowlists.tsv; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi
-  done
-
-  # render-search-count (M4 PR 3 fix round 12b, QA recheck of 54d4517): the
-  # COUNT=<n> expectation itself. Rows of the real table with a wrong count
-  # must each fail: one finding pinned as 0 and as 2, and two findings pinned
-  # as 1 and as 3, so a runner that ignores the count, reads it as at least
-  # or at most n, or as "some findings" fails this line.
-  count_table=$(mktemp)
-  awk -F'\t' -v OFS='\t' '
-    $1 == "unread-home-form-icon" { for (c = 0; c <= 2; c += 2) { r = $0; sub(/COUNT=1 /, "COUNT=" c " ", r); split(r, f, "\t"); f[1] = f[1] "-count-" c; print f[1], f[2], f[3], f[4], f[5] } }
-    $1 == "unread-unclosed-only-finding" { for (c = 1; c <= 3; c += 2) { r = $0; sub(/COUNT=2 /, "COUNT=" c " ", r); split(r, f, "\t"); f[1] = f[1] "-count-" c; print f[1], f[2], f[3], f[4], f[5] } }
-  ' "$FIXTURES/render/search-cases.tsv" >"$count_table"
-  search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$count_table" \
-    "$FIXTURES/render/pass-search" "$SELFTEST_ROOT/schema" >"$out" 2>&1
-  rm -f "$count_table"
-  count_rows=$(grep -cE '^(ok   |FAIL )render-search/.*-count-[0-9]' "$out")
-  count_fails=$(grep -cE '^FAIL render-search/.*-count-[0-9]' "$out")
-  if [[ "$count_rows" == 4 && "$count_fails" == 4 ]]; then
-    echo "ok   render-search-count (4 rows with a wrong COUNT= each fail)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL render-search-count: $count_fails of $count_rows rows with a wrong COUNT= failed (need 4 of 4); output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
+    local allow_table
+    allow_table="$(mktemp)"
+    for case_name in widening narrowing; do
+      if [[ $case_name == widening ]]; then
+        grep -v $'^LITERALS_MEMBERS\tTitle$' "$FIXTURES/literals/allowlists.tsv" >"$allow_table"
+      else
+        { cat "$FIXTURES/literals/allowlists.tsv"; printf 'LITERALS_MEMBERS\tSummary\n'; } >"$allow_table"
+      fi
+      allowlists_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$allow_table" >"$out" 2>&1
+      if grep -q '^FAIL literals-allowlists: ' "$out"; then
+        echo "ok   literals-allowlists/fails-on-$case_name (failed as expected: $(grep -m1 -o 'the code differs .\{0,80\}' "$out"))"
+        n_passed=$((n_passed + 1))
+      else
+        echo "FAIL literals-allowlists/fails-on-$case_name: the comparison passed on a table it must reject; output:"
+        sed 's/^/     | /' "$out"
+        n_failed=$((n_failed + 1))
+      fi
+    done
+    rm -f "$allow_table"
   fi
 
-  # fixture-script-copies (M4 PR 3 fix round 2, QA): every fixture copy of
-  # assets/js/search.js, found by name under tests/fixtures/reflow (the
-  # cases of case (6) load one), equals the real script byte for byte, so
-  # no case proves the on-load and reveal behaviour of a script the site
-  # no longer ships. No copy at all fails too, so the line cannot pass by
-  # finding nothing. The literals cases are no copies: each stands in for
-  # a repo root with a script crafted to fail one rule (fix round 4).
-  local script_copy n_copies=0 stale_copies=""
-  while IFS= read -r -d '' script_copy; do
-    n_copies=$((n_copies + 1))
-    cmp -s "$script_copy" "$SELFTEST_ROOT/assets/js/search.js" \
-      || stale_copies+=" ${script_copy#"$FIXTURES"/}"
-  done < <(find "$FIXTURES/reflow" -type f -name search.js -print0)
-  if (( n_copies == 0 )) || [[ -n "$stale_copies" ]]; then
-    echo "FAIL fixture-script-copies: $n_copies fixture copies of search.js; these differ" \
-      "from assets/js/search.js:${stale_copies:- (none found)}"
-    n_failed=$((n_failed + 1))
-  else
-    echo "ok   fixture-script-copies ($n_copies fixture copies equal assets/js/search.js)"
-    n_passed=$((n_passed + 1))
+  if selftest_wants literals-deterministic; then
+    # literals-deterministic (M3 PR 9 fix round 2, #31 delta review 2): the
+    # print sinks once read a dict with a repeated or computed key in hash
+    # order, so a run pruned a branch another run kept. The two dict cases
+    # run under 8 fixed hash seeds (no -I here: it would ignore
+    # PYTHONHASHSEED; env -i, -s and -P keep the rest of the environment, the
+    # user site and the script directory out) and must give the same exit
+    # code 1 and the same output every time. On 8cb0d33 3 of the 8 seeds gave
+    # 1 finding and the other 5 gave 0, on both cases.
+    local det_case det_seed det_first det_got det_ok
+    for det_case in fail-dict-repeated-key fail-dict-computed-keys; do
+      det_first="" det_ok=1
+      for det_seed in 0 1 2 3 4 5 6 7; do
+        det_got="$(env -i PATH="$PATH" PYTHONHASHSEED="$det_seed" python3 -B -s -P \
+          "$SELFTEST_ROOT/tools/sitecheck.py" literals --root "$FIXTURES/literals/$det_case" 2>&1;
+          echo "exit $?")"
+        [[ $det_got == *$'\nexit 1' ]] || det_ok=0
+        if [[ $det_seed == 0 ]]; then
+          det_first="$det_got"
+        elif [[ $det_got != "$det_first" ]]; then
+          det_ok=0
+        fi
+      done
+      if [[ $det_ok == 1 ]]; then
+        echo "ok   literals-deterministic/$det_case (exit 1 and the same output under 8 hash seeds)"
+        n_passed=$((n_passed + 1))
+      else
+        echo "FAIL literals-deterministic/$det_case: the output or exit code changed with the hash seed; last run:"
+        printf '%s\n' "$det_got" | sed 's/^/     | /'
+        n_failed=$((n_failed + 1))
+      fi
+    done
   fi
 
-  # site-built-pins-missing-stem (M4 PR 3 fix round 6, QA): a pinned stem
-  # without a built pin is a finding, never a pass on its own bytes. The
-  # line drops one built pin at a time through importlib and runs the real
-  # cmd_site on site/pass-built-pins, which must then fail on that stem.
-  if python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/site/pass-built-pins" \
-      "$SELFTEST_ROOT/schema" >"$out" 2>&1 <<'PY'
+  if selftest_wants feed-fields; then
+    # feed-fields (M3 PR 8 review 4, #30 Known limit 3): render rule 12 field
+    # by field from tests/fixtures/render/feed-fields.tsv on the feed of
+    # render/pass-feed, its coverage of every compared field, and the
+    # field-set branch against a test-only schema (feed_fields_runner above).
+    # coverage-fails-on-field-without-row proves the coverage on the table
+    # without the reports label row.
+    feed_fields_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render/feed-fields.tsv" \
+      "$FIXTURES/render/pass-feed" "$SELFTEST_ROOT/schema" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )feed-fields/field-set-test-schema' "$out"; then
+      echo "FAIL feed-fields: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+    local fields_table
+    fields_table="$(mktemp)"
+    grep -v $'^reports\texample-front-company\tlabel\t' "$FIXTURES/render/feed-fields.tsv" \
+      >"$fields_table"
+    FEED_FIELDS_COVERAGE_ONLY=1 feed_fields_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$fields_table" "$FIXTURES/render/pass-feed" "$SELFTEST_ROOT/schema" >"$out" 2>&1
+    if grep -q '^FAIL feed-fields/coverage: reports\[\]\.label has no row' "$out" \
+        && ! grep -q '^ok   feed-fields/coverage' "$out"; then
+      echo "ok   feed-fields/coverage-fails-on-field-without-row (failed as expected: reports[].label has no row)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL feed-fields/coverage-fails-on-field-without-row: the coverage passed on a table without the label row; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+    rm -f "$fields_table"
+  fi
+
+  if selftest_wants page-suffixes; then
+    # page-suffixes (M4 PR 3 fix round 10): site rule (n) and literals L6 for
+    # every member of HTML_SUFFIXES (page_suffixes_runner above).
+    page_suffixes_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/site/pass-two-scripts" "$SELFTEST_ROOT/schema" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -q '^ok   page-suffixes/table' "$out"; then
+      echo "FAIL page-suffixes: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+
+  if selftest_wants site-head; then
+    # site-head (M4 PR 3 fix rounds 7 and 8): site rule (m) row by row from
+    # tests/fixtures/site/head-cases.tsv (site_cases_runner above).
+    site_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/site/head-cases.tsv" "$FIXTURES/site/pass-built-pins" \
+      "$SELFTEST_ROOT/schema" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )site-head/table' "$out"; then
+      echo "FAIL site-head: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+
+  if selftest_wants render-search; then
+    # render-search (M4 PR 2 and PR 3, ADR-0005 part 6): render rules 15 and 16 branch by
+    # branch and member by member from tests/fixtures/render/search-cases.tsv
+    # on a copy of render/pass-search (search_cases_runner above).
+    search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/render/search-cases.tsv" "$FIXTURES/render/pass-search" \
+      "$SELFTEST_ROOT/schema" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )render-search/table' "$out"; then
+      echo "FAIL render-search: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+
+  if selftest_wants render-report; then
+    # render-report/<row> (M4 PR 4): render rule 17, the exact trees of a
+    # report page, branch by branch from tests/fixtures/render/report-cases.tsv
+    # on a copy of render/pass-report-pins, the real fixture build, with the
+    # feed rules and rule 17 on (search_cases_runner above).
+    search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/render/report-cases.tsv" "$FIXTURES/render/pass-report-pins" \
+      "$SELFTEST_ROOT/schema" render-report >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )render-report/table' "$out"; then
+      echo "FAIL render-report: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+
+  if selftest_wants render-intake; then
+    # render-intake/<row> and site-intake/<row> (M5b PR 3, ADR-0006 parts 3,
+    # 5, 6 and 9): render rule 18 from tests/fixtures/render/intake-cases.tsv
+    # (search_cases_runner, rule 18 on through the base's intake.txt) and site
+    # rule (a) with the CSP from tests/fixtures/site/intake-cases.tsv
+    # (site_intake_runner), both on copies of render/pass-intake, the real
+    # built intake pages; then the coverage of both tables against the member
+    # sets in the code, and its negative proof (one member row left out each).
+    search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/render/intake-cases.tsv" "$FIXTURES/render/pass-intake" \
+      "$SELFTEST_ROOT/schema" render-intake >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )render-intake/table' "$out"; then
+      echo "FAIL render-intake: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+  if selftest_wants site-intake; then
+    site_intake_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/site/intake-cases.tsv" "$FIXTURES/render/pass-intake" \
+      "$SELFTEST_ROOT/schema" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )site-intake/table' "$out"; then
+      echo "FAIL site-intake: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+  if selftest_wants site-intake-expect; then
+    # site-intake-expect (the negative proof of site_intake_runner's expect):
+    # a real row with an expect text the findings do not hold must fail, and
+    # a PASS row that fails must fail too.
+    local expect_table
+    expect_table=$(mktemp)
+    awk -F'\t' -v OFS='\t' '
+      $1 == "fail-input-formaction-intake" { $1 = $1 "-wrong-expect"; $5 = "(a) <form action> submits to"; print }
+      $1 == "fail-button-formaction-intake" { $1 = $1 "-as-pass"; $5 = "PASS"; print }
+    ' "$FIXTURES/site/intake-cases.tsv" >"$expect_table"
+    site_intake_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$expect_table" \
+      "$FIXTURES/render/pass-intake" "$SELFTEST_ROOT/schema" >"$out" 2>&1
+    rm -f "$expect_table"
+    if [[ "$(grep -cE '^FAIL site-intake/fail-(input|button)-formaction-intake-(wrong-expect|as-pass):' "$out")" == 2 ]]; then
+      echo "ok   site-intake-expect (a wrong expect and a failing PASS row each fail)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL site-intake-expect: a row with a wrong expect or a failing PASS row did not fail; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+  if selftest_wants render-intake site-intake; then
+    intake_coverage "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render/intake-cases.tsv" \
+      "$FIXTURES/site/intake-cases.tsv" >"$out" 2>&1
+    selftest_rows "$out"
+    if [[ "$(grep -cE '^ok   (render|site)-intake/coverage' "$out")" != 2 ]]; then
+      echo "FAIL $(selftest_suite intake-coverage render-intake site-intake): the coverage lines did not both pass; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+  if selftest_wants render-intake site-intake; then
+    local drop kind
+    # One row of every case family the coverage reads, so dropping a family
+    # from intake_coverage turns its line red (fix round 1, QA): per field
+    # missing, duplicated, renamed, type, autocomplete, autocomplete=off,
+    # required, the three maxlength cases, label-for, no-label and the two
+    # rewordings; the MIME types; per result id missing, doubled, id elsewhere
+    # and the two rewordings; the sitemap; the pages and forms; the referrer
+    # tags; URL_ATTRS, FORM_ATTRS, INTAKE_FORM_PAGES and CSP_DIRECTIVES.
+    for drop in render:b-report-scam_alias-renamed render:b-correction-email-required \
+        render:b-report-headers-maxlength-above render:b-correction-request-hint-reworded \
+        render:b-correction-files-accept-without-webp render:d-error-doubled \
+        render:c-correction-referrerpolicy-input render:a-correction-page-missing \
+        render:b-correction-page_url-autocomplete-off render:d-not-sent-in-sitemap \
+        render:b-report-details-missing render:b-report-email-duplicated \
+        render:b-correction-page_url-type render:b-report-scam_alias-autocomplete \
+        render:b-report-contact_start-maxlength-below render:b-correction-request-maxlength-absent \
+        render:b-report-headers-label-for render:b-correction-email-no-label \
+        render:b-report-files-label-reworded render:d-paused-missing \
+        render:d-too-long-id-elsewhere render:d-bad-address-heading-reworded \
+        render:d-not-accepted-text-reworded render:a-report-form-missing \
+        site:fail-intake-host-in-data site:fail-input-formaction-intake \
+        site:fail-csp-form-action-missing-intake-correction site:csp-intake/worker-src; do
+      kind="${drop%%:*}"
+      selftest_wants "$kind-intake" || continue
+      intake_coverage "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render/intake-cases.tsv" \
+        "$FIXTURES/site/intake-cases.tsv" "${drop#*:}" >"$out" 2>&1
+      if grep -q "^FAIL $kind-intake/coverage: 1 member(s) without a row: ${drop#*:}\$" "$out"; then
+        echo "ok   $kind-intake/coverage-fails-on-missing-row (${drop#*:})"
+        n_passed=$((n_passed + 1))
+      else
+        echo "FAIL $kind-intake/coverage-fails-on-missing-row: without ${drop#*:} the coverage line did not fail; output:"
+        sed 's/^/     | /' "$out"
+        n_failed=$((n_failed + 1))
+      fi
+    done
+  fi
+
+  if selftest_wants render-search-count; then
+    # render-search-count (M4 PR 3 fix round 12b, QA recheck of 54d4517): the
+    # COUNT=<n> expectation itself. Rows of the real table with a wrong count
+    # must each fail: one finding pinned as 0 and as 2, and two findings pinned
+    # as 1 and as 3, so a runner that ignores the count, reads it as at least
+    # or at most n, or as "some findings" fails this line.
+    count_table=$(mktemp)
+    awk -F'\t' -v OFS='\t' '
+      $1 == "unread-home-form-icon" { for (c = 0; c <= 2; c += 2) { r = $0; sub(/COUNT=1 /, "COUNT=" c " ", r); split(r, f, "\t"); f[1] = f[1] "-count-" c; print f[1], f[2], f[3], f[4], f[5] } }
+      $1 == "unread-unclosed-only-finding" { for (c = 1; c <= 3; c += 2) { r = $0; sub(/COUNT=2 /, "COUNT=" c " ", r); split(r, f, "\t"); f[1] = f[1] "-count-" c; print f[1], f[2], f[3], f[4], f[5] } }
+    ' "$FIXTURES/render/search-cases.tsv" >"$count_table"
+    search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$count_table" \
+      "$FIXTURES/render/pass-search" "$SELFTEST_ROOT/schema" >"$out" 2>&1
+    rm -f "$count_table"
+    count_rows=$(grep -cE '^(ok   |FAIL )render-search/.*-count-[0-9]' "$out")
+    count_fails=$(grep -cE '^FAIL render-search/.*-count-[0-9]' "$out")
+    if [[ "$count_rows" == 4 && "$count_fails" == 4 ]]; then
+      echo "ok   render-search-count (4 rows with a wrong COUNT= each fail)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL render-search-count: $count_fails of $count_rows rows with a wrong COUNT= failed (need 4 of 4); output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+
+  if selftest_wants fixture-script-copies; then
+    # fixture-script-copies (M4 PR 3 fix round 2, QA): every fixture copy of
+    # assets/js/search.js, found by name under tests/fixtures/reflow (the
+    # cases of case (6) load one), equals the real script byte for byte, so
+    # no case proves the on-load and reveal behaviour of a script the site
+    # no longer ships. No copy at all fails too, so the line cannot pass by
+    # finding nothing. The literals cases are no copies: each stands in for
+    # a repo root with a script crafted to fail one rule (fix round 4).
+    local script_copy n_copies=0 stale_copies=""
+    while IFS= read -r -d '' script_copy; do
+      n_copies=$((n_copies + 1))
+      cmp -s "$script_copy" "$SELFTEST_ROOT/assets/js/search.js" \
+        || stale_copies+=" ${script_copy#"$FIXTURES"/}"
+    done < <(find "$FIXTURES/reflow" -type f -name search.js -print0)
+    if (( n_copies == 0 )) || [[ -n "$stale_copies" ]]; then
+      echo "FAIL fixture-script-copies: $n_copies fixture copies of search.js; these differ" \
+        "from assets/js/search.js:${stale_copies:- (none found)}"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   fixture-script-copies ($n_copies fixture copies equal assets/js/search.js)"
+      n_passed=$((n_passed + 1))
+    fi
+  fi
+
+  if selftest_wants site-built-pins-missing-stem; then
+    # site-built-pins-missing-stem (M4 PR 3 fix round 6, QA): a pinned stem
+    # without a built pin is a finding, never a pass on its own bytes. The
+    # line drops one built pin at a time through importlib and runs the real
+    # cmd_site on site/pass-built-pins, which must then fail on that stem.
+    if python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/site/pass-built-pins" \
+        "$SELFTEST_ROOT/schema" >"$out" 2>&1 <<'PY'
 import argparse
 import contextlib
 import importlib.util
@@ -3827,47 +4268,52 @@ if bad:
     print("; ".join(bad))
     sys.exit(1)
 PY
-  then
-    echo "ok   site-built-pins-missing-stem (a pinned stem without a built pin fails)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL site-built-pins-missing-stem: $(cat "$out")"
-    n_failed=$((n_failed + 1))
+    then
+      echo "ok   site-built-pins-missing-stem (a pinned stem without a built pin fails)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL site-built-pins-missing-stem: $(cat "$out")"
+      n_failed=$((n_failed + 1))
+    fi
   fi
 
-  # guard-public/<row> and guard-wf/<row> (ADR-0007 part 4,
-  # Replikanti/interviewscam#38 PR B): the public-tree rules and the
-  # workflow hardening, one row per member of every flagging set and per
-  # form (guard_public_runner above), plus their wiring into cmd_guard
-  # (guard_wiring_runner above).
-  guard_public_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$SELFTEST_ROOT/schema" \
-    "$SELFTEST_ROOT/tools/pins.env" >"$out" 2>&1
-  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
-  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
-  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if ! grep -qE '^(ok   |FAIL )guard-wf/table' "$out"; then
-    echo "FAIL guard-public: the runner did not finish; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
+  if selftest_wants guard-public guard-wf; then
+    # guard-public/<row> and guard-wf/<row> (ADR-0007 part 4,
+    # Replikanti/interviewscam#38 PR B): the public-tree rules and the
+    # workflow hardening, one row per member of every flagging set and per
+    # form (guard_public_runner above), plus their wiring into cmd_guard
+    # (guard_wiring_runner above).
+    guard_public_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$SELFTEST_ROOT/schema" \
+      "$SELFTEST_ROOT/tools/pins.env" >"$out" 2>&1
+    selftest_rows "$out" details
+    if ! grep -qE '^(ok   |FAIL )guard-wf/table' "$out"; then
+      echo "FAIL $(selftest_suite guard-public guard-wf): the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
   fi
-  guard_wiring_runner "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1
-  sed -n '/^ok   \|^FAIL /p' "$out"
-  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
-  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if [[ $(grep -c '^ok   wiring/guard-' "$out") -ne 3 ]]; then
-    echo "FAIL wiring/guard-public-tree: the wiring runner did not pass all three lines; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
+  if selftest_wants wiring; then
+    guard_wiring_runner "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if [[ $(grep -c '^ok   wiring/guard-' "$out") -ne 3 ]]; then
+      echo "FAIL wiring/guard-public-tree: the wiring runner did not pass all three lines; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
   fi
-  # The template pins of the records workflows (ADR-0007 part 5, PR E).
-  guard_templates_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/records-repo" >"$out" 2>&1
-  sed -n '/^ok   \|^FAIL /p' "$out"
-  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
-  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if ! grep -q '^ok   guard-records-templates/table' "$out"; then
-    echo "FAIL guard-records-templates: the runner did not finish; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
+  if selftest_wants guard-records-templates; then
+    # The template pins of the records workflows (ADR-0007 part 5, PR E).
+    guard_templates_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/records-repo" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -q '^ok   guard-records-templates/table' "$out"; then
+      echo "FAIL guard-records-templates: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
   fi
 
   # Records mode and the pin rule (ADR-0007 part 5,
@@ -3875,9 +4321,17 @@ PY
   # the wiring of the shared workflow rules, the pin rule's extra cases,
   # check.sh's flags, the token unset after the pin step, the classified
   # .records-site/, the Lighthouse page set of records mode, and the e2e
-  # runs of check.sh --records.
-  local family runner_out
+  # runs of check.sh --records. Each family runs when one of the suites its
+  # rows print is selected (pin_runner prints pin and pin-extra rows).
+  local family family_suites runner_out
   for family in table wiring extra; do
+    case "$family" in
+      table) family_suites="records-repo" ;;
+      wiring) family_suites="wiring" ;;
+      extra) family_suites="pin pin-extra" ;;
+    esac
+    # shellcheck disable=SC2086 # family_suites is a list of suite names
+    selftest_wants $family_suites || continue
     case "$family" in
       table)
         records_repo_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$SELFTEST_ROOT/tools/pins.env" \
@@ -3891,9 +4345,7 @@ PY
         pin_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/pin" >"$out" 2>&1
         ;;
     esac
-    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
-    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
-    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    selftest_rows "$out" details
     runner_out=0
     case "$family" in
       table) grep -qE '^ok   records-repo/table' "$out" && runner_out=1 ;;
@@ -3903,131 +4355,141 @@ PY
         && grep -q '^ok   pin/cases' "$out" && runner_out=1 ;;
     esac
     if [[ $runner_out -eq 0 ]]; then
-      echo "FAIL records-mode/$family: the runner did not finish with every line; output:"
+      # shellcheck disable=SC2086 # family_suites is a list of suite names
+      echo "FAIL $(selftest_suite records-mode $family_suites)/$family: the runner did not finish with every line; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi
   done
 
-  # records-mode/usage: check.sh's flags, through parse_check_args (the
-  # function check_main calls first): --records at most once and with a
-  # directory, --external at most once, both orders, the directory resolved
-  # with cd -P, refused when it is this checkout or inside it (also through
-  # a symlink), allowed when this checkout lies inside it.
-  local usage_tmp usage_bad=() usage_n=0 got
-  usage_tmp="$(mktemp -d)"
-  mkdir -p "$usage_tmp/records/sub" && : >"$usage_tmp/file"
-  ln -s "$SELFTEST_ROOT/tools" "$usage_tmp/inside-link"
-  ln -s "$usage_tmp/records" "$usage_tmp/outside-link"
-  # usage_case <want rc> <want RECORDS_DIR or -> <want EXTERNAL or -> <args...>
-  usage_case() {
-    local want_rc="$1" want_dir="$2" want_ext="$3" rc_got
-    shift 3
-    usage_n=$((usage_n + 1))
-    got="$(cd "$usage_tmp" && parse_check_args "$@" 2>&1 && printf '%s|%s' "$RECORDS_DIR" "$EXTERNAL")"
-    rc_got=$?
-    if [[ $rc_got -ne $want_rc ]] \
-        || { [[ $want_rc -eq 0 ]] && [[ "$got" != "$want_dir|$want_ext" ]]; }; then
-      usage_bad+=("[$*]: exit $rc_got, got '$got'")
+  if selftest_wants records-mode; then
+    # records-mode/usage: check.sh's flags, through parse_check_args (the
+    # function check_main calls first): --records at most once and with a
+    # directory, --external at most once, both orders, the directory resolved
+    # with cd -P, refused when it is this checkout or inside it (also through
+    # a symlink), allowed when this checkout lies inside it.
+    local usage_tmp usage_bad=() usage_n=0 got
+    usage_tmp="$(mktemp -d)"
+    mkdir -p "$usage_tmp/records/sub" && : >"$usage_tmp/file"
+    ln -s "$SELFTEST_ROOT/tools" "$usage_tmp/inside-link"
+    ln -s "$usage_tmp/records" "$usage_tmp/outside-link"
+    # usage_case <want rc> <want RECORDS_DIR or -> <want EXTERNAL or -> <args...>
+    usage_case() {
+      local want_rc="$1" want_dir="$2" want_ext="$3" rc_got
+      shift 3
+      usage_n=$((usage_n + 1))
+      got="$(cd "$usage_tmp" && parse_check_args "$@" 2>&1 && printf '%s|%s' "$RECORDS_DIR" "$EXTERNAL")"
+      rc_got=$?
+      if [[ $rc_got -ne $want_rc ]] \
+          || { [[ $want_rc -eq 0 ]] && [[ "$got" != "$want_dir|$want_ext" ]]; }; then
+        usage_bad+=("[$*]: exit $rc_got, got '$got'")
+      fi
+    }
+    local real
+    real="$(cd -P "$usage_tmp/records" && pwd)"
+    usage_case 0 "" "" 
+    usage_case 0 "" --external --external
+    usage_case 0 "$real" "" --records records
+    usage_case 0 "$real" "" --records records/
+    usage_case 0 "$real" "" --records records/sub/..
+    usage_case 0 "$real" "" --records "$usage_tmp/records"
+    usage_case 0 "$real" "" --records outside-link
+    usage_case 0 "$real" --external --records records --external
+    usage_case 0 "$real" --external --external --records records
+    usage_case 0 "$(cd -P "$SELFTEST_ROOT/.." && pwd)" "" --records "$SELFTEST_ROOT/.."
+    usage_case 2 - - --records
+    usage_case 2 - - --records ""
+    usage_case 2 - - --records missing
+    usage_case 2 - - --records file
+    usage_case 2 - - --records "$SELFTEST_ROOT"
+    usage_case 2 - - --records "$SELFTEST_ROOT/tools"
+    usage_case 2 - - --records inside-link
+    usage_case 2 - - --records records --records records
+    usage_case 2 - - --external --external
+    usage_case 2 - - --records records --external --external
+    usage_case 2 - - --other
+    rm -rf "$usage_tmp"
+    if [[ ${#usage_bad[@]} -eq 0 ]]; then
+      echo "ok   records-mode/usage ($usage_n flag forms)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL records-mode/usage: ${usage_bad[*]}"
+      n_failed=$((n_failed + 1))
     fi
-  }
-  local real
-  real="$(cd -P "$usage_tmp/records" && pwd)"
-  usage_case 0 "" "" 
-  usage_case 0 "" --external --external
-  usage_case 0 "$real" "" --records records
-  usage_case 0 "$real" "" --records records/
-  usage_case 0 "$real" "" --records records/sub/..
-  usage_case 0 "$real" "" --records "$usage_tmp/records"
-  usage_case 0 "$real" "" --records outside-link
-  usage_case 0 "$real" --external --records records --external
-  usage_case 0 "$real" --external --external --records records
-  usage_case 0 "$(cd -P "$SELFTEST_ROOT/.." && pwd)" "" --records "$SELFTEST_ROOT/.."
-  usage_case 2 - - --records
-  usage_case 2 - - --records ""
-  usage_case 2 - - --records missing
-  usage_case 2 - - --records file
-  usage_case 2 - - --records "$SELFTEST_ROOT"
-  usage_case 2 - - --records "$SELFTEST_ROOT/tools"
-  usage_case 2 - - --records inside-link
-  usage_case 2 - - --records records --records records
-  usage_case 2 - - --external --external
-  usage_case 2 - - --records records --external --external
-  usage_case 2 - - --other
-  rm -rf "$usage_tmp"
-  if [[ ${#usage_bad[@]} -eq 0 ]]; then
-    echo "ok   records-mode/usage ($usage_n flag forms)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL records-mode/usage: ${usage_bad[*]}"
-    n_failed=$((n_failed + 1))
   fi
 
-  # wiring/records-token-unset: in check_records_main the pin step is the
-  # first step, and `unset GH_TOKEN GITHUB_TOKEN` is the very next line, so
-  # no later step (Hugo, lychee, the checks) holds the job token.
-  if awk 'found == 1 { if ($0 ~ /^ *unset GH_TOKEN GITHUB_TOKEN;?$/) found = 2; else found = -1 }
-          /run_step/ && !seen { seen = 1; if ($0 ~ /^ *run_step "pin \(green check on public main\)" step_pin "\$sha";?$/) found = 1 }
-          END { exit found != 2 }' <<<"$(declare -f check_records_main)"; then
-    echo "ok   wiring/records-token-unset (the pin step comes first, the token is unset right after it)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL wiring/records-token-unset: check_records_main in tools/check.sh does not run the pin step first with \`unset GH_TOKEN GITHUB_TOKEN\` right after it"
-    n_failed=$((n_failed + 1))
+  if selftest_wants wiring; then
+    # wiring/records-token-unset: in check_records_main the pin step is the
+    # first step, and `unset GH_TOKEN GITHUB_TOKEN` is the very next line, so
+    # no later step (Hugo, lychee, the checks) holds the job token.
+    if awk 'found == 1 { if ($0 ~ /^ *unset GH_TOKEN GITHUB_TOKEN;?$/) found = 2; else found = -1 }
+            /run_step/ && !seen { seen = 1; if ($0 ~ /^ *run_step "pin \(green check on public main\)" step_pin "\$sha";?$/) found = 1 }
+            END { exit found != 2 }' <<<"$(declare -f check_records_main)"; then
+      echo "ok   wiring/records-token-unset (the pin step comes first, the token is unset right after it)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL wiring/records-token-unset: check_records_main in tools/check.sh does not run the pin step first with \`unset GH_TOKEN GITHUB_TOKEN\` right after it"
+      n_failed=$((n_failed + 1))
+    fi
+
+    # wiring/fixture-skip-records-site: .records-site/ is classified for the
+    # fixture build and git-ignored, so a public run after a records run
+    # neither fails on an unclassified path nor offers it to git add.
+    if [[ " ${FIXTURE_SKIP[*]} " == *" .records-site "* ]] \
+        && grep -qx '/.records-site/' "$SELFTEST_ROOT/.gitignore"; then
+      echo "ok   wiring/fixture-skip-records-site (in FIXTURE_SKIP and .gitignore)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL wiring/fixture-skip-records-site: .records-site is not in FIXTURE_SKIP of tools/check.sh or not /.records-site/ in .gitignore"
+      n_failed=$((n_failed + 1))
+    fi
   fi
 
-  # wiring/fixture-skip-records-site: .records-site/ is classified for the
-  # fixture build and git-ignored, so a public run after a records run
-  # neither fails on an unclassified path nor offers it to git add.
-  if [[ " ${FIXTURE_SKIP[*]} " == *" .records-site "* ]] \
-      && grep -qx '/.records-site/' "$SELFTEST_ROOT/.gitignore"; then
-    echo "ok   wiring/fixture-skip-records-site (in FIXTURE_SKIP and .gitignore)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL wiring/fixture-skip-records-site: .records-site is not in FIXTURE_SKIP of tools/check.sh or not /.records-site/ in .gitignore"
-    n_failed=$((n_failed + 1))
+  if selftest_wants lighthouse; then
+    # lighthouse/records-pages: the production page set of the Lighthouse run
+    # (sitecheck lighthouse-pages, both modes): every directory with an
+    # index.html except a record page, the section pages kept, plus /404.html,
+    # with no public-fixtures/ anywhere.
+    local lh_tmp lh_got
+    lh_tmp="$(mktemp -d)"
+    mkdir -p "$lh_tmp/public/about" "$lh_tmp/public/reports/x" "$lh_tmp/public/campaigns/y/amp" \
+      "$lh_tmp/public/campaigns/y"
+    for line in index.html about/index.html reports/index.html reports/x/index.html \
+        campaigns/y/index.html campaigns/y/amp/index.html 404.html; do
+      : >"$lh_tmp/public/$line"
+    done
+    lh_got="$(sitecheck lighthouse-pages "$lh_tmp/public" 2>&1 | tr '\n' ' ')"
+    if [[ "$lh_got" == "/about/ / /reports/ /404.html " ]] \
+        && ! sitecheck lighthouse-pages "$lh_tmp/public/about/missing" >/dev/null 2>&1; then
+      echo "ok   lighthouse/records-pages (production pages only: $lh_got)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL lighthouse/records-pages: got '$lh_got'"
+      n_failed=$((n_failed + 1))
+    fi
+    rm -rf "$lh_tmp"
   fi
 
-  # lighthouse/records-pages: the production page set of the Lighthouse run
-  # (sitecheck lighthouse-pages, both modes): every directory with an
-  # index.html except a record page, the section pages kept, plus /404.html,
-  # with no public-fixtures/ anywhere.
-  local lh_tmp lh_got
-  lh_tmp="$(mktemp -d)"
-  mkdir -p "$lh_tmp/public/about" "$lh_tmp/public/reports/x" "$lh_tmp/public/campaigns/y/amp" \
-    "$lh_tmp/public/campaigns/y"
-  for line in index.html about/index.html reports/index.html reports/x/index.html \
-      campaigns/y/index.html campaigns/y/amp/index.html 404.html; do
-    : >"$lh_tmp/public/$line"
-  done
-  lh_got="$(sitecheck lighthouse-pages "$lh_tmp/public" 2>&1 | tr '\n' ' ')"
-  if [[ "$lh_got" == "/about/ / /reports/ /404.html " ]] \
-      && ! sitecheck lighthouse-pages "$lh_tmp/public/about/missing" >/dev/null 2>&1; then
-    echo "ok   lighthouse/records-pages (production pages only: $lh_got)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL lighthouse/records-pages: got '$lh_got'"
-    n_failed=$((n_failed + 1))
-  fi
-  rm -rf "$lh_tmp"
-
-  records_mode_e2e "$SELFTEST_ROOT" "$FIXTURES" >"$out" 2>&1
-  sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
-  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
-  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if [[ $(grep -c '^ok   records-mode/' "$out") -ne 15 ]]; then
-    echo "FAIL records-mode/e2e: not every e2e case passed; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
+  if selftest_wants records-mode; then
+    records_mode_e2e "$SELFTEST_ROOT" "$FIXTURES" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if [[ $(grep -c '^ok   records-mode/' "$out") -ne 15 ]]; then
+      echo "FAIL records-mode/e2e: not every e2e case passed; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
   fi
 
-  # guard-worker-exact (M5b PR 2 fix round 1, QA): guard_worker_pins gives
-  # exactly the findings each worker fixture names, and none on a root
-  # without worker/, so a scan without recursion, a directory read as a
-  # source, an unpinned file passed or an absent worker/ made a finding each
-  # change the set. Through importlib, because the guard fixtures check one
-  # substring each.
-  if python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/guard" >"$out" 2>&1 <<'PY'
+  if selftest_wants guard-worker-exact; then
+    # guard-worker-exact (M5b PR 2 fix round 1, QA): guard_worker_pins gives
+    # exactly the findings each worker fixture names, and none on a root
+    # without worker/, so a scan without recursion, a directory read as a
+    # source, an unpinned file passed or an absent worker/ made a finding each
+    # change the set. Through importlib, because the guard fixtures check one
+    # substring each.
+    if python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/guard" >"$out" 2>&1 <<'PY'
 import importlib.util
 import pathlib
 import sys
@@ -4074,19 +4536,21 @@ with tempfile.TemporaryDirectory() as tmp:
 print("\n".join(bad))
 sys.exit(1 if bad else 0)
 PY
-  then
-    echo "ok   guard-worker-exact (each worker fixture gives exactly its findings; none without worker/)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL guard-worker-exact: $(cat "$out")"
-    n_failed=$((n_failed + 1))
+    then
+      echo "ok   guard-worker-exact (each worker fixture gives exactly its findings; none without worker/)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL guard-worker-exact: $(cat "$out")"
+      n_failed=$((n_failed + 1))
+    fi
   fi
 
-  # guard-stylesheet-unreadable (M4 PR 3 fix round 5, QA): a stylesheet
-  # source that cannot be read is a finding, never skipped. Git cannot hold
-  # an unreadable file, so the line builds a root with one stylesheet in a
-  # temporary directory and makes its read fail through importlib.
-  if python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
+  if selftest_wants guard-stylesheet-unreadable; then
+    # guard-stylesheet-unreadable (M4 PR 3 fix round 5, QA): a stylesheet
+    # source that cannot be read is a finding, never skipped. Git cannot hold
+    # an unreadable file, so the line builds a root with one stylesheet in a
+    # temporary directory and makes its read fail through importlib.
+    if python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
 import importlib.util
 import pathlib
 import sys
@@ -4115,24 +4579,26 @@ with tempfile.TemporaryDirectory() as tmp:
         print(findings.items)
         sys.exit(1)
 PY
-  then
-    echo "ok   guard-stylesheet-unreadable (an unreadable stylesheet source is a finding)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL guard-stylesheet-unreadable: an unreadable stylesheet source was skipped:" \
-      "$(cat "$out")"
-    n_failed=$((n_failed + 1))
+    then
+      echo "ok   guard-stylesheet-unreadable (an unreadable stylesheet source is a finding)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL guard-stylesheet-unreadable: an unreadable stylesheet source was skipped:" \
+        "$(cat "$out")"
+      n_failed=$((n_failed + 1))
+    fi
   fi
 
-  # site-script-stems (M4 PR 3, ADR-0005 part 5): site rule (j) reads the
-  # stems of the pinned scripts from SCRIPT_SHA256, and only a key
-  # assets/js/<stem>.js gives one. The real pin holds only such keys, so
-  # the line patches the pin through importlib with a key in another
-  # directory, one in a subdirectory, an .mjs key, one with a hyphen and
-  # one with an upper-case letter, none of which may give a stem (a
-  # hyphen and an upper-case letter are outside the closed path alphabet
-  # of resource_path, so such a script could never be served).
-  if python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
+  if selftest_wants site-script-stems; then
+    # site-script-stems (M4 PR 3, ADR-0005 part 5): site rule (j) reads the
+    # stems of the pinned scripts from SCRIPT_SHA256, and only a key
+    # assets/js/<stem>.js gives one. The real pin holds only such keys, so
+    # the line patches the pin through importlib with a key in another
+    # directory, one in a subdirectory, an .mjs key, one with a hyphen and
+    # one with an upper-case letter, none of which may give a stem (a
+    # hyphen and an upper-case letter are outside the closed path alphabet
+    # of resource_path, so such a script could never be served).
+    if python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
 import importlib.util
 import sys
 
@@ -4156,302 +4622,308 @@ if real != {"copy", "search"} or got != {"a"}:
     print(f"real pin {sorted(real)}, patched pin {sorted(got)}")
     sys.exit(1)
 PY
-  then
-    echo "ok   site-script-stems (only assets/js/<stem>.js keys of SCRIPT_SHA256 give a stem; the built pins name exactly the pinned stems)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL site-script-stems: script_stems reads other keys than assets/js/<stem>.js:" \
-      "$(cat "$out")"
-    n_failed=$((n_failed + 1))
+    then
+      echo "ok   site-script-stems (only assets/js/<stem>.js keys of SCRIPT_SHA256 give a stem; the built pins name exactly the pinned stems)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL site-script-stems: script_stems reads other keys than assets/js/<stem>.js:" \
+        "$(cat "$out")"
+      n_failed=$((n_failed + 1))
+    fi
   fi
 
-  # Wiring: the fixture build classifies its inputs before it copies them
-  # (ADR-0004 part 10, amended), and copies exactly the FIXTURE_COPY
-  # entries; declare -f prints the function without comments.
-  # shellcheck disable=SC2016 # the patterns match literal $ names
-  if grep -qE '^ *fixture_inputs "\$CHECK_ROOT" \|\| return 1;?$' <<<"$(declare -f step_fixture_build)" \
-      && grep -qF 'for item in "${FIXTURE_COPY[@]}"' <<<"$(declare -f step_fixture_build)"; then
-    echo "ok   wiring/fixture-inputs-step (step_fixture_build classifies \$CHECK_ROOT, then copies FIXTURE_COPY)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL wiring/fixture-inputs-step: step_fixture_build in tools/check.sh does not" \
-      "call fixture_inputs \"\$CHECK_ROOT\" || return 1, or does not copy by iterating FIXTURE_COPY"
-    n_failed=$((n_failed + 1))
+  if selftest_wants wiring; then
+    # Wiring: the fixture build classifies its inputs before it copies them
+    # (ADR-0004 part 10, amended), and copies exactly the FIXTURE_COPY
+    # entries; declare -f prints the function without comments.
+    # shellcheck disable=SC2016 # the patterns match literal $ names
+    if grep -qE '^ *fixture_inputs "\$CHECK_ROOT" \|\| return 1;?$' <<<"$(declare -f step_fixture_build)" \
+        && grep -qF 'for item in "${FIXTURE_COPY[@]}"' <<<"$(declare -f step_fixture_build)"; then
+      echo "ok   wiring/fixture-inputs-step (step_fixture_build classifies \$CHECK_ROOT, then copies FIXTURE_COPY)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL wiring/fixture-inputs-step: step_fixture_build in tools/check.sh does not" \
+        "call fixture_inputs \"\$CHECK_ROOT\" || return 1, or does not copy by iterating FIXTURE_COPY"
+      n_failed=$((n_failed + 1))
+    fi
   fi
 
-  # fixture-inputs/arrays-disjoint: the real arrays name every entry once,
-  # so fixture_inputs passes on an empty root. classified-twice: a name
-  # added to a second array fails it, with its own message.
-  inputs_root="$(mktemp -d)"
-  if fixture_inputs "$inputs_root" >"$out" 2>&1; then
-    echo "ok   fixture-inputs/arrays-disjoint (no name in two of FIXTURE_COPY, FIXTURE_CONTENT, FIXTURE_SKIP)"
-    n_passed=$((n_passed + 1))
-  else
-    echo "FAIL fixture-inputs/arrays-disjoint: fixture_inputs fails on an empty root; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
+  if selftest_wants fixture-inputs; then
+    # fixture-inputs/arrays-disjoint: the real arrays name every entry once,
+    # so fixture_inputs passes on an empty root. classified-twice: a name
+    # added to a second array fails it, with its own message.
+    inputs_root="$(mktemp -d)"
+    if fixture_inputs "$inputs_root" >"$out" 2>&1; then
+      echo "ok   fixture-inputs/arrays-disjoint (no name in two of FIXTURE_COPY, FIXTURE_CONTENT, FIXTURE_SKIP)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL fixture-inputs/arrays-disjoint: fixture_inputs fails on an empty root; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+    if (FIXTURE_SKIP+=(layouts); fixture_inputs "$inputs_root") >"$out" 2>&1; then
+      echo "FAIL fixture-inputs/classified-twice: layouts in FIXTURE_COPY and FIXTURE_SKIP passed; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    elif ! grep -qF "'layouts' classified twice" "$out"; then
+      echo "FAIL fixture-inputs/classified-twice: failed without the expected reason \"'layouts' classified twice\"; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   fixture-inputs/classified-twice (failed as expected: 'layouts' classified twice)"
+      n_passed=$((n_passed + 1))
+    fi
+    rm -rf "$inputs_root"
   fi
-  if (FIXTURE_SKIP+=(layouts); fixture_inputs "$inputs_root") >"$out" 2>&1; then
-    echo "FAIL fixture-inputs/classified-twice: layouts in FIXTURE_COPY and FIXTURE_SKIP passed; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  elif ! grep -qF "'layouts' classified twice" "$out"; then
-    echo "FAIL fixture-inputs/classified-twice: failed without the expected reason \"'layouts' classified twice\"; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  else
-    echo "ok   fixture-inputs/classified-twice (failed as expected: 'layouts' classified twice)"
-    n_passed=$((n_passed + 1))
-  fi
-  rm -rf "$inputs_root"
 
-  # reflow-launch: the launch of sitecheck reflow (ADR-0003 part 6, #24)
-  # against a stub browser, so the cases run locally and in CI, each with
-  # --launch-timeout 1 on reflow/pass-fluid (default-budget without it).
-  # The stub appends its PID to a launch log, its arguments to an argument
-  # log and the file behind its stderr to a log-path log on every start,
-  # writes one line to stdout and one to stderr (as Chrome logs), and then
-  # acts or execs, so the PID stays the browser's. Each case counts the
-  # launches, and after sitecheck returns no logged PID may still be alive
-  # (every Chrome of both launches is killed or reaped).
-  #   never-answers: the stub never answers, so both launches time out:
-  #     exit 2, "on launch 2 of 2", 2 launches, both stub lines in the dump
-  #     of each launch (Chrome's log is captured), a probe line naming the
-  #     stub's PID and the 1 s budget before the budget ran out (0.x s),
-  #     the verbose log flags among its arguments, and both logs in a
-  #     reflow-log- directory on /dev/shm where that is a writable tmpfs
-  #     (a disk stall cannot block Chrome's log writes unless memory runs
-  #     short: reclaim can then wait on the disk, through swap or through
-  #     other files' writeback; the probe line reports memory pressure), in
-  #     the temporary directory otherwise.
-  #   protocol-error-no-retry: the stub answers the first command with a
-  #     DevTools error, which must fail at once: exit 2, the error, no
-  #     retry line, 1 launch, the stub's stderr line in the error
-  #     dump. A stub line that reached the DevTools pipe would break the
-  #     reply's parse.
-  #   later-call-no-retry: the stub answers Browser.getVersion and closes
-  #     the pipe 3 s later, while sitecheck waits for the answer to
-  #     Target.createTarget; only the first answer of a launch retries:
-  #     exit 2, no retry line, 1 launch, "Chrome closed the
-  #     DevTools pipe", and the probe of the later call names its 30 s
-  #     budget (REFLOW_TIMEOUT, not the launch budget).
-  #   exits-at-once: the stub exits at once, an early exit that must retry
-  #     whichever side sees the closed pipe first: exit 2, "on launch 2 of
-  #     2", 2 launches, no Traceback. Unloaded the read usually sees the
-  #     close first, so this case guards the behaviour, and
-  #     first-answer-epipe below proves the write side.
-  #   default-budget: the exits-at-once stub without --launch-timeout, so
-  #     the budget CI uses: exit 2, 2 launches, no Traceback, and the probe
-  #     before each kill names a 75 s budget (REFLOW_LAUNCH_TIMEOUT, the
-  #     option's default) on launch 1 and on launch 2. The stub exits at
-  #     once, so the case never waits for that budget; first-answer-deadline
-  #     below pins the deadline actually waited.
-  #   slow-first-answer: the stub answers Browser.getVersion after 0.5 s,
-  #     inside the budget, and then acts like later-call-no-retry: exit 2
-  #     from the later call, no retry line, 1 launch, a
-  #     "first answer after 0." line naming the log directory, a probe
-  #     before it and the launch's dump right after it.
-  # The stubs keep both pipe ends open while they sleep, so a later-call
-  # failure is the closed pipe on the read (a NoAnswerError, which a retry
-  # scoped too wide would catch) and never a BrokenPipeError on the write.
-  # The 3 s sleeps outlast the 1 s launch budget, so a retry scoped too wide
-  # fires (and a closed pipe cannot stand in for the protocol error), and
-  # stay short, because the reflow cleanup waits for the stub to exit; no
-  # case waits on the 30 s budget of a later call.
-  local stub_dir launches problem pid retry_line log_line log_glob
-  local -a budget_args
-  # The retry line. The diagnostics name "launch 1 of 2" too, so the
-  # no-retry checks look for the whole retry phrase.
-  retry_line='on launch 1 of 2; starting it again'
-  # Where sitecheck must put Chrome's logs (REFLOW_LOG_DIR): a reflow-log-
-  # directory on /dev/shm when that is a writable tmpfs, else the work
-  # directory under the temporary directory. log_line: what the timing
-  # line names (an ERE).
-  if [[ "$(stat -f -c %T /dev/shm 2>/dev/null)" == tmpfs && -w /dev/shm ]]; then
-    log_line='/dev/shm'
-    log_glob='/dev/shm/reflow-log-*/chrome-[12].log'
-  else
-    log_line='[^)]+'
-    log_glob="$(cd "${TMPDIR:-/tmp}" && pwd -P)/reflow-*/chrome-[12].log"
-  fi
-  for name in never-answers protocol-error-no-retry later-call-no-retry \
-      exits-at-once default-budget slow-first-answer; do
-    stub_dir="$(mktemp -d)"
-    {
-      echo '#!/bin/sh'
-      printf 'echo $$ >>"%s/launches"\n' "$stub_dir"
-      printf 'printf '"'"'%%s\\n'"'"' "$@" >>"%s/args"\n' "$stub_dir"
-      # readlink's own fd 2 is the stub's stderr, the log: the >> touches
-      # only fd 1, wherever the shell applies it (CI's dash applied it in
-      # the stub's own process, so /proc/$$/fd/1 named the logs file).
-      printf 'readlink /proc/self/fd/2 >>"%s/logs"\n' "$stub_dir"
-      echo "echo 'stub browser: a line on stdout'"
-      echo "echo 'stub browser: a line on stderr' >&2"
-    } >"$stub_dir/chrome"
-    # Replies are one NUL-terminated JSON message on fd 4 (Chrome's output
-    # pipe) to command id 1. The octal \0 is POSIX printf, so dash writes
-    # the same bytes.
-    case "$name" in
-      never-answers)
-        echo 'exec sleep 30' >>"$stub_dir/chrome"
-        ;;
-      protocol-error-no-retry)
-        cat >>"$stub_dir/chrome" <<'STUB'
+  if selftest_wants reflow-launch; then
+    # reflow-launch: the launch of sitecheck reflow (ADR-0003 part 6, #24)
+    # against a stub browser, so the cases run locally and in CI, each with
+    # --launch-timeout 1 on reflow/pass-fluid (default-budget without it).
+    # The stub appends its PID to a launch log, its arguments to an argument
+    # log and the file behind its stderr to a log-path log on every start,
+    # writes one line to stdout and one to stderr (as Chrome logs), and then
+    # acts or execs, so the PID stays the browser's. Each case counts the
+    # launches, and after sitecheck returns no logged PID may still be alive
+    # (every Chrome of both launches is killed or reaped).
+    #   never-answers: the stub never answers, so both launches time out:
+    #     exit 2, "on launch 2 of 2", 2 launches, both stub lines in the dump
+    #     of each launch (Chrome's log is captured), a probe line naming the
+    #     stub's PID and the 1 s budget before the budget ran out (0.x s),
+    #     the verbose log flags among its arguments, and both logs in a
+    #     reflow-log- directory on /dev/shm where that is a writable tmpfs
+    #     (a disk stall cannot block Chrome's log writes unless memory runs
+    #     short: reclaim can then wait on the disk, through swap or through
+    #     other files' writeback; the probe line reports memory pressure), in
+    #     the temporary directory otherwise.
+    #   protocol-error-no-retry: the stub answers the first command with a
+    #     DevTools error, which must fail at once: exit 2, the error, no
+    #     retry line, 1 launch, the stub's stderr line in the error
+    #     dump. A stub line that reached the DevTools pipe would break the
+    #     reply's parse.
+    #   later-call-no-retry: the stub answers Browser.getVersion and closes
+    #     the pipe 3 s later, while sitecheck waits for the answer to
+    #     Target.createTarget; only the first answer of a launch retries:
+    #     exit 2, no retry line, 1 launch, "Chrome closed the
+    #     DevTools pipe", and the probe of the later call names its 30 s
+    #     budget (REFLOW_TIMEOUT, not the launch budget).
+    #   exits-at-once: the stub exits at once, an early exit that must retry
+    #     whichever side sees the closed pipe first: exit 2, "on launch 2 of
+    #     2", 2 launches, no Traceback. Unloaded the read usually sees the
+    #     close first, so this case guards the behaviour, and
+    #     first-answer-epipe below proves the write side.
+    #   default-budget: the exits-at-once stub without --launch-timeout, so
+    #     the budget CI uses: exit 2, 2 launches, no Traceback, and the probe
+    #     before each kill names a 75 s budget (REFLOW_LAUNCH_TIMEOUT, the
+    #     option's default) on launch 1 and on launch 2. The stub exits at
+    #     once, so the case never waits for that budget; first-answer-deadline
+    #     below pins the deadline actually waited.
+    #   slow-first-answer: the stub answers Browser.getVersion after 0.5 s,
+    #     inside the budget, and then acts like later-call-no-retry: exit 2
+    #     from the later call, no retry line, 1 launch, a
+    #     "first answer after 0." line naming the log directory, a probe
+    #     before it and the launch's dump right after it.
+    # The stubs keep both pipe ends open while they sleep, so a later-call
+    # failure is the closed pipe on the read (a NoAnswerError, which a retry
+    # scoped too wide would catch) and never a BrokenPipeError on the write.
+    # The 3 s sleeps outlast the 1 s launch budget, so a retry scoped too wide
+    # fires (and a closed pipe cannot stand in for the protocol error), and
+    # stay short, because the reflow cleanup waits for the stub to exit; no
+    # case waits on the 30 s budget of a later call.
+    local stub_dir launches problem pid retry_line log_line log_glob
+    local -a budget_args
+    # The retry line. The diagnostics name "launch 1 of 2" too, so the
+    # no-retry checks look for the whole retry phrase.
+    retry_line='on launch 1 of 2; starting it again'
+    # Where sitecheck must put Chrome's logs (REFLOW_LOG_DIR): a reflow-log-
+    # directory on /dev/shm when that is a writable tmpfs, else the work
+    # directory under the temporary directory. log_line: what the timing
+    # line names (an ERE).
+    if [[ "$(stat -f -c %T /dev/shm 2>/dev/null)" == tmpfs && -w /dev/shm ]]; then
+      log_line='/dev/shm'
+      log_glob='/dev/shm/reflow-log-*/chrome-[12].log'
+    else
+      log_line='[^)]+'
+      log_glob="$(cd "${TMPDIR:-/tmp}" && pwd -P)/reflow-*/chrome-[12].log"
+    fi
+    for name in never-answers protocol-error-no-retry later-call-no-retry \
+        exits-at-once default-budget slow-first-answer; do
+      stub_dir="$(mktemp -d)"
+      {
+        echo '#!/bin/sh'
+        printf 'echo $$ >>"%s/launches"\n' "$stub_dir"
+        printf 'printf '"'"'%%s\\n'"'"' "$@" >>"%s/args"\n' "$stub_dir"
+        # readlink's own fd 2 is the stub's stderr, the log: the >> touches
+        # only fd 1, wherever the shell applies it (CI's dash applied it in
+        # the stub's own process, so /proc/$$/fd/1 named the logs file).
+        printf 'readlink /proc/self/fd/2 >>"%s/logs"\n' "$stub_dir"
+        echo "echo 'stub browser: a line on stdout'"
+        echo "echo 'stub browser: a line on stderr' >&2"
+      } >"$stub_dir/chrome"
+      # Replies are one NUL-terminated JSON message on fd 4 (Chrome's output
+      # pipe) to command id 1. The octal \0 is POSIX printf, so dash writes
+      # the same bytes.
+      case "$name" in
+        never-answers)
+          echo 'exec sleep 30' >>"$stub_dir/chrome"
+          ;;
+        protocol-error-no-retry)
+          cat >>"$stub_dir/chrome" <<'STUB'
 printf '{"id":1,"error":{"code":-32601,"message":"stub: no such method"}}\0' >&4
 exec sleep 3
 STUB
-        ;;
-      later-call-no-retry)
-        cat >>"$stub_dir/chrome" <<'STUB'
+          ;;
+        later-call-no-retry)
+          cat >>"$stub_dir/chrome" <<'STUB'
 printf '{"id":1,"result":{"product":"stub/1"}}\0' >&4
 exec sleep 3
 STUB
-        ;;
-      exits-at-once|default-budget)
-        echo 'exit 0' >>"$stub_dir/chrome"
-        ;;
-      slow-first-answer)
-        cat >>"$stub_dir/chrome" <<'STUB'
+          ;;
+        exits-at-once|default-budget)
+          echo 'exit 0' >>"$stub_dir/chrome"
+          ;;
+        slow-first-answer)
+          cat >>"$stub_dir/chrome" <<'STUB'
 sleep 0.5
 printf '{"id":1,"result":{"product":"stub/1"}}\0' >&4
 exec sleep 3
 STUB
-        ;;
-    esac
-    chmod +x "$stub_dir/chrome"
-    budget_args=(--launch-timeout 1)
-    [[ "$name" == default-budget ]] && budget_args=()
-    sitecheck reflow --chrome "$stub_dir/chrome" --no-search "${budget_args[@]}" \
-      "$FIXTURES/reflow/pass-fluid" >"$out" 2>&1
-    rc=$?
-    launches=0
-    [[ -f "$stub_dir/launches" ]] && launches="$(wc -l <"$stub_dir/launches")"
-    launches="${launches// /}"
-    problem=""
-    case "$name" in
-      never-answers)
-        pid="$(head -n 1 "$stub_dir/launches" 2>/dev/null)"
-        if [[ $rc -ne 2 ]]; then
-          problem="expected exit 2, got $rc"
-        elif ! grep -qF 'on launch 2 of 2' "$out"; then
-          problem="no 'on launch 2 of 2' in the output"
-        elif [[ "$launches" != 2 ]]; then
-          problem="expected 2 launches, the stub counted $launches"
-        elif ! launch_dump_has "$out" 1 'stub browser: a line on stdout' \
-            || ! launch_dump_has "$out" 1 'stub browser: a line on stderr' \
-            || ! launch_dump_has "$out" 2 'stub browser: a line on stdout' \
-            || ! launch_dump_has "$out" 2 'stub browser: a line on stderr'; then
-          problem="a stub line is missing from the Chrome log dump of a launch"
-        elif ! grep -qE "^reflow: no answer after 0\.[0-9]+ s on launch 1 of 2 \(budget 1 s\): .*process $pid \(" "$out"; then
-          problem="no probe line naming the stub PID $pid and the 1 s budget before the budget ran out"
-        elif ! grep -qxF -- '--enable-logging=stderr' "$stub_dir/args" \
-            || ! grep -qxF -- '--v=1' "$stub_dir/args"; then
-          problem="the stub was not started with --enable-logging=stderr and --v=1"
-        elif ! logs_moved "$stub_dir/logs" "$log_glob"; then
-          problem="Chrome's two logs are not under $log_glob, or a log directory outlived the call: $(tr '\n' ' ' <"$stub_dir/logs" 2>/dev/null)"
-        fi
-        ;;
-      protocol-error-no-retry)
-        if [[ $rc -ne 2 ]]; then
-          problem="expected exit 2, got $rc"
-        elif ! grep -qF 'Browser.getVersion failed' "$out"; then
-          problem="no 'Browser.getVersion failed' in the output"
-        elif grep -qF "$retry_line" "$out"; then
-          problem="the protocol error was retried ('$retry_line')"
-        elif [[ "$launches" != 1 ]]; then
-          problem="expected 1 launch, the stub counted $launches"
-        elif ! launch_dump_has "$out" 1 'stub browser: a line on stderr'; then
-          problem="the stub's stderr line is missing from the error dump"
-        fi
-        ;;
-      later-call-no-retry)
-        if [[ $rc -ne 2 ]]; then
-          problem="expected exit 2, got $rc"
-        elif grep -qF "$retry_line" "$out"; then
-          problem="a later call was retried ('$retry_line')"
-        elif [[ "$launches" != 1 ]]; then
-          problem="expected 1 launch, the stub counted $launches"
-        elif ! grep -qF 'Chrome closed the DevTools pipe' "$out"; then
-          problem="no 'Chrome closed the DevTools pipe' in the output"
-        elif ! grep -qE '^reflow: no answer after [0-9.]+ s on launch 1 of 2 \(budget 30 s\): ' "$out"; then
-          problem="no probe line of the later call with its 30 s budget"
-        fi
-        ;;
-      exits-at-once)
-        if [[ $rc -ne 2 ]]; then
-          problem="expected exit 2, got $rc"
-        elif grep -qF 'Traceback' "$out"; then
-          problem="a Traceback in the output (the early exit was not a launch failure)"
-        elif ! grep -qF 'on launch 2 of 2' "$out"; then
-          problem="no 'on launch 2 of 2' in the output"
-        elif [[ "$launches" != 2 ]]; then
-          problem="expected 2 launches, the stub counted $launches"
-        fi
-        ;;
-      default-budget)
-        if [[ $rc -ne 2 ]]; then
-          problem="expected exit 2, got $rc"
-        elif grep -qF 'Traceback' "$out"; then
-          problem="a Traceback in the output"
-        elif [[ "$launches" != 2 ]]; then
-          problem="expected 2 launches, the stub counted $launches"
-        elif ! grep -qE '^reflow: no answer after [0-9.]+ s on launch 1 of 2 \(budget 75 s\): ' "$out"; then
-          problem="launch 1 did not run with the default 75 s budget"
-        elif ! grep -qE '^reflow: no answer after [0-9.]+ s on launch 2 of 2 \(budget 75 s\): ' "$out"; then
-          problem="launch 2 did not run with the default 75 s budget"
-        fi
-        ;;
-      slow-first-answer)
-        if [[ $rc -ne 2 ]]; then
-          problem="expected exit 2, got $rc"
-        elif grep -qF "$retry_line" "$out"; then
-          problem="the slow first answer was retried ('$retry_line')"
-        elif [[ "$launches" != 1 ]]; then
-          problem="expected 1 launch, the stub counted $launches"
-        elif ! grep -qF 'Chrome closed the DevTools pipe' "$out"; then
-          problem="no 'Chrome closed the DevTools pipe' (the later call) in the output"
-        elif ! grep -qE "^reflow: first answer after 0\.[0-9]+ s on launch 1 of 2 \(budget 1 s, Chrome log [0-9]+ lines in $log_line\)\$" "$out"; then
-          problem="no 'first answer after 0.' line with the 1 s budget and the log directory"
-        elif ! awk '/^reflow: no answer after 0\.[0-9]+ s on launch 1 of 2 \(budget 1 s\): /{p = 1}
-            /^reflow: first answer after /{ok = p; exit}
-            END{exit !ok}' "$out"; then
-          problem="no probe line before the first answer"
-        elif ! awk 'f{ok = index($0, "reflow: Chrome log of launch 1 of 2 (") == 1; exit}
-            /^reflow: first answer after /{f = 1}
-            END{exit !ok}' "$out"; then
-          problem="no Chrome log dump right after the slow first answer"
-        fi
-        ;;
-    esac
-    # Every logged PID must be gone. A survivor is killed here, so a red
-    # case leaves no stub behind.
-    if [[ -f "$stub_dir/launches" ]]; then
-      while read -r pid; do
-        if kill -0 "$pid" 2>/dev/null; then
-          [[ -z "$problem" ]] && problem="stub browser PID $pid still alive after sitecheck returned"
-          kill "$pid" 2>/dev/null
-        fi
-      done <"$stub_dir/launches"
-    fi
-    if [[ -z "$problem" ]]; then
-      echo "ok   reflow-launch/$name (exit $rc, $launches launch(es), all reaped)"
-      n_passed=$((n_passed + 1))
-    else
-      echo "FAIL reflow-launch/$name: $problem; output:"
-      sed 's/^/     | /' "$out"
-      n_failed=$((n_failed + 1))
-    fi
-    rm -rf "$stub_dir"
-  done
+          ;;
+      esac
+      chmod +x "$stub_dir/chrome"
+      budget_args=(--launch-timeout 1)
+      [[ "$name" == default-budget ]] && budget_args=()
+      sitecheck reflow --chrome "$stub_dir/chrome" --no-search "${budget_args[@]}" \
+        "$FIXTURES/reflow/pass-fluid" >"$out" 2>&1
+      rc=$?
+      launches=0
+      [[ -f "$stub_dir/launches" ]] && launches="$(wc -l <"$stub_dir/launches")"
+      launches="${launches// /}"
+      problem=""
+      case "$name" in
+        never-answers)
+          pid="$(head -n 1 "$stub_dir/launches" 2>/dev/null)"
+          if [[ $rc -ne 2 ]]; then
+            problem="expected exit 2, got $rc"
+          elif ! grep -qF 'on launch 2 of 2' "$out"; then
+            problem="no 'on launch 2 of 2' in the output"
+          elif [[ "$launches" != 2 ]]; then
+            problem="expected 2 launches, the stub counted $launches"
+          elif ! launch_dump_has "$out" 1 'stub browser: a line on stdout' \
+              || ! launch_dump_has "$out" 1 'stub browser: a line on stderr' \
+              || ! launch_dump_has "$out" 2 'stub browser: a line on stdout' \
+              || ! launch_dump_has "$out" 2 'stub browser: a line on stderr'; then
+            problem="a stub line is missing from the Chrome log dump of a launch"
+          elif ! grep -qE "^reflow: no answer after 0\.[0-9]+ s on launch 1 of 2 \(budget 1 s\): .*process $pid \(" "$out"; then
+            problem="no probe line naming the stub PID $pid and the 1 s budget before the budget ran out"
+          elif ! grep -qxF -- '--enable-logging=stderr' "$stub_dir/args" \
+              || ! grep -qxF -- '--v=1' "$stub_dir/args"; then
+            problem="the stub was not started with --enable-logging=stderr and --v=1"
+          elif ! logs_moved "$stub_dir/logs" "$log_glob"; then
+            problem="Chrome's two logs are not under $log_glob, or a log directory outlived the call: $(tr '\n' ' ' <"$stub_dir/logs" 2>/dev/null)"
+          fi
+          ;;
+        protocol-error-no-retry)
+          if [[ $rc -ne 2 ]]; then
+            problem="expected exit 2, got $rc"
+          elif ! grep -qF 'Browser.getVersion failed' "$out"; then
+            problem="no 'Browser.getVersion failed' in the output"
+          elif grep -qF "$retry_line" "$out"; then
+            problem="the protocol error was retried ('$retry_line')"
+          elif [[ "$launches" != 1 ]]; then
+            problem="expected 1 launch, the stub counted $launches"
+          elif ! launch_dump_has "$out" 1 'stub browser: a line on stderr'; then
+            problem="the stub's stderr line is missing from the error dump"
+          fi
+          ;;
+        later-call-no-retry)
+          if [[ $rc -ne 2 ]]; then
+            problem="expected exit 2, got $rc"
+          elif grep -qF "$retry_line" "$out"; then
+            problem="a later call was retried ('$retry_line')"
+          elif [[ "$launches" != 1 ]]; then
+            problem="expected 1 launch, the stub counted $launches"
+          elif ! grep -qF 'Chrome closed the DevTools pipe' "$out"; then
+            problem="no 'Chrome closed the DevTools pipe' in the output"
+          elif ! grep -qE '^reflow: no answer after [0-9.]+ s on launch 1 of 2 \(budget 30 s\): ' "$out"; then
+            problem="no probe line of the later call with its 30 s budget"
+          fi
+          ;;
+        exits-at-once)
+          if [[ $rc -ne 2 ]]; then
+            problem="expected exit 2, got $rc"
+          elif grep -qF 'Traceback' "$out"; then
+            problem="a Traceback in the output (the early exit was not a launch failure)"
+          elif ! grep -qF 'on launch 2 of 2' "$out"; then
+            problem="no 'on launch 2 of 2' in the output"
+          elif [[ "$launches" != 2 ]]; then
+            problem="expected 2 launches, the stub counted $launches"
+          fi
+          ;;
+        default-budget)
+          if [[ $rc -ne 2 ]]; then
+            problem="expected exit 2, got $rc"
+          elif grep -qF 'Traceback' "$out"; then
+            problem="a Traceback in the output"
+          elif [[ "$launches" != 2 ]]; then
+            problem="expected 2 launches, the stub counted $launches"
+          elif ! grep -qE '^reflow: no answer after [0-9.]+ s on launch 1 of 2 \(budget 75 s\): ' "$out"; then
+            problem="launch 1 did not run with the default 75 s budget"
+          elif ! grep -qE '^reflow: no answer after [0-9.]+ s on launch 2 of 2 \(budget 75 s\): ' "$out"; then
+            problem="launch 2 did not run with the default 75 s budget"
+          fi
+          ;;
+        slow-first-answer)
+          if [[ $rc -ne 2 ]]; then
+            problem="expected exit 2, got $rc"
+          elif grep -qF "$retry_line" "$out"; then
+            problem="the slow first answer was retried ('$retry_line')"
+          elif [[ "$launches" != 1 ]]; then
+            problem="expected 1 launch, the stub counted $launches"
+          elif ! grep -qF 'Chrome closed the DevTools pipe' "$out"; then
+            problem="no 'Chrome closed the DevTools pipe' (the later call) in the output"
+          elif ! grep -qE "^reflow: first answer after 0\.[0-9]+ s on launch 1 of 2 \(budget 1 s, Chrome log [0-9]+ lines in $log_line\)\$" "$out"; then
+            problem="no 'first answer after 0.' line with the 1 s budget and the log directory"
+          elif ! awk '/^reflow: no answer after 0\.[0-9]+ s on launch 1 of 2 \(budget 1 s\): /{p = 1}
+              /^reflow: first answer after /{ok = p; exit}
+              END{exit !ok}' "$out"; then
+            problem="no probe line before the first answer"
+          elif ! awk 'f{ok = index($0, "reflow: Chrome log of launch 1 of 2 (") == 1; exit}
+              /^reflow: first answer after /{f = 1}
+              END{exit !ok}' "$out"; then
+            problem="no Chrome log dump right after the slow first answer"
+          fi
+          ;;
+      esac
+      # Every logged PID must be gone. A survivor is killed here, so a red
+      # case leaves no stub behind.
+      if [[ -f "$stub_dir/launches" ]]; then
+        while read -r pid; do
+          if kill -0 "$pid" 2>/dev/null; then
+            [[ -z "$problem" ]] && problem="stub browser PID $pid still alive after sitecheck returned"
+            kill "$pid" 2>/dev/null
+          fi
+        done <"$stub_dir/launches"
+      fi
+      if [[ -z "$problem" ]]; then
+        echo "ok   reflow-launch/$name (exit $rc, $launches launch(es), all reaped)"
+        n_passed=$((n_passed + 1))
+      else
+        echo "FAIL reflow-launch/$name: $problem; output:"
+        sed 's/^/     | /' "$out"
+        n_failed=$((n_failed + 1))
+      fi
+      rm -rf "$stub_dir"
+    done
 
-  # reflow-launch/first-answer-epipe: the write side of an early exit,
-  # deterministically. The real DevTools client gets a command pipe whose
-  # read end is closed, so the write of the first command meets EPIPE:
-  # first_answer must turn it into the retried NoAnswerError naming the
-  # closed pipe, and a later call (send) must keep the BrokenPipeError.
-  # The budget the probe names must be first_answer's even then (1 s).
-  # -B: the import writes no tools/__pycache__, which the guard would fail.
-  python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
+    # reflow-launch/first-answer-epipe: the write side of an early exit,
+    # deterministically. The real DevTools client gets a command pipe whose
+    # read end is closed, so the write of the first command meets EPIPE:
+    # first_answer must turn it into the retried NoAnswerError naming the
+    # closed pipe, and a later call (send) must keep the BrokenPipeError.
+    # The budget the probe names must be first_answer's even then (1 s).
+    # -B: the import writes no tools/__pycache__, which the guard would fail.
+    python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
 import importlib.util
 import os
 import sys
@@ -4480,44 +4952,44 @@ for name, call in (
         print(f"{name}: returned")
     print(f"{name} budget: {tools.budget:g}")
 PY
-  if ! grep -qxF 'first_answer: NoAnswerError: reflow: Chrome closed the DevTools pipe' "$out"; then
-    echo "FAIL reflow-launch/first-answer-epipe: first_answer did not turn EPIPE on the first write into NoAnswerError; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  elif ! grep -qE '^send: BrokenPipeError: ' "$out"; then
-    echo "FAIL reflow-launch/first-answer-epipe: a later call no longer raises BrokenPipeError; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  elif ! grep -qxF 'first_answer budget: 1' "$out"; then
-    echo "FAIL reflow-launch/first-answer-epipe: after EPIPE the probe would not name first_answer's budget; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  else
-    echo "ok   reflow-launch/first-answer-epipe (first write EPIPE: NoAnswerError; later write: BrokenPipeError)"
-    n_passed=$((n_passed + 1))
-  fi
+    if ! grep -qxF 'first_answer: NoAnswerError: reflow: Chrome closed the DevTools pipe' "$out"; then
+      echo "FAIL reflow-launch/first-answer-epipe: first_answer did not turn EPIPE on the first write into NoAnswerError; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    elif ! grep -qE '^send: BrokenPipeError: ' "$out"; then
+      echo "FAIL reflow-launch/first-answer-epipe: a later call no longer raises BrokenPipeError; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    elif ! grep -qxF 'first_answer budget: 1' "$out"; then
+      echo "FAIL reflow-launch/first-answer-epipe: after EPIPE the probe would not name first_answer's budget; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   reflow-launch/first-answer-epipe (first write EPIPE: NoAnswerError; later write: BrokenPipeError)"
+      n_passed=$((n_passed + 1))
+    fi
 
-  # reflow-launch/first-answer-deadline: the deadline first_answer waits
-  # is its own budget, not REFLOW_TIMEOUT. default-budget above pins the
-  # budget the probe line names, which a deadline taken from REFLOW_TIMEOUT
-  # (alone or as a min with the budget) would still print. Here the real
-  # DevTools client waits on a pipe that never answers, with REFLOW_TIMEOUT
-  # patched to 0.1 s, and first_answer(0.5) must raise NoAnswerError after
-  # 0.45 to 2.5 s. Lower bound: the code raises once the monotonic clock
-  # passes a deadline set after the timer starts, so it cannot wait less
-  # than 0.5 s, and both wrong deadlines above wait 0.1 s. Upper bound: a
-  # deadline of 5 times the budget or more (the budget times 5 waits
-  # 2.5 s, times 10 waits 5 s, a fixed REFLOW_LAUNCH_TIMEOUT 75 s) waits
-  # past 2.5 s, while 2.5 s leaves 2 s, four times the wait itself, above
-  # the 0.5 s deadline for a slow runner's wake-up (CI measured 0.500 s,
-  # 0.60 s for the whole case). The upper bound does NOT catch the budget
-  # times 2 to 4 (1 s to 2 s). A second sub-case patches REFLOW_TIMEOUT to
-  # 5 s and requires the same 2.5 s: the additive form, the budget plus
-  # REFLOW_TIMEOUT, waits 0.6 s at 0.1 s and passes the first sub-case, but
-  # waits 5.5 s here. In production that form would be 105 s per launch and
-  # break the 7-minute cap row. The real code still waits 0.5 s. -B as
-  # above.
-  python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
+    # reflow-launch/first-answer-deadline: the deadline first_answer waits
+    # is its own budget, not REFLOW_TIMEOUT. default-budget above pins the
+    # budget the probe line names, which a deadline taken from REFLOW_TIMEOUT
+    # (alone or as a min with the budget) would still print. Here the real
+    # DevTools client waits on a pipe that never answers, with REFLOW_TIMEOUT
+    # patched to 0.1 s, and first_answer(0.5) must raise NoAnswerError after
+    # 0.45 to 2.5 s. Lower bound: the code raises once the monotonic clock
+    # passes a deadline set after the timer starts, so it cannot wait less
+    # than 0.5 s, and both wrong deadlines above wait 0.1 s. Upper bound: a
+    # deadline of 5 times the budget or more (the budget times 5 waits
+    # 2.5 s, times 10 waits 5 s, a fixed REFLOW_LAUNCH_TIMEOUT 75 s) waits
+    # past 2.5 s, while 2.5 s leaves 2 s, four times the wait itself, above
+    # the 0.5 s deadline for a slow runner's wake-up (CI measured 0.500 s,
+    # 0.60 s for the whole case). The upper bound does NOT catch the budget
+    # times 2 to 4 (1 s to 2 s). A second sub-case patches REFLOW_TIMEOUT to
+    # 5 s and requires the same 2.5 s: the additive form, the budget plus
+    # REFLOW_TIMEOUT, waits 0.6 s at 0.1 s and passes the first sub-case, but
+    # waits 5.5 s here. In production that form would be 105 s per launch and
+    # break the 7-minute cap row. The real code still waits 0.5 s. -B as
+    # above.
+    python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
 import importlib.util
 import os
 import sys
@@ -4553,36 +5025,36 @@ else:
     print("first_answer additive: returned")
 print(f"waited additive: {time.monotonic() - start:.3f}")
 PY
-  if ! grep -qxF 'first_answer: NoAnswerError: reflow: no answer from Chrome within 0.5 s' "$out"; then
-    echo "FAIL reflow-launch/first-answer-deadline: first_answer(0.5) on a silent pipe did not raise NoAnswerError naming its 0.5 s budget; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  elif ! awk '$1 == "waited:" && $2 >= 0.45 { ok = 1 } END { exit !ok }' "$out"; then
-    echo "FAIL reflow-launch/first-answer-deadline: first_answer(0.5) gave up before 0.45 s (its deadline is not its budget; REFLOW_TIMEOUT patched to 0.1); output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  elif ! awk '$1 == "waited:" && $2 <= 2.5 { ok = 1 } END { exit !ok }' "$out"; then
-    echo "FAIL reflow-launch/first-answer-deadline: first_answer(0.5) waited more than 2.5 s (its deadline is not its budget but 5 times it or more); output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  elif ! grep -qxF 'first_answer additive: NoAnswerError: reflow: no answer from Chrome within 0.5 s' "$out"; then
-    echo "FAIL reflow-launch/first-answer-deadline: first_answer(0.5) with REFLOW_TIMEOUT 5 did not raise NoAnswerError naming its 0.5 s budget; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  elif ! awk '$1 == "waited" && $2 == "additive:" && $3 <= 2.5 { ok = 1 } END { exit !ok }' "$out"; then
-    echo "FAIL reflow-launch/first-answer-deadline: first_answer(0.5) with REFLOW_TIMEOUT 5 waited more than 2.5 s (its deadline adds REFLOW_TIMEOUT to the budget); output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  else
-    echo "ok   reflow-launch/first-answer-deadline (first_answer(0.5) with REFLOW_TIMEOUT 0.1: $(awk '$1 == "waited:" { print $2 }' "$out") s, with 5: $(awk '$1 == "waited" && $2 == "additive:" { print $3 }' "$out") s)"
-    n_passed=$((n_passed + 1))
-  fi
+    if ! grep -qxF 'first_answer: NoAnswerError: reflow: no answer from Chrome within 0.5 s' "$out"; then
+      echo "FAIL reflow-launch/first-answer-deadline: first_answer(0.5) on a silent pipe did not raise NoAnswerError naming its 0.5 s budget; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    elif ! awk '$1 == "waited:" && $2 >= 0.45 { ok = 1 } END { exit !ok }' "$out"; then
+      echo "FAIL reflow-launch/first-answer-deadline: first_answer(0.5) gave up before 0.45 s (its deadline is not its budget; REFLOW_TIMEOUT patched to 0.1); output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    elif ! awk '$1 == "waited:" && $2 <= 2.5 { ok = 1 } END { exit !ok }' "$out"; then
+      echo "FAIL reflow-launch/first-answer-deadline: first_answer(0.5) waited more than 2.5 s (its deadline is not its budget but 5 times it or more); output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    elif ! grep -qxF 'first_answer additive: NoAnswerError: reflow: no answer from Chrome within 0.5 s' "$out"; then
+      echo "FAIL reflow-launch/first-answer-deadline: first_answer(0.5) with REFLOW_TIMEOUT 5 did not raise NoAnswerError naming its 0.5 s budget; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    elif ! awk '$1 == "waited" && $2 == "additive:" && $3 <= 2.5 { ok = 1 } END { exit !ok }' "$out"; then
+      echo "FAIL reflow-launch/first-answer-deadline: first_answer(0.5) with REFLOW_TIMEOUT 5 waited more than 2.5 s (its deadline adds REFLOW_TIMEOUT to the budget); output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   reflow-launch/first-answer-deadline (first_answer(0.5) with REFLOW_TIMEOUT 0.1: $(awk '$1 == "waited:" { print $2 }' "$out") s, with 5: $(awk '$1 == "waited" && $2 == "additive:" { print $3 }' "$out") s)"
+      n_passed=$((n_passed + 1))
+    fi
 
-  # reflow-launch/log-dir-fallback: where REFLOW_LOG_DIR is missing, is no
-  # tmpfs mount (a plain directory), or is one in which no directory can be
-  # made, reflow_log_dir keeps Chrome's logs in the work directory and
-  # raises nothing. never-answers above proves the tmpfs side.
-  python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
+    # reflow-launch/log-dir-fallback: where REFLOW_LOG_DIR is missing, is no
+    # tmpfs mount (a plain directory), or is one in which no directory can be
+    # made, reflow_log_dir keeps Chrome's logs in the work directory and
+    # raises nothing. never-answers above proves the tmpfs side.
+    python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
 import importlib.util
 import shutil
 import sys
@@ -4611,71 +5083,84 @@ try:
 finally:
     shutil.rmtree(work)
 PY
-  if [[ "$(cat "$out")" != $'missing: work\nnot-tmpfs: work\nno-mkdir: work' ]]; then
-    echo "FAIL reflow-launch/log-dir-fallback: reflow_log_dir did not fall back to the work directory; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
-  else
-    echo "ok   reflow-launch/log-dir-fallback (missing, not a tmpfs, no directory made: work directory)"
-    n_passed=$((n_passed + 1))
+    if [[ "$(cat "$out")" != $'missing: work\nnot-tmpfs: work\nno-mkdir: work' ]]; then
+      echo "FAIL reflow-launch/log-dir-fallback: reflow_log_dir did not fall back to the work directory; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   reflow-launch/log-dir-fallback (missing, not a tmpfs, no directory made: work directory)"
+      n_passed=$((n_passed + 1))
+    fi
   fi
 
-  # search-oracle/tables (M4 PR 4): the oracle's own tables against
-  # sitecheck's and the script's, member by member (search_oracle_tables).
-  search_oracle_tables "$SELFTEST_ROOT/tools/sitecheck.py" \
-    "$SELFTEST_ROOT/assets/js/search.js" "$SELFTEST_ROOT/docs/adr/0005-search.md" >"$out" 2>&1
-  sed -n '/^ok   \|^FAIL /p' "$out"
-  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
-  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if ! grep -qE '^(ok   |FAIL )search-oracle/tables' "$out"; then
-    echo "FAIL search-oracle/tables: the runner did not finish; output:"
-    sed 's/^/     | /' "$out"
-    n_failed=$((n_failed + 1))
+  if selftest_wants search-oracle; then
+    # search-oracle/tables (M4 PR 4): the oracle's own tables against
+    # sitecheck's and the script's, member by member (search_oracle_tables).
+    search_oracle_tables "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$SELFTEST_ROOT/assets/js/search.js" "$SELFTEST_ROOT/docs/adr/0005-search.md" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )search-oracle/tables' "$out"; then
+      echo "FAIL search-oracle/tables: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
   fi
 
-  # reflow-search/<row> (M4 PR 4, CI only): reflow case (8) branch by
-  # branch from tests/fixtures/reflow/search-cases.tsv on a copy of
-  # reflow/pass-search with today's search.js (reflow_search_runner),
-  # counted with the reflow fixtures.
-  local search_rows search_chrome
-  search_rows="$(grep -cv '^#\|^$' "$FIXTURES/reflow/search-cases.tsv")"
-  reflow_total=$((reflow_total + search_rows))
-  if in_github_actions; then
-    if search_chrome="$(command -v google-chrome || command -v google-chrome-stable)"; then
-      reflow_search_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
-        "$FIXTURES/reflow/search-cases.tsv" "$FIXTURES/reflow/pass-search" \
-        "$SELFTEST_ROOT/assets/js/search.js" "$search_chrome" >"$out" 2>&1
-      sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
-      n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
-      n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-      reflow_run=$((reflow_run + $(grep '^\(ok   \|FAIL \)reflow-search/' "$out" \
-        | grep -cv '^\(ok   \|FAIL \)reflow-search/table')))
-      if ! grep -qE '^(ok   |FAIL )reflow-search/table' "$out"; then
-        echo "FAIL reflow-search: the runner did not finish; output:"
-        sed 's/^/     | /' "$out"
+  if selftest_wants reflow-search; then
+    # reflow-search/<row> (M4 PR 4, CI only): reflow case (8) branch by
+    # branch from tests/fixtures/reflow/search-cases.tsv on a copy of
+    # reflow/pass-search with today's search.js (reflow_search_runner),
+    # counted with the reflow fixtures.
+    local search_rows search_chrome
+    search_rows="$(grep -cv '^#\|^$' "$FIXTURES/reflow/search-cases.tsv")"
+    reflow_total=$((reflow_total + search_rows))
+    if in_github_actions; then
+      if search_chrome="$(command -v google-chrome || command -v google-chrome-stable)"; then
+        reflow_search_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+          "$FIXTURES/reflow/search-cases.tsv" "$FIXTURES/reflow/pass-search" \
+          "$SELFTEST_ROOT/assets/js/search.js" "$search_chrome" >"$out" 2>&1
+        sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+        n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+        n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+        reflow_run=$((reflow_run + $(grep '^\(ok   \|FAIL \)reflow-search/' "$out" \
+          | grep -cv '^\(ok   \|FAIL \)reflow-search/table')))
+        if ! grep -qE '^(ok   |FAIL )reflow-search/table' "$out"; then
+          echo "FAIL reflow-search: the runner did not finish; output:"
+          sed 's/^/     | /' "$out"
+          n_failed=$((n_failed + 1))
+        fi
+      else
+        echo "FAIL reflow-search: Google Chrome not found; in CI case (8) must run"
         n_failed=$((n_failed + 1))
       fi
     else
-      echo "FAIL reflow-search: Google Chrome not found; in CI case (8) must run"
-      n_failed=$((n_failed + 1))
+      echo "NOT RUN reflow-search/* ($search_rows rows, CI only)"
     fi
-  else
-    echo "NOT RUN reflow-search/* ($search_rows rows, CI only)"
   fi
 
-  if [[ $html_total -eq 0 ]]; then
+  if selftest_wants selftest-only; then
+    selftest_only_rows
+  fi
+
+  # The closing invariants hold for the suites that ran: the html pair when
+  # html is selected, the reflow pair when reflow or reflow-search is.
+  local want_reflow=0
+  selftest_wants reflow reflow-search && want_reflow=1
+  if selftest_wants html && [[ $html_total -eq 0 ]]; then
     echo "FAIL: no html fixtures found"
     n_failed=$((n_failed + 1))
   fi
-  if [[ $reflow_total -eq 0 ]]; then
+  if [[ $want_reflow -eq 1 && $reflow_total -eq 0 ]]; then
     echo "FAIL: no reflow fixtures found"
     n_failed=$((n_failed + 1))
   fi
-  if in_github_actions && [[ $html_run -ne $html_total ]]; then
+  if selftest_wants html && in_github_actions && [[ $html_run -ne $html_total ]]; then
     echo "FAIL: only $html_run of $html_total html fixtures ran in CI"
     n_failed=$((n_failed + 1))
   fi
-  if in_github_actions && [[ $reflow_run -ne $reflow_total ]]; then
+  if [[ $want_reflow -eq 1 ]] && in_github_actions && [[ $reflow_run -ne $reflow_total ]]; then
     echo "FAIL: only $reflow_run of $reflow_total reflow fixtures ran in CI"
     n_failed=$((n_failed + 1))
   fi
@@ -4685,9 +5170,6 @@ PY
   if ! in_github_actions && [[ $reflow_total -gt 0 ]]; then
     echo "$REFLOW_NOT_RUN_LINE"
   fi
-
-  echo "selftest: $n_passed passed, $n_failed failed, html fixtures run: $html_run of $html_total, reflow fixtures run: $reflow_run of $reflow_total"
-  [[ $n_failed -eq 0 ]]
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
