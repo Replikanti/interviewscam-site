@@ -6,20 +6,20 @@ name: lighthouse
 # checkout, and it sees only the artifact of `build` (public/ and tools/ of
 # the public checkout).
 #
-# Not a required check (ADR-0003 part 4). Record-only PRs are measured by
-# the push run on main after the merge.
+# Not a required check (ADR-0003 part 4). Weekly and on manual start, not
+# on every push to main (ADR-0007 part 6): Pages is off until M6, and the
+# records grow one PR at a time, so a budget breach shows up gradually.
+# The job build also re-checks main's records weekly. No concurrency
+# group: a dispatch never cancels the weekly run.
 on:
-  push:
-    branches: [main]
+  schedule:
+    # Mondays 07:47 UTC, 90 minutes after links-external (06:17, at most
+    # 10 minutes), off the hour to avoid the scheduler's peak.
+    - cron: "47 7 * * 1"
   workflow_dispatch:
 
 permissions:
   contents: read
-
-# A newer push to the same ref makes the older run's result moot.
-concurrency:
-  group: lighthouse-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   # Load-bearing job names: the guard reads this file, and ADR-0003 names

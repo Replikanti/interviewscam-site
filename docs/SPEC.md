@@ -197,7 +197,7 @@ Accounts and logins, an API beyond the JSON feed, MCP server, browser extension,
 3. **Data**: schema, report and campaign pages, JSON feed, structured data, state chips, artifact code boxes and the Copy button.
 4. **Search**: static index and the no-JavaScript fallback.
 5. **Seed content**: the three campaign families from §1 with sources, and the Saifuro report. The operator supplies the Saifuro artifacts (meeting domain, messages).
-6. **Launch**, mostly manual: domain verification, the Pages DNS records, HTTPS, Search Console, and the link on the org profile.
+6. **Launch**, mostly manual: the records repo's deploy workflow (ADR-0007 part 6), domain verification, the Pages DNS records, HTTPS, Search Console, and the link on the org profile.
 
 Added 2026-11-11, between milestones 5 and 6: **Report and correction form** (Replikanti/interviewscam#13, [ADR-0006](adr/0006-intake-form.md); **Depends on:** Replikanti/interviewscam#3): the intake Worker and its deploy tool, the forms on Report a scam and Corrections with their result pages, the move of DNS and mail to Cloudflare, and the privacy page update. It sets up the mail routing of the address in place of the Namecheap mail forwarding that milestone 6 listed; the cutover found that no such forwarding had ever been set up.
 

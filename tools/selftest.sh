@@ -1869,10 +1869,12 @@ PY
 # run on a temporary git work tree with one workflow and one static page
 # (guard_hugo_config stubbed, so no Hugo is needed), must call
 # guard_public_tree with that root and git's listing
-# (wiring/guard-public-tree-called) and guard_workflows must call
+# (wiring/guard-public-tree-called), guard_workflows must call
 # guard_workflow_hardening with the workflow's path and text
-# (wiring/guard-workflow-hardening-called). Recorders replace both
-# functions, so a cmd_guard that drops either call turns its line red.
+# (wiring/guard-workflow-hardening-called), and cmd_guard must call
+# guard_records_templates with the root (wiring/guard-records-templates-
+# called, ADR-0007 part 5). Recorders replace the three functions, so a
+# cmd_guard that drops a call turns its line red.
 guard_wiring_runner() {
   python3 -I -B - "$1" <<'PY'
 import argparse
@@ -1887,8 +1889,9 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
 sitecheck = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sitecheck)
-calls = {"tree": [], "hardening": []}
+calls = {"tree": [], "hardening": [], "templates": []}
 sitecheck.guard_public_tree = lambda root, files, findings: calls["tree"].append((root, files))
+sitecheck.guard_records_templates = lambda root, findings: calls["templates"].append(root)
 sitecheck.guard_workflow_hardening = lambda rel, text, findings: calls["hardening"].append((rel, text))
 sitecheck.guard_hugo_config = lambda root, hugo_bin, findings: None
 workflow = "name: x\non: push\npermissions:\n  contents: read\njobs: {}\n"
@@ -1908,25 +1911,121 @@ print(f"ok   wiring/guard-public-tree-called (cmd_guard passes the root and git'
 ok = calls["hardening"] == [(".github/workflows/x.yml", workflow)]
 print(f"ok   wiring/guard-workflow-hardening-called (guard_workflows passes each workflow)"
       if ok else f"FAIL wiring/guard-workflow-hardening-called: calls {calls['hardening']}")
+ok = calls["templates"] == [root]
+print(f"ok   wiring/guard-records-templates-called (cmd_guard passes the root)"
+      if ok else f"FAIL wiring/guard-records-templates-called: calls {calls['templates']}")
+PY
+}
+
+# guard_templates_runner <sitecheck.py> <records-repo fixtures> (ADR-0007
+# part 5, Replikanti/interviewscam#38 PR E): guard_records_templates on a
+# temporary root per case, which must give exactly the case's findings.
+# The template directory holds the three real templates (pass-real), one
+# of them with one byte appended (fail-byte-*), an unpinned extra.yml, the
+# retired deploy.yml template of PR C byte for byte (fail-retired-deploy,
+# tests/fixtures/records-repo/retired-deploy.yml, held to its old SHA-256
+# here so it cannot drift), a symlink in place of a template, or lacks one
+# template (fail-missing-*); a root without the template directory (the
+# guard fixtures) gives no finding. One ok/FAIL line per case.
+guard_templates_runner() {
+  python3 -I -B - "$@" <<'PY'
+import hashlib
+import importlib.util
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+fixtures = Path(sys.argv[2])
+real = Path(sys.argv[1]).resolve().parent.parent / sitecheck.RECORDS_TEMPLATE_DIR
+retired = fixtures / "retired-deploy.yml"
+RETIRED_SHA256 = "3922286571a3828e6c362b87cbc44c170f3f574ef39b98fbf5a1805b5c0a85d3"
+UNPINNED = "a records workflow template that is not pinned"
+MISMATCH = "the records workflow template's SHA-256 is"
+MISSING = "a pinned records workflow template is missing"
+NOT_FILE = "a records workflow template must be a regular file"
+KINDS = (UNPINNED, MISMATCH, MISSING, NOT_FILE)
+D = sitecheck.RECORDS_TEMPLATE_DIR
+
+
+def tree(tmp, edit):
+    root = Path(tmp)
+    if edit == "no-dir":
+        return root
+    base = root / D
+    base.mkdir(parents=True)
+    for name in sitecheck.RECORDS_WORKFLOWS:
+        shutil.copyfile(real / name, base / name)
+    kind, _, name = edit.partition(" ")
+    if kind == "byte":
+        with open(base / name, "ab") as handle:
+            handle.write(b"#")
+    elif kind == "missing":
+        (base / name).unlink()
+    elif kind == "extra":
+        (base / name).write_bytes(b"name: extra\n")
+    elif kind == "retired":
+        shutil.copyfile(retired, base / name)
+    elif kind == "symlink":
+        (base / name).unlink()
+        (base / name).symlink_to(real / name)
+    return root
+
+
+cases = {"pass-real": ("real", set()), "pass-no-template-dir": ("no-dir", set()),
+         "fail-unpinned-extra": ("extra extra.yml", {(f"{D}/extra.yml", UNPINNED)}),
+         "fail-retired-deploy": ("retired deploy.yml", {(f"{D}/deploy.yml", UNPINNED)}),
+         "fail-symlink-ci": ("symlink ci.yml", {(f"{D}/ci.yml", NOT_FILE)})}
+for name in sitecheck.RECORDS_WORKFLOWS:
+    stem = name.removesuffix(".yml")
+    cases[f"fail-byte-{stem}"] = (f"byte {name}", {(f"{D}/{name}", MISMATCH)})
+    cases[f"fail-missing-{stem}"] = (f"missing {name}", {(f"{D}/{name}", MISSING)})
+if hashlib.sha256(retired.read_bytes()).hexdigest() != RETIRED_SHA256:
+    print("FAIL guard-records-templates/retired-fixture: retired-deploy.yml is not the "
+          "template of PR C byte for byte")
+for case, (edit, want) in cases.items():
+    with tempfile.TemporaryDirectory() as tmp:
+        findings = sitecheck.Findings()
+        sitecheck.guard_records_templates(tree(tmp, edit), findings)
+    got = set()
+    for item in findings.items:
+        where, message = item[len("FAIL: "):].split(": ", 1)
+        got.add((where, next((k for k in KINDS if message.startswith(k)), message)))
+    if got == want:
+        print(f"ok   guard-records-templates/{case} ({len(want)} finding(s))")
+    else:
+        print(f"FAIL guard-records-templates/{case}: {findings.items}")
+print(f"ok   guard-records-templates/table ({len(cases)} cases)")
 PY
 }
 
 # records_repo_runner <sitecheck.py> <pins.env> case <dir> | table <tsv>
 # <base dir> | wiring <base dir> (ADR-0007 part 5, Replikanti/interviewscam#38
 # PR C): `sitecheck records-repo` on a fake records repo. Every run gets a
-# throwaway public checkout (a git work tree holding tools/pins.env, one
-# commit) and a copy of the case in its own git work tree, untracked (the
-# rule reads git's listing, tracked and untracked alike). The fixture pin
-# RECORDS_FIXTURE_PIN in the case's workflows is set to that checkout's
-# HEAD, so pass-shapes/ stays the canonical set of the private workflows
-# that PR D copies with the real pin. case: prints the output and exits
-# with the check's exit code (the fixture loop judges it). table: one line
-# per row of tests/fixtures/records-repo/cases.tsv on a copy of the base
-# case, each row one edit; a find string absent or present twice fails the
-# row. wiring: cmd_records_repo must hand every workflow of the records repo
-# to guard_workflows in records mode, which calls guard_workflow_hardening
-# (PR B's shared rules) and records_workflow_rules on each, and
-# guard_lighthouse_workflow in records mode. -B: no tools/__pycache__.
+# throwaway public checkout (a git work tree holding tools/pins.env and the
+# canonical templates of RECORDS_TEMPLATE_DIR, copied from this checkout,
+# one commit) and a copy of the case in its own git work tree, untracked
+# (the rule reads git's listing, tracked and untracked alike). A case with
+# no .github/ (pass-empty, pass-records) gets the same templates as its
+# workflows, so it stays a layout case: the identity rule (PR E) requires
+# every canonical workflow. The fixture pin RECORDS_FIXTURE_PIN in the
+# case's workflows is set to that checkout's HEAD, so pass-shapes/ stays
+# the canonical set of the private workflows that the pin bump copies with
+# the real pin. Every read and write keeps the bytes (no newline
+# translation), so a CR row reaches the check as written. case: prints the
+# output and exits with the check's exit code (the fixture loop judges
+# it). table: one line per row of tests/fixtures/records-repo/cases.tsv on
+# a copy of the base case, each row one edit; a find string absent or
+# present twice fails the row. wiring: cmd_records_repo must hand every
+# workflow of the records repo to guard_workflows in records mode, which
+# calls guard_workflow_hardening (PR B's shared rules) and
+# records_workflow_rules on each, guard_lighthouse_workflow in records
+# mode, and records_workflow_identity with the root, the records repo,
+# git's listing and the pin; the runner's PIN must be
+# RECORDS_FIXTURE_PIN. -B: no tools/__pycache__.
 records_repo_runner() {
   python3 -I -B - "$@" <<'PY'
 import argparse
@@ -1934,6 +2033,7 @@ import contextlib
 import importlib.util
 import io
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1942,6 +2042,9 @@ from pathlib import Path
 
 SITECHECK, PINS, MODE = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
 PIN = "0123456789abcdef0123456789abcdef01234567"  # RECORDS_FIXTURE_PIN
+# The canonical templates (RECORDS_TEMPLATE_DIR) of this checkout.
+TEMPLATE_DIR = "tests/fixtures/records-repo/pass-shapes/.github/workflows"
+TEMPLATES = Path(SITECHECK).resolve().parent.parent / TEMPLATE_DIR
 GIT = ["git", "-c", "user.name=selftest", "-c", "user.email=selftest@example.invalid",
        "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"]
 MARKERS = ("expect.txt",)
@@ -1951,10 +2054,23 @@ def git(*args):
     subprocess.run([*GIT, *args], check=True, capture_output=True)
 
 
-def public_root(tmp):
+def public_root(tmp, form=None, name=None):
+    """The throwaway public checkout: tools/pins.env and the templates, one
+    commit. form template-missing leaves the template name out,
+    template-edited appends one byte to it, before the commit."""
     root = tmp / "public"
     (root / "tools").mkdir(parents=True)
     shutil.copy(PINS, root / "tools" / "pins.env")
+    templates = root / TEMPLATE_DIR
+    templates.mkdir(parents=True)
+    for path in sorted(TEMPLATES.iterdir()):
+        if path.is_file() and not path.is_symlink():
+            shutil.copyfile(path, templates / path.name)
+    if form == "template-missing":
+        (templates / name).unlink()
+    elif form == "template-edited":
+        with open(templates / name, "ab") as handle:
+            handle.write(b"#")
     git("-C", str(root), "init", "-q")
     git("-C", str(root), "add", "-A")
     git("-C", str(root), "commit", "-q", "-m", "fixture public checkout")
@@ -1968,6 +2084,8 @@ def records_dir(tmp, case):
     shutil.copytree(case, rdir, symlinks=True)
     for name in MARKERS:
         (rdir / name).unlink(missing_ok=True)
+    if not (rdir / ".github").exists():
+        shutil.copytree(TEMPLATES, rdir / ".github" / "workflows")
     return rdir
 
 
@@ -1976,8 +2094,8 @@ def set_pin(rdir, sha):
     if workflows.is_dir():
         for path in workflows.iterdir():
             if path.is_file() and not path.is_symlink():
-                path.write_text(path.read_text(encoding="utf-8").replace(PIN, sha),
-                                encoding="utf-8")
+                path.write_bytes(path.read_bytes().replace(PIN.encode("ascii"),
+                                                           sha.encode("ascii")))
 
 
 def run(root, rdir, sha):
@@ -1988,8 +2106,9 @@ def run(root, rdir, sha):
 
 
 def unescape(text):
-    return text.replace("\\n", "\n").replace("{PIN39}", PIN[:39]).replace(
+    text = text.replace("\\n", "\n").replace("{PIN39}", PIN[:39]).replace(
         "{PINUP}", PIN.upper()).replace("{PIN}", PIN)
+    return re.sub(r"\{U\+([0-9A-F]{4,6})\}", lambda m: chr(int(m.group(1), 16)), text)
 
 
 _module = []
@@ -2028,8 +2147,13 @@ if MODE == "wiring":
     spec = importlib.util.spec_from_file_location("sitecheck", SITECHECK)
     sitecheck = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(sitecheck)
-    calls = {"hardening": [], "records": [], "lighthouse": []}
+    calls = {"hardening": [], "records": [], "lighthouse": [], "identity": []}
     sitecheck.guard_workflow_hardening = lambda rel, text, findings: calls["hardening"].append(rel)
+
+    def identity(root, rdir, files, sha, findings):
+        calls["identity"].append((root, rdir, list(files), sha))
+        return 0
+    sitecheck.records_workflow_identity = identity
     sitecheck.records_workflow_rules = (
         lambda rel, text, sha, findings: calls["records"].append((rel, sha)))
     sitecheck.guard_lighthouse_workflow = (
@@ -2043,6 +2167,10 @@ if MODE == "wiring":
         git("-C", str(rdir), "init", "-q")
         with contextlib.redirect_stdout(io.StringIO()):
             sitecheck.cmd_records_repo(argparse.Namespace(root=str(root), dir=str(rdir), sha=sha))
+        listing = subprocess.run(["git", "-C", str(rdir), "ls-files", "-z", "--cached", "--others",
+                                  "--exclude-standard"], check=True, capture_output=True,
+                                 text=True).stdout
+        listing = sorted({p for p in listing.split("\0") if p})
     want = sorted(f".github/workflows/{name}" for name in sitecheck.RECORDS_WORKFLOWS)
     ok = sorted(calls["hardening"]) == want
     print("ok   wiring/records-repo-workflow-hardening-called (every records workflow gets "
@@ -2056,6 +2184,14 @@ if MODE == "wiring":
     print("ok   wiring/records-repo-lighthouse-called (guard_lighthouse_workflow in records "
           "mode)" if ok else
           f"FAIL wiring/records-repo-lighthouse-called: calls {calls['lighthouse']}")
+    ok = calls["identity"] == [(root.resolve(), rdir.resolve(), listing, sha)] and listing
+    print("ok   wiring/records-repo-identity-called (records_workflow_identity gets the root, "
+          "the records repo, git's listing and the pin)" if ok else
+          f"FAIL wiring/records-repo-identity-called: calls {calls['identity']}")
+    ok = PIN == sitecheck.RECORDS_FIXTURE_PIN
+    print("ok   wiring/records-fixture-pin-matches (the runner's PIN is RECORDS_FIXTURE_PIN)"
+          if ok else f"FAIL wiring/records-fixture-pin-matches: {PIN} against "
+          f"{sitecheck.RECORDS_FIXTURE_PIN}")
     sys.exit(0)
 
 table, base = Path(sys.argv[4]), Path(sys.argv[5])
@@ -2090,6 +2226,9 @@ for line in table.read_text(encoding="utf-8").splitlines():
                 stray.write_text("x\n")
             elif find == "head":
                 sha = "1" * 40
+            elif find in ("template-missing", "template-edited"):
+                # Its own public checkout, committed after the change.
+                root, sha = public_root(tmp, find, replace)
             else:
                 bad = f"unknown @root form {find!r}"
         elif rel == "@nested":
@@ -2100,16 +2239,18 @@ for line in table.read_text(encoding="utf-8").splitlines():
                 bad = f"{rel} exists already"
             else:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(replace, encoding="utf-8")
+                path.write_bytes(replace.encode("utf-8"))
         elif find == "*":
             (rdir / rel).unlink()
+        elif find == "=":
+            (rdir / rel).write_bytes(replace.encode("utf-8"))
         else:
             path = rdir / rel
-            text = path.read_text(encoding="utf-8")
+            text = path.read_bytes().decode("utf-8")
             if text.count(find) != 1:
                 bad = f"the find string occurs {text.count(find)} times in {rel}, not once"
             else:
-                path.write_text(text.replace(find, replace), encoding="utf-8")
+                path.write_bytes(text.replace(find, replace).encode("utf-8"))
         if bad:
             print(f"FAIL records-repo/{name}: {bad}")
             continue
@@ -2118,6 +2259,10 @@ for line in table.read_text(encoding="utf-8").splitlines():
         rc, out = run_inline(root, target, sha)
     if expect == "PASS":
         ok = rc == 0
+    elif expect.startswith("ONLY "):
+        # Exactly one finding, the row's: no other rule saw the edit.
+        fails = [out_line for out_line in out.splitlines() if out_line.startswith("FAIL: ")]
+        ok = rc == 1 and len(fails) == 1 and expect[len("ONLY "):] in fails[0]
     else:
         ok = rc == 1 and expect in out
     if ok:
@@ -2494,13 +2639,17 @@ domains = ["records-mode-selftest[.]example"]
 '
   local ok line n
 
-  # e2e-empty: a records repo with no content/ at all.
+  # e2e-empty: a records repo with no content/ at all, and the canonical
+  # workflows at the pin (the identity rule requires every one).
   mkdir -p "$records" && printf '# records\n' >"$records/README.md"
+  cp -R "$fx/records-repo/pass-shapes/.github" "$records/"
+  sed -i "s/0123456789abcdef0123456789abcdef01234567/$sha/" "$records"/.github/workflows/*.yml
   e2e_run
   ok=0
   [[ $rc -eq 0 ]] && grep -qx "RECORDS LOCAL PASS on ${sha:0:12}, HTML validation and reflow not run (CI only)" "$out" \
-    && grep -q '^records checked: 0 ' "$out" && grep -q '^pin checked: ' "$out" && ok=1
-  e2e_report e2e-empty "$ok" "exit $rc, records checked: 0, RECORDS LOCAL PASS on ${sha:0:12}"
+    && grep -q '^records checked: 0 ' "$out" && grep -q '^pin checked: ' "$out" \
+    && grep -q '^records-repo checked: .* 0 records, 3 workflows (3 identical to the templates)' "$out" && ok=1
+  e2e_report e2e-empty "$ok" "exit $rc, records checked: 0, 3 workflows identical to the templates, RECORDS LOCAL PASS on ${sha:0:12}"
 
   # e2e: one record, the canonical workflows at the pin, the policy. The
   # policy retires a slug made up here (no file of the copy holds it), the
@@ -2519,9 +2668,9 @@ domains = ["records-mode-selftest[.]example"]
   ok=0
   [[ $rc -eq 0 ]] && grep -qx "RECORDS LOCAL PASS on ${sha:0:12}, HTML validation and reflow not run (CI only)" "$out" \
     && grep -q '^records checked: 1 (reports 1, campaigns 0)' "$out" \
-    && grep -q '^records-repo checked: .* 1 records, 4 workflows' "$out" \
+    && grep -q '^records-repo checked: .* 1 records, 3 workflows (3 identical to the templates)' "$out" \
     && grep -q '^render checked: 1 records' "$out" && [[ -f "$root/public/reports/records-mode-selftest-name/index.html" ]] && ok=1
-  e2e_report e2e "$ok" "exit $rc, 1 record built and checked, 4 workflows, RECORDS LOCAL PASS"
+  e2e_report e2e "$ok" "exit $rc, 1 record built and checked, 3 workflows identical to the templates, RECORDS LOCAL PASS"
 
   # no-records-copy (fix round 2 of interviewscam-site#12): a passing run
   # leaves no copy of the records repo where an artifact upload could take
@@ -3705,8 +3854,18 @@ PY
   sed -n '/^ok   \|^FAIL /p' "$out"
   n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
   n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-  if [[ $(grep -c '^ok   wiring/guard-' "$out") -ne 2 ]]; then
-    echo "FAIL wiring/guard-public-tree: the wiring runner did not pass both lines; output:"
+  if [[ $(grep -c '^ok   wiring/guard-' "$out") -ne 3 ]]; then
+    echo "FAIL wiring/guard-public-tree: the wiring runner did not pass all three lines; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+  # The template pins of the records workflows (ADR-0007 part 5, PR E).
+  guard_templates_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/records-repo" >"$out" 2>&1
+  sed -n '/^ok   \|^FAIL /p' "$out"
+  n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+  n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+  if ! grep -q '^ok   guard-records-templates/table' "$out"; then
+    echo "FAIL guard-records-templates: the runner did not finish; output:"
     sed 's/^/     | /' "$out"
     n_failed=$((n_failed + 1))
   fi
@@ -3738,7 +3897,8 @@ PY
     runner_out=0
     case "$family" in
       table) grep -qE '^ok   records-repo/table' "$out" && runner_out=1 ;;
-      wiring) [[ $(grep -c '^ok   wiring/records-repo-' "$out") -eq 3 ]] && runner_out=1 ;;
+      wiring) [[ $(grep -c '^ok   wiring/records-repo-' "$out") -eq 4 ]] \
+        && grep -q '^ok   wiring/records-fixture-pin-matches' "$out" && runner_out=1 ;;
       extra) [[ $(grep -c '^ok   pin-extra/' "$out") -eq 14 ]] \
         && grep -q '^ok   pin/cases' "$out" && runner_out=1 ;;
     esac

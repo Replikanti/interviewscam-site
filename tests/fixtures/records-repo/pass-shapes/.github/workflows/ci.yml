@@ -1,13 +1,13 @@
 name: ci
 
-# The required check of the records repo (ADR-0007 part 5): every records
-# PR and every push to main builds the site from the public code repo at
-# the pinned commit and runs every content check on the records. No path
-# filters: branch protection requires the context `check` on every PR.
+# The required check of the records repo (ADR-0007 part 5): every push to
+# a records PR builds the site from the public code repo at the pinned
+# commit and runs every content check on the records. No path filters:
+# branch protection requires the context `check` on every PR. No push
+# trigger: protection is strict and squash-only, so the tree merged to
+# main is the tree of the PR's last green check (ADR-0007 part 6).
 on:
   pull_request:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
@@ -26,7 +26,7 @@ jobs:
         with:
           persist-credentials: false
           path: records
-      # The public code repo at the pin. Every ref: of the four workflows
+      # The public code repo at the pin. Every ref: of the three workflows
       # moves together, in one pin bump PR.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

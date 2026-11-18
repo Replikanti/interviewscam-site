@@ -6583,7 +6583,7 @@ PINNED_ALLOWLISTS = LITERALS_PASSING_SETS + (
     # the closed key sets of its workflows.
     "RECORDS_TOP", "RECORDS_WORKFLOWS", "RECORDS_TOP_KEYS", "RECORDS_JOB_KEYS",
     "RECORDS_STEP_KEYS", "RECORDS_JOB_STEPS", "RECORDS_NEEDS", "RECORDS_WITH",
-    "RECORDS_PERMISSIONS", "RECORDS_JOB_PERMISSIONS", "RECORDS_EXPRESSIONS")
+    "RECORDS_PERMISSIONS", "RECORDS_JOB_PERMISSIONS")
 # L5: the CSS properties and @counter-style descriptors whose strings the
 # browser draws as text.
 CSS_TEXT_PROPERTIES = {"content", "list-style", "list-style-type", "quotes",
@@ -14762,6 +14762,54 @@ def guard_worker_pins(root, findings):
                          "ADR-0006 part 10)")
 
 
+def guard_records_templates(root, findings):
+    """The template pin of the records workflows (ADR-0007 part 5, PR E):
+    every entry of RECORDS_TEMPLATE_DIR, read from the disk, is a regular
+    file named by RECORDS_WORKFLOW_SHA256 with the SHA-256 of its bytes, and
+    every pinned template is there. records-repo compares each private
+    workflow with these bytes, so a template edit changes what the private
+    repo must hold: the pin makes it a tools/ change with the safety-net
+    review. A root without the directory (the guard fixtures of the other
+    rules) gives no finding; records-repo fails closed on a missing
+    template by itself."""
+    base = root / RECORDS_TEMPLATE_DIR
+    if base.is_symlink():
+        findings.add(RECORDS_TEMPLATE_DIR, "the records workflow templates must be a "
+                     f"directory, not a symlink ({RECORDS_WHY})")
+        return
+    if not base.is_dir():
+        return
+    for path in sorted(base.iterdir()):
+        rel = f"{RECORDS_TEMPLATE_DIR}/{path.name}"
+        if path.is_symlink() or not path.is_file():
+            findings.add(rel, "a records workflow template must be a regular file, not a "
+                         f"symlink or a directory (RECORDS_WORKFLOW_SHA256, {RECORDS_WHY})")
+            continue
+        pinned = RECORDS_WORKFLOW_SHA256.get(path.name)
+        if pinned is None:
+            findings.add(rel, "a records workflow template that is not pinned: every file "
+                         "in the template directory is a key of RECORDS_WORKFLOW_SHA256 in "
+                         "tools/sitecheck.py, so adding one is a tools/ change with the "
+                         f"safety-net review; a retired workflow leaves the directory ({RECORDS_WHY})")
+            continue
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            findings.add(rel, f"cannot read a records workflow template: {exc}")
+            continue
+        if digest != pinned:
+            findings.add(rel, f"the records workflow template's SHA-256 is {digest}, not the "
+                         "one pinned in tools/sitecheck.py (RECORDS_WORKFLOW_SHA256); a "
+                         "template edit updates the pin there, so it is a tools/ change with "
+                         f"the safety-net review ({RECORDS_WHY})")
+    for name in RECORDS_WORKFLOW_SHA256:
+        path = base / name
+        if not path.exists() and not path.is_symlink():
+            findings.add(f"{RECORDS_TEMPLATE_DIR}/{name}", "a pinned records workflow template "
+                         "is missing; the records repo must hold every canonical workflow, "
+                         f"and records-repo compares it with this file ({RECORDS_WHY})")
+
+
 # The public-tree guard (ADR-0007 part 4, Replikanti/interviewscam#38 PR B):
 # the public code repo holds no record, draft, intake material or removal
 # entry; those live only in the private records repo and the operator's
@@ -15221,6 +15269,7 @@ def cmd_guard(args):
     guard_lighthouse_workflow(root, files, findings)
     guard_stylesheet_pins(root, findings)
     guard_worker_pins(root, findings)
+    guard_records_templates(root, findings)
     n_workflows = sum(f.startswith(".github/workflows/") for f in files)
     return findings.report(f"guard checked: {len(files)} files, "
                            f"{n_workflows} workflows")
@@ -15246,7 +15295,31 @@ PIN_SHA = re.compile(r"[0-9a-f]{40}")
 # from the public repo at the pin, so the records repo cannot ship a
 # template, a schema, copy or config.
 RECORDS_TOP = (".git", ".github", ".gitignore", "CLAUDE.md", "README.md", "content", "schema")
-RECORDS_WORKFLOWS = ("ci.yml", "lighthouse.yml", "links-external.yml", "deploy.yml")
+# The workflows of the records repo (ADR-0007 part 6, PR E): check on every
+# push to a PR, lighthouse.yml and links-external.yml weekly and on manual
+# start, nothing on a push to main. deploy.yml left the set in PR E: until
+# Pages goes on it only ran check.sh once more and uploaded an artifact
+# nothing read; M6 (Replikanti/interviewscam#7) adds the deploy workflow in
+# one reviewed change.
+RECORDS_WORKFLOWS = ("ci.yml", "lighthouse.yml", "links-external.yml")
+# Workflow identity (ADR-0007 part 5, PR E): each records workflow is its
+# canonical template in RECORDS_TEMPLATE_DIR of the public checkout at the
+# pin, byte for byte, with the pin written where the template holds
+# RECORDS_FIXTURE_PIN. The compare is on bytes: the records rules below
+# hold each workflow's shape but not its triggers, schedule, timeout values
+# or comments (a pull_request trigger in lighthouse.yml, a 5-minute cron and
+# timeout-minutes: 360 each passed them), and a byte compare closes that
+# whole class with no parser to fool, CR, BOM and look-alike characters
+# included. The templates are pinned by SHA-256 (RECORDS_WORKFLOW_SHA256,
+# held by guard_records_templates), so a template edit is a tools/ change
+# with the safety-net review, as the stylesheet and script pins are.
+RECORDS_FIXTURE_PIN = "0123456789abcdef0123456789abcdef01234567"
+RECORDS_TEMPLATE_DIR = "tests/fixtures/records-repo/pass-shapes/.github/workflows"
+RECORDS_WORKFLOW_SHA256 = {
+    "ci.yml": "d6b31ac99650822dd8d65595571a1dd9334b6cfbd6c9a46f2868b47a0651fb28",
+    "lighthouse.yml": "516b500c183b96ac344bd95eeeb4b25942f5ab753b9bf509bf8bfc85e136bc45",
+    "links-external.yml": "e17a103d45b7098d9b87a96b390cdb8d53ceec4d15ac863679b2a9f583f5c638",
+}
 # The run steps of a records repo workflow: check.sh in records mode, from
 # the public checkout in site/ on the records checkout in records/, and in
 # the job lighthouse of lighthouse.yml only the Lighthouse run on the
@@ -15261,7 +15334,7 @@ RECORDS_LIGHTHOUSE_JOB = "lighthouse"
 # and continue-on-error (a skipped or tolerated job reports success to a
 # required check), strategy (a matrix), env and defaults (EXEC_KEYS), and
 # any key GitHub may add later.
-RECORDS_TOP_KEYS = ("name", "on", "permissions", "concurrency", "jobs")
+RECORDS_TOP_KEYS = ("name", "on", "permissions", "jobs")
 RECORDS_JOB_KEYS = ("runs-on", "timeout-minutes", "permissions", "needs", "steps")
 RECORDS_STEP_KEYS = ("name", "uses", "with", "shell", "env", "run")
 RECORDS_RUNNER = "ubuntu-24.04"
@@ -15269,14 +15342,12 @@ RECORDS_RUNNER = "ubuntu-24.04"
 # tests/fixtures/records-repo/pass-shapes/), keyed "<workflow> <job>", each
 # with the kinds of its steps in order (records_step_kind). Pinned whole:
 # the required job check must run the two checkouts and check.sh, not a
-# no-op that reports success; the Pages artifact is uploaded after check.sh,
-# from the build it checked; an extra job can neither gate a canonical one
-# nor upload a second artifact. Any other shape is a public, reviewed PR
-# that changes this table.
+# no-op that reports success; an artifact is uploaded only after check.sh
+# checked it, from the build it checked; an extra job can neither gate a
+# canonical one nor upload a second artifact. Any other shape is a public,
+# reviewed PR that changes this table.
 RECORDS_JOB_STEPS = {
     "ci.yml check": ("checkout records", "checkout site", "check.sh"),
-    "deploy.yml pages-artifact": ("checkout records", "checkout site", "check.sh",
-                                  "upload-pages-artifact"),
     "lighthouse.yml build": ("checkout records", "checkout site", "check.sh",
                              "upload-artifact"),
     "lighthouse.yml lighthouse": ("download-artifact", "lighthouse.sh"),
@@ -15290,16 +15361,14 @@ RECORDS_NEEDS = {"lighthouse.yml lighthouse": "build"}
 # The exact with: of every uses: step of the records workflows besides the
 # two checkouts (records_checkout pins those), keyed by step kind
 # (records_step_kind); a literal block (`path: |`) is the tuple of its
-# lines. Compared exactly: no input more or less, no other value. The Pages
-# upload takes the build that check.sh checked, never the records checkout
-# or another tree. The upload of lighthouse.yml build takes the checked
-# build and the check scripts only: one more path (a hidden one with
+# lines. Compared exactly: no input more or less, no other value. The upload
+# of lighthouse.yml build takes the checked build and the check scripts
+# only: one more path (a hidden one with
 # include-hidden-files: true, say .records-site/ with the real
 # retired_slugs) would reach the job lighthouse, which runs the registry
 # code with network access (ADR-0003 part 2). The download takes that one
 # artifact into the job's work directory.
 RECORDS_WITH = {
-    "upload-pages-artifact": {"path": "site/public"},
     "upload-artifact": {"name": "built-site", "path": ("site/public", "site/tools"),
                         "if-no-files-found": "error", "retention-days": "1"},
     "download-artifact": {"name": "built-site"},
@@ -15316,15 +15385,6 @@ RECORDS_JOB_PERMISSIONS = {"lighthouse.yml lighthouse": "{}"}
 # job lighthouse: the job token for the pin rule's two API reads (check.sh
 # unsets it right after the pin step).
 RECORDS_ENV = ("GH_TOKEN", "${{ github.token }}")
-# The only other expressions of a records workflow, each only as (part of)
-# the value of a concurrency group: they read no credential. Every other
-# ${{ }} fails, in a with: input, a name or a comment alike, because an
-# expression there can write the token or the whole github context where
-# the run shows it (an artifact name, a step name).
-RECORDS_EXPRESSIONS = (
-    "${{ github.ref }}",
-    "${{ github.event_name == 'push' && 'pages' || format('pages-pr-{0}', github.ref) }}",
-)
 # The two checkouts of a job that runs check.sh: the records repo itself,
 # and the public repo at the pin.
 RECORDS_SELF_CHECKOUT = {"persist-credentials": "false", "path": "records"}
@@ -15820,8 +15880,8 @@ def records_workflow_rules(rel, text, sha, findings):
         if want_steps is not None and tuple(kinds) != want_steps:
             findings.add(f"{rel}: job {job}", f"steps {', '.join(kinds) or 'none'}, not the "
                          f"canonical {', '.join(want_steps)} in that order (the required job "
-                         "check must run the check, and the Pages artifact is uploaded only "
-                         f"after check.sh checked it; {RECORDS_WHY})")
+                         "check must run the check, and an artifact is uploaded only after "
+                         f"check.sh checked it; {RECORDS_WHY})")
         if check_runs:
             for kind in ("self", "public"):
                 n = checkouts.count(kind)
@@ -15839,24 +15899,81 @@ def records_workflow_rules(rel, text, sha, findings):
             findings.add(f"{rel}:{i + 1}", "env: only as `GH_TOKEN: ${{ github.token }}` on "
                          "the check.sh step, and never in the job lighthouse of lighthouse.yml "
                          f"(the job that runs registry code holds no credential; {RECORDS_WHY})")
+        # The one expression of a records workflow is RECORDS_ENV's value
+        # (PR E removed the concurrency groups and their expressions). Every
+        # other ${{ }} fails, in a with: input, a name or a comment alike,
+        # because an expression there can write the token or the whole
+        # github context where the run shows it (an artifact name, a step
+        # name).
         if "${{" not in line:
             continue
         found = YAML_EXPRESSION.findall(line)
-        parsed = yaml_line(line)
-        if len(found) != line.count("${{"):
-            ok = False
-        elif i in env_ok:
-            ok = found == [RECORDS_ENV[1]]
-        else:
-            ok = (parsed is not None and parsed[3] == "group" and not parsed[2]
-                  and all(e in RECORDS_EXPRESSIONS for e in found))
-        if not ok:
+        if not (i in env_ok and len(found) == line.count("${{")
+                and found == [RECORDS_ENV[1]]):
             findings.add(f"{rel}:{i + 1}", "an expression outside its canonical place: a "
                          "records workflow holds `${{ github.token }}` only as the GH_TOKEN env "
-                         "of a check.sh step, and only the RECORDS_EXPRESSIONS as a "
-                         "concurrency group (an expression in a with: input, a name or a "
+                         "of a check.sh step (an expression in a with: input, a name or a "
                          "comment can write the token or the github context where the run "
                          f"shows it; {RECORDS_WHY})")
+
+
+def records_workflow_identity(root, rdir, files, sha, findings):
+    """Workflow identity (ADR-0007 part 5, PR E): each name of
+    RECORDS_WORKFLOWS is in git's listing of the records repo, and its bytes
+    are the template of RECORDS_TEMPLATE_DIR in the public checkout with the
+    pin written where the template holds RECORDS_FIXTURE_PIN. The pin goes
+    into the template, never out of the private file, so a private file
+    that still holds the fixture pin, or the pin on an extra line, differs.
+    A template that is missing, unreadable or not its pinned SHA-256 is a
+    finding (fails closed). One finding per file, at the first line that
+    differs; it prints no byte of the file. A symlink or a non-regular file
+    counts as not identical, and records_layout reports it. Returns the
+    number of identical workflows."""
+    listed = set(files)
+    names = ", ".join(RECORDS_WORKFLOWS)
+    identical = 0
+    for name in RECORDS_WORKFLOWS:
+        rel = f".github/workflows/{name}"
+        if rel not in listed:
+            findings.add(rel, f"missing; the records repo holds every canonical workflow "
+                         f"({names}), and a deleted workflow would drop its checks "
+                         f"without a finding ({RECORDS_WHY})")
+            continue
+        template_rel = f"{RECORDS_TEMPLATE_DIR}/{name}"
+        template_path = root / template_rel
+        try:
+            template = (None if template_path.is_symlink() or not template_path.is_file()
+                        else template_path.read_bytes())
+        except OSError:
+            template = None
+        if template is None:
+            findings.add(rel, f"its canonical template {template_rel} is missing or unreadable "
+                         f"in the public checkout at the pin (fails closed, {RECORDS_WHY})")
+            continue
+        if hashlib.sha256(template).hexdigest() != RECORDS_WORKFLOW_SHA256[name]:
+            findings.add(rel, f"its canonical template {template_rel} is not the one pinned in "
+                         "tools/sitecheck.py (RECORDS_WORKFLOW_SHA256) (fails closed, "
+                         f"{RECORDS_WHY})")
+            continue
+        path = rdir / rel
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            actual = path.read_bytes()
+        except OSError as exc:
+            findings.add(rel, f"cannot read the workflow: {exc}")
+            continue
+        expected = template.replace(RECORDS_FIXTURE_PIN.encode("ascii"), sha.encode("ascii"))
+        if actual == expected:
+            identical += 1
+            continue
+        want, got = expected.splitlines(keepends=True), actual.splitlines(keepends=True)
+        line = next((k for k, (a, b) in enumerate(zip(want, got)) if a != b),
+                    min(len(want), len(got))) + 1
+        findings.add(f"{rel}:{line}", f"differs from the canonical template {template_rel} at "
+                     f"the pin {sha[:12]} from this line on; a records workflow is that "
+                     f"template byte for byte with the pin in its ref: ({RECORDS_WHY})")
+    return identical
 
 
 def cmd_records_repo(args):
@@ -15873,16 +15990,18 @@ def cmd_records_repo(args):
     findings = Findings()
     records_root_state(root, sha, findings)
     files = records_listing(rdir, findings)
-    n_records = n_workflows = 0
+    n_records = n_workflows = n_identical = 0
     if files is not None:
         n_records = records_layout(rdir, files, findings)
+        n_identical = records_workflow_identity(root, rdir, files, sha, findings)
         workflows = [f for f in files if f.startswith(".github/workflows/")
                      and (rdir / f).is_file() and not (rdir / f).is_symlink()]
         n_workflows = len(workflows)
         guard_workflows(rdir, workflows, findings, pins_root=root, records_sha=sha)
         guard_lighthouse_workflow(rdir, workflows, findings, records_mode=True)
     return findings.report(f"records-repo checked: {len(files or ())} files, {n_records} "
-                           f"records, {n_workflows} workflows, against the pin {sha[:12]}")
+                           f"records, {n_workflows} workflows ({n_identical} identical to "
+                           f"the templates), against the pin {sha[:12]}")
 
 
 class PinNoRedirect(urllib.request.HTTPRedirectHandler):
