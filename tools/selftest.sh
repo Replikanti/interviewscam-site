@@ -2878,6 +2878,22 @@ selftest_parse_args() {
   fi
 }
 
+# selftest_signal_traps <file>...: on HUP, INT or TERM remove the files
+# (the run's temp files) and exit 128 plus the signal number, so a run
+# stopped by a sweep's budget or by hand leaves no temp file behind (the
+# RETURN trap of selftest_main covers every normal return; nothing covers
+# SIGKILL).
+selftest_signal_traps() {
+  local files="" file sig
+  for file in "$@"; do
+    files+=" '$file'"
+  done
+  for sig in HUP:129 INT:130 TERM:143; do
+    # shellcheck disable=SC2064 # expand now: the paths are fixed
+    trap "rm -f$files; exit ${sig#*:}" "${sig%:*}"
+  done
+}
+
 # selftest_wants <suite>...: true when no --only is given or it names one
 # of the suites.
 selftest_wants() {
@@ -2930,6 +2946,18 @@ selftest_rows() {
   [[ -n "$rows" ]] && printf '%s\n' "$rows"
   n_passed=$((n_passed + $(grep -c '^ok   ' <<<"$rows")))
   n_failed=$((n_failed + $(grep -c '^FAIL ' <<<"$rows")))
+}
+
+# selftest_ok_count <file> <suite> <ERE> <n>: true when <suite> is not
+# selected, or <file> holds exactly <n> ok rows matching ^ok   <ERE>. The
+# "runner did not finish" checks of the two-suite runners use it, so under
+# --only a failure that only the partner suite sees is filtered out with
+# its row and the selected suite stays green (the mutant reports
+# SURVIVED, ADR-0008 part 4); without --only every suite counts, as
+# before.
+selftest_ok_count() {
+  selftest_wants "$2" || return 0
+  [[ "$(grep -cE "^ok   $3" "$1")" -eq "$4" ]]
 }
 
 # selftest_selection_check <log>: under --only, every ok and FAIL row of
@@ -2999,7 +3027,10 @@ selftest_only_rows() {
         so_usage_case "$so_case" --only tokens,
         ;;
       duplicate) so_usage_case "$so_case" --only tokens,tokens ;;
-      uppercase) so_usage_case "$so_case" --only Tokens ;;
+      uppercase)
+        so_usage_case "$so_case" --only Tokens
+        so_usage_case "$so_case" --only tOkens
+        ;;
       # schema with its last a as U+0430 CYRILLIC SMALL LETTER A.
       lookalike) so_usage_case "$so_case" --only "schem"$'\320\260' ;;
       # tokens with U+200B ZERO WIDTH SPACE after tok.
@@ -3168,6 +3199,96 @@ selftest_only_rows() {
     echo "FAIL selftest-only/suite-fallback:$so_bad"
     n_failed=$((n_failed + 1))
   fi
+
+  # partner-*: the "runner did not finish" checks of the two-suite runners
+  # count only the selected suites (selftest_ok_count), so a failure only
+  # the partner suite sees leaves the selected one green, as guard-public
+  # and guard-wf do. Synthetic runner output with one partner row failed
+  # (pin-extra/sha-form, the row a widened PIN_SHA fails; the
+  # render-intake coverage line): under --only pin and --only site-intake
+  # the finished check holds and only the selected rows print and count;
+  # without --only the same output fails the check, as before.
+  so_log="$(mktemp)"
+  so_partner_case() {
+    local row="$1" suites="$2" want_done="$3" want_rows="$4" done_rc rows
+    shift 4
+    printf '%s\n' "$@" >"$so_log"
+    done_rc=0
+    case "$row" in
+      partner-pin|partner-full)
+        so_with "$suites" selftest_ok_count "$so_log" pin-extra 'pin-extra/' 14 \
+          && so_with "$suites" selftest_ok_count "$so_log" pin 'pin/cases' 1 || done_rc=1 ;;
+      partner-intake)
+        so_with "$suites" selftest_ok_count "$so_log" render-intake 'render-intake/coverage' 1 \
+          && so_with "$suites" selftest_ok_count "$so_log" site-intake 'site-intake/coverage' 1 \
+          || done_rc=1 ;;
+    esac
+    rows="$(so_with "$suites" so_rows_counts details)"
+    if [[ $done_rc -eq $want_done && "$rows" == "$want_rows" ]]; then
+      echo "ok   selftest-only/$row (finished check exit $done_rc)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL selftest-only/$row: finished check exit $done_rc, want $want_done; rows:"
+      printf '%s\n' "$rows" | sed 's/^/     | /'
+      n_failed=$((n_failed + 1))
+    fi
+  }
+  local -a so_pin=('ok   pin/pass-a' 'FAIL pin-extra/sha-form 40 chars abcdef: x')
+  for so_n in $(seq 1 13); do
+    so_pin+=("ok   pin-extra/x-$so_n")
+  done
+  so_pin+=('ok   pin/cases (1 cases)')
+  so_partner_case partner-pin pin 0 \
+    $'ok   pin/pass-a\nok   pin/cases (1 cases)\ncounts 2 0' "${so_pin[@]}"
+  so_partner_case partner-full "" 1 \
+    "$(printf '%s\n' "${so_pin[@]}")"$'\ncounts 15 1' "${so_pin[@]}"
+  so_partner_case partner-intake site-intake 0 \
+    $'ok   site-intake/coverage (3 member rows)\ncounts 1 0' \
+    'FAIL render-intake/coverage: 1 member(s) without a row: x' \
+    'ok   site-intake/coverage (3 member rows)'
+  rm -f "$so_log"
+
+  # streams-rows: under --only the rows reach stdout as they finish, and a
+  # run stopped with TERM removes its temp files. A nested --only tokens
+  # run writes to a file with its own TMPDIR and is stopped once its first
+  # row is there: it must have printed fewer rows than there are tokens
+  # cases (rows held back to the end arrive all at once), no summary line,
+  # exit 143, and leave its TMPDIR empty. 1200 polls of 0.1 s bound the
+  # wait for the first row (fetch-tools runs before it).
+  local so_tmp so_pid so_i so_seen=0
+  so_tmp="$(mktemp -d)"
+  mkdir "$so_tmp/tmp"
+  TMPDIR="$so_tmp/tmp" bash "$so_sh" --only tokens >"$so_tmp/out" 2>&1 &
+  so_pid=$!
+  for (( so_i = 0; so_i < 1200; so_i++ )); do
+    so_seen="$(grep -c '^ok   tokens/' "$so_tmp/out")"
+    [[ "$so_seen" -gt 0 ]] && break
+    kill -0 "$so_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -TERM "$so_pid" 2>/dev/null
+  wait "$so_pid"
+  so_rc=$?
+  so_n="$(find "$FIXTURES/tokens" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+  so_bad=""
+  if [[ "$so_seen" -lt 1 || "$so_seen" -ge "$so_n" ]]; then
+    so_bad="$so_seen of $so_n rows printed when the first was seen"
+  elif [[ $so_rc -ne 143 ]]; then
+    so_bad="exit $so_rc after TERM, want 143"
+  elif grep -q '^selftest (only' "$so_tmp/out"; then
+    so_bad="the summary line was printed, so the run had finished"
+  elif [[ -n "$(find "$so_tmp/tmp" -mindepth 1)" ]]; then
+    so_bad="temp files left: $(find "$so_tmp/tmp" -mindepth 1 | tr '\n' ' ')"
+  fi
+  if [[ -z "$so_bad" ]]; then
+    echo "ok   selftest-only/streams-rows ($so_seen of $so_n rows out before TERM, exit 143, no temp file left)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL selftest-only/streams-rows: $so_bad; output:"
+    sed 's/^/     | /' "$so_tmp/out"
+    n_failed=$((n_failed + 1))
+  fi
+  rm -rf "$so_tmp"
 }
 
 selftest_main() {
@@ -3182,10 +3303,11 @@ selftest_main() {
   # The counters and $out are local here and read and written by
   # selftest_blocks (bash scopes dynamically).
   local n_passed=0 n_failed=0 html_total=0 html_run=0 reflow_total=0 reflow_run=0
-  local out log="" violations suites
+  local out log="" violations suites tee_fd tee_pid
   out="$(mktemp)"
   # shellcheck disable=SC2064 # expand now: the path is fixed
   trap "rm -f '$out'" RETURN
+  selftest_signal_traps "$out"
   # Python exits with 120 when it cannot flush stdout at exit (ENOSPC, EDQUOT,
   # ENOMEM or a closed pipe). Probe the temp file first, so a full or
   # over-quota /tmp is named before 20 fixtures fail with empty output.
@@ -3201,14 +3323,23 @@ selftest_main() {
     return
   fi
 
-  # --only (ADR-0008 part 4): the rows go to a log, which is printed and
-  # then checked, so a row of an unselected suite (a block without its
-  # guard) or a selected suite without rows fails the run with exit 2.
+  # --only (ADR-0008 part 4): the rows stream to stdout as they finish and
+  # tee copies them to a log, so a run stopped at a sweep's budget has
+  # already printed every row it finished (a FAIL row before a TIMEOUT
+  # among them). After the blocks the log is checked: a row of an
+  # unselected suite (a block without its guard) or a selected suite
+  # without rows fails the run with exit 2. tee runs on its own descriptor
+  # and is waited for by its PID, so a background job of a block cannot
+  # change $! and the summary never overtakes a row.
   log="$(mktemp)"
   # shellcheck disable=SC2064 # expand now: the paths are fixed
   trap "rm -f '$out' '$log'" RETURN
-  selftest_blocks >"$log"
-  cat "$log"
+  selftest_signal_traps "$out" "$log"
+  exec {tee_fd}> >(tee "$log")
+  tee_pid=$!
+  selftest_blocks >&"$tee_fd"
+  exec {tee_fd}>&-
+  wait "$tee_pid"
   violations="$(selftest_selection_check "$log")"
   if [[ -n "$violations" ]]; then
     printf '%s\n' "$violations"
@@ -4141,7 +4272,8 @@ PINNED
     intake_coverage "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render/intake-cases.tsv" \
       "$FIXTURES/site/intake-cases.tsv" >"$out" 2>&1
     selftest_rows "$out"
-    if [[ "$(grep -cE '^ok   (render|site)-intake/coverage' "$out")" != 2 ]]; then
+    if ! selftest_ok_count "$out" render-intake 'render-intake/coverage' 1 \
+        || ! selftest_ok_count "$out" site-intake 'site-intake/coverage' 1; then
       echo "FAIL $(selftest_suite intake-coverage render-intake site-intake): the coverage lines did not both pass; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
@@ -4348,11 +4480,11 @@ PY
     selftest_rows "$out" details
     runner_out=0
     case "$family" in
-      table) grep -qE '^ok   records-repo/table' "$out" && runner_out=1 ;;
-      wiring) [[ $(grep -c '^ok   wiring/records-repo-' "$out") -eq 4 ]] \
-        && grep -q '^ok   wiring/records-fixture-pin-matches' "$out" && runner_out=1 ;;
-      extra) [[ $(grep -c '^ok   pin-extra/' "$out") -eq 14 ]] \
-        && grep -q '^ok   pin/cases' "$out" && runner_out=1 ;;
+      table) selftest_ok_count "$out" records-repo 'records-repo/table' 1 && runner_out=1 ;;
+      wiring) selftest_ok_count "$out" wiring 'wiring/records-repo-' 4 \
+        && selftest_ok_count "$out" wiring 'wiring/records-fixture-pin-matches' 1 && runner_out=1 ;;
+      extra) selftest_ok_count "$out" pin-extra 'pin-extra/' 14 \
+        && selftest_ok_count "$out" pin 'pin/cases' 1 && runner_out=1 ;;
     esac
     if [[ $runner_out -eq 0 ]]; then
       # shellcheck disable=SC2086 # family_suites is a list of suite names
