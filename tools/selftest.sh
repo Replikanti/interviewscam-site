@@ -3229,7 +3229,7 @@ selftest_only_rows() {
   # the stub runners, its rows cut to their names, then its counters. Only
   # ever called in $(...): the stubs replace the real runners for good.
   so_partner_blocks() {
-    # shellcheck disable=SC2329 # selftest_blocks calls the stubs
+    # shellcheck disable=SC2317,SC2329 # selftest_blocks calls the stubs
     pin_runner() {
       local i
       echo 'ok   pin/pass-a'
@@ -3239,9 +3239,9 @@ selftest_only_rows() {
       done
       echo 'ok   pin/cases (1 cases)'
     }
-    # shellcheck disable=SC2329 # selftest_blocks calls the stubs
+    # shellcheck disable=SC2317,SC2329 # selftest_blocks calls the stubs
     site_intake_runner() { echo 'ok   site-intake/table (1 rows)'; }
-    # shellcheck disable=SC2329 # selftest_blocks calls the stubs
+    # shellcheck disable=SC2317,SC2329 # selftest_blocks calls the stubs
     intake_coverage() {
       if [[ $# -ge 4 ]]; then
         echo "FAIL $kind-intake/coverage: 1 member(s) without a row: $4"
