@@ -2886,12 +2886,13 @@ SELFTEST_TMP_DIR=""
 SELFTEST_TEE_FD=""
 SELFTEST_TEE_PID=""
 
-# selftest_on_signal <signal>: the trap for HUP, INT and TERM. It stops
-# tee and waits for it, so tee cannot write the log after the removal (it
-# is killed, not waited out: the trap can run inside a block whose
-# redirections hold saved copies of the FIFO descriptor, so closing the
-# shell's own copy gives tee no end of input), removes the temp
-# directory, and then raises the same
+# selftest_on_signal <signal>: the trap for HUP, INT, TERM and PIPE. It
+# stops tee with SIGKILL and waits for it, so tee cannot write the log
+# after the removal (it is killed, not waited out: the trap can run inside
+# a block whose redirections hold saved copies of the FIFO descriptor, so
+# closing the shell's own copy gives tee no end of input; and SIGKILL,
+# because a run started with SIGTERM ignored hands that to tee too),
+# removes the temp directory, and then raises the same
 # signal again with its default action, so the shell dies of it and a
 # calling script sees a death by signal (bash then stops on SIGINT as it
 # did before the trap, instead of reading an ordinary exit 130 and going
@@ -2900,7 +2901,7 @@ SELFTEST_TEE_PID=""
 selftest_on_signal() {
   local sig="$1"
   if [[ -n "$SELFTEST_TEE_PID" ]]; then
-    kill "$SELFTEST_TEE_PID" 2>/dev/null
+    kill -KILL "$SELFTEST_TEE_PID" 2>/dev/null
     wait "$SELFTEST_TEE_PID" 2>/dev/null
   fi
   [[ -n "$SELFTEST_TMP_DIR" ]] && rm -rf "$SELFTEST_TMP_DIR"
@@ -3402,6 +3403,110 @@ PY
     n_failed=$((n_failed + 1))
   fi
   rm -rf "$so_tmp"
+
+  # pipe-closed: a reader of stdout that closes early (| head -n 1) ends an
+  # --only run with SIGPIPE, and the temp directory goes with it. The real
+  # selftest_main runs in its own bash with selftest_blocks replaced by
+  # 50000 rows (about 700 KB, far past the 64 KiB of the pipe and of the
+  # FIFO); the reader is sed, which quits at the first row (the fetch-tools
+  # lines come before it), so tee dies at its first write after that and
+  # the rest must not block on the FIFO. A run that stays a reader of its own FIFO
+  # blocks there until the 60 s bound (exit 124), and a run without the
+  # PIPE trap dies with its temp directory left behind.
+  so_tmp="$(mktemp -d)"
+  mkdir "$so_tmp/tmp"
+  # shellcheck disable=SC2016 # the nested bash expands them
+  TMPDIR="$so_tmp/tmp" timeout 60 bash -c 'source "$1"
+    selftest_blocks() { yes "ok   tokens/pass-x" | head -n 50000; }
+    selftest_main --only tokens' _ "$so_sh" 2>"$so_tmp/err" \
+    | sed -n '/^ok   /{p;q;}' >"$so_tmp/out"
+  so_rc="${PIPESTATUS[0]}"
+  so_bad=""
+  if [[ $so_rc -ne 141 ]]; then
+    so_bad="exit $so_rc, want 141 (death by SIGPIPE; 124 is the 60 s bound)"
+  elif [[ "$(cat "$so_tmp/out")" != "ok   tokens/pass-x" ]]; then
+    so_bad="the reader got '$(cat "$so_tmp/out")', not the first row"
+  elif [[ -n "$(find "$so_tmp/tmp" -mindepth 1)" ]]; then
+    so_bad="temp files left: $(find "$so_tmp/tmp" -mindepth 1 | tr '\n' ' ')"
+  fi
+  if [[ -z "$so_bad" ]]; then
+    echo "ok   selftest-only/pipe-closed (reader gone after the first row: exit 141, no temp file left)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL selftest-only/pipe-closed: $so_bad; stderr:"
+    sed 's/^/     | /' "$so_tmp/err"
+    n_failed=$((n_failed + 1))
+  fi
+  rm -rf "$so_tmp"
+
+  # term-ignored: the trap stops tee with SIGKILL, so a run started with
+  # SIGTERM ignored (which tee inherits) still ends on SIGINT. A nested
+  # --only tokens run starts in its own process group with SIGTERM ignored
+  # and SIGINT at its default action, and once its first row is there
+  # SIGINT goes to the shell alone. It must die of SIGINT within 30 s and
+  # leave its TMPDIR empty; a trap that stops tee with SIGTERM waits for
+  # it forever.
+  so_tmp="$(mktemp -d)"
+  mkdir "$so_tmp/tmp"
+  so_got="$(python3 -I -B - "$so_tmp" "$so_sh" <<'PY' 2>&1
+import os
+import signal
+import subprocess
+import sys
+import time
+
+tmp, child = sys.argv[1], sys.argv[2]
+out_path = os.path.join(tmp, "out")
+env = dict(os.environ, TMPDIR=os.path.join(tmp, "tmp"))
+
+
+def dispositions():
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
+with open(out_path, "wb") as out:
+    proc = subprocess.Popen(["bash", child, "--only", "tokens"], stdout=out,
+                            stderr=subprocess.STDOUT, env=env, start_new_session=True,
+                            preexec_fn=dispositions)
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline and proc.poll() is None:
+        with open(out_path, "rb") as seen:
+            if b"\nok   tokens/" in b"\n" + seen.read():
+                break
+        time.sleep(0.1)
+    try:
+        os.kill(proc.pid, signal.SIGINT)
+    except ProcessLookupError:
+        pass
+    try:
+        rc = proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        rc = "timeout"
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+print(f"run: {rc}")
+PY
+)"
+  so_bad=""
+  if [[ "$so_got" != "run: -2" ]]; then
+    so_bad="the run ended with '$so_got', want death by SIGINT (run: -2)"
+  elif ! grep -q '^ok   tokens/' "$so_tmp/out"; then
+    so_bad="no row before the signal"
+  elif [[ -n "$(find "$so_tmp/tmp" -mindepth 1)" ]]; then
+    so_bad="temp files left: $(find "$so_tmp/tmp" -mindepth 1 | tr '\n' ' ')"
+  fi
+  if [[ -z "$so_bad" ]]; then
+    echo "ok   selftest-only/term-ignored (SIGTERM ignored, SIGINT: the run died of it, no temp file left)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL selftest-only/term-ignored: $so_bad; output:"
+    sed 's/^/     | /' "$so_tmp/out"
+    n_failed=$((n_failed + 1))
+  fi
+  rm -rf "$so_tmp"
 }
 
 selftest_main() {
@@ -3416,9 +3521,11 @@ selftest_main() {
   # The counters and $out are local here and read and written by
   # selftest_blocks (bash scopes dynamically).
   local n_passed=0 n_failed=0 html_total=0 html_run=0 reflow_total=0 reflow_run=0
-  local out log fifo violations suites sig
-  # The signal traps come first, so no temp file exists before them.
-  for sig in HUP INT TERM; do
+  local out log fifo violations suites sig rw_fd
+  # The signal traps come first, so no temp file exists before them. PIPE
+  # too: a reader of stdout that closes early (| head -n 1) ends the run
+  # with SIGPIPE, and the temp directory goes with it.
+  for sig in HUP INT TERM PIPE; do
     # shellcheck disable=SC2064 # expand now: the signal name is fixed
     trap "selftest_on_signal $sig" "$sig"
   done
@@ -3450,15 +3557,21 @@ selftest_main() {
   # job reading a FIFO, not a process substitution, so waiting for it by
   # its PID works on every bash (a process substitution's PID is waitable
   # only from bash 5.1 on) and the summary never overtakes a row. The
-  # shell opens the FIFO read-write first, so neither side blocks on the
-  # open, and tee closes its inherited copy, so the shell's close is its
-  # end of input.
+  # shell opens the FIFO read-write first, so tee's open for reading does
+  # not block, then opens it write-only (a reader exists, so that does not
+  # block either) and closes the read-write descriptor: the shell must not
+  # stay a reader of its own FIFO, or a dead tee (stdout's reader closed,
+  # | head -n 1) would leave every write blocked on a full FIFO instead of
+  # ending the run with SIGPIPE. tee closes its inherited copy, so the
+  # shell's close is its end of input.
   log="$SELFTEST_TMP_DIR/log"
   fifo="$SELFTEST_TMP_DIR/fifo"
   mkfifo "$fifo" || return 1
-  exec {SELFTEST_TEE_FD}<>"$fifo"
-  tee "$log" <"$fifo" {SELFTEST_TEE_FD}>&- &
+  exec {rw_fd}<>"$fifo"
+  tee "$log" <"$fifo" {rw_fd}>&- &
   SELFTEST_TEE_PID=$!
+  exec {SELFTEST_TEE_FD}>"$fifo"
+  exec {rw_fd}>&-
   selftest_blocks >&"$SELFTEST_TEE_FD"
   exec {SELFTEST_TEE_FD}>&-
   SELFTEST_TEE_FD=""
