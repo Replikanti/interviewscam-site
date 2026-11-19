@@ -74,6 +74,7 @@ while IFS= read -r line; do
     STUCK) mkdir stuck; echo x >stuck/f; chmod 555 stuck ;;
     TOOLS) mkdir -p .tools/cache; echo x >.tools/cache/kept ;;
     CHECKTOOLS) [[ -f .tools/cache/kept ]] || { echo "FAIL s/tools-gone"; exit 1; } ;;
+    CHECKNOMUTANTS) [[ ! -e tests/mutants ]] || { echo "FAIL s/mutants-present"; exit 1; } ;;
     CHECKCLEAN)
       if [[ "$(cat other.txt)" != other || -e untracked.txt || -e newdir ]]; then
         echo "FAIL s/dirty"
@@ -157,7 +158,7 @@ class Repo:
             path.write_bytes(text if isinstance(text, bytes) else text.encode("utf-8"))
         data = raw if raw is not None else jsonl(mutants or [])
         self.mutants_rel = "tests/mutants/m.jsonl"
-        (self.root / self.mutants_rel).parent.mkdir(parents=True)
+        (self.root / self.mutants_rel).parent.mkdir(parents=True, exist_ok=True)
         (self.root / self.mutants_rel).write_bytes(data)
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", "stub")
@@ -320,7 +321,8 @@ class Load(unittest.TestCase):
         bad = ["/abs/target.txt", "../target.txt", "dir/../target.txt", "./target.txt",
                "dir//inner.txt", "dir\\inner.txt", "dir/", "~/target.txt", "link.txt",
                "untracked.txt", "dir", "sub", "bad.txt", "missing.txt", "", "a\nb",
-               "target.txt\u0000", "*.txt", ":(glob)*.txt"]
+               "target.txt\u0000", "*.txt", ":(glob)*.txt", "tests/mutants/m.jsonl",
+               "tests/mutants"]
         for path in bad:
             with self.subTest(path=path):
                 with self.assertRaises(mutate.InputError) as ctx:
@@ -552,6 +554,38 @@ class Shard(Patched):
                                    mutant("b", replace="CHECKTOOLS")])
         rc, out, _ = repo.run()
         self.assertEqual((rc, verdicts(out)), (0, {"a": "SURVIVED", "b": "SURVIVED"}))
+
+    def test_shard_tree_drops_mutant_files(self):
+        # The guard's PT2a refuses the committed mutant files (ADR-0007 part
+        # 4), so the shard tree holds the swept commit without tests/mutants/
+        # and every restore keeps it that way; the rest equals the sweep ref.
+        repo = Repo(self, mutants=[mutant("a", replace="CHECKNOMUTANTS"),
+                                   mutant("b", replace="DIRT"),
+                                   mutant("c", replace="CHECKNOMUTANTS")],
+                    extra={"tests/other.txt": "kept\n", "tools/x.bin": b"\x00\xff\n",
+                           "tests/mutants/sub/older.jsonl": "{}\n"})
+        rc, out, _ = repo.run()
+        self.assertEqual((rc, verdicts(out)), (0, {"a": "SURVIVED", "b": "SURVIVED",
+                                                   "c": "SURVIVED"}))
+        tree = out.parent / "tree"
+        self.assertFalse((tree / "tests" / "mutants").exists())
+        want = {}
+        for rel in git(repo.root, "ls-tree", "-r", "-z", "--name-only", repo.head) \
+                .decode().split("\0"):
+            if rel and not rel.startswith("tests/mutants/"):
+                want[rel] = git(repo.root, "cat-file", "blob", f"{repo.head}:{rel}")
+        got = {}
+        for path in sorted(tree.rglob("*")):
+            rel = path.relative_to(tree).as_posix()
+            if rel == ".git" or rel == ".tools" or rel.startswith(".tools/") or path.is_dir():
+                continue
+            got[rel] = path.read_bytes()
+        self.assertEqual(got, want)
+        self.assertEqual(git(tree, "diff", "--name-status", repo.head, "HEAD").decode(),
+                         "D\ttests/mutants/m.jsonl\nD\ttests/mutants/sub/older.jsonl\n")
+        # The checkout and its branch are untouched.
+        self.assertEqual(git(repo.root, "rev-parse", "HEAD").decode().strip(), repo.head)
+        self.assertTrue((repo.root / repo.mutants_rel).exists())
 
     def test_unrestorable_tree_aborts(self):
         repo = Repo(self, mutants=[mutant("a", replace="STUCK"), mutant("b"), mutant("c")])

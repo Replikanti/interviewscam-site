@@ -52,7 +52,7 @@ BUDGET_ADD_S = 220
 DEADLINE_MARGIN_S = 60
 # Equal to timeout-minutes of every job of mutation-sweep.yml
 # (test_workflow_timeout_matches_deadline).
-JOB_TIMEOUT_MIN = 95
+JOB_TIMEOUT_MIN = 170
 DEADLINE_S = JOB_TIMEOUT_MIN * 60 - DEADLINE_MARGIN_S
 
 MUTANTS_PATH_RE = re.compile(r"tests/mutants/[a-z0-9][a-z0-9._-]*\.jsonl")
@@ -73,6 +73,18 @@ REGULAR_MODES = ("100644", "100755")
 # The fetched toolchain may stay in the tree between runs (fetch-tools.sh
 # re-verifies it on every run of selftest.sh).
 TOOLS_CACHE = ".tools"
+# The mutant files live on the sweep branch only (ADR-0008 part 3), and the
+# guard's PT2a refuses a multi-line JSON Lines file anywhere outside
+# content/ (ADR-0007 part 4), so a suite that runs the guard on a copy of
+# the tree (records-mode) would fail on them in every sweep. The shard tree
+# therefore drops this directory in a throwaway commit of its own and is
+# restored to that commit: it equals the swept code without the mutant
+# files, and no guard rule changes.
+MUTANTS_DIR = "tests/mutants"
+# The throwaway commit of the shard tree: a fixed identity, no signing and
+# no hooks, so no configuration of the runner can change or stop it.
+TREE_COMMIT = ("-c", "user.name=mutate", "-c", "user.email=mutate@invalid",
+               "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null")
 
 
 class InputError(Exception):
@@ -124,6 +136,8 @@ def path_problem(path):
         return "ends with /"
     if any(ord(c) < 0x20 or ord(c) == 0x7f for c in path):
         return "holds a control character"
+    if path == MUTANTS_DIR or path.startswith(MUTANTS_DIR + "/"):
+        return f"is under {MUTANTS_DIR}/, which the shard tree does not hold"
     return None
 
 
@@ -321,6 +335,18 @@ def run_selftest(tree, suites, timeout, log_path, env):
     return proc.returncode, output, timed_out
 
 
+def drop_mutant_files(tree):
+    """Remove MUTANTS_DIR from the shard tree in a commit of the tree's own
+    (detached; the checkout and the sweep branch stay as they are), so
+    restore_tree resets every run to the swept code without the mutant
+    files. Nothing to do when HEAD holds no such directory."""
+    if not git(tree, "ls-tree", "-d", "HEAD", "--", MUTANTS_DIR):
+        return
+    git(tree, "rm", "-r", "-q", "--", MUTANTS_DIR)
+    git(tree, *TREE_COMMIT, "commit", "-q", "--no-verify", "-m",
+        f"mutate: the shard tree without {MUTANTS_DIR}/ (ADR-0008 part 3)")
+
+
 def restore_tree(tree):
     """Reset the worktree to HEAD and remove everything untracked or
     ignored but the toolchain cache; True when git then shows nothing
@@ -481,6 +507,7 @@ class Shard:
         if not runnable:
             return
         git(self.root, "worktree", "add", "-q", "--detach", str(self.tree), "HEAD")
+        drop_mutant_files(self.tree)
         sets = []
         for m in runnable:
             key = tuple(sorted(m["suites"]))
