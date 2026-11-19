@@ -5533,6 +5533,38 @@ PY
     fi
   fi
 
+  if selftest_wants mutate; then
+    # mutate/<test> (Replikanti/interviewscam#40, ADR-0008): the unit tests
+    # of tools/mutate.py, the sweep runner, on throwaway repositories with a
+    # stub self-test (tests/mutate/), one row per case. mutate/unittest
+    # fails as worker_check does: on a failing exit, no case run, a skipped
+    # case, an expected failure or an unexpected success (unittest reports
+    # each of those as OK), and when the case lines do not add up to the
+    # count unittest ran.
+    local mu_out mu_rc mu_n mu_rows mu_line
+    mu_out="$(cd "$SELFTEST_ROOT" && python3 -I -B -m unittest discover -v \
+      -s tests/mutate -t tests/mutate -p 'test_*.py' 2>&1)"
+    mu_rc=$?
+    mu_rows="$(LC_ALL=C sed -n \
+      -e 's/^\(test_[A-Za-z0-9_]*\) (.*) \.\.\. ok$/ok   mutate\/\1/p' \
+      -e 's/^\(test_[A-Za-z0-9_]*\) (.*) \.\.\. \(FAIL\|ERROR\)$/FAIL mutate\/\1: \2/p' \
+      <<<"$mu_out")"
+    [[ -n "$mu_rows" ]] && printf '%s\n' "$mu_rows"
+    n_passed=$((n_passed + $(grep -c '^ok   ' <<<"$mu_rows")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' <<<"$mu_rows")))
+    mu_n="$(sed -n 's/^Ran \([0-9][0-9]*\) tests\{0,1\} in .*/\1/p' <<<"$mu_out")"
+    if [[ $mu_rc -ne 0 || -z "$mu_n" || "$mu_n" -eq 0 \
+        || "$(grep -c '^ok   ' <<<"$mu_rows")" -ne "$mu_n" ]] \
+        || grep -qE 'skipped=|expected failures=|unexpected successes=' <<<"$mu_out"; then
+      echo "FAIL mutate/unittest: exit $mu_rc, ${mu_n:-no} cases run, $(grep -c '^ok   ' <<<"$mu_rows") ok (a skipped case, an expected failure and an unexpected success fail too); output:"
+      while IFS= read -r mu_line; do echo "     | $mu_line"; done <<<"$mu_out"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   mutate/unittest ($mu_n cases)"
+      n_passed=$((n_passed + 1))
+    fi
+  fi
+
   if selftest_wants selftest-only; then
     selftest_only_rows
   fi

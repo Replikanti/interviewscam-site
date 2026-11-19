@@ -1,12 +1,14 @@
 name: mutation-sweep
 
 # Mutation sweeps on GitHub-hosted runners (ADR-0008,
-# Replikanti/interviewscam#40). This file is the registration stub of the
-# first PR: GitHub starts a workflow_dispatch run on another ref only for a
-# workflow that is on the default branch, so the second PR's full workflow
-# can be dispatched from its own branch before it merges. The second PR
-# replaces this file. The one step runs a script that main does not have
-# yet, so a run started on main fails within seconds and changes nothing.
+# Replikanti/interviewscam#40). Started only by hand on a sweep branch:
+#   gh workflow run mutation-sweep.yml --ref <branch> -f mutants=<path>
+# Each job runs one shard of the committed mutant file (tools/mutate.py
+# shard, through the shim tools/mutate.sh, which the workflow hardening of
+# ADR-0007 part 4 requires) and uploads its results as the artifact
+# shard-<k>; the agent downloads all 20 and merges them locally with
+# `python3 -I -B tools/mutate.py merge <dir>` (part 7). Not a required
+# check, and nothing reads its artifacts in a workflow.
 on:
   workflow_dispatch:
     inputs:
@@ -18,13 +20,378 @@ on:
 permissions:
   contents: read
 
+# Twenty literal jobs, identical but the index, which mutate.py reads from
+# GITHUB_JOB (ADR-0008 part 6): a matrix leg could not learn its index,
+# because a run step may hold no expression and no job may set its own
+# environment (ADR-0007 part 4). test_workflow_shards_identical holds them
+# in step.
+#
+# timeout-minutes, ADR-0008 Numbers ("Job cap"): the factor 2 times the
+# slowest green shard job of the acceptance sweeps, rounded up to a
+# 5-minute step (ADR-0003 part 5 method). mutate.py stops admitting
+# mutants at the deadline D = cap x 60 - 60 s (JOB_TIMEOUT_MIN,
+# DEADLINE_MARGIN_S; test_workflow_timeout_matches_deadline), so the cap
+# only ever fires on a hang of the runner itself. The upload runs on a
+# failed step too, so a partial shard still reports its rows. Retention
+# 90 days, the longest a public repo allows: the QA reports and ADR-0008
+# cite the runs.
 jobs:
   shard-1:
     runs-on: ubuntu-24.04
-    # ADR-0008 Numbers, "Stub job cap": no checkout and one step that fails
-    # at once, so the job ends in seconds; 1 minute is the smallest cap.
-    timeout-minutes: 1
+    timeout-minutes: 95
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: bash tools/mutate.sh --shard
         shell: bash
         run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-1
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-2
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-3:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-3
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-4:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-4
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-5:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-5
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-6:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-6
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-7:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-7
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-8:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-8
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-9:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-9
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-10:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-10
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-11:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-11
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-12:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-12
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-13:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-13
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-14:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-14
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-15:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-15
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-16:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-16
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-17:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-17
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-18:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-18
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-19:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-19
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
+
+  shard-20:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shard-20
+          path: ${{ runner.temp }}/mutate/out
+          if-no-files-found: error
+          retention-days: 90
