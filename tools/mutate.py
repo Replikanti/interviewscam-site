@@ -37,6 +37,7 @@ import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -407,55 +408,174 @@ def drop_mutant_files(tree):
     return git(tree, "rev-parse", "--verify", "HEAD^{commit}").decode().strip()
 
 
+# Every git call of the restore runs with the runner's own settings, never
+# ones a run could have written: no hooks (a planted reference-transaction
+# or post-checkout hook would run inside the restore, after kill_strays),
+# no fsmonitor command, no global or system config file, no replace refs,
+# and none of the variables that point git at another repository.
+TREE_GIT_OPTS = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+                 "--literal-pathspecs")
+TREE_GIT_UNSET = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+                  "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                  "GIT_NAMESPACE", "GIT_REPLACE_REF_BASE", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS",
+                  "GIT_CONFIG_COUNT", "GIT_ATTR_SOURCE")
+
+
+def tree_git_env():
+    env = {k: v for k, v in os.environ.items() if k not in TREE_GIT_UNSET}
+    env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+               GIT_NO_REPLACE_OBJECTS="1", GIT_TERMINAL_PROMPT="0")
+    return env
+
+
 def tree_git(tree, *args, data=None):
     """(exit code, stdout) of git in the shard tree; never raises."""
-    run = subprocess.run(["git", "-C", str(tree), "--literal-pathspecs", *args], input=data,
+    run = subprocess.run(["git", "-C", str(tree), *TREE_GIT_OPTS, *args], input=data,
                          stdin=None if data is not None else subprocess.DEVNULL,
-                         capture_output=True)
+                         capture_output=True, env=tree_git_env())
     return run.returncode, run.stdout
 
 
-def restore_tree(tree, sha):
-    """Put the shard tree back to sha, the commit of drop_mutant_files,
-    whatever a run did to it: HEAD detached at sha (a run may commit,
-    move HEAD or switch to a branch), every skip-worktree and
-    assume-unchanged bit cleared (with one set, reset --hard leaves a
-    changed file as it is), the index and the files reset, and everything
-    untracked or ignored removed but the toolchain cache. True only when
-    git then shows HEAD at sha, every index entry plain (`H ` in ls-files
-    -v) and nothing else on disk; anything less makes the caller end the
-    shard (ERROR, the rest NOT-RUN), because the next run would not start
-    from sha."""
+def read_entry(path):
+    """(kind, mode, bytes) of a file, a symlink or a whole directory, or
+    None when path does not exist; never follows a symlink."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(st.st_mode):
+        return ("link", 0, os.readlink(path).encode("utf-8", "surrogateescape"))
+    if stat.S_ISDIR(st.st_mode):
+        return ("dir", st.st_mode & 0o7777, tuple(sorted(
+            (name, read_entry(os.path.join(path, name))) for name in os.listdir(path))))
+    if stat.S_ISREG(st.st_mode):
+        with open(path, "rb") as handle:
+            return ("file", st.st_mode & 0o7777, handle.read())
+    return ("other", st.st_mode, b"")
+
+
+def git_state(tree):
+    """The git state a run can write that changes what the restore writes
+    or what a later run's git does (ADR-0008 part 5): in the common git
+    directory config, info/ (attributes, exclude, sparse-checkout, grafts),
+    hooks/, shallow and the alternates of objects/info/; in the tree's own
+    git directory config.worktree, info/, commondir and gitdir; the tree's
+    .git file; the replace refs; the global config files. Compared with
+    its value right after drop_mutant_files."""
+    rc, out = tree_git(tree, "rev-parse", "--path-format=absolute", "--git-common-dir",
+                       "--git-dir")
+    if rc != 0:
+        return None
+    common, own = out.decode("utf-8", "surrogateescape").split("\n")[:2]
+    paths = [os.path.join(common, name) for name in
+             ("config", "info", "hooks", "shallow", "objects/info/alternates",
+              "objects/info/http-alternates")]
+    paths += [os.path.join(own, name) for name in ("config.worktree", "info", "commondir",
+                                                    "gitdir")]
+    paths.append(os.path.join(tree, ".git"))
+    home = Path.home()
+    paths += [str(home / ".gitconfig"), str(home / ".config" / "git"),
+              os.environ.get("XDG_CONFIG_HOME", str(home / ".config")) + "/git"]
+    if os.environ.get("GIT_CONFIG_GLOBAL"):
+        paths.append(os.environ["GIT_CONFIG_GLOBAL"])
+    state = {path: read_entry(path) for path in paths}
+    rc, refs = tree_git(tree, "for-each-ref", "--format=%(refname) %(objectname)",
+                        "refs/replace/")
+    state["refs/replace/"] = (rc, refs)
+    return state
+
+
+def tree_content(tree):
+    """{path: (kind, executable, bytes)} of every file and symlink in the
+    tree but its .git file and the toolchain cache: the checkout output the
+    restore must reproduce, read from the disk rather than from git."""
+    content = {}
+    for dirpath, dirnames, filenames in os.walk(tree):
+        rel_dir = os.path.relpath(dirpath, tree)
+        if rel_dir == ".":
+            dirnames[:] = [d for d in dirnames if d != TOOLS_CACHE]
+            filenames = [f for f in filenames if f != ".git"]
+        for name in dirnames + filenames:
+            path = os.path.join(dirpath, name)
+            st = os.lstat(path)
+            rel = os.path.normpath(os.path.join(rel_dir, name))
+            if stat.S_ISLNK(st.st_mode):
+                content[rel] = ("link", False, os.readlink(path))
+            elif stat.S_ISREG(st.st_mode):
+                with open(path, "rb") as handle:
+                    content[rel] = ("file", bool(st.st_mode & 0o100), handle.read())
+            elif not stat.S_ISDIR(st.st_mode):
+                content[rel] = ("other", False, b"")
+    return content
+
+
+class Pristine:
+    """The shard tree right after drop_mutant_files: its commit, its git
+    state and its content, which every restore must reproduce."""
+
+    def __init__(self, tree, sha):
+        self.sha = sha
+        self.state = git_state(tree)
+        self.content = tree_content(tree)
+
+
+def restore_tree(tree, pristine):
+    """Put the shard tree back to the pristine commit, whatever a run did
+    to it, and check the result; None when it holds, else the reason (the
+    caller then ends the shard: ERROR, the rest NOT-RUN, because the next
+    run would not start from the swept code).
+
+    First the git state of git_state must be what it was: a run that
+    changed config (core.autocrlf, a filter, an include), info/ (attributes,
+    sparse-checkout), hooks/, the alternates, a replace ref, the tree's git
+    files or a global config file fails here, before the restore runs git
+    on it. Then HEAD is detached at the commit (a run may commit, move HEAD
+    or switch to a branch), every skip-worktree and assume-unchanged bit
+    cleared (with one set, reset --hard leaves a changed file as it is), the
+    index and the files reset, everything untracked or ignored removed but
+    the toolchain cache. Last the outcome: HEAD at the commit, every index
+    entry plain (`H ` in ls-files -v), a clean status, and every file of the
+    tree byte for byte, executable bit and symlink target as right after
+    drop_mutant_files, read from the disk, so no git setting can make a
+    changed output look clean."""
+    if git_state(tree) != pristine.state:
+        changed = sorted(k for k in pristine.state
+                         if (git_state(tree) or {}).get(k) != pristine.state[k])
+        return f"git state changed: {', '.join(changed) or 'unreadable'}"
     rc, listing = tree_git(tree, "ls-files", "-v", "-z")
     if rc != 0:
-        return False
+        return "git ls-files failed"
     flagged = [e[2:] for e in listing.split(b"\0") if e and not e.startswith(b"H ")]
     # One flag per call: update-index applies only the last of the two.
     for flag in ("--no-skip-worktree", "--no-assume-unchanged"):
         if flagged and tree_git(tree, "update-index", flag, "-z", "--stdin",
                                 data=b"\0".join(flagged) + b"\0")[0] != 0:
-            return False
-    for args in (("update-ref", "--no-deref", "HEAD", sha),
-                 ("reset", "-q", "--hard", sha),
+            return f"git update-index {flag} failed"
+    for args in (("update-ref", "--no-deref", "HEAD", pristine.sha),
+                 ("reset", "-q", "--hard", pristine.sha),
                  ("clean", "-ffdxq", "-e", TOOLS_CACHE)):
         if tree_git(tree, *args)[0] != 0:
-            return False
+            return f"git {args[0]} failed"
     rc, head = tree_git(tree, "rev-parse", "--verify", "HEAD")
-    if rc != 0 or head.decode().strip() != sha:
-        return False
+    if rc != 0 or head.decode().strip() != pristine.sha:
+        return "HEAD is not the pristine commit"
     rc, listing = tree_git(tree, "ls-files", "-v", "-z")
     if rc != 0 or any(e and not e.startswith(b"H ") for e in listing.split(b"\0")):
-        return False
-    status = subprocess.run(["git", "-C", str(tree), "status", "--porcelain=v1", "-z",
-                             "--untracked-files=all", "--ignored"],
-                            stdin=subprocess.DEVNULL, capture_output=True)
-    if status.returncode != 0:
-        return False
-    for entry in (e for e in status.stdout.split(b"\0") if e):
+        return "an index entry keeps a skip-worktree or assume-unchanged bit"
+    rc, status = tree_git(tree, "status", "--porcelain=v1", "-z", "--untracked-files=all",
+                          "--ignored")
+    if rc != 0:
+        return "git status failed"
+    for entry in (e for e in status.split(b"\0") if e):
         path = entry[3:].decode("utf-8", "replace")
         if not (path == TOOLS_CACHE + "/" or path.startswith(TOOLS_CACHE + "/")):
-            return False
-    return True
+            return f"git status shows {path}"
+    content = tree_content(tree)
+    if content != pristine.content:
+        diff = sorted(k for k in set(content) | set(pristine.content)
+                      if content.get(k) != pristine.content.get(k))
+        return f"the tree differs from the pristine commit on disk: {', '.join(diff[:5])}"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -569,8 +689,11 @@ class Shard:
 
     def settle(self):
         """After every run: no process of it left (kill_strays), the tree
-        back at the commit of drop_mutant_files (restore_tree)."""
-        return kill_strays() and restore_tree(self.tree, self.tree_sha)
+        back at the commit of drop_mutant_files (restore_tree). None when
+        both hold, else the reason."""
+        if not kill_strays():
+            return f"a process of the run outlived the sweep ({STRAY_SWEEP_S} s)"
+        return restore_tree(self.tree, self.pristine)
 
     def run(self):
         self.logs.mkdir(parents=True)
@@ -608,7 +731,7 @@ class Shard:
         if not runnable:
             return
         git(self.root, "worktree", "add", "-q", "--detach", str(self.tree), "HEAD")
-        self.tree_sha = drop_mutant_files(self.tree)
+        self.pristine = Pristine(self.tree, drop_mutant_files(self.tree))
         sets = []
         for m in runnable:
             key = tuple(sorted(m["suites"]))
@@ -620,10 +743,13 @@ class Shard:
             remaining = self.deadline - self.elapsed()
             rc, output, timed_out, seconds = self.timed_run(
                 key, remaining, self.logs / "controls" / f"{n}.log")
-            restored = self.settle()
+            problem = self.settle()
+            if problem:
+                with open(self.logs / "controls" / f"{n}.log", "a", encoding="utf-8") as log:
+                    log.write(f"\nmutate: the control fails: {problem}\n")
             if timed_out:
                 status = "TIMEOUT"
-            elif rc == 0 and not FAIL_LINE.search(output) and restored:
+            elif rc == 0 and not FAIL_LINE.search(output) and not problem:
                 status = "PASS"
             else:
                 status = "FAIL"
@@ -649,11 +775,11 @@ class Shard:
             row = {"verdict": verdict, "killer": killer, "seconds": seconds}
             if verdict == "KILLED" and m["expect"]:
                 row["expected"] = "yes" if killer in m["expect"] else "no"
-            if not self.settle():
+            problem = self.settle()
+            if problem:
                 with open(self.logs / f"{mid}.log", "a", encoding="utf-8") as log:
-                    log.write(f"\nmutate: {verdict} overruled: a process of the run outlived "
-                              "the sweep, or the tree could not be restored to "
-                              f"{self.tree_sha}; the rest of the shard is NOT-RUN\n")
+                    log.write(f"\nmutate: {verdict} overruled: {problem}; the rest of the "
+                              "shard is NOT-RUN\n")
                 row = {"verdict": "ERROR", "seconds": seconds}
                 stop = True
             self.rows[mid] = row

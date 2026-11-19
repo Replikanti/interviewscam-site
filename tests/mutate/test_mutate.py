@@ -83,6 +83,38 @@ while IFS= read -r line; do
     SKIPWT) git update-index --skip-worktree other.txt; echo leaked >other.txt ;;
     ASSUME) git update-index --assume-unchanged other.txt; echo leaked >other.txt ;;
     CHECKOTHER) [[ "$(cat other.txt)" == other ]] || { echo "FAIL s/other-leaked"; exit 1; } ;;
+    AUTOCRLF) git config core.autocrlf true; echo x >>other.txt ;;
+    FILTER)
+      git config filter.leak.smudge "sed s/other/LEAKED/"
+      git config filter.leak.clean "sed s/LEAKED/other/"
+      common="$(git rev-parse --git-common-dir)"
+      mkdir -p "$common/info"
+      echo "other.txt filter=leak" >>"$common/info/attributes"
+      echo x >>other.txt
+      ;;
+    HOOK)
+      hooks="$(git rev-parse --git-common-dir)/hooks"
+      mkdir -p "$hooks"
+      printf '#!/bin/sh\necho hook >>"%s"\ncat >/dev/null\n' "$STUB_DIR/ran" >"$hooks/reference-transaction"
+      chmod +x "$hooks/reference-transaction"
+      ;;
+    FSMONITOR)
+      printf '#!/bin/sh\necho fsmonitor >>"%s"\n' "$STUB_DIR/ran" >"$STUB_DIR/fsmonitor.sh"
+      chmod +x "$STUB_DIR/fsmonitor.sh"
+      git config core.fsmonitor "$STUB_DIR/fsmonitor.sh"
+      ;;
+    REPLACE) git replace "$(git rev-parse HEAD:other.txt)" "$(echo LEAKED | git hash-object -w --stdin)" ;;
+    ALTERNATES) mkdir -p "$STUB_DIR/alt"; echo "$STUB_DIR/alt" >>"$(git rev-parse --git-common-dir)/objects/info/alternates" ;;
+    EXCLUDE) mkdir -p "$(git rev-parse --git-dir)/info"; echo other.txt >>"$(git rev-parse --git-dir)/info/exclude" ;;
+    SPARSE) git sparse-checkout set --no-cone /target.txt /tools/ >/dev/null 2>&1 ;;
+    DOTGIT) printf 'gitdir: %s\n' "$STUB_DIR/elsewhere" >.git ;;
+    GLOBALCFG) git config --global core.autocrlf true ;;
+    ATTRS) echo "other.txt text eol=crlf" >>"$(git rev-parse --git-common-dir)/info/attributes" ;;
+    WTCONFIG) printf '[core]\n\tautocrlf = true\n' >"$(git rev-parse --git-dir)/config.worktree" ;;
+    COMMONDIR) echo "$STUB_DIR/other-repo" >"$(git rev-parse --git-dir)/commondir" ;;
+    GITDIRFILE) echo "$STUB_DIR/moved/.git" >"$(git rev-parse --git-dir)/gitdir" ;;
+    SHALLOW) git rev-parse HEAD >"$(git rev-parse --git-common-dir)/shallow" ;;
+    XDGCFG) mkdir -p "$HOME/.config/git"; printf '[core]\n\tautocrlf = true\n' >"$HOME/.config/git/config" ;;
     SETSID) setsid sleep 300 </dev/null >/dev/null 2>&1 & echo "$!" >>"$STUB_DIR/strays" ;;
     SETSIDENV) setsid env -i sleep 300 </dev/null >/dev/null 2>&1 & echo "$!" >>"$STUB_DIR/strays" ;;
     SETSIDWRITE)
@@ -615,29 +647,117 @@ class Shard(Patched):
             self.assertFalse(alive(pid), f"stray {pid} survived the sweep")
         self.assertEqual(mutate.children(), [])
 
-    def test_restore_verifies_head_and_flags(self):
-        # restore_tree checks what it did: a skip-worktree bit or a HEAD it
-        # could not move back (git refusing the update, simulated here by
-        # dropping those calls) fails the restore instead of passing it.
-        repo = Repo(self, mutants=[mutant("a")])
+    def pristine_tree(self, repo):
         tree = repo.tmp / "tree"
         git(repo.root, "worktree", "add", "-q", "--detach", str(tree), "HEAD")
-        sha = mutate.drop_mutant_files(tree)
-        self.assertTrue(mutate.restore_tree(tree, sha))
+        return tree, mutate.drop_mutant_files(tree)
+
+    def test_restore_verifies_head_and_flags(self):
+        # restore_tree checks what it did: a skip-worktree bit, a HEAD it
+        # could not move back or a file git did not rewrite (git refusing
+        # the update, simulated here by dropping those calls) fails the
+        # restore instead of passing it.
+        repo = Repo(self, mutants=[mutant("a")])
+        tree, sha = self.pristine_tree(repo)
+        pristine = mutate.Pristine(tree, sha)
+        self.assertIsNone(mutate.restore_tree(tree, pristine))
         real = mutate.tree_git
-        for skipped, setup in ((("update-index",), ("update-index", "--skip-worktree",
-                                                     "other.txt")),
-                               (("update-ref", "reset"), ("commit", "--allow-empty", "-qm",
-                                                           "moved"))):
+        for skipped, setup, reason in (
+                (("update-index",), ("update-index", "--skip-worktree", "other.txt"),
+                 "skip-worktree"),
+                (("update-ref", "reset"), ("commit", "--allow-empty", "-qm", "moved"),
+                 "HEAD is not"),
+                (("reset", "status"), None, "differs from the pristine commit on disk")):
             with self.subTest(skipped=skipped):
-                git(tree, *setup)
+                if setup:
+                    git(tree, *setup)
+                else:
+                    (tree / "other.txt").write_text("changed\n")
                 mutate.tree_git = lambda t, *args, data=None: (0, b"") \
                     if args[0] in skipped else real(t, *args, data=data)
                 try:
-                    self.assertFalse(mutate.restore_tree(tree, sha))
+                    self.assertIn(reason, mutate.restore_tree(tree, pristine) or "")
                 finally:
                     mutate.tree_git = real
-                self.assertTrue(mutate.restore_tree(tree, sha))
+                self.assertIsNone(mutate.restore_tree(tree, pristine))
+
+    def test_restore_ignores_settings_a_run_could_write(self):
+        # With state the run could have written already in the pristine
+        # snapshot, the restore itself still runs no hook and no fsmonitor
+        # command, reads no global config and no replace ref: the file it
+        # writes is the commit's own (LF, "other"), and neither marker
+        # appears.
+        repo = Repo(self, mutants=[mutant("a")])
+        tree, sha = self.pristine_tree(repo)
+        common = Path(git(tree, "rev-parse", "--path-format=absolute",
+                          "--git-common-dir").decode().strip())
+        (common / "hooks").mkdir(exist_ok=True)
+        marker = repo.stub_dir / "ran"
+        for hook in ("reference-transaction", "post-checkout", "post-index-change"):
+            path = common / "hooks" / hook
+            path.write_text(f"#!/bin/sh\necho {hook} >>'{marker}'\ncat >/dev/null\n")
+            path.chmod(0o755)
+        fsmonitor = repo.stub_dir / "fsmonitor.sh"
+        fsmonitor.write_text(f"#!/bin/sh\necho fsmonitor >>'{marker}'\n")
+        fsmonitor.chmod(0o755)
+        git(tree, "config", "core.fsmonitor", str(fsmonitor))
+        blob = git(tree, "hash-object", "-w", "--stdin", data=b"LEAKED\n").decode().strip()
+        git(tree, "replace", git(tree, "rev-parse", "HEAD:other.txt").decode().strip(), blob)
+        global_config = repo.tmp / "global-gitconfig"
+        global_config.write_text("[core]\n\tautocrlf = true\n")
+        saved = os.environ.get("GIT_CONFIG_GLOBAL")
+        os.environ["GIT_CONFIG_GLOBAL"] = str(global_config)
+        try:
+            marker.unlink(missing_ok=True)
+            pristine = mutate.Pristine(tree, sha)
+            self.assertEqual(pristine.content["other.txt"][2], b"other\n")
+            (tree / "other.txt").write_text("changed\n")
+            self.assertIsNone(mutate.restore_tree(tree, pristine))
+            self.assertEqual((tree / "other.txt").read_bytes(), b"other\n")
+            self.assertFalse(marker.exists(), marker.read_text() if marker.exists() else "")
+        finally:
+            os.environ["GIT_CONFIG_GLOBAL"] = saved
+
+    def test_git_state_written_by_a_run_ends_the_shard(self):
+        # A run that writes git state the restore or a later run would read
+        # fails the restore before it runs git: that mutant is ERROR, the
+        # rest NOT-RUN, and the log names what changed. The hook and the
+        # fsmonitor command never run.
+        cases = {
+            "AUTOCRLF": "config", "FILTER": "config", "HOOK": "hooks",
+            "FSMONITOR": "config", "REPLACE": "refs/replace/", "ALTERNATES": "alternates",
+            "EXCLUDE": "worktrees/tree/info", "SPARSE": "config", "DOTGIT": "tree/.git",
+            "GLOBALCFG": "global-gitconfig", "GLOBALHOME": "home/.gitconfig",
+            "ATTRS": ".git/info", "WTCONFIG": "config.worktree", "COMMONDIR": "commondir",
+            "GITDIRFILE": "worktrees/tree/gitdir", "SHALLOW": "shallow",
+            "XDGHOME": "home/.config/git",
+        }
+        for flag, reason in cases.items():
+            with self.subTest(flag=flag):
+                repo = Repo(self, mutants=[mutant("a", replace=flag.replace("HOME", "CFG")),
+                                           mutant("b", replace="CHECKOTHER")])
+                global_config = repo.tmp / "global-gitconfig"
+                global_config.write_text("")
+                home = repo.tmp / "home"
+                home.mkdir()
+                saved = dict(os.environ)
+                if flag.endswith("HOME"):
+                    # No GIT_CONFIG_GLOBAL: --global writes $HOME/.gitconfig.
+                    os.environ.pop("GIT_CONFIG_GLOBAL")
+                    os.environ["HOME"] = str(home)
+                else:
+                    os.environ["GIT_CONFIG_GLOBAL"] = str(global_config)
+                try:
+                    env = repo.env(HOME=str(home) if flag.endswith("HOME") else GIT_HOME)
+                    rc, out, _ = repo.run(env=env)
+                finally:
+                    os.environ.clear()
+                    os.environ.update(saved)
+                self.assertEqual((rc, verdicts(out)), (1, {"a": "ERROR", "b": "NOT-RUN"}))
+                log = (out / "logs" / "a.log").read_text()
+                self.assertIn("git state changed", log)
+                self.assertIn(reason, log.rsplit("git state changed", 1)[1])
+                self.assertFalse((repo.stub_dir / "ran").exists())
 
     def test_stray_that_outlives_the_sweep_aborts(self):
         # A stray the sweep cannot remove makes the mutant ERROR and the rest
