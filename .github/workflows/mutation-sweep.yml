@@ -1,0 +1,30 @@
+name: mutation-sweep
+
+# Mutation sweeps on GitHub-hosted runners (ADR-0008,
+# Replikanti/interviewscam#40). This file is the registration stub of the
+# first PR: GitHub starts a workflow_dispatch run on another ref only for a
+# workflow that is on the default branch, so the second PR's full workflow
+# can be dispatched from its own branch before it merges. The second PR
+# replaces this file. The one step runs a script that main does not have
+# yet, so a run started on main fails within seconds and changes nothing.
+on:
+  workflow_dispatch:
+    inputs:
+      mutants:
+        description: "The mutant file, tests/mutants/<name>.jsonl"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  shard-1:
+    runs-on: ubuntu-24.04
+    # ADR-0008 Numbers, "Stub job cap": no checkout and one step that fails
+    # at once, so the job ends in seconds; 1 minute is the smallest cap.
+    timeout-minutes: 1
+    steps:
+      - name: bash tools/mutate.sh --shard
+        shell: bash
+        run: bash tools/mutate.sh --shard
