@@ -482,7 +482,64 @@ def git_state(tree):
     rc, refs = tree_git(tree, "for-each-ref", "--format=%(refname) %(objectname)",
                         "refs/replace/")
     state["refs/replace/"] = (rc, refs)
+    state[os.path.join(common, "objects")] = object_store(os.path.join(common, "objects"))
     return state
+
+
+# Files under objects/ that git may rewrite on its own while a clean run
+# only reads (commit-graph upkeep, the dumb-protocol pack list); every
+# other change of the object store fails the restore.
+OBJECTS_VOLATILE = re.compile(r"info/(?:commit-graph.*|commit-graphs(?:/.*)?|packs)")
+
+
+def object_store(objects):
+    """(path, kind, size, mtime_ns, ctime_ns, inode) of every entry under
+    the common objects/ directory but OBJECTS_VOLATILE. Git does not verify
+    an object's hash when it reads it, and a loose object shadows a packed
+    one of the same name, so a run that writes or rewrites an object file
+    changes what a later checkout or `git cat-file` returns; every write
+    changes the ctime, which no process can set back. Clean runs only read
+    the store (ADR-0008 part 5)."""
+    entries = []
+    for dirpath, dirnames, filenames in os.walk(objects):
+        dirnames.sort()
+        for name in sorted(dirnames + filenames):
+            path = os.path.join(dirpath, name)
+            rel = os.path.relpath(path, objects)
+            if OBJECTS_VOLATILE.fullmatch(rel):
+                continue
+            try:
+                st = os.lstat(path)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISDIR(st.st_mode):
+                entries.append((rel, "dir", 0, 0, 0, st.st_ino))
+            else:
+                entries.append((rel, stat.S_IFMT(st.st_mode), st.st_size, st.st_mtime_ns,
+                                st.st_ctime_ns, st.st_ino))
+    return tuple(entries)
+
+
+def tools_cache_problem(tree):
+    """Why the toolchain cache the restore leaves in place is unsafe, or
+    None: anything under .tools/ that is a symlink or neither a regular file
+    nor a directory (a symlinked .tools/cache sends the next run's download
+    into a tracked directory, which the content check would only see after
+    that run). fetch-tools.sh writes only regular files and directories."""
+    top = os.path.join(tree, TOOLS_CACHE)
+    try:
+        st = os.lstat(top)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISDIR(st.st_mode):
+        return f"{TOOLS_CACHE} is not a directory"
+    for dirpath, dirnames, filenames in os.walk(top):
+        for name in dirnames + filenames:
+            path = os.path.join(dirpath, name)
+            mode = os.lstat(path).st_mode
+            if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+                return f"{os.path.relpath(path, tree)} is a symlink or special file"
+    return None
 
 
 def tree_content(tree):
@@ -538,6 +595,9 @@ def restore_tree(tree, pristine):
     tree byte for byte, executable bit and symlink target as right after
     drop_mutant_files, read from the disk, so no git setting can make a
     changed output look clean."""
+    problem = tools_cache_problem(tree)
+    if problem:
+        return problem
     if git_state(tree) != pristine.state:
         changed = sorted(k for k in pristine.state
                          if (git_state(tree) or {}).get(k) != pristine.state[k])

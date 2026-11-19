@@ -81,6 +81,51 @@ while IFS= read -r line; do
         && git -c user.name=x -c user.email=x@x.invalid -c commit.gpgsign=false commit -qm leak
       ;;
     SKIPWT) git update-index --skip-worktree other.txt; echo leaked >other.txt ;;
+    BRANCH) git switch -q -c leak; echo leaked >other.txt ;;
+    MOVEHEAD) git update-ref --no-deref HEAD HEAD^; echo leaked >other.txt ;;
+    FORGEBLOB)
+      python3 -I -c '
+import os, subprocess, zlib
+sha = subprocess.run(["git", "rev-parse", ":other.txt"], capture_output=True, text=True,
+                     check=True).stdout.strip()
+objects = os.path.join(subprocess.run(["git", "rev-parse", "--git-common-dir"],
+                                      capture_output=True, text=True, check=True).stdout.strip(),
+                       "objects")
+path = os.path.join(objects, sha[:2], sha[2:])
+os.makedirs(os.path.dirname(path), exist_ok=True)
+if os.path.exists(path):
+    os.chmod(path, 0o644)
+data = b"LEAKED\n"
+open(path, "wb").write(zlib.compress(b"blob %d\0" % len(data) + data))
+'
+      ;;
+    FORGESTAT)
+      python3 -I -c '
+import os, subprocess
+sha = subprocess.run(["git", "rev-parse", ":other.txt"], capture_output=True, text=True,
+                     check=True).stdout.strip()
+objects = os.path.join(subprocess.run(["git", "rev-parse", "--git-common-dir"],
+                                      capture_output=True, text=True, check=True).stdout.strip(),
+                       "objects")
+path = os.path.join(objects, sha[:2], sha[2:])
+st = os.stat(path)
+os.chmod(path, 0o644)
+data = bytearray(open(path, "rb").read())
+data[-1] ^= 1
+with open(path, "r+b") as handle:
+    handle.write(data)
+os.chmod(path, st.st_mode & 0o7777)
+os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+'
+      ;;
+    CATOTHER) [[ "$(git cat-file blob :other.txt)" == other ]] || { echo "FAIL s/blob-forged"; exit 1; } ;;
+    TOOLSLINK) mkdir -p .tools && ln -s ../tools .tools/cache ;;
+    TOOLSFIFO) mkdir -p .tools && mkfifo .tools/pipe ;;
+    TOOLSTOP) ln -s tools .tools ;;
+    FETCH)
+      mkdir -p .tools/cache && echo x >.tools/cache/dl.tar.gz
+      [[ ! -e tools/dl.tar.gz ]] || { echo "FAIL s/download-in-tracked-dir"; exit 1; }
+      ;;
     ASSUME) git update-index --assume-unchanged other.txt; echo leaked >other.txt ;;
     CHECKOTHER) [[ "$(cat other.txt)" == other ]] || { echo "FAIL s/other-leaked"; exit 1; } ;;
     AUTOCRLF) git config core.autocrlf true; echo x >>other.txt ;;
@@ -608,15 +653,25 @@ class Shard(Patched):
         self.assertEqual(flags, {b"H "})
 
     def test_tree_restored_after_commit(self):
-        # A run that switches to a branch and commits there leaks nothing:
-        # the tree goes back, detached, to the commit of drop_mutant_files.
-        repo = Repo(self, mutants=[mutant("a", replace="PRINT FAIL s/a: x\nCOMMITALL\nEXIT 1"),
-                                   mutant("b", file="other.txt", find="other", replace="other2"),
-                                   mutant("c", replace="CHECKCLEAN")])
-        rc, out, _ = repo.run()
-        self.assertEqual((rc, verdicts(out)), (0, {"a": "KILLED", "b": "SURVIVED",
-                                                   "c": "SURVIVED"}))
-        self.assert_tree_at_drop_commit(repo, out)
+        # A run that switches to a branch or moves HEAD leaks nothing: the
+        # tree goes back, detached, to the commit of drop_mutant_files. A run
+        # that commits writes objects, which the object-store snapshot
+        # refuses: that mutant is ERROR and the rest NOT-RUN.
+        for flag, want in (
+                ("BRANCH", (0, {"a": "KILLED", "b": "SURVIVED", "c": "SURVIVED"})),
+                ("MOVEHEAD", (0, {"a": "KILLED", "b": "SURVIVED", "c": "SURVIVED"})),
+                ("COMMITALL", (1, {"a": "ERROR", "b": "NOT-RUN", "c": "NOT-RUN"}))):
+            with self.subTest(flag=flag):
+                repo = Repo(self, mutants=[
+                    mutant("a", replace=f"PRINT FAIL s/a: x\n{flag}\nEXIT 1"),
+                    mutant("b", file="other.txt", find="other", replace="other2"),
+                    mutant("c", replace="CHECKCLEAN")])
+                rc, out, _ = repo.run()
+                self.assertEqual((rc, verdicts(out)), want)
+                if rc == 0:
+                    self.assert_tree_at_drop_commit(repo, out)
+                else:
+                    self.assertIn("objects", (out / "logs" / "a.log").read_text())
 
     def test_tree_restored_after_skip_worktree(self):
         # skip-worktree and assume-unchanged bits are cleared, so reset
@@ -665,7 +720,7 @@ class Shard(Patched):
         for skipped, setup, reason in (
                 (("update-index",), ("update-index", "--skip-worktree", "other.txt"),
                  "skip-worktree"),
-                (("update-ref", "reset"), ("commit", "--allow-empty", "-qm", "moved"),
+                (("update-ref", "reset"), ("update-ref", "--no-deref", "HEAD", repo.head),
                  "HEAD is not"),
                 (("reset", "status"), None, "differs from the pristine commit on disk")):
             with self.subTest(skipped=skipped):
@@ -731,6 +786,9 @@ class Shard(Patched):
             "ATTRS": ".git/info", "WTCONFIG": "config.worktree", "COMMONDIR": "commondir",
             "GITDIRFILE": "worktrees/tree/gitdir", "SHALLOW": "shallow",
             "XDGHOME": "home/.config/git",
+            "FORGEBLOB": ".git/objects", "COMMITALL": ".git/objects",
+            # Same name, inode, size, mode and mtime: only the ctime shows it.
+            "FORGESTAT": ".git/objects",
         }
         for flag, reason in cases.items():
             with self.subTest(flag=flag):
@@ -796,6 +854,20 @@ class Shard(Patched):
             signal.signal(signal.SIGALRM, old)
             mutate.children = real
         self.assertTrue(mutate.kill_strays())
+
+    def test_tools_cache_must_hold_only_files_and_dirs(self):
+        # The restore keeps .tools/, so anything there but regular files and
+        # directories (a symlink into a tracked directory, a FIFO, .tools
+        # itself a symlink) ends the shard before a later run can use it.
+        for flag, reason in (("TOOLSLINK", ".tools/cache is a symlink"),
+                             ("TOOLSFIFO", ".tools/pipe is a symlink or special file"),
+                             ("TOOLSTOP", ".tools is not a directory")):
+            with self.subTest(flag=flag):
+                repo = Repo(self, mutants=[mutant("a", replace=flag),
+                                           mutant("b", replace="FETCH")])
+                rc, out, _ = repo.run()
+                self.assertEqual((rc, verdicts(out)), (1, {"a": "ERROR", "b": "NOT-RUN"}))
+                self.assertIn(reason, (out / "logs" / "a.log").read_text())
 
     def test_restore_keeps_tools_cache(self):
         repo = Repo(self, mutants=[mutant("a", replace="TOOLS"),
