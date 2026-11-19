@@ -1,0 +1,1270 @@
+"""tools/mutate.py, the mutation sweep runner (ADR-0008, Replikanti/interviewscam#40).
+
+Run by `bash tools/selftest.sh` (suite `mutate`) as python3 -I -B -m
+unittest. Never on GitHub's API and never with the real self-test: every
+shard case builds a throwaway git repository whose tools/selftest.sh is a
+stub driven by the lines of its target.txt, and calls the module's
+functions through importlib with an explicit environment, so the CLI keeps
+refusing any run outside a workflow_dispatch job. Budgets are shrunk by
+patching BUDGET_ADD_S and DEADLINE_S; the admission cases inject a clock
+and a runner, so no case waits on a real budget.
+"""
+
+import contextlib
+import hashlib
+import importlib.util
+import io
+import json
+import os
+import re
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+
+ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW = ROOT / ".github" / "workflows" / "mutation-sweep.yml"
+SHIM = ROOT / "tools" / "mutate.sh"
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+mutate = load("mutate", ROOT / "tools" / "mutate.py")
+
+# The stub self-test. Arguments as the real one takes them; each line of
+# target.txt is one instruction, so a mutant decides what the run prints,
+# how it ends and what it leaves behind. Suite names steer the control:
+# nosuch exits 2 as an unknown suite does, broken fails, slow sleeps.
+STUB = r"""#!/usr/bin/env bash
+only="*"
+if [[ $# -gt 0 ]]; then
+  [[ $# -eq 2 && "$1" == --only ]] || { echo "stub: bad arguments" >&2; exit 2; }
+  only="$2"
+fi
+printf '%s\n' "$only" >>"$STUB_DIR/calls"
+IFS=, read -ra suites <<<"$only"
+for suite in "${suites[@]}"; do
+  case "$suite" in
+    nosuch) echo "FAIL selftest-only: --only nosuch ran no rows"; exit 2 ;;
+    broken) echo "FAIL broken/row: the control fails"; exit 1 ;;
+    slow) sleep 30 ;;
+  esac
+done
+while IFS= read -r line; do
+  case "$line" in
+    "PRINT "*) printf '%s\n' "${line#PRINT }" ;;
+    "EXIT "*) exit "${line#EXIT }" ;;
+    HANG)
+      sleep 300 &
+      echo "$!" >"$STUB_DIR/grandchild"
+      sleep 300
+      ;;
+    DIRT) echo dirt >>other.txt; echo junk >untracked.txt; mkdir -p newdir; echo x >newdir/f ;;
+    STUCK) mkdir stuck; echo x >stuck/f; chmod 555 stuck ;;
+    TOOLS) mkdir -p .tools/cache; echo x >.tools/cache/kept ;;
+    CHECKTOOLS) [[ -f .tools/cache/kept ]] || { echo "FAIL s/tools-gone"; exit 1; } ;;
+    CHECKNOMUTANTS) [[ ! -e tests/mutants ]] || { echo "FAIL s/mutants-present"; exit 1; } ;;
+    COMMITALL)
+      git switch -q -c leak && git add -A >/dev/null \
+        && git -c user.name=x -c user.email=x@x.invalid -c commit.gpgsign=false commit -qm leak
+      ;;
+    SKIPWT) git update-index --skip-worktree other.txt; echo leaked >other.txt ;;
+    BRANCH) git switch -q -c leak; echo leaked >other.txt ;;
+    MOVEHEAD) git update-ref --no-deref HEAD HEAD^; echo leaked >other.txt ;;
+    FORGEBLOB)
+      python3 -I -c '
+import os, subprocess, zlib
+sha = subprocess.run(["git", "rev-parse", ":other.txt"], capture_output=True, text=True,
+                     check=True).stdout.strip()
+objects = os.path.join(subprocess.run(["git", "rev-parse", "--git-common-dir"],
+                                      capture_output=True, text=True, check=True).stdout.strip(),
+                       "objects")
+path = os.path.join(objects, sha[:2], sha[2:])
+os.makedirs(os.path.dirname(path), exist_ok=True)
+if os.path.exists(path):
+    os.chmod(path, 0o644)
+data = b"LEAKED\n"
+open(path, "wb").write(zlib.compress(b"blob %d\0" % len(data) + data))
+'
+      ;;
+    FORGESTAT)
+      python3 -I -c '
+import os, subprocess
+sha = subprocess.run(["git", "rev-parse", ":other.txt"], capture_output=True, text=True,
+                     check=True).stdout.strip()
+objects = os.path.join(subprocess.run(["git", "rev-parse", "--git-common-dir"],
+                                      capture_output=True, text=True, check=True).stdout.strip(),
+                       "objects")
+path = os.path.join(objects, sha[:2], sha[2:])
+st = os.stat(path)
+os.chmod(path, 0o644)
+data = bytearray(open(path, "rb").read())
+data[-1] ^= 1
+with open(path, "r+b") as handle:
+    handle.write(data)
+os.chmod(path, st.st_mode & 0o7777)
+os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+'
+      ;;
+    CATOTHER) [[ "$(git cat-file blob :other.txt)" == other ]] || { echo "FAIL s/blob-forged"; exit 1; } ;;
+    TOOLSLINK) mkdir -p .tools && ln -s ../tools .tools/cache ;;
+    TOOLSFIFO) mkdir -p .tools && mkfifo .tools/pipe ;;
+    TOOLSTOP) ln -s tools .tools ;;
+    FETCH)
+      mkdir -p .tools/cache && echo x >.tools/cache/dl.tar.gz
+      [[ ! -e tools/dl.tar.gz ]] || { echo "FAIL s/download-in-tracked-dir"; exit 1; }
+      ;;
+    ASSUME) git update-index --assume-unchanged other.txt; echo leaked >other.txt ;;
+    CHECKOTHER) [[ "$(cat other.txt)" == other ]] || { echo "FAIL s/other-leaked"; exit 1; } ;;
+    AUTOCRLF) git config core.autocrlf true; echo x >>other.txt ;;
+    FILTER)
+      git config filter.leak.smudge "sed s/other/LEAKED/"
+      git config filter.leak.clean "sed s/LEAKED/other/"
+      common="$(git rev-parse --git-common-dir)"
+      mkdir -p "$common/info"
+      echo "other.txt filter=leak" >>"$common/info/attributes"
+      echo x >>other.txt
+      ;;
+    HOOK)
+      hooks="$(git rev-parse --git-common-dir)/hooks"
+      mkdir -p "$hooks"
+      printf '#!/bin/sh\necho hook >>"%s"\ncat >/dev/null\n' "$STUB_DIR/ran" >"$hooks/reference-transaction"
+      chmod +x "$hooks/reference-transaction"
+      ;;
+    FSMONITOR)
+      printf '#!/bin/sh\necho fsmonitor >>"%s"\n' "$STUB_DIR/ran" >"$STUB_DIR/fsmonitor.sh"
+      chmod +x "$STUB_DIR/fsmonitor.sh"
+      git config core.fsmonitor "$STUB_DIR/fsmonitor.sh"
+      ;;
+    REPLACE) git replace "$(git rev-parse HEAD:other.txt)" "$(echo LEAKED | git hash-object -w --stdin)" ;;
+    ALTERNATES) mkdir -p "$STUB_DIR/alt"; echo "$STUB_DIR/alt" >>"$(git rev-parse --git-common-dir)/objects/info/alternates" ;;
+    EXCLUDE) mkdir -p "$(git rev-parse --git-dir)/info"; echo other.txt >>"$(git rev-parse --git-dir)/info/exclude" ;;
+    SPARSE) git sparse-checkout set --no-cone /target.txt /tools/ >/dev/null 2>&1 ;;
+    DOTGIT) printf 'gitdir: %s\n' "$STUB_DIR/elsewhere" >.git ;;
+    GLOBALCFG) git config --global core.autocrlf true ;;
+    ATTRS) echo "other.txt text eol=crlf" >>"$(git rev-parse --git-common-dir)/info/attributes" ;;
+    WTCONFIG) printf '[core]\n\tautocrlf = true\n' >"$(git rev-parse --git-dir)/config.worktree" ;;
+    COMMONDIR) echo "$STUB_DIR/other-repo" >"$(git rev-parse --git-dir)/commondir" ;;
+    GITDIRFILE) echo "$STUB_DIR/moved/.git" >"$(git rev-parse --git-dir)/gitdir" ;;
+    SHALLOW) git rev-parse HEAD >"$(git rev-parse --git-common-dir)/shallow" ;;
+    XDGCFG) mkdir -p "$HOME/.config/git"; printf '[core]\n\tautocrlf = true\n' >"$HOME/.config/git/config" ;;
+    SETSID) setsid sleep 300 </dev/null >/dev/null 2>&1 & echo "$!" >>"$STUB_DIR/strays" ;;
+    SETSIDENV) setsid env -i sleep 300 </dev/null >/dev/null 2>&1 & echo "$!" >>"$STUB_DIR/strays" ;;
+    SETSIDWRITE)
+      setsid bash -c 'sleep 0.5; echo late >late.txt' </dev/null >/dev/null 2>&1 &
+      echo "$!" >>"$STUB_DIR/strays"
+      ;;
+    SLEEP1) sleep 1 ;;
+    CHECKLATE) [[ ! -e late.txt ]] || { echo "FAIL s/late-write"; exit 1; } ;;
+    CHECKCLEAN)
+      if [[ "$(cat other.txt)" != other || -e untracked.txt || -e newdir ]]; then
+        echo "FAIL s/dirty"
+        exit 1
+      fi
+      ;;
+  esac
+done <target.txt
+echo "ok   s/row"
+"""
+
+GIT_ENV = {
+    "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "test@example.com",
+    "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "test@example.com",
+    "GIT_CONFIG_NOSYSTEM": "1",
+}
+
+
+def setUpModule():
+    global SAVED_ENV, GIT_HOME
+    SAVED_ENV = dict(os.environ)
+    GIT_HOME = tempfile.mkdtemp(prefix="mutate-home-")
+    os.environ.update(GIT_ENV)
+    os.environ["GIT_CONFIG_GLOBAL"] = str(Path(GIT_HOME) / "gitconfig")
+    (Path(GIT_HOME) / "gitconfig").write_text("")
+
+
+def tearDownModule():
+    os.environ.clear()
+    os.environ.update(SAVED_ENV)
+    shutil.rmtree(GIT_HOME, ignore_errors=True)
+
+
+def git(root, *args, data=None):
+    return subprocess.run(["git", "-C", str(root), *args], input=data, check=True,
+                          capture_output=True).stdout
+
+
+def mutant(mid, find="base", replace="PRINT ok   s/x", suites=("s",), file="target.txt", **extra):
+    obj = {"id": mid, "suites": list(suites),
+           "edits": [{"file": file, "find": find, "replace": replace}]}
+    obj.update(extra)
+    return obj
+
+
+def jsonl(objs):
+    return "".join(json.dumps(o) + "\n" for o in objs).encode("ascii")
+
+
+def unwritable_tree_cleanup(path):
+    for dirpath, dirnames, _ in os.walk(path):
+        for name in dirnames:
+            full = os.path.join(dirpath, name)
+            if not os.path.islink(full):
+                os.chmod(full, stat.S_IRWXU)
+
+
+class Repo:
+    """A throwaway repository with the stub self-test and one mutant file."""
+
+    def __init__(self, case, mutants=None, raw=None, extra=None):
+        self.tmp = Path(tempfile.mkdtemp(prefix="mutate-test-"))
+        case.addCleanup(self.cleanup)
+        self.root = self.tmp / "repo"
+        self.stub_dir = self.tmp / "stub"
+        self.stub_dir.mkdir()
+        self.root.mkdir()
+        git(self.root, "init", "-q", "-b", "main")
+        files = {
+            "tools/selftest.sh": STUB,
+            "tools/mutate.py": "# a placeholder the mutants may edit\n",
+            ".github/workflows/x.yml": "name: x\n",
+            "target.txt": "base\n",
+            "other.txt": "other\n",
+            ".gitignore": ".tools/\n",
+        }
+        files.update(extra or {})
+        for rel, text in files.items():
+            path = self.root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(text if isinstance(text, bytes) else text.encode("utf-8"))
+        data = raw if raw is not None else jsonl(mutants or [])
+        self.mutants_rel = "tests/mutants/m.jsonl"
+        (self.root / self.mutants_rel).parent.mkdir(parents=True, exist_ok=True)
+        (self.root / self.mutants_rel).write_bytes(data)
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "stub")
+        self.head = git(self.root, "rev-parse", "HEAD").decode().strip()
+        self.runs = 0
+
+    def cleanup(self):
+        unwritable_tree_cleanup(self.tmp)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def env(self, shard=1, **over):
+        self.runs += 1
+        temp = self.tmp / f"runner-{self.runs}"
+        temp.mkdir()
+        event = self.tmp / f"event-{self.runs}.json"
+        event.write_text(json.dumps({"inputs": {"mutants": self.mutants_rel}}))
+        env = {
+            "PATH": os.environ["PATH"],
+            "HOME": GIT_HOME,
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_JOB": f"shard-{shard}",
+            "GITHUB_SHA": self.head,
+            "GITHUB_EVENT_PATH": str(event),
+            "RUNNER_TEMP": str(temp),
+            "GITHUB_STEP_SUMMARY": str(temp / "summary.md"),
+            "STUB_DIR": str(self.stub_dir),
+        }
+        env.update({k: v for k, v in os.environ.items() if k.startswith("GIT_")})
+        for key, value in over.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
+        return env
+
+    def run(self, shard=1, env=None, **kwargs):
+        env = env or self.env(shard)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = mutate.shard_main(env, self.root, **kwargs)
+        out = Path(env.get("RUNNER_TEMP", "/nonexistent")) / "mutate" / "out"
+        return rc, out, err.getvalue()
+
+    def calls(self):
+        path = self.stub_dir / "calls"
+        return path.read_text().splitlines() if path.exists() else []
+
+
+def rows(out):
+    lines = (out / "results.tsv").read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "\t".join(mutate.TSV_HEADER), lines[0]
+    return {line.split("\t")[0]: line.split("\t") for line in lines[1:]}
+
+
+def verdicts(out):
+    return {mid: row[1] for mid, row in rows(out).items()}
+
+
+def meta(out):
+    return (out / "meta.txt").read_text(encoding="utf-8").splitlines()
+
+
+class Patched(unittest.TestCase):
+    """Shard cases on one shard with short budgets."""
+
+    def setUp(self):
+        self.saved = {name: getattr(mutate, name)
+                      for name in ("SHARDS", "BUDGET_ADD_S", "DEADLINE_S", "STRAY_SWEEP_S")}
+        mutate.SHARDS = 1
+        mutate.BUDGET_ADD_S = 0.5
+        mutate.DEADLINE_S = 60
+
+    def tearDown(self):
+        for name, value in self.saved.items():
+            setattr(mutate, name, value)
+
+
+class Load(unittest.TestCase):
+
+    def refuse(self, data, needle=""):
+        with self.assertRaises(mutate.InputError) as ctx:
+            mutate.parse_mutants(data)
+        self.assertIn(needle, str(ctx.exception))
+
+    def test_load_refuses_empty(self):
+        self.refuse(b"", "no mutants")
+        repo = Repo(self, raw=b"")
+        rc, _, err = repo.run()
+        self.assertEqual(rc, 2)
+        self.assertIn("no mutants", err)
+
+    def test_load_refuses_bad_ids(self):
+        for bad in ("Upper", "ab\u0430", "a\u200bb", "a" * 101, "", "-a", "a b", ".a"):
+            with self.subTest(id=bad):
+                self.refuse(jsonl([mutant(bad)]), "id")
+        self.refuse(jsonl([mutant("a"), mutant("a", replace="x")]), "duplicate id")
+        self.assertEqual(len(mutate.parse_mutants(jsonl([mutant("a" * 100)]))), 1)
+
+    def test_identical_edits_allowed(self):
+        loaded = mutate.parse_mutants(jsonl([mutant("a"), mutant("b")]))
+        self.assertEqual([m["id"] for m in loaded], ["a", "b"])
+
+    def test_load_refuses_malformed(self):
+        good = json.dumps(mutant("a"))
+        cases = {
+            "blank line": (good + "\n\n" + json.dumps(mutant("b")) + "\n").encode(),
+            "crlf": (good + "\r\n").encode(),
+            "bom": b"\xef\xbb\xbf" + (good + "\n").encode(),
+            "non-ascii": (good[:-1] + ', "note": "\u00e9"}\n').encode("utf-8"),
+            "no final lf": good.encode(),
+            "duplicate key": (good[:-1] + ', "id": "b"}\n').encode(),
+            "unknown key": (good[:-1] + ', "extra": 1}\n').encode(),
+            "nan": (good[:-1] + ', "note": NaN}\n').encode(),
+            "infinity": (good[:-1] + ', "note": -Infinity}\n').encode(),
+            "not an object": b"[1]\n",
+            "not json": b"{\n",
+            "id type": jsonl([{"id": 1, "suites": ["s"], "edits": []}]),
+            "suites type": jsonl([{"id": "a", "suites": "s", "edits": [
+                {"file": "f", "find": "x", "replace": "y"}]}]),
+            "edits type": jsonl([{"id": "a", "suites": ["s"], "edits": {}}]),
+            "empty edits": jsonl([{"id": "a", "suites": ["s"], "edits": []}]),
+            "edit key missing": jsonl([{"id": "a", "suites": ["s"], "edits": [
+                {"file": "f", "find": "x"}]}]),
+            "edit key extra": jsonl([{"id": "a", "suites": ["s"], "edits": [
+                {"file": "f", "find": "x", "replace": "y", "z": "w"}]}]),
+            "edit value type": jsonl([{"id": "a", "suites": ["s"], "edits": [
+                {"file": "f", "find": True, "replace": "y"}]}]),
+            "empty find": jsonl([mutant("a", find="")]),
+            "find equals replace": jsonl([mutant("a", find="x", replace="x")]),
+            "expect type": jsonl([mutant("a", expect="s/a")]),
+            "expect empty": jsonl([mutant("a", expect=[])]),
+            "expect empty name": jsonl([mutant("a", expect=[""])]),
+            "expect duplicate": jsonl([mutant("a", expect=["s/a", "s/a"])]),
+            "note type": jsonl([mutant("a", note=3)]),
+            "missing id": jsonl([{"suites": ["s"], "edits": [
+                {"file": "f", "find": "x", "replace": "y"}]}]),
+        }
+        for name, data in cases.items():
+            with self.subTest(case=name):
+                self.refuse(data)
+
+    def test_load_refuses_suites(self):
+        for suites in ([], ["s", "s"], ["*", "render"], ["Render"], ["r\u0430"],
+                       ["-r"], ["a/b"], [""], ["*", "*"], [1]):
+            with self.subTest(suites=suites):
+                self.refuse(jsonl([mutant("a", suites=suites)]), "suites")
+        self.assertEqual(mutate.parse_mutants(jsonl([mutant("a", suites=["*"])]))[0]["suites"],
+                         ("*",))
+
+    def test_load_refuses_paths(self):
+        repo = Repo(self, mutants=[mutant("a")], extra={
+            "bad.txt": b"\xff\xfe\n", "dir/inner.txt": "x\n"})
+        os.symlink("target.txt", repo.root / "link.txt")
+        git(repo.root, "add", "link.txt")
+        git(repo.root, "update-index", "--add", "--cacheinfo",
+            f"160000,{repo.head},sub")
+        git(repo.root, "commit", "-q", "-m", "more")
+        (repo.root / "untracked.txt").write_text("x\n")
+        bad = ["/abs/target.txt", "../target.txt", "dir/../target.txt", "./target.txt",
+               "dir//inner.txt", "dir\\inner.txt", "dir/", "~/target.txt", "link.txt",
+               "untracked.txt", "dir", "sub", "bad.txt", "missing.txt", "", "a\nb",
+               "target.txt\u0000", "*.txt", ":(glob)*.txt", "tests/mutants/m.jsonl",
+               "tests/mutants"]
+        for path in bad:
+            with self.subTest(path=path):
+                with self.assertRaises(mutate.InputError) as ctx:
+                    mutate.target_texts(repo.root, mutate.parse_mutants(
+                        jsonl([mutant("a", file=path)])))
+                self.assertIn("file", str(ctx.exception))
+        texts = mutate.target_texts(repo.root, mutate.parse_mutants(jsonl([
+            mutant("a", file="dir/inner.txt", find="x", replace="y")])))
+        self.assertEqual(texts, {"dir/inner.txt": "x\n"})
+
+
+class Edits(unittest.TestCase):
+
+    def test_overlapping_find_is_invalid(self):
+        self.assertEqual("aaa".count("aa"), 1)
+        self.assertEqual(mutate.count_overlapping("aaa", "aa"), 2)
+        m = mutate.parse_mutants(jsonl([mutant("a", find="aa", replace="b")]))[0]
+        result, reason = mutate.apply_edits({"target.txt": "aaa"}, m)
+        self.assertIsNone(result)
+        self.assertIn("2", reason)
+
+    def test_invalid_counts(self):
+        for text, count in (("zzz", 0), ("base base", 2)):
+            with self.subTest(text=text):
+                m = mutate.parse_mutants(jsonl([mutant("a")]))[0]
+                result, reason = mutate.apply_edits({"target.txt": text}, m)
+                self.assertIsNone(result)
+                self.assertIn(f"{count}", reason)
+
+    def test_second_edit_sees_first(self):
+        m = mutate.parse_mutants(jsonl([{"id": "a", "suites": ["s"], "edits": [
+            {"file": "target.txt", "find": "base", "replace": "next"},
+            {"file": "target.txt", "find": "next", "replace": "last"}]}]))[0]
+        result, _ = mutate.apply_edits({"target.txt": "base\n"}, m)
+        self.assertEqual(result, {"target.txt": "last\n"})
+
+    def test_edit_creating_second_match_invalid(self):
+        m = mutate.parse_mutants(jsonl([{"id": "a", "suites": ["s"], "edits": [
+            {"file": "target.txt", "find": "base", "replace": "one one"},
+            {"file": "target.txt", "find": "one", "replace": "two"}]}]))[0]
+        result, reason = mutate.apply_edits({"target.txt": "base\n"}, m)
+        self.assertIsNone(result)
+        self.assertIn("edit 2", reason)
+
+    def test_assign_first_last(self):
+        self.assertEqual(mutate.SHARDS, 20)
+        self.assertEqual([mutate.assign(i) for i in range(20)], list(range(1, 21)))
+        self.assertEqual(mutate.assign(20), 1)
+        self.assertEqual([i for i in range(21) if mutate.assign(i) == 1], [0, 20])
+        self.assertEqual(mutate.assign(39), 20)
+
+    def test_budget_formula(self):
+        self.assertEqual(mutate.budget(450), 1120)
+        self.assertAlmostEqual(mutate.budget(0.1), 220.2)
+
+    def test_classify_table(self):
+        cases = [
+            ((0, "ok   s/a\n", False), ("SURVIVED", None)),
+            ((1, "ok   s/a\nFAIL s/b: x\nFAIL s/c: y\n", False), ("KILLED", "s/b")),
+            ((1, "ok   s/a\n", False), ("ERROR", None)),
+            ((0, "FAIL s/b: x\n", False), ("ERROR", None)),
+            ((2, "FAIL s/b: x\n", False), ("ERROR", None)),
+            ((3, "", False), ("ERROR", None)),
+            ((-9, "FAIL s/b\n", True), ("TIMEOUT", None)),
+            ((0, "", True), ("TIMEOUT", None)),
+            ((1, "     | FAIL s/b: a detail line\n", False), ("ERROR", None)),
+        ]
+        for args, want in cases:
+            with self.subTest(args=args):
+                self.assertEqual(mutate.classify(*args), want)
+
+    def test_killer_row_name_forms(self):
+        self.assertEqual(mutate.classify(1, "FAIL a/b c\n", False), ("KILLED", "a/b"))
+        self.assertEqual(mutate.classify(1, "FAIL: no html fixtures found\n", False),
+                         ("KILLED", "selftest"))
+        self.assertEqual(mutate.classify(1, "FAIL a/b:c d\n", False), ("KILLED", "a/b"))
+        self.assertEqual(mutate.classify(1, "FAIL reflow-search\tx\n", False),
+                         ("KILLED", "reflow-search"))
+        self.assertEqual(mutate.classify(1, "FAILED x\nFAIL a/b\n", False), ("KILLED", "a/b"))
+
+    def test_tsv_escaping(self):
+        cases = {"a\tb": "a\\tb", "a\nb": "a\\nb", "a\rb": "a\\rb", "a\\b": "a\\\\b",
+                 "a\u200bb": "a\\u200bb", "\u00e9": "\\u00e9", "\U0001f600": "\\U0001f600",
+                 "\x7f": "\\u007f", "plain/row-1": "plain/row-1"}
+        for raw, escaped in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(mutate.escape(raw), escaped)
+                self.assertEqual(mutate.unescape(escaped), raw)
+                self.assertTrue(all(0x20 <= ord(c) < 0x7f for c in escaped))
+        for broken in ("a\\", "\\x", "\\u12", "\\U0011ffff"):
+            with self.subTest(broken=broken):
+                with self.assertRaises(ValueError):
+                    mutate.unescape(broken)
+
+
+class Shard(Patched):
+
+    def test_empty_shard_complete(self):
+        mutate.SHARDS = 20
+        repo = Repo(self, mutants=[mutant("a")])
+        rc, out, _ = repo.run(shard=2)
+        self.assertEqual(rc, 0)
+        self.assertEqual(rows(out), {})
+        self.assertIn("complete yes", meta(out))
+        self.assertFalse([line for line in meta(out) if line.startswith("control ")])
+        self.assertEqual(repo.calls(), [])
+        rc, out, _ = repo.run(shard=1)
+        self.assertEqual((rc, verdicts(out)), (0, {"a": "SURVIVED"}))
+
+    def test_star_runs_full_selftest(self):
+        repo = Repo(self, mutants=[mutant("a", suites=["*"]), mutant("b", suites=["s", "t"])])
+        rc, out, _ = repo.run()
+        self.assertEqual(rc, 0)
+        self.assertEqual(repo.calls(), ["*", "s,t", "*", "s,t"])
+
+    def test_unknown_suite_voids_shard(self):
+        repo = Repo(self, mutants=[mutant("a", suites=["nosuch"]), mutant("b")])
+        rc, out, _ = repo.run()
+        self.assertEqual(rc, 1)
+        self.assertEqual(verdicts(out), {"a": "VOID", "b": "VOID"})
+        self.assertIn("complete no", meta(out))
+
+    def test_control_per_suite_set_order(self):
+        repo = Repo(self, mutants=[mutant("a", suites=["t"]), mutant("b", suites=["s", "t"]),
+                                   mutant("c", suites=["t", "s"]), mutant("d", suites=["t"]),
+                                   mutant("e")])
+        rc, out, _ = repo.run()
+        self.assertEqual(rc, 0)
+        self.assertEqual(repo.calls()[:3], ["t", "s,t", "s"])
+        controls = [line.split()[1:3] for line in meta(out) if line.startswith("control ")]
+        self.assertEqual(controls, [["t", "PASS"], ["s,t", "PASS"], ["s", "PASS"]])
+
+    def test_control_failure_voids_shard(self):
+        repo = Repo(self, mutants=[mutant("a"), mutant("b", suites=["broken"]),
+                                   mutant("z", find="nothing")])
+        rc, out, _ = repo.run()
+        self.assertEqual(rc, 1)
+        self.assertEqual(set(verdicts(out).values()), {"VOID"})
+        self.assertIn("control broken FAIL", " ".join(meta(out)))
+
+    def test_no_controls_when_all_invalid(self):
+        repo = Repo(self, mutants=[mutant("a", find="nothing"), mutant("b", find="zz")])
+        rc, out, _ = repo.run()
+        self.assertEqual((rc, verdicts(out)), (0, {"a": "INVALID", "b": "INVALID"}))
+        self.assertEqual(repo.calls(), [])
+        self.assertIn("complete yes", meta(out))
+
+    def test_runner_files_mutable_in_tree(self):
+        repo = Repo(self, mutants=[
+            mutant("a", file="tools/mutate.py", find="placeholder", replace="changed"),
+            mutant("b", file=".github/workflows/x.yml", find="x", replace="y")])
+        rc, out, _ = repo.run()
+        self.assertEqual((rc, verdicts(out)), (0, {"a": "SURVIVED", "b": "SURVIVED"}))
+        self.assertIn("placeholder", (repo.root / "tools/mutate.py").read_text())
+
+    def test_identical_edits_run(self):
+        repo = Repo(self, mutants=[mutant("a"), mutant("b")])
+        rc, out, _ = repo.run()
+        self.assertEqual((rc, verdicts(out)), (0, {"a": "SURVIVED", "b": "SURVIVED"}))
+
+    def test_verdicts_and_expected_column(self):
+        repo = Repo(self, mutants=[
+            mutant("k", replace="PRINT FAIL s/b: x\nEXIT 1", expect=["s/b"]),
+            mutant("n", replace="PRINT FAIL s/c: x\nEXIT 1", expect=["s/b"]),
+            mutant("s", expect=["s/b"]),
+            mutant("i", find="nothing"),
+            mutant("e", replace="EXIT 3")])
+        rc, out, _ = repo.run()
+        got = rows(out)
+        self.assertEqual(rc, 1)
+        self.assertEqual({k: v[1:4] for k, v in got.items()}, {
+            "k": ["KILLED", "s/b", "yes"], "n": ["KILLED", "s/c", "no"],
+            "s": ["SURVIVED", "-", "-"], "i": ["INVALID", "-", "-"], "e": ["ERROR", "-", "-"]})
+        self.assertTrue((out / "logs" / "k.log").exists())
+        self.assertTrue((out / "logs" / "i.log").exists())
+        self.assertEqual((out / "mutants.jsonl").read_bytes(),
+                         (repo.root / repo.mutants_rel).read_bytes())
+
+    def test_timeout_after_fail_row_is_timeout(self):
+        repo = Repo(self, mutants=[mutant("a", replace="PRINT FAIL s/b: x\nHANG")])
+        started = time.monotonic()
+        rc, out, _ = repo.run()
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual((rc, verdicts(out)), (0, {"a": "TIMEOUT"}))
+        self.assertIn("FAIL s/b: x", (out / "logs" / "a.log").read_text())
+
+    def test_timeout_kills_grandchildren(self):
+        repo = Repo(self, mutants=[mutant("a", replace="HANG")])
+        rc, out, _ = repo.run()
+        self.assertEqual(verdicts(out), {"a": "TIMEOUT"})
+        pid = int((repo.stub_dir / "grandchild").read_text())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and alive(pid):
+            time.sleep(0.05)
+        self.assertFalse(alive(pid), f"grandchild {pid} survived the kill")
+
+    def test_admission_boundary(self):
+        mutate.BUDGET_ADD_S = 5
+        for deadline, want in ((35, {"a": "SURVIVED", "b": "NOT-RUN", "c": "NOT-RUN"}),
+                               (34, {"a": "NOT-RUN", "b": "NOT-RUN", "c": "NOT-RUN"})):
+            with self.subTest(deadline=deadline):
+                mutate.DEADLINE_S = deadline
+                repo = Repo(self, mutants=[mutant("a"), mutant("b"), mutant("c")])
+                clock = FakeClock()
+                rc, out, _ = repo.run(clock=clock, runner=clock.runner([10, 1, 1, 1]))
+                # Control 10 s, so B = 2 x 10 + 5 = 25; mutant a may start
+                # at elapsed 10 iff 10 + 25 <= D; after it, 11 + 25 > 35.
+                self.assertEqual(verdicts(out), want)
+                self.assertEqual(rc, 1)
+                self.assertEqual(clock.timeouts[1:], [25] if deadline == 35 else [])
+
+    def test_control_deadline(self):
+        mutate.DEADLINE_S = 0.5
+        repo = Repo(self, mutants=[mutant("a", suites=["slow"]), mutant("b")])
+        started = time.monotonic()
+        rc, out, _ = repo.run()
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual((rc, verdicts(out)), (1, {"a": "VOID", "b": "VOID"}))
+        self.assertIn("control slow TIMEOUT", " ".join(meta(out)))
+
+    def test_tree_restored_after_dirt(self):
+        repo = Repo(self, mutants=[mutant("a", replace="DIRT"),
+                                   mutant("b", replace="CHECKCLEAN")])
+        rc, out, _ = repo.run()
+        self.assertEqual((rc, verdicts(out)), (0, {"a": "SURVIVED", "b": "SURVIVED"}))
+
+    def assert_tree_at_drop_commit(self, repo, out):
+        tree = out.parent / "tree"
+        head = git(tree, "rev-parse", "HEAD").decode().strip()
+        self.assertEqual(git(tree, "rev-parse", "HEAD^").decode().strip(), repo.head)
+        self.assertIn(b"mutate: the shard tree without", git(tree, "log", "-1", "--format=%s", head))
+        self.assertNotEqual(subprocess.run(["git", "-C", str(tree), "symbolic-ref", "-q", "HEAD"],
+                                           capture_output=True).returncode, 0)
+        flags = {e[:2] for e in git(tree, "ls-files", "-v", "-z").split(b"\0") if e}
+        self.assertEqual(flags, {b"H "})
+
+    def test_tree_restored_after_commit(self):
+        # A run that switches to a branch or moves HEAD leaks nothing: the
+        # tree goes back, detached, to the commit of drop_mutant_files. A run
+        # that commits writes objects, which the object-store snapshot
+        # refuses: that mutant is ERROR and the rest NOT-RUN.
+        for flag, want in (
+                ("BRANCH", (0, {"a": "KILLED", "b": "SURVIVED", "c": "SURVIVED"})),
+                ("MOVEHEAD", (0, {"a": "KILLED", "b": "SURVIVED", "c": "SURVIVED"})),
+                ("COMMITALL", (1, {"a": "ERROR", "b": "NOT-RUN", "c": "NOT-RUN"}))):
+            with self.subTest(flag=flag):
+                repo = Repo(self, mutants=[
+                    mutant("a", replace=f"PRINT FAIL s/a: x\n{flag}\nEXIT 1"),
+                    mutant("b", file="other.txt", find="other", replace="other2"),
+                    mutant("c", replace="CHECKCLEAN")])
+                rc, out, _ = repo.run()
+                self.assertEqual((rc, verdicts(out)), want)
+                if rc == 0:
+                    self.assert_tree_at_drop_commit(repo, out)
+                else:
+                    self.assertIn("objects", (out / "logs" / "a.log").read_text())
+
+    def test_tree_restored_after_skip_worktree(self):
+        # skip-worktree and assume-unchanged bits are cleared, so reset
+        # --hard restores the file they hid.
+        for flag in ("SKIPWT", "ASSUME"):
+            with self.subTest(flag=flag):
+                repo = Repo(self, mutants=[mutant("a", replace=flag),
+                                           mutant("b", replace="CHECKOTHER")])
+                rc, out, _ = repo.run()
+                self.assertEqual((rc, verdicts(out)), (0, {"a": "SURVIVED", "b": "SURVIVED"}))
+                self.assert_tree_at_drop_commit(repo, out)
+
+    def test_strays_killed_across_sessions(self):
+        # Processes a run starts in a new session (killpg cannot reach them),
+        # with a cleared environment too, are killed after the run, on a
+        # normal exit and on a TIMEOUT, before the next run starts.
+        mutate.BUDGET_ADD_S = 2
+        repo = Repo(self, mutants=[mutant("a", replace="SETSID\nSETSIDENV"),
+                                   mutant("b", replace="SETSID\nSETSIDENV\nHANG"),
+                                   mutant("c", replace="SETSIDWRITE"),
+                                   mutant("d", replace="SLEEP1\nCHECKLATE")])
+        rc, out, _ = repo.run()
+        self.assertEqual((rc, verdicts(out)), (0, {"a": "SURVIVED", "b": "TIMEOUT",
+                                                   "c": "SURVIVED", "d": "SURVIVED"}))
+        pids = [int(p) for p in (repo.stub_dir / "strays").read_text().split()]
+        self.assertEqual(len(pids), 5)
+        for pid in pids:
+            self.assertFalse(alive(pid), f"stray {pid} survived the sweep")
+        self.assertEqual(mutate.children(), [])
+
+    def pristine_tree(self, repo):
+        tree = repo.tmp / "tree"
+        git(repo.root, "worktree", "add", "-q", "--detach", str(tree), "HEAD")
+        return tree, mutate.drop_mutant_files(tree)
+
+    def test_restore_verifies_head_and_flags(self):
+        # restore_tree checks what it did: a skip-worktree bit, a HEAD it
+        # could not move back or a file git did not rewrite (git refusing
+        # the update, simulated here by dropping those calls) fails the
+        # restore instead of passing it.
+        repo = Repo(self, mutants=[mutant("a")])
+        tree, sha = self.pristine_tree(repo)
+        pristine = mutate.Pristine(tree, sha)
+        self.assertIsNone(mutate.restore_tree(tree, pristine))
+        real = mutate.tree_git
+        for skipped, setup, reason in (
+                (("update-index",), ("update-index", "--skip-worktree", "other.txt"),
+                 "skip-worktree"),
+                (("update-ref", "reset"), ("update-ref", "--no-deref", "HEAD", repo.head),
+                 "HEAD is not"),
+                (("reset", "status"), None, "differs from the pristine commit on disk")):
+            with self.subTest(skipped=skipped):
+                if setup:
+                    git(tree, *setup)
+                else:
+                    (tree / "other.txt").write_text("changed\n")
+                mutate.tree_git = lambda t, *args, data=None: (0, b"") \
+                    if args[0] in skipped else real(t, *args, data=data)
+                try:
+                    self.assertIn(reason, mutate.restore_tree(tree, pristine) or "")
+                finally:
+                    mutate.tree_git = real
+                self.assertIsNone(mutate.restore_tree(tree, pristine))
+
+    def test_restore_ignores_settings_a_run_could_write(self):
+        # With state the run could have written already in the pristine
+        # snapshot, the restore itself still runs no hook and no fsmonitor
+        # command, reads no global config and no replace ref: the file it
+        # writes is the commit's own (LF, "other"), and neither marker
+        # appears.
+        repo = Repo(self, mutants=[mutant("a")])
+        tree, sha = self.pristine_tree(repo)
+        common = Path(git(tree, "rev-parse", "--path-format=absolute",
+                          "--git-common-dir").decode().strip())
+        (common / "hooks").mkdir(exist_ok=True)
+        marker = repo.stub_dir / "ran"
+        for hook in ("reference-transaction", "post-checkout", "post-index-change"):
+            path = common / "hooks" / hook
+            path.write_text(f"#!/bin/sh\necho {hook} >>'{marker}'\ncat >/dev/null\n")
+            path.chmod(0o755)
+        fsmonitor = repo.stub_dir / "fsmonitor.sh"
+        fsmonitor.write_text(f"#!/bin/sh\necho fsmonitor >>'{marker}'\n")
+        fsmonitor.chmod(0o755)
+        git(tree, "config", "core.fsmonitor", str(fsmonitor))
+        blob = git(tree, "hash-object", "-w", "--stdin", data=b"LEAKED\n").decode().strip()
+        git(tree, "replace", git(tree, "rev-parse", "HEAD:other.txt").decode().strip(), blob)
+        global_config = repo.tmp / "global-gitconfig"
+        global_config.write_text("[core]\n\tautocrlf = true\n")
+        saved = os.environ.get("GIT_CONFIG_GLOBAL")
+        os.environ["GIT_CONFIG_GLOBAL"] = str(global_config)
+        try:
+            marker.unlink(missing_ok=True)
+            pristine = mutate.Pristine(tree, sha)
+            self.assertEqual(pristine.content["other.txt"][2], b"other\n")
+            (tree / "other.txt").write_text("changed\n")
+            self.assertIsNone(mutate.restore_tree(tree, pristine))
+            self.assertEqual((tree / "other.txt").read_bytes(), b"other\n")
+            self.assertFalse(marker.exists(), marker.read_text() if marker.exists() else "")
+        finally:
+            os.environ["GIT_CONFIG_GLOBAL"] = saved
+
+    def test_git_state_written_by_a_run_ends_the_shard(self):
+        # A run that writes git state the restore or a later run would read
+        # fails the restore before it runs git: that mutant is ERROR, the
+        # rest NOT-RUN, and the log names what changed. The hook and the
+        # fsmonitor command never run.
+        cases = {
+            "AUTOCRLF": "config", "FILTER": "config", "HOOK": "hooks",
+            "FSMONITOR": "config", "REPLACE": "refs/replace/", "ALTERNATES": "alternates",
+            "EXCLUDE": "worktrees/tree/info", "SPARSE": "config", "DOTGIT": "tree/.git",
+            "GLOBALCFG": "global-gitconfig", "GLOBALHOME": "home/.gitconfig",
+            "ATTRS": ".git/info", "WTCONFIG": "config.worktree", "COMMONDIR": "commondir",
+            "GITDIRFILE": "worktrees/tree/gitdir", "SHALLOW": "shallow",
+            "XDGHOME": "home/.config/git",
+            "FORGEBLOB": ".git/objects", "COMMITALL": ".git/objects",
+            # Same name, inode, size, mode and mtime: only the ctime shows it.
+            "FORGESTAT": ".git/objects",
+        }
+        for flag, reason in cases.items():
+            with self.subTest(flag=flag):
+                repo = Repo(self, mutants=[mutant("a", replace=flag.replace("HOME", "CFG")),
+                                           mutant("b", replace="CHECKOTHER")])
+                global_config = repo.tmp / "global-gitconfig"
+                global_config.write_text("")
+                home = repo.tmp / "home"
+                home.mkdir()
+                saved = dict(os.environ)
+                if flag.endswith("HOME"):
+                    # No GIT_CONFIG_GLOBAL: --global writes $HOME/.gitconfig.
+                    os.environ.pop("GIT_CONFIG_GLOBAL")
+                    os.environ["HOME"] = str(home)
+                else:
+                    os.environ["GIT_CONFIG_GLOBAL"] = str(global_config)
+                try:
+                    env = repo.env(HOME=str(home) if flag.endswith("HOME") else GIT_HOME)
+                    rc, out, _ = repo.run(env=env)
+                finally:
+                    os.environ.clear()
+                    os.environ.update(saved)
+                self.assertEqual((rc, verdicts(out)), (1, {"a": "ERROR", "b": "NOT-RUN"}))
+                log = (out / "logs" / "a.log").read_text()
+                self.assertIn("git state changed", log)
+                self.assertIn(reason, log.rsplit("git state changed", 1)[1])
+                self.assertFalse((repo.stub_dir / "ran").exists())
+
+    def test_stray_that_outlives_the_sweep_aborts(self):
+        # A stray the sweep cannot remove makes the mutant ERROR and the rest
+        # NOT-RUN, as an unrestorable tree does (the control's sweep passes).
+        real, calls = mutate.kill_strays, []
+
+        def kill_strays():
+            calls.append(1)
+            return len(calls) == 1
+        mutate.kill_strays = kill_strays
+        try:
+            repo = Repo(self, mutants=[mutant("a"), mutant("b")])
+            rc, out, _ = repo.run()
+        finally:
+            mutate.kill_strays = real
+        self.assertEqual(rc, 1)
+        self.assertEqual(verdicts(out), {"a": "ERROR", "b": "NOT-RUN"})
+        self.assertIn("outlived the sweep", (out / "logs" / "a.log").read_text())
+
+    def test_kill_strays_gives_up(self):
+        # A child that never goes away: the sweep returns False after
+        # STRAY_SWEEP_S instead of looping (the PID is above pid_max, so
+        # the kill and the reap find nothing).
+        mutate.STRAY_SWEEP_S = 0.2
+        real = mutate.children
+        mutate.children = lambda: [2 ** 30]
+
+        def overrun(signum, frame):
+            raise AssertionError("kill_strays ignored STRAY_SWEEP_S")
+        old = signal.signal(signal.SIGALRM, overrun)
+        signal.setitimer(signal.ITIMER_REAL, 5)
+        try:
+            self.assertFalse(mutate.kill_strays())
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, old)
+            mutate.children = real
+        self.assertTrue(mutate.kill_strays())
+
+    def test_tools_cache_must_hold_only_files_and_dirs(self):
+        # The restore keeps .tools/, so anything there but regular files and
+        # directories (a symlink into a tracked directory, a FIFO, .tools
+        # itself a symlink) ends the shard before a later run can use it.
+        for flag, reason in (("TOOLSLINK", ".tools/cache is a symlink"),
+                             ("TOOLSFIFO", ".tools/pipe is a symlink or special file"),
+                             ("TOOLSTOP", ".tools is not a directory")):
+            with self.subTest(flag=flag):
+                repo = Repo(self, mutants=[mutant("a", replace=flag),
+                                           mutant("b", replace="FETCH")])
+                rc, out, _ = repo.run()
+                self.assertEqual((rc, verdicts(out)), (1, {"a": "ERROR", "b": "NOT-RUN"}))
+                self.assertIn(reason, (out / "logs" / "a.log").read_text())
+
+    def test_restore_keeps_tools_cache(self):
+        repo = Repo(self, mutants=[mutant("a", replace="TOOLS"),
+                                   mutant("b", replace="CHECKTOOLS")])
+        rc, out, _ = repo.run()
+        self.assertEqual((rc, verdicts(out)), (0, {"a": "SURVIVED", "b": "SURVIVED"}))
+
+    def test_shard_tree_drops_mutant_files(self):
+        # The guard's PT2a refuses the committed mutant files (ADR-0007 part
+        # 4), so the shard tree holds the swept commit without tests/mutants/
+        # and every restore keeps it that way; the rest equals the sweep ref.
+        repo = Repo(self, mutants=[mutant("a", replace="CHECKNOMUTANTS"),
+                                   mutant("b", replace="DIRT"),
+                                   mutant("c", replace="CHECKNOMUTANTS")],
+                    extra={"tests/other.txt": "kept\n", "tools/x.bin": b"\x00\xff\n",
+                           "tests/mutants/sub/older.jsonl": "{}\n"})
+        rc, out, _ = repo.run()
+        self.assertEqual((rc, verdicts(out)), (0, {"a": "SURVIVED", "b": "SURVIVED",
+                                                   "c": "SURVIVED"}))
+        tree = out.parent / "tree"
+        self.assertFalse((tree / "tests" / "mutants").exists())
+        want = {}
+        for rel in git(repo.root, "ls-tree", "-r", "-z", "--name-only", repo.head) \
+                .decode().split("\0"):
+            if rel and not rel.startswith("tests/mutants/"):
+                want[rel] = git(repo.root, "cat-file", "blob", f"{repo.head}:{rel}")
+        got = {}
+        for path in sorted(tree.rglob("*")):
+            rel = path.relative_to(tree).as_posix()
+            if rel == ".git" or rel == ".tools" or rel.startswith(".tools/") or path.is_dir():
+                continue
+            got[rel] = path.read_bytes()
+        self.assertEqual(got, want)
+        self.assertEqual(git(tree, "diff", "--name-status", repo.head, "HEAD").decode(),
+                         "D\ttests/mutants/m.jsonl\nD\ttests/mutants/sub/older.jsonl\n")
+        # The checkout and its branch are untouched.
+        self.assertEqual(git(repo.root, "rev-parse", "HEAD").decode().strip(), repo.head)
+        self.assertTrue((repo.root / repo.mutants_rel).exists())
+
+    def test_unrestorable_tree_aborts(self):
+        repo = Repo(self, mutants=[mutant("a", replace="STUCK"), mutant("b"), mutant("c")])
+        rc, out, _ = repo.run()
+        self.assertEqual(rc, 1)
+        self.assertEqual(verdicts(out), {"a": "ERROR", "b": "NOT-RUN", "c": "NOT-RUN"})
+        self.assertIn("complete no", meta(out))
+
+    def test_internal_error_writes_partial_results(self):
+        repo = Repo(self, mutants=[mutant("a"), mutant("b"), mutant("c")])
+        calls = []
+
+        def runner(tree, suites, timeout, log_path, env):
+            calls.append(suites)
+            if len(calls) == 3:
+                raise RuntimeError("injected")
+            log_path.write_text("ok   s/row\n")
+            return 0, "ok   s/row\n", False
+
+        rc, out, err = repo.run(runner=runner)
+        self.assertEqual(rc, 1)
+        self.assertEqual(verdicts(out), {"a": "SURVIVED", "b": "ERROR", "c": "ERROR"})
+        self.assertIn("injected", (out / "logs" / "internal-error.log").read_text())
+        self.assertIn("RuntimeError", err)
+        self.assertIn("complete no", meta(out))
+        # The upload step runs on a failed step too.
+        self.assertIn("if: always()", upload_steps(WORKFLOW.read_text())[0])
+
+    def test_summary_escapes_pipe(self):
+        repo = Repo(self, mutants=[mutant("a", replace="PRINT FAIL a|b/c\u200b: x\nEXIT 1")])
+        env = repo.env()
+        rc, out, _ = repo.run(env=env)
+        self.assertEqual(rows(out)["a"][2], "a|b/c\\u200b")
+        summary = Path(env["GITHUB_STEP_SUMMARY"]).read_text()
+        line = next(line for line in summary.splitlines() if line.startswith("| a |"))
+        self.assertIn("a\\|b/c\\u200b", line)
+        self.assertEqual(len(re.findall(r"(?<!\\)\|", line)), 6)
+
+    def test_shard_env_refusals(self):
+        mutate.SHARDS = 20
+        repo = Repo(self, mutants=[mutant("a")])
+        bad_paths = ["/abs/m.jsonl", "tests/mutants/../mutants/m.jsonl", "tests/m.jsonl",
+                     "tests/mutants/m.json", "tests/mutants/M.jsonl",
+                     "tests/mutants/m\u0430.jsonl", "tests/mutants/m\u200b.jsonl",
+                     "tests/mutants/link.jsonl", "tests/mutants/untracked.jsonl",
+                     "tests/mutants/missing.jsonl", "", "tests/mutants/m.jsonl\n"]
+        os.symlink("m.jsonl", repo.root / "tests/mutants/link.jsonl")
+        git(repo.root, "add", "tests/mutants/link.jsonl")
+        git(repo.root, "commit", "-q", "-m", "link")
+        repo.head = git(repo.root, "rev-parse", "HEAD").decode().strip()
+        for path in bad_paths:
+            with self.subTest(mutants=path):
+                env = repo.env()
+                Path(env["GITHUB_EVENT_PATH"]).write_text(json.dumps({"inputs": {"mutants": path}}))
+                if path == "tests/mutants/untracked.jsonl":
+                    (repo.root / path).write_text("")
+                rc, _, _ = repo.run(env=env)
+                (repo.root / "tests/mutants/untracked.jsonl").unlink(missing_ok=True)
+                self.assertEqual(rc, 2)
+        for name, over in {
+                "event push": {"GITHUB_EVENT_NAME": "push"},
+                "shard-0": {"GITHUB_JOB": "shard-0"}, "shard-21": {"GITHUB_JOB": "shard-21"},
+                "shard-01": {"GITHUB_JOB": "shard-01"}, "shard-1x": {"GITHUB_JOB": "shard-1x"},
+                "job unset": {"GITHUB_JOB": None}, "outside actions": {"GITHUB_ACTIONS": None},
+                "actions false": {"GITHUB_ACTIONS": "false"},
+                "sha mismatch": {"GITHUB_SHA": "0" * 40},
+                "no event file": {"GITHUB_EVENT_PATH": None},
+                "no runner temp": {"RUNNER_TEMP": None}}.items():
+            with self.subTest(env=name):
+                rc, _, _ = repo.run(env=repo.env(**over))
+                self.assertEqual(rc, 2)
+        (repo.root / "dirt.txt").write_text("x")
+        rc, _, err = repo.run()
+        self.assertEqual(rc, 2)
+        self.assertIn("clean", err)
+        (repo.root / "dirt.txt").unlink()
+        rc, out, _ = repo.run()
+        self.assertEqual((rc, verdicts(out)), (0, {"a": "SURVIVED"}))
+
+    def test_two_runs_same_results(self):
+        objs = [mutant("k", replace="PRINT FAIL s/b: x\nEXIT 1"), mutant("s"),
+                mutant("i", find="nothing"), mutant("t", replace="HANG")]
+        repo = Repo(self, mutants=objs)
+        first = [row[:3] for row in rows(repo.run()[1]).values()]
+        second = [row[:3] for row in rows(repo.run()[1]).values()]
+        self.assertEqual(first, second)
+        self.assertEqual([r[1] for r in first], ["KILLED", "SURVIVED", "INVALID", "TIMEOUT"])
+
+
+class Merge(unittest.TestCase):
+    """merge over 20 real stub shards (three mutants, so 17 empty shards)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.saved = mutate.BUDGET_ADD_S
+        mutate.BUDGET_ADD_S = 0.5
+        cls.objs = [mutant("a", replace="PRINT FAIL s/b\u00e9\tx\nEXIT 1"),
+                    mutant("b"), mutant("c", find="nothing"),
+                    mutant("d", replace="PRINT FAIL s/c: x\nEXIT 1", expect=["s/b"])]
+        cls.cleanups = []
+        cls.repo = Repo(cls, mutants=cls.objs)
+        cls.sweep = cls.repo.tmp / "sweep"
+        for k in range(1, 21):
+            rc, out, _ = cls.repo.run(shard=k)
+            assert rc == 0, (k, rc)
+            shutil.copytree(out, cls.sweep / f"shard-{k}")
+
+    @classmethod
+    def addCleanup(cls, func, *args):
+        cls.cleanups.append(lambda: func(*args))
+
+    @classmethod
+    def tearDownClass(cls):
+        mutate.BUDGET_ADD_S = cls.saved
+        for func in cls.cleanups:
+            func()
+
+    def merged(self, sweep):
+        out, err = io.StringIO(), io.StringIO()
+        rc = mutate.merge_main(sweep, out, err)
+        return rc, out.getvalue(), err.getvalue()
+
+    def copy(self):
+        target = Path(tempfile.mkdtemp(prefix="mutate-merge-")) / "sweep"
+        self.addCleanup(shutil.rmtree, target.parent, True)
+        shutil.copytree(self.sweep, target)
+        return target
+
+    def test_merge_complete(self):
+        rc, out, err = self.merged(self.sweep)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("mutate: 4 mutants: 2 killed, 1 survived, 1 invalid, 0 timeout; "
+                      "1 killed by another row (expected=no); complete", err)
+        head = err.splitlines()[0]
+        self.assertEqual(head, f"mutate: sweep of {self.repo.head} with tests/mutants/m.jsonl "
+                               f"(sha256 {hashlib.sha256(jsonl(self.objs)).hexdigest()})")
+        lines = out.splitlines()
+        self.assertEqual(lines[0], "\t".join(mutate.TSV_HEADER))
+        self.assertEqual([line.split("\t")[:2] for line in lines[1:]],
+                         [["a", "KILLED"], ["b", "SURVIVED"], ["c", "INVALID"], ["d", "KILLED"]])
+        self.assertEqual(lines[4].split("\t")[3], "no")
+
+    def test_merge_round_trip(self):
+        _, out, _ = self.merged(self.sweep)
+        merged = {line.split("\t")[0]: line.split("\t") for line in out.splitlines()[1:]}
+        for k in (1, 2, 3):
+            shard = rows(self.sweep / f"shard-{k}")
+            for mid, row in shard.items():
+                self.assertEqual(merged[mid], row)
+        self.assertEqual(merged["a"][2], "s/b\\u00e9")
+        self.assertEqual(mutate.unescape(merged["a"][2]), "s/b\u00e9")
+
+    def incomplete(self, sweep, needle):
+        rc, _, err = self.merged(sweep)
+        self.assertEqual(rc, 1, err)
+        self.assertIn("INCOMPLETE", err)
+        self.assertIn(needle, err)
+
+    def test_merge_incomplete_missing_shard(self):
+        sweep = self.copy()
+        shutil.rmtree(sweep / "shard-2")
+        rc, out, err = self.merged(sweep)
+        self.assertEqual(rc, 1)
+        self.assertIn("b\tMISSING", out)
+        self.assertIn("shard-2", err)
+
+    def test_merge_incomplete_duplicate_shard(self):
+        sweep = self.copy()
+        text = (sweep / "shard-5" / "meta.txt").read_text().replace("shard 5\n", "shard 4\n")
+        (sweep / "shard-5" / "meta.txt").write_text(text)
+        self.incomplete(sweep, "shard-5")
+
+    def test_merge_incomplete_extra_entry(self):
+        sweep = self.copy()
+        shutil.copytree(sweep / "shard-1", sweep / "shard-01")
+        self.incomplete(sweep, "shard-01")
+
+    def test_merge_incomplete_mixed_sha(self):
+        sweep = self.copy()
+        path = sweep / "shard-3" / "meta.txt"
+        path.write_text(re.sub(r"(?m)^sha \S+", "sha " + "f" * 40, path.read_text()))
+        self.incomplete(sweep, "sha")
+
+    def test_merge_incomplete_mixed_file(self):
+        sweep = self.copy()
+        data = jsonl(self.objs + [mutant("d")])
+        (sweep / "shard-4" / "mutants.jsonl").write_bytes(data)
+        path = sweep / "shard-4" / "meta.txt"
+        path.write_text(re.sub(r"(?m)^mutants_sha256 \S+",
+                               "mutants_sha256 " + hashlib.sha256(data).hexdigest(),
+                               path.read_text()))
+        self.incomplete(sweep, "mutant file")
+
+    def test_merge_incomplete_mixed_path(self):
+        sweep = self.copy()
+        path = sweep / "shard-3" / "meta.txt"
+        path.write_text(path.read_text().replace("mutants_path tests/mutants/m.jsonl",
+                                                 "mutants_path tests/mutants/n.jsonl"))
+        self.incomplete(sweep, "mutant file path")
+
+    def test_merge_incomplete_bad_expected(self):
+        for mid, old, new in (("b", "\tSURVIVED\t-\t-\t", "\tSURVIVED\t-\tyes\t"),
+                              ("d", "\tno\t4\t", "\tmaybe\t4\t")):
+            with self.subTest(row=mid):
+                sweep = self.copy()
+                k = 2 if mid == "b" else 4
+                path = sweep / f"shard-{k}" / "results.tsv"
+                text = path.read_text()
+                self.assertEqual(text.count(old), 1)
+                path.write_text(text.replace(old, new))
+                self.incomplete(sweep, "expected")
+
+    def test_merge_incomplete_wrong_shard(self):
+        sweep = self.copy()
+        self.move_row(sweep, "b", 2, 3)
+        self.incomplete(sweep, "shard-3")
+
+    def test_merge_incomplete_unknown_id(self):
+        sweep = self.copy()
+        with open(sweep / "shard-3" / "results.tsv", "a") as handle:
+            handle.write("zz\tSURVIVED\t-\t-\t3\t1.0\n")
+        self.incomplete(sweep, "zz")
+
+    def test_merge_incomplete_duplicate_id(self):
+        sweep = self.copy()
+        with open(sweep / "shard-2" / "results.tsv", "a") as handle:
+            handle.write("b\tSURVIVED\t-\t-\t2\t1.0\n")
+        self.incomplete(sweep, "twice")
+
+    def test_merge_incomplete_verdicts(self):
+        for verdict in ("VOID", "NOT-RUN", "ERROR", "BOGUS"):
+            with self.subTest(verdict=verdict):
+                sweep = self.copy()
+                path = sweep / "shard-2" / "results.tsv"
+                path.write_text(path.read_text().replace("\tSURVIVED\t", f"\t{verdict}\t"))
+                self.incomplete(sweep, verdict)
+
+    def test_merge_incomplete_bad_killer(self):
+        sweep = self.copy()
+        path = sweep / "shard-1" / "results.tsv"
+        path.write_text(path.read_text().replace("\tKILLED\ts/b\\u00e9\t", "\tKILLED\ts\\q\t"))
+        self.incomplete(sweep, "killer")
+
+    def move_row(self, sweep, mid, src, dst):
+        src_path = sweep / f"shard-{src}" / "results.tsv"
+        lines = src_path.read_text().splitlines(keepends=True)
+        row = next(line for line in lines if line.startswith(mid + "\t"))
+        src_path.write_text("".join(line for line in lines if line is not row))
+        with open(sweep / f"shard-{dst}" / "results.tsv", "a") as handle:
+            handle.write(row)
+
+
+class Files(unittest.TestCase):
+    """The workflow, the shim and the constants agree (ADR-0008 Numbers)."""
+
+    def jobs(self):
+        text = WORKFLOW.read_text()
+        head, sep, body = text.partition("\njobs:\n")
+        self.assertTrue(sep)
+        blocks = re.split(r"(?m)^(?=  shard-\d+:\n)", body)
+        self.assertEqual(blocks[0], "")
+        return head, blocks[1:]
+
+    def test_workflow_job_count_equals_shards(self):
+        _, blocks = self.jobs()
+        self.assertEqual(len(blocks), mutate.SHARDS)
+        self.assertEqual([re.match(r"  (shard-\d+):", b).group(1) for b in blocks],
+                         [f"shard-{k}" for k in range(1, mutate.SHARDS + 1)])
+
+    def test_workflow_shards_identical(self):
+        _, blocks = self.jobs()
+        first = blocks[0]
+        self.assertEqual(first.count("shard-1"), 2)  # the job key and the artifact
+        for k, block in enumerate(blocks[1:], 2):
+            with self.subTest(shard=k):
+                self.assertEqual(block.rstrip("\n"), first.replace("shard-1", f"shard-{k}")
+                                 .rstrip("\n"))
+
+    def test_workflow_timeout_matches_deadline(self):
+        _, blocks = self.jobs()
+        for block in blocks:
+            minutes = re.findall(r"(?m)^    timeout-minutes: (\d+)$", block)
+            self.assertEqual(minutes, [str(mutate.JOB_TIMEOUT_MIN)])
+        self.assertEqual(mutate.JOB_TIMEOUT_MIN * 60 - mutate.DEADLINE_MARGIN_S,
+                         mutate.DEADLINE_S)
+
+    def test_workflow_trigger_and_permissions(self):
+        head, blocks = self.jobs()
+        self.assertIn("\non:\n  workflow_dispatch:\n    inputs:\n      mutants:\n", head)
+        self.assertEqual(re.findall(r"(?m)^[^\s#].*$", head),
+                         ["name: mutation-sweep", "on:", "permissions:"])
+        self.assertIn("\npermissions:\n  contents: read\n", head)
+        self.assertNotIn("concurrency", WORKFLOW.read_text())
+        for block in blocks:
+            self.assertIn("    runs-on: ubuntu-24.04\n", block)
+            self.assertIn("        run: bash tools/mutate.sh --shard\n", block)
+            self.assertIn("          persist-credentials: false\n", block)
+            upload = upload_steps(block)
+            self.assertEqual(len(upload), 1)
+            for line in ("if: always()", "path: ${{ runner.temp }}/mutate/out",
+                         "if-no-files-found: error", "retention-days: 90"):
+                self.assertIn(line, upload[0])
+
+    def test_mutate_sh_exec_line(self):
+        text = SHIM.read_text()
+        execs = [line.strip() for line in text.splitlines() if "exec " in line
+                 and not line.lstrip().startswith("#")]
+        self.assertEqual(execs, ['exec python3 -I -B "$root/tools/mutate.py" shard'])
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GITHUB_")}
+        for args in ([], ["--bogus"], ["--shard", "x"], ["shard"]):
+            with self.subTest(args=args):
+                run = subprocess.run(["bash", str(SHIM), *args], capture_output=True,
+                                     text=True, env=env)
+                self.assertEqual(run.returncode, 2)
+                self.assertIn("usage: bash tools/mutate.sh --shard", run.stderr)
+        run = subprocess.run(["bash", str(SHIM), "--shard"], capture_output=True, text=True,
+                             env=env)
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("GITHUB_ACTIONS", run.stderr)
+
+    def test_budget_constants(self):
+        self.assertEqual((mutate.SHARDS, mutate.BUDGET_FACTOR, mutate.BUDGET_ADD_S,
+                          mutate.DEADLINE_MARGIN_S), (20, 2, 220, 60))
+        self.assertEqual(mutate.DEADLINE_S, mutate.JOB_TIMEOUT_MIN * 60 - 60)
+
+
+def upload_steps(text):
+    return re.findall(r"(?ms)^      - uses: actions/upload-artifact@.*?(?=^      - |^  \S|\Z)",
+                      text)
+
+
+def alive(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as handle:
+            return handle.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except FileNotFoundError:
+        return False
+
+
+class FakeClock:
+    """A clock that moves only when the fake runner says a run took time."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.timeouts = []
+
+    def __call__(self):
+        return self.now
+
+    def runner(self, durations):
+        durations = list(durations)
+
+        def run(tree, suites, timeout, log_path, env):
+            self.timeouts.append(timeout)
+            self.now += durations.pop(0)
+            log_path.write_text("ok   s/row\n")
+            return 0, "ok   s/row\n", False
+        return run
+
+
+if __name__ == "__main__":
+    unittest.main()
