@@ -31,6 +31,7 @@ Subcommands. Each exits 2 on a usage or input error.
       mutant without a verdict.
 """
 
+import ctypes
 import hashlib
 import json
 import os
@@ -335,27 +336,116 @@ def run_selftest(tree, suites, timeout, log_path, env):
     return proc.returncode, output, timed_out
 
 
+# prctl(2): a child subreaper inherits every orphaned descendant, so no
+# process of a run escapes the runner, whatever its session, process group
+# or environment (Linux, which the runners are).
+PR_SET_CHILD_SUBREAPER = 36
+STRAY_SWEEP_S = 10
+
+
+def set_subreaper(on):
+    """Make this process the child subreaper of its descendants (or stop)."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_SET_CHILD_SUBREAPER, 1 if on else 0, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "prctl(PR_SET_CHILD_SUBREAPER) failed")
+
+
+def children():
+    """The PIDs whose parent is this process, zombies included."""
+    me, kids = os.getpid(), []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", "rb") as handle:
+                fields = handle.read().rsplit(b")", 1)[1].split()
+        except OSError:
+            continue
+        if int(fields[1]) == me:
+            kids.append(int(entry))
+    return kids
+
+
+def kill_strays():
+    """SIGKILL and reap every child of the runner after a run. As the child
+    subreaper (set_subreaper) the runner is the parent of every process a
+    run left behind once its own parent is gone: one started with setsid
+    or start_new_session, which killpg never reaches, or with a cleared
+    environment. Repeats until no child is left, as each kill orphans the
+    next generation to the runner; True when none is left within
+    STRAY_SWEEP_S, else the caller ends the shard, because a stray could
+    still write to the tree."""
+    end = time.monotonic() + STRAY_SWEEP_S
+    while True:
+        kids = children()
+        if not kids:
+            return True
+        if time.monotonic() > end:
+            return False
+        for pid in kids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        for pid in kids:
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                pass
+        time.sleep(0.01)
+
+
 def drop_mutant_files(tree):
     """Remove MUTANTS_DIR from the shard tree in a commit of the tree's own
-    (detached; the checkout and the sweep branch stay as they are), so
-    restore_tree resets every run to the swept code without the mutant
-    files. Nothing to do when HEAD holds no such directory."""
-    if not git(tree, "ls-tree", "-d", "HEAD", "--", MUTANTS_DIR):
-        return
-    git(tree, "rm", "-r", "-q", "--", MUTANTS_DIR)
-    git(tree, *TREE_COMMIT, "commit", "-q", "--no-verify", "-m",
-        f"mutate: the shard tree without {MUTANTS_DIR}/ (ADR-0008 part 3)")
+    (detached; the checkout and the sweep branch stay as they are), and
+    return the commit every run is restored to (restore_tree): that commit,
+    or HEAD when HEAD holds no such directory."""
+    if git(tree, "ls-tree", "-d", "HEAD", "--", MUTANTS_DIR):
+        git(tree, "rm", "-r", "-q", "--", MUTANTS_DIR)
+        git(tree, *TREE_COMMIT, "commit", "-q", "--no-verify", "-m",
+            f"mutate: the shard tree without {MUTANTS_DIR}/ (ADR-0008 part 3)")
+    return git(tree, "rev-parse", "--verify", "HEAD^{commit}").decode().strip()
 
 
-def restore_tree(tree):
-    """Reset the worktree to HEAD and remove everything untracked or
-    ignored but the toolchain cache; True when git then shows nothing
-    else."""
-    for args in (("reset", "-q", "--hard", "HEAD"),
-                 ("clean", "-ffdxq", "-e", TOOLS_CACHE)):
-        if subprocess.run(["git", "-C", str(tree), *args], stdin=subprocess.DEVNULL,
-                          capture_output=True).returncode != 0:
+def tree_git(tree, *args, data=None):
+    """(exit code, stdout) of git in the shard tree; never raises."""
+    run = subprocess.run(["git", "-C", str(tree), "--literal-pathspecs", *args], input=data,
+                         stdin=None if data is not None else subprocess.DEVNULL,
+                         capture_output=True)
+    return run.returncode, run.stdout
+
+
+def restore_tree(tree, sha):
+    """Put the shard tree back to sha, the commit of drop_mutant_files,
+    whatever a run did to it: HEAD detached at sha (a run may commit,
+    move HEAD or switch to a branch), every skip-worktree and
+    assume-unchanged bit cleared (with one set, reset --hard leaves a
+    changed file as it is), the index and the files reset, and everything
+    untracked or ignored removed but the toolchain cache. True only when
+    git then shows HEAD at sha, every index entry plain (`H ` in ls-files
+    -v) and nothing else on disk; anything less makes the caller end the
+    shard (ERROR, the rest NOT-RUN), because the next run would not start
+    from sha."""
+    rc, listing = tree_git(tree, "ls-files", "-v", "-z")
+    if rc != 0:
+        return False
+    flagged = [e[2:] for e in listing.split(b"\0") if e and not e.startswith(b"H ")]
+    # One flag per call: update-index applies only the last of the two.
+    for flag in ("--no-skip-worktree", "--no-assume-unchanged"):
+        if flagged and tree_git(tree, "update-index", flag, "-z", "--stdin",
+                                data=b"\0".join(flagged) + b"\0")[0] != 0:
             return False
+    for args in (("update-ref", "--no-deref", "HEAD", sha),
+                 ("reset", "-q", "--hard", sha),
+                 ("clean", "-ffdxq", "-e", TOOLS_CACHE)):
+        if tree_git(tree, *args)[0] != 0:
+            return False
+    rc, head = tree_git(tree, "rev-parse", "--verify", "HEAD")
+    if rc != 0 or head.decode().strip() != sha:
+        return False
+    rc, listing = tree_git(tree, "ls-files", "-v", "-z")
+    if rc != 0 or any(e and not e.startswith(b"H ") for e in listing.split(b"\0")):
+        return False
     status = subprocess.run(["git", "-C", str(tree), "status", "--porcelain=v1", "-z",
                              "--untracked-files=all", "--ignored"],
                             stdin=subprocess.DEVNULL, capture_output=True)
@@ -477,9 +567,15 @@ class Shard:
         rc, output, timed_out = self.runner(self.tree, suites, timeout, log, self.env)
         return rc, output, timed_out, self.clock() - started
 
+    def settle(self):
+        """After every run: no process of it left (kill_strays), the tree
+        back at the commit of drop_mutant_files (restore_tree)."""
+        return kill_strays() and restore_tree(self.tree, self.tree_sha)
+
     def run(self):
         self.logs.mkdir(parents=True)
         try:
+            set_subreaper(True)
             self.sweep()
         except Exception as exc:  # partial results, ERROR for the rest (step 9)
             trace = traceback.format_exc()
@@ -490,6 +586,11 @@ class Shard:
             for m in self.mine:
                 self.rows.setdefault(m["id"], {"verdict": "ERROR"})
         finally:
+            try:
+                kill_strays()
+                set_subreaper(False)
+            except OSError:
+                pass
             self.write()
         complete = all(self.rows.get(m["id"], {}).get("verdict") in VERDICTS for m in self.mine)
         return 0 if complete else 1
@@ -507,7 +608,7 @@ class Shard:
         if not runnable:
             return
         git(self.root, "worktree", "add", "-q", "--detach", str(self.tree), "HEAD")
-        drop_mutant_files(self.tree)
+        self.tree_sha = drop_mutant_files(self.tree)
         sets = []
         for m in runnable:
             key = tuple(sorted(m["suites"]))
@@ -519,7 +620,7 @@ class Shard:
             remaining = self.deadline - self.elapsed()
             rc, output, timed_out, seconds = self.timed_run(
                 key, remaining, self.logs / "controls" / f"{n}.log")
-            restored = restore_tree(self.tree)
+            restored = self.settle()
             if timed_out:
                 status = "TIMEOUT"
             elif rc == 0 and not FAIL_LINE.search(output) and restored:
@@ -548,10 +649,11 @@ class Shard:
             row = {"verdict": verdict, "killer": killer, "seconds": seconds}
             if verdict == "KILLED" and m["expect"]:
                 row["expected"] = "yes" if killer in m["expect"] else "no"
-            if not restore_tree(self.tree):
+            if not self.settle():
                 with open(self.logs / f"{mid}.log", "a", encoding="utf-8") as log:
-                    log.write(f"\nmutate: {verdict} overruled: the tree could not be restored "
-                              "to HEAD; the rest of the shard is NOT-RUN\n")
+                    log.write(f"\nmutate: {verdict} overruled: a process of the run outlived "
+                              "the sweep, or the tree could not be restored to "
+                              f"{self.tree_sha}; the rest of the shard is NOT-RUN\n")
                 row = {"verdict": "ERROR", "seconds": seconds}
                 stop = True
             self.rows[mid] = row
@@ -632,7 +734,7 @@ def merge_main(directory, stdout=sys.stdout, stderr=sys.stderr):
     for entry in sorted(os.listdir(directory)):
         if entry not in names:
             problems.append(f"unexpected entry {entry!r} (only shard-1 to shard-{SHARDS})")
-    shas, files, shard_rows, present = set(), {}, {}, set()
+    shas, paths, files, shard_rows, present = set(), set(), {}, {}, set()
     for k in range(1, SHARDS + 1):
         base = directory / f"shard-{k}"
         if not base.is_dir():
@@ -658,6 +760,7 @@ def merge_main(directory, stdout=sys.stdout, stderr=sys.stderr):
             problems.append(f"shard-{k}: results.tsv is not the shard format")
             continue
         shas.add(meta.get("sha"))
+        paths.add(meta.get("mutants_path"))
         files[digest] = data
         shard_rows[k] = [line.split("\t") for line in lines[1:-1]]
         present.add(k)
@@ -665,6 +768,8 @@ def merge_main(directory, stdout=sys.stdout, stderr=sys.stderr):
         problems.append(f"mixed sha: {sorted(shas)}")
     if len(files) > 1:
         problems.append(f"mixed mutant file: {len(files)} different copies")
+    if len(paths) > 1:
+        problems.append(f"mixed mutant file path: {sorted(map(str, paths))}")
     mutants = []
     if files:
         try:
@@ -690,6 +795,8 @@ def merge_main(directory, stdout=sys.stdout, stderr=sys.stderr):
                 continue
             if verdict not in VERDICTS:
                 problems.append(f"shard-{k}: {mid} is {verdict}")
+            if row[3] not in (("yes", "no", "-") if verdict == "KILLED" else ("-",)):
+                problems.append(f"shard-{k}: {mid}: expected {row[3]!r} with {verdict}")
             if killer != "-":
                 try:
                     if escape(unescape(killer)) != killer:
@@ -703,6 +810,11 @@ def merge_main(directory, stdout=sys.stdout, stderr=sys.stderr):
             if shard in present:
                 problems.append(f"shard-{shard}: no row for {m['id']}")
             merged[m["id"]] = [m["id"], "MISSING", "-", "-", str(shard), "-"]
+    # The header names what was swept, so a merged table cannot be read
+    # against another commit or mutant file.
+    print(f"mutate: sweep of {', '.join(sorted(map(str, shas))) or '?'} with "
+          f"{', '.join(sorted(map(str, paths))) or '?'} (sha256 "
+          f"{', '.join(sorted(files)) or '?'})", file=stderr)
     print("\t".join(TSV_HEADER), file=stdout)
     for m in mutants:
         print("\t".join(merged[m["id"]]), file=stdout)
@@ -712,6 +824,16 @@ def merge_main(directory, stdout=sys.stdout, stderr=sys.stderr):
     line = (f"mutate: {len(mutants)} mutants: {counts.get('KILLED', 0)} killed, "
             f"{counts.get('SURVIVED', 0)} survived, {counts.get('INVALID', 0)} invalid, "
             f"{counts.get('TIMEOUT', 0)} timeout")
+    # A KILLED whose killer is not one of its expected rows (expected=no) is
+    # still a kill: some row of the selected suites failed on the mutant and
+    # its control was green on the same runner. It is reported on its own,
+    # because it can be a kill for another reason than the one the mutant
+    # aims at (a flake, a check that fires earlier), which the reader checks
+    # in the mutant's log; it does not make the sweep INCOMPLETE (ADR-0008
+    # part 7).
+    other = sum(1 for m in mutants if merged[m["id"]][1] == "KILLED"
+                and merged[m["id"]][3] == "no")
+    line += f"; {other} killed by another row (expected=no)"
     for problem in problems:
         print(f"mutate: {problem}", file=stderr)
     if problems:

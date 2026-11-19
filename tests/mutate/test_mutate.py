@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -75,6 +76,21 @@ while IFS= read -r line; do
     TOOLS) mkdir -p .tools/cache; echo x >.tools/cache/kept ;;
     CHECKTOOLS) [[ -f .tools/cache/kept ]] || { echo "FAIL s/tools-gone"; exit 1; } ;;
     CHECKNOMUTANTS) [[ ! -e tests/mutants ]] || { echo "FAIL s/mutants-present"; exit 1; } ;;
+    COMMITALL)
+      git switch -q -c leak && git add -A >/dev/null \
+        && git -c user.name=x -c user.email=x@x.invalid -c commit.gpgsign=false commit -qm leak
+      ;;
+    SKIPWT) git update-index --skip-worktree other.txt; echo leaked >other.txt ;;
+    ASSUME) git update-index --assume-unchanged other.txt; echo leaked >other.txt ;;
+    CHECKOTHER) [[ "$(cat other.txt)" == other ]] || { echo "FAIL s/other-leaked"; exit 1; } ;;
+    SETSID) setsid sleep 300 </dev/null >/dev/null 2>&1 & echo "$!" >>"$STUB_DIR/strays" ;;
+    SETSIDENV) setsid env -i sleep 300 </dev/null >/dev/null 2>&1 & echo "$!" >>"$STUB_DIR/strays" ;;
+    SETSIDWRITE)
+      setsid bash -c 'sleep 0.5; echo late >late.txt' </dev/null >/dev/null 2>&1 &
+      echo "$!" >>"$STUB_DIR/strays"
+      ;;
+    SLEEP1) sleep 1 ;;
+    CHECKLATE) [[ ! -e late.txt ]] || { echo "FAIL s/late-write"; exit 1; } ;;
     CHECKCLEAN)
       if [[ "$(cat other.txt)" != other || -e untracked.txt || -e newdir ]]; then
         echo "FAIL s/dirty"
@@ -227,7 +243,7 @@ class Patched(unittest.TestCase):
 
     def setUp(self):
         self.saved = {name: getattr(mutate, name)
-                      for name in ("SHARDS", "BUDGET_ADD_S", "DEADLINE_S")}
+                      for name in ("SHARDS", "BUDGET_ADD_S", "DEADLINE_S", "STRAY_SWEEP_S")}
         mutate.SHARDS = 1
         mutate.BUDGET_ADD_S = 0.5
         mutate.DEADLINE_S = 60
@@ -549,6 +565,118 @@ class Shard(Patched):
         rc, out, _ = repo.run()
         self.assertEqual((rc, verdicts(out)), (0, {"a": "SURVIVED", "b": "SURVIVED"}))
 
+    def assert_tree_at_drop_commit(self, repo, out):
+        tree = out.parent / "tree"
+        head = git(tree, "rev-parse", "HEAD").decode().strip()
+        self.assertEqual(git(tree, "rev-parse", "HEAD^").decode().strip(), repo.head)
+        self.assertIn(b"mutate: the shard tree without", git(tree, "log", "-1", "--format=%s", head))
+        self.assertNotEqual(subprocess.run(["git", "-C", str(tree), "symbolic-ref", "-q", "HEAD"],
+                                           capture_output=True).returncode, 0)
+        flags = {e[:2] for e in git(tree, "ls-files", "-v", "-z").split(b"\0") if e}
+        self.assertEqual(flags, {b"H "})
+
+    def test_tree_restored_after_commit(self):
+        # A run that switches to a branch and commits there leaks nothing:
+        # the tree goes back, detached, to the commit of drop_mutant_files.
+        repo = Repo(self, mutants=[mutant("a", replace="PRINT FAIL s/a: x\nCOMMITALL\nEXIT 1"),
+                                   mutant("b", file="other.txt", find="other", replace="other2"),
+                                   mutant("c", replace="CHECKCLEAN")])
+        rc, out, _ = repo.run()
+        self.assertEqual((rc, verdicts(out)), (0, {"a": "KILLED", "b": "SURVIVED",
+                                                   "c": "SURVIVED"}))
+        self.assert_tree_at_drop_commit(repo, out)
+
+    def test_tree_restored_after_skip_worktree(self):
+        # skip-worktree and assume-unchanged bits are cleared, so reset
+        # --hard restores the file they hid.
+        for flag in ("SKIPWT", "ASSUME"):
+            with self.subTest(flag=flag):
+                repo = Repo(self, mutants=[mutant("a", replace=flag),
+                                           mutant("b", replace="CHECKOTHER")])
+                rc, out, _ = repo.run()
+                self.assertEqual((rc, verdicts(out)), (0, {"a": "SURVIVED", "b": "SURVIVED"}))
+                self.assert_tree_at_drop_commit(repo, out)
+
+    def test_strays_killed_across_sessions(self):
+        # Processes a run starts in a new session (killpg cannot reach them),
+        # with a cleared environment too, are killed after the run, on a
+        # normal exit and on a TIMEOUT, before the next run starts.
+        mutate.BUDGET_ADD_S = 2
+        repo = Repo(self, mutants=[mutant("a", replace="SETSID\nSETSIDENV"),
+                                   mutant("b", replace="SETSID\nSETSIDENV\nHANG"),
+                                   mutant("c", replace="SETSIDWRITE"),
+                                   mutant("d", replace="SLEEP1\nCHECKLATE")])
+        rc, out, _ = repo.run()
+        self.assertEqual((rc, verdicts(out)), (0, {"a": "SURVIVED", "b": "TIMEOUT",
+                                                   "c": "SURVIVED", "d": "SURVIVED"}))
+        pids = [int(p) for p in (repo.stub_dir / "strays").read_text().split()]
+        self.assertEqual(len(pids), 5)
+        for pid in pids:
+            self.assertFalse(alive(pid), f"stray {pid} survived the sweep")
+        self.assertEqual(mutate.children(), [])
+
+    def test_restore_verifies_head_and_flags(self):
+        # restore_tree checks what it did: a skip-worktree bit or a HEAD it
+        # could not move back (git refusing the update, simulated here by
+        # dropping those calls) fails the restore instead of passing it.
+        repo = Repo(self, mutants=[mutant("a")])
+        tree = repo.tmp / "tree"
+        git(repo.root, "worktree", "add", "-q", "--detach", str(tree), "HEAD")
+        sha = mutate.drop_mutant_files(tree)
+        self.assertTrue(mutate.restore_tree(tree, sha))
+        real = mutate.tree_git
+        for skipped, setup in ((("update-index",), ("update-index", "--skip-worktree",
+                                                     "other.txt")),
+                               (("update-ref", "reset"), ("commit", "--allow-empty", "-qm",
+                                                           "moved"))):
+            with self.subTest(skipped=skipped):
+                git(tree, *setup)
+                mutate.tree_git = lambda t, *args, data=None: (0, b"") \
+                    if args[0] in skipped else real(t, *args, data=data)
+                try:
+                    self.assertFalse(mutate.restore_tree(tree, sha))
+                finally:
+                    mutate.tree_git = real
+                self.assertTrue(mutate.restore_tree(tree, sha))
+
+    def test_stray_that_outlives_the_sweep_aborts(self):
+        # A stray the sweep cannot remove makes the mutant ERROR and the rest
+        # NOT-RUN, as an unrestorable tree does (the control's sweep passes).
+        real, calls = mutate.kill_strays, []
+
+        def kill_strays():
+            calls.append(1)
+            return len(calls) == 1
+        mutate.kill_strays = kill_strays
+        try:
+            repo = Repo(self, mutants=[mutant("a"), mutant("b")])
+            rc, out, _ = repo.run()
+        finally:
+            mutate.kill_strays = real
+        self.assertEqual(rc, 1)
+        self.assertEqual(verdicts(out), {"a": "ERROR", "b": "NOT-RUN"})
+        self.assertIn("outlived the sweep", (out / "logs" / "a.log").read_text())
+
+    def test_kill_strays_gives_up(self):
+        # A child that never goes away: the sweep returns False after
+        # STRAY_SWEEP_S instead of looping (the PID is above pid_max, so
+        # the kill and the reap find nothing).
+        mutate.STRAY_SWEEP_S = 0.2
+        real = mutate.children
+        mutate.children = lambda: [2 ** 30]
+
+        def overrun(signum, frame):
+            raise AssertionError("kill_strays ignored STRAY_SWEEP_S")
+        old = signal.signal(signal.SIGALRM, overrun)
+        signal.setitimer(signal.ITIMER_REAL, 5)
+        try:
+            self.assertFalse(mutate.kill_strays())
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, old)
+            mutate.children = real
+        self.assertTrue(mutate.kill_strays())
+
     def test_restore_keeps_tools_cache(self):
         repo = Repo(self, mutants=[mutant("a", replace="TOOLS"),
                                    mutant("b", replace="CHECKTOOLS")])
@@ -683,7 +811,8 @@ class Merge(unittest.TestCase):
         cls.saved = mutate.BUDGET_ADD_S
         mutate.BUDGET_ADD_S = 0.5
         cls.objs = [mutant("a", replace="PRINT FAIL s/b\u00e9\tx\nEXIT 1"),
-                    mutant("b"), mutant("c", find="nothing")]
+                    mutant("b"), mutant("c", find="nothing"),
+                    mutant("d", replace="PRINT FAIL s/c: x\nEXIT 1", expect=["s/b"])]
         cls.cleanups = []
         cls.repo = Repo(cls, mutants=cls.objs)
         cls.sweep = cls.repo.tmp / "sweep"
@@ -716,12 +845,16 @@ class Merge(unittest.TestCase):
     def test_merge_complete(self):
         rc, out, err = self.merged(self.sweep)
         self.assertEqual(rc, 0, err)
-        self.assertIn("mutate: 3 mutants: 1 killed, 1 survived, 1 invalid, 0 timeout; complete",
-                      err)
+        self.assertIn("mutate: 4 mutants: 2 killed, 1 survived, 1 invalid, 0 timeout; "
+                      "1 killed by another row (expected=no); complete", err)
+        head = err.splitlines()[0]
+        self.assertEqual(head, f"mutate: sweep of {self.repo.head} with tests/mutants/m.jsonl "
+                               f"(sha256 {hashlib.sha256(jsonl(self.objs)).hexdigest()})")
         lines = out.splitlines()
         self.assertEqual(lines[0], "\t".join(mutate.TSV_HEADER))
         self.assertEqual([line.split("\t")[:2] for line in lines[1:]],
-                         [["a", "KILLED"], ["b", "SURVIVED"], ["c", "INVALID"]])
+                         [["a", "KILLED"], ["b", "SURVIVED"], ["c", "INVALID"], ["d", "KILLED"]])
+        self.assertEqual(lines[4].split("\t")[3], "no")
 
     def test_merge_round_trip(self):
         _, out, _ = self.merged(self.sweep)
@@ -773,6 +906,25 @@ class Merge(unittest.TestCase):
                                "mutants_sha256 " + hashlib.sha256(data).hexdigest(),
                                path.read_text()))
         self.incomplete(sweep, "mutant file")
+
+    def test_merge_incomplete_mixed_path(self):
+        sweep = self.copy()
+        path = sweep / "shard-3" / "meta.txt"
+        path.write_text(path.read_text().replace("mutants_path tests/mutants/m.jsonl",
+                                                 "mutants_path tests/mutants/n.jsonl"))
+        self.incomplete(sweep, "mutant file path")
+
+    def test_merge_incomplete_bad_expected(self):
+        for mid, old, new in (("b", "\tSURVIVED\t-\t-\t", "\tSURVIVED\t-\tyes\t"),
+                              ("d", "\tno\t4\t", "\tmaybe\t4\t")):
+            with self.subTest(row=mid):
+                sweep = self.copy()
+                k = 2 if mid == "b" else 4
+                path = sweep / f"shard-{k}" / "results.tsv"
+                text = path.read_text()
+                self.assertEqual(text.count(old), 1)
+                path.write_text(text.replace(old, new))
+                self.incomplete(sweep, "expected")
 
     def test_merge_incomplete_wrong_shard(self):
         sweep = self.copy()
