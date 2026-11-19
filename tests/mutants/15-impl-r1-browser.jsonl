@@ -1,0 +1,100 @@
+{"id": "b-partial-min-2", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "var PARTIAL_MIN = 3;", "replace": "var PARTIAL_MIN = 2;"}]}
+{"id": "b-partial-cap-4", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "var PARTIAL_CAP = 5;", "replace": "var PARTIAL_CAP = 4;"}]}
+{"id": "b-feed-version-2", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "var FEED_VERSION = 1;", "replace": "var FEED_VERSION = 2;"}]}
+{"id": "b-ignorable-shy", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "[0x00AD, 0x00AD], ", "replace": ""}]}
+{"id": "b-ignorable-zw", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "[0x200B, 0x200F], ", "replace": "[0x200C, 0x200F], "}]}
+{"id": "b-ignorable-tags", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": ",\n    [0xE0000, 0xE0FFF]", "replace": ""}]}
+{"id": "b-dots-ideo", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "var DOTS = [0x3002, 0xFF0E, 0xFF61];", "replace": "var DOTS = [0xFF0E, 0xFF61];"}]}
+{"id": "b-dots-full", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "var DOTS = [0x3002, 0xFF0E, 0xFF61];", "replace": "var DOTS = [0x3002, 0xFF61];"}]}
+{"id": "b-spaces-nbsp", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "[0x85, 0x85], [0xA0, 0xA0], ", "replace": "[0x85, 0x85], "}]}
+{"id": "b-spaces-ideo", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": ",\n    [0x3000, 0x3000]", "replace": ""}]}
+{"id": "b-defang-dot", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "[\"[.]\", \".\"], ", "replace": ""}]}
+{"id": "b-defang-scheme", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "[\"[://]\", \"://\"], ", "replace": ""}]}
+{"id": "b-defang-colon", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "[\"[:]\", \":\"], ", "replace": ""}]}
+{"id": "b-defang-at", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "[\"[@]\", \"@\"], ", "replace": ""}]}
+{"id": "b-defang-hxxp", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": ", [\"hxxp\", \"http\"]", "replace": ""}]}
+{"id": "b-schemes-https", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "var SCHEMES = [\"http\", \"https\"];", "replace": "var SCHEMES = [\"http\"];"}]}
+{"id": "b-www", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "var WWW = \"www.\";", "replace": "var WWW = \"www\";"}]}
+{"id": "b-lists-domains", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "var VALUE_LISTS = [\"domains\", ", "replace": "var VALUE_LISTS = ["}]}
+{"id": "b-lists-urls", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "\"urls\", \"ips\"", "replace": "\"ips\""}]}
+{"id": "b-lists-ips", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "\"ips\", \"emails\"", "replace": "\"emails\""}]}
+{"id": "b-lists-emails", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "\"emails\", \"repositories\"", "replace": "\"repositories\""}]}
+{"id": "b-lists-files", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": ", \"file_names\"];", "replace": "];"}]}
+{"id": "b-fields-handles", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "[[\"handles\", \"value\"], ", "replace": "["}]}
+{"id": "b-fields-packages", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "[\"packages\", \"name\"], ", "replace": ""}]}
+{"id": "b-fields-sha", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "[\"sha256\", \"value\"],\n", "replace": "\n"}]}
+{"id": "b-nfkc-nfc", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "var NFKC = \"nfkc\".toUpperCase();", "replace": "var NFKC = \"nfc\".toUpperCase();"}]}
+{"id": "b-guard-sections", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "|| !sections[0] || !sections[1] || !sections[2]", "replace": "|| !sections[0]"}]}
+{"id": "b-inranges-ge", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "code >= ranges[i][0]", "replace": "code > ranges[i][0]"}]}
+{"id": "b-inranges-le", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "code <= ranges[i][1]", "replace": "code < ranges[i][1]"}]}
+{"id": "b-codepoints-step", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "i += code > 0xFFFF ? 2 : 1", "replace": "i += 1"}]}
+{"id": "b-fold-no-ignorable", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "if (!inRanges(code, IGNORABLE)) {", "replace": "if (true) {"}]}
+{"id": "b-fold-dot", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "kept += DOTS.indexOf(code) >= 0 ? \".\" : String.fromCodePoint(code);", "replace": "kept += String.fromCodePoint(code);"}]}
+{"id": "b-fold-no-lower", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "kept.normalize(NFC).toLowerCase()", "replace": "kept.normalize(NFC)"}]}
+{"id": "b-fold-no-nfkc", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "codePoints(text.normalize(NFKC), function", "replace": "codePoints(text, function"}]}
+{"id": "b-fold-gap-leading", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "gap = out !== \"\";", "replace": "gap = true;"}]}
+{"id": "b-fold-gap-never", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "out += (gap ? \" \" : \"\") + String.fromCodePoint(code);", "replace": "out += String.fromCodePoint(code);"}]}
+{"id": "b-fold-spaces-kept", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "if (inRanges(code, SPACES)) {", "replace": "if (code === 0x20) {"}]}
+{"id": "b-refang-once", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "text = text.split(DEFANGS[i][0]).join(DEFANGS[i][1]);", "replace": "text = text.replace(DEFANGS[i][0], DEFANGS[i][1]);"}]}
+{"id": "b-startswith-loose", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "return text.slice(0, start.length) === start;", "replace": "return text.indexOf(start) >= 0;"}]}
+{"id": "b-endswith-loose", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "return text.length >= end.length && text.slice(text.length - end.length) === end;", "replace": "return text.indexOf(end) >= 0;"}]}
+{"id": "b-cutbefore-none", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "return text.slice(0, i);", "replace": "return text;"}]}
+{"id": "b-bare-no-break", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "        break;\n      }\n    }\n    if (startsWith(text, WWW))", "replace": "      }\n    }\n    if (startsWith(text, WWW))"}]}
+{"id": "b-bare-no-www", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "      text = text.slice(WWW.length);", "replace": "      text = text;"}]}
+{"id": "b-bare-keep-slash", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "return endsWith(text, \"/\") ? text.slice(0, text.length - 1) : text;", "replace": "return text;"}]}
+{"id": "b-withoutend-none", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "return endsWith(text, end) ? text.slice(0, text.length - end.length) : text;", "replace": "return text;"}]}
+{"id": "b-isobject-array", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": " && !Array.isArray(value);", "replace": ";"}]}
+{"id": "b-text-any-type", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "typeof object[key] === \"string\" ? object[key] : null", "replace": "object[key] !== undefined ? object[key] : null"}]}
+{"id": "b-letter-or-digit-any", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "var LETTER_OR_DIGIT = new RegExp(\"[\\\\p{L}\\\\p{N}]\", \"u\");", "replace": "var LETTER_OR_DIGIT = new RegExp(\"[^]\", \"u\");"}]}
+{"id": "b-letter-only", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "new RegExp(\"[\\\\p{L}\\\\p{N}]\", \"u\")", "replace": "new RegExp(\"[\\\\p{L}]\", \"u\")"}]}
+{"id": "b-addform-always", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "    if (LETTER_OR_DIGIT.test(form)) {\n      list.push(form);\n    }", "replace": "    list.push(form);"}]}
+{"id": "b-keys-no-name", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "      addForm(keys.names, fold(name));", "replace": "      name = null;"}]}
+{"id": "b-keys-no-alias", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "        addForm(keys.names, fold(alias));", "replace": "        alias = null;"}]}
+{"id": "b-keys-alias-raw", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "addForm(keys.names, fold(alias));", "replace": "addForm(keys.names, alias);"}]}
+{"id": "b-value-no-bare", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "var key = bare(refang(fold(raw)));", "replace": "var key = refang(fold(raw));"}]}
+{"id": "b-value-no-refang", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "var key = bare(refang(fold(raw)));", "replace": "var key = bare(fold(raw));"}]}
+{"id": "b-value-no-fold", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "var key = bare(refang(fold(raw)));", "replace": "var key = bare(refang(raw));"}]}
+{"id": "b-domains-keep-dot", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "addForm(keys.domains, withoutEnd(key, \".\"));", "replace": "addForm(keys.domains, key);"}]}
+{"id": "b-domains-none", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "if (list === \"domains\") {", "replace": "if (list === \"domainz\") {"}]}
+{"id": "b-handles-no-at", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "if (list === \"handles\" && startsWith(key, \"@\")) {", "replace": "if (false) {"}]}
+{"id": "b-handles-slice-0", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "addForm(keys.values, key.slice(1));", "replace": "addForm(keys.values, key);"}]}
+{"id": "b-objects-pair-1", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "var raw = text(object, pair[1]);", "replace": "var raw = text(object, pair[0]);"}]}
+{"id": "b-objects-list-name", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "value(raw, pair[0]);", "replace": "value(raw, pair[1]);"}]}
+{"id": "b-entrypath-href", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "new URL(url, location.href).pathname", "replace": "new URL(url, location.href).href"}]}
+{"id": "b-buildindex-version", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "feed.version !== FEED_VERSION", "replace": "feed.version === undefined"}]}
+{"id": "b-buildindex-campaigns", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "feed.reports.concat(feed.campaigns).forEach", "replace": "feed.reports.forEach"}]}
+{"id": "b-buildindex-reports", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "|| !Array.isArray(feed.campaigns)) {", "replace": ") {"}]}
+{"id": "b-buildindex-list-class", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "getByClass.call(page, \"index-list\")[0]", "replace": "getByClass.call(page, \"index-lists\")[0]"}]}
+{"id": "b-buildindex-li-any", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "li.localName === \"li\" ? li.getElementsByTagName(\"a\")[0] : null", "replace": "li.getElementsByTagName(\"a\")[0]"}]}
+{"id": "b-buildindex-shown", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "        shown[path] = true;\n", "replace": ""}]}
+{"id": "b-buildindex-no-orphans", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "orphans: orphans};", "replace": "orphans: []};"}]}
+{"id": "b-load-not-ok", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "if (!replies[0].ok || !replies[1].ok) {", "replace": "if (!replies[0].ok) {"}]}
+{"id": "b-match-r0-cut", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "var r0 = cutBefore(r, \"?#\");", "replace": "var r0 = r;"}]}
+{"id": "b-match-rat", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "var rAt = startsWith(r, \"@\") ? r.slice(1) : r;", "replace": "var rAt = r;"}]}
+{"id": "b-match-host-space", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "r0.indexOf(\".\") >= 0 && r0.indexOf(\" \") < 0", "replace": "r0.indexOf(\".\") >= 0"}]}
+{"id": "b-match-host-path", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "h = cutBefore(r0, \"/\");", "replace": "h = r0;"}]}
+{"id": "b-match-host-userinfo", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "h.slice(h.lastIndexOf(\"@\") + 1)", "replace": "h"}]}
+{"id": "b-match-host-port", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "cutBefore(h.slice(h.lastIndexOf(\"@\") + 1), \":\")", "replace": "h.slice(h.lastIndexOf(\"@\") + 1)"}]}
+{"id": "b-match-host-dot", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "h = withoutEnd(cutBefore(h.slice(h.lastIndexOf(\"@\") + 1), \":\"), \".\");", "replace": "h = cutBefore(h.slice(h.lastIndexOf(\"@\") + 1), \":\");"}]}
+{"id": "b-match-no-r0", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "[r, r0, rAt].forEach", "replace": "[r, rAt].forEach"}]}
+{"id": "b-match-no-names", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "      return keys.names.indexOf(form) >= 0;", "replace": "      return false;"}]}
+{"id": "b-match-subdomain", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "endsWith(host, \".\" + domain)", "replace": "endsWith(host, domain)"}]}
+{"id": "b-match-no-subdomain", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "return host === domain || endsWith(host, \".\" + domain);", "replace": "return host === domain;"}]}
+{"id": "b-match-orphans-ignored", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "if (index.orphans.some(isExact)) {", "replace": "if (false) {"}]}
+{"id": "b-match-partial-f-only", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "[f, r].forEach(function (form) {", "replace": "[f].forEach(function (form) {"}]}
+{"id": "b-match-partial-ge", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "codePointCount(form) >= PARTIAL_MIN", "replace": "form.length >= PARTIAL_MIN"}]}
+{"id": "b-match-partial-names-only", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "entry.keys.names.concat(entry.keys.values)", "replace": "entry.keys.names"}]}
+{"id": "b-match-partial-prefix", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "return key.indexOf(part) >= 0;", "replace": "return key.indexOf(part) === 0;"}]}
+{"id": "b-match-cap-off", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "close.slice(0, PARTIAL_CAP)", "replace": "close"}]}
+{"id": "b-match-none-section", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "return [2, []];", "replace": "return [1, []];"}]}
+{"id": "b-reveal-no-clear", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "Array.prototype.forEach.call(section.getElementsByClassName(\"index-list\"), clear);", "replace": ""}]}
+{"id": "b-reveal-keep-others", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "      section.hidden = true;\n", "replace": ""}]}
+{"id": "b-reveal-no-results", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "    results.hidden = false;\n", "replace": ""}]}
+{"id": "b-reveal-no-focus", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "section.getElementsByTagName(\"h2\")[0].focus({preventScroll: true});", "replace": ""}]}
+{"id": "b-reveal-shallow", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "importNode.call(document, entry.li, true)", "replace": "importNode.call(document, entry.li, false)"}]}
+{"id": "b-settle-busy-kept", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "    results.removeAttribute(\"aria-busy\");\n", "replace": ""}]}
+{"id": "b-settle-stale", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "if (mine !== asked) {", "replace": "if (false) {"}]}
+{"id": "b-submit-empty-reveal", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "    if (fold(query) === \"\") {", "replace": "    if (query === \"\") {"}]}
+{"id": "b-submit-no-busy", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "    results.setAttribute(\"aria-busy\", \"true\");\n", "replace": ""}]}
+{"id": "b-submit-orphan-reveal", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "        if (found === null) {\n          submitForm.call(form);", "replace": "        if (found === null) {\n          reveal([2, []]);"}]}
+{"id": "b-submit-error-silent", "suites": ["reflow-search"], "edits": [{"file": "assets/js/search.js", "find": "    }, function () {\n      if (settle(mine)) {\n        submitForm.call(form);\n      }", "replace": "    }, function () {\n      settle(mine);"}]}
