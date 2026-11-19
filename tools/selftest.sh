@@ -3408,29 +3408,53 @@ PY
   # --only run with SIGPIPE, and the temp directory goes with it. The real
   # selftest_main runs in its own bash with selftest_blocks replaced by
   # 50000 rows (about 700 KB, far past the 64 KiB of the pipe and of the
-  # FIFO); the reader is sed, which quits at the first row (the fetch-tools
-  # lines come before it), so tee dies at its first write after that and
-  # the rest must not block on the FIFO. A run that stays a reader of its own FIFO
-  # blocks there until the 60 s bound (exit 124), and a run without the
-  # PIPE trap dies with its temp directory left behind.
+  # FIFO). Python starts it under a 60 s timeout with SIGPIPE at its
+  # default action (subprocess restores it; the CI runner starts jobs with
+  # SIGPIPE ignored, which bash can neither trap nor reset, and a write then
+  # fails with EPIPE instead), reads up to the first row (the fetch-tools
+  # lines come before it) and closes its end, so tee dies at its next write
+  # and the rest must not block on the FIFO. The run must die of SIGPIPE
+  # and leave its TMPDIR empty. A run that stays a reader of its own FIFO
+  # blocks there until the 60 s bound (124), and a run without the PIPE
+  # trap dies with its temp directory left behind.
   so_tmp="$(mktemp -d)"
   mkdir "$so_tmp/tmp"
-  # shellcheck disable=SC2016 # the nested bash expands them
-  TMPDIR="$so_tmp/tmp" timeout 60 bash -c 'source "$1"
-    selftest_blocks() { yes "ok   tokens/pass-x" | head -n 50000; }
-    selftest_main --only tokens' _ "$so_sh" 2>"$so_tmp/err" \
-    | sed -n '/^ok   /{p;q;}' >"$so_tmp/out"
-  so_rc="${PIPESTATUS[0]}"
+  so_got="$(python3 -I -B - "$so_tmp" "$so_sh" <<'PY' 2>&1
+import os
+import subprocess
+import sys
+
+tmp, child = sys.argv[1], sys.argv[2]
+script = ('source "$1"\n'
+          'selftest_blocks() { yes "ok   tokens/pass-x" | head -n 50000; }\n'
+          'selftest_main --only tokens\n')
+env = dict(os.environ, TMPDIR=os.path.join(tmp, "tmp"))
+with open(os.path.join(tmp, "err"), "wb") as err:
+    proc = subprocess.Popen(["timeout", "60", "bash", "-c", script, "_", child],
+                            stdout=subprocess.PIPE, stderr=err, env=env)
+    first = b""
+    for line in proc.stdout:
+        if line.startswith(b"ok   "):
+            first = line.rstrip(b"\n")
+            break
+    proc.stdout.close()
+    try:
+        rc = proc.wait(timeout=90)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        rc = "timeout"
+# timeout passes a death by signal on as its own (-13) or as 128 + 13.
+print(f"run: {'SIGPIPE' if rc in (-13, 141) else rc}; first row: {first.decode()}")
+PY
+)"
   so_bad=""
-  if [[ $so_rc -ne 141 ]]; then
-    so_bad="exit $so_rc, want 141 (death by SIGPIPE; 124 is the 60 s bound)"
-  elif [[ "$(cat "$so_tmp/out")" != "ok   tokens/pass-x" ]]; then
-    so_bad="the reader got '$(cat "$so_tmp/out")', not the first row"
+  if [[ "$so_got" != "run: SIGPIPE; first row: ok   tokens/pass-x" ]]; then
+    so_bad="got '$so_got', want death by SIGPIPE after the first row (124 is the 60 s bound)"
   elif [[ -n "$(find "$so_tmp/tmp" -mindepth 1)" ]]; then
     so_bad="temp files left: $(find "$so_tmp/tmp" -mindepth 1 | tr '\n' ' ')"
   fi
   if [[ -z "$so_bad" ]]; then
-    echo "ok   selftest-only/pipe-closed (reader gone after the first row: exit 141, no temp file left)"
+    echo "ok   selftest-only/pipe-closed (reader gone after the first row: death by SIGPIPE, no temp file left)"
     n_passed=$((n_passed + 1))
   else
     echo "FAIL selftest-only/pipe-closed: $so_bad; stderr:"
