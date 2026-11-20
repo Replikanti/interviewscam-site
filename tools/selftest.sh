@@ -1446,12 +1446,39 @@ got = (hits("Ali", "all"), hits("Ali", "Of all things"), hits("Neil", "nell"),
        sc.name_fold("Riley Placeh\u05d5\u05e1der", 4))
 row("name-stroke-reading", got == ([], [], [], [3], [0, 2, 3], [3], [3], [], [3], [1, 2, 3],
                                     [1, 2, 3], "riley placeholder"), f"got {got!r}")
+# Fix round 2 (delta review 1 to 3): the matcher of rules 4, 9 and 12
+# (name_pattern) and R5's (r5_patterns) agree on every pair, a name and a
+# text: no stroke as a name's outer boundary, a written "l" for a name's
+# capital I at the start, inside a word and in a word of capitals, U+4E28
+# and the strokes the table maps to it as a separator, digits of a number
+# as digits, and the accepted false positive "Ian" in "LAN".
+pairs = [("Ali", "all", False), ("Il", "ill", False), ("Il", "I'll say", False),
+         ("Li", "Il", False), ("Ali", "ALL", False), ("Rene", "Irene", False),
+         ("Van", "Ivan", False), ("Van Le", "Ivan Le", False), ("Dan", "DANIEL", False),
+         ("Tem", "ListItem", False), ("Li", "2026-11-01", False), ("Il", "2026-11-01", False),
+         ("Ivan Petrov", "lvan Petrov", True), ("Ian McIntyre", "lan McIntyre", True),
+         ("Ian McIntyre", "Ian Mclntyre", True), ("Riley Placeholder", "RlLEY PLACEHOLDER", True),
+         ("Ivan Petrov", "lVAN PETROV", True), ("Avery Exampleton", "Avery丨Exampleton", True),
+         ("Avery Exampleton", "Avery⼁Exampleton", True),
+         ("Avery Exampleton", "AveryㅣExampleton", True),
+         ("Avery Exampleton", "AveryￜExampleton", True), ("Riley", "R1ley", True),
+         ("Ian", "LAN", True)]
+bad = [(n, x) for n, x, want in pairs
+       if bool(hits(n, x)) != want or (sc.r5_reading(sc.r5_patterns(n), x) is not None) != want]
+row("name-pairs", not bad, f"{len(pairs)} pairs, wrong: {bad!r}")
+got = (sc.caps_l("RlLEY lVAN Il Ill all McLl"), sc.stroke_table()[0x4E28] == sc.STROKE_CJK,
+       sorted(cp for cp, v in sc.confusable_tables()[0].items() if v == "丨")
+       == sorted(cp for cp, v in sc.stroke_table().items() if v == sc.STROKE_CJK and cp != 0x4E28))
+row("name-caps-l-and-cjk-stroke", got == (f"R{sc.STROKE}LEY {sc.STROKE}VAN Il Ill all McLl", True, True),
+    f"got {got!r}")
+
 # R1 is R3 with every STROKE read as "l" (reading_folds derives it so):
 # every source and target code point of the table, alone, between two
 # letters and before a combining mark.
 cps = sorted(set(table) | {ord(c) for v in table.values() for c in v})
 bad = [f"U+{cp:04X}" for cp in cps for x in (chr(cp), f"a{chr(cp)}b", chr(cp) + "\u0301")
-       if sc.skeleton_fold(x) != sc.skeleton_fold(x, stroke=True).replace(sc.STROKE, "l")]
+       if sc.skeleton_fold(x) != sc.skeleton_fold(x, stroke=True).replace(sc.STROKE, "l")
+       .replace(sc.STROKE_CJK, sc.CJK_STROKE)]
 row("stroke-to-r1", not bad and len(cps) > 8000, f"{len(cps)} code points, differ: {bad[:5]}")
 got = (sc.name_pattern("ˌ", 0) is sc.NEVER, sc.name_pattern("ˌ", 1) is sc.NEVER,
        sc.name_pattern("⠀", 0) is sc.NEVER, sc.name_pattern("⠀", 1) is sc.NEVER,
@@ -1468,7 +1495,7 @@ row("visual-spans", got == (f"x {O}בא{C} y", f"{O}ב{C}א{O}c{C}",
 # U+10CA5, the one capital of CAPITAL_L that R2 reads as neither "i" nor
 # "l", tells R3 (from R1) from a fold of R2.
 texts = ["Riley Placehוסder", "RΙLEY |nfo", "plain text", "Mоrgan א",
-         "\U00010ca5ay", "Ali|א \ue002"]
+         "\U00010ca5ay", "Ali|א \ue002", "Avery\u4e28Exampleton \u2f01 \ue003 RlLEY 2026-11-01"]
 drawn = [sc.visual_order(t) for t in texts]
 memo = {}
 bad = [r for r in R if sc.reading_folds(texts, drawn, r, memo, 2)

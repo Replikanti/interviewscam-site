@@ -1065,6 +1065,9 @@ def word_variants(text, reading=0, name=False):
     variants = {text, html.unescape(text)}
     variants |= {MD_ESCAPE.sub(r"\1", v) for v in list(variants)}
     variants |= {strip_markup(v) for v in list(variants)}
+    if reading and name and not NAME_READING_FORMS[reading][1]:
+        # As name_pattern: only the stroke readings keep the name's case.
+        variants = {unicodedata.normalize("NFKC", v).casefold() for v in variants}
     if reading and name and NAME_READING_FORMS[reading][2]:
         return {name_fold(visual_order(v), reading, drawn=True) for v in variants}
     if reading:
@@ -1307,6 +1310,36 @@ def verdict_problems(record):
     return problems
 
 
+def r5_patterns(name):
+    """R5's patterns of one name or alias, a list per reading of
+    NAME_READINGS: each variant of the name (word_variants) as written,
+    with no word character right before or after (name_bounds: under R3
+    and V3 no stroke either), its "i", "l" and strokes read as in
+    stroke_pattern."""
+    patterns = []
+    for reading in range(len(NAME_READINGS)):
+        folded = word_variants(name, reading, True)
+        before, after = name_bounds(reading, r"\w")
+        patterns.append([re.compile(f"{before}{stroke_pattern(text, reading)}{after}")
+                         for text in sorted(t for t in folded if t)])
+    return patterns
+
+
+def r5_reading(patterns, text, variants=None):
+    """The first reading under which text holds a name of patterns
+    (r5_patterns), or None; variants caches word_variants per text."""
+    for reading, at in enumerate(patterns):
+        if variants is None:
+            forms = word_variants(text, reading)
+        else:
+            if (text, reading) not in variants:
+                variants[text, reading] = word_variants(text, reading)
+            forms = variants[text, reading]
+        if any(pattern.search(v) for pattern in at for v in forms):
+            return reading
+    return None
+
+
 def persona_problems(records):
     """R5: (record, problem) for every persona name or alias in the free text
     or body of any record, so hide_name can remove it in one line. Names
@@ -1328,18 +1361,9 @@ def persona_problems(records):
         names += [(f"params.aliases[{i}]", a)
                   for i, a in enumerate(aliases if isinstance(aliases, list) else [])]
         for field, name in names:
-            patterns = []
-            for reading in range(len(NAME_READINGS)):
-                folded = word_variants(name, reading, True) if isinstance(name, str) else set()
-                patterns.append([re.compile(rf"(?<!\w){stroke_pattern(text, reading)}(?!\w)")
-                                 for text in sorted(t for t in folded if t)])
-            personas.append((persona, field, patterns))
+            if isinstance(name, str):
+                personas.append((persona, field, r5_patterns(name)))
     variants = {}
-
-    def variants_at(text, reading):
-        if (text, reading) not in variants:
-            variants[text, reading] = word_variants(text, reading)
-        return variants[text, reading]
     for record in records:
         texts = free_text(record) + [("body", record.body)]
         for persona, field, patterns in personas:
@@ -1347,9 +1371,7 @@ def persona_problems(records):
                 if record is persona and (path == "params.name"
                                           or path.startswith("params.aliases[")):
                     continue
-                hit = next((r for r, at in enumerate(patterns)
-                            if any(pattern.search(v) for pattern in at
-                                   for v in variants_at(text, r))), None)
+                hit = r5_reading(patterns, text, variants)
                 if hit is not None:
                     found.append((record, f"{path}: contains the {field} of the persona "
                                   f"record {persona.rel}; a persona name renders only "
@@ -3363,29 +3385,81 @@ def confusable_tables():
 
 
 # The stroke reading of the persona names (Replikanti/interviewscam#28 PR 2
-# fix round 1, review findings A2 and C): every "l" a table target holds
-# becomes STROKE, so a character that draws as a vertical stroke (I, |, 1,
-# U+01C0, the palochka, and the rest of the 115 sources whose prototype is
-# "l") stays apart from a written lower-case "l". STROKE is a private-use
-# character, so a pattern reads it as no letter: name_pattern lets it
-# stand for "i" or "l" inside a token and as a separator between tokens,
-# and a written "l" or a dotted "i" keeps its own letter ("all" is not
-# "Ali"). A STROKE in the text itself is read as U+FFFD first, in every
-# reading of skeleton_fold, so R1 stays R3 with the strokes read as "l".
+# fix rounds 1 and 2, review findings A2, C and delta 1 to 3): every "l" a
+# table target holds becomes STROKE, so a character that draws as a
+# vertical stroke (I, |, 1, U+01C0, the palochka, and the rest of the 115
+# sources whose prototype is "l") stays apart from a written lower-case
+# "l"; the prototype U+4E28 (CJK stroke, with U+3163, U+1175, U+FFDC and
+# U+2F01 and every other source the table maps to it) becomes STROKE_CJK,
+# the same mark for a reader. Two marks, so that R1 is R3 with STROKE read
+# as "l" and STROKE_CJK as U+4E28 (reading_folds). Both are private-use
+# characters, so a pattern reads them as no letter: name_pattern lets
+# them stand for "i" or "l" inside a token and for the separator between
+# its own tokens, never for its outer boundary ("Irene" does not hold
+# "Rene"). A written "l" stays an "l" (so "all" is not "Ali"), except in a
+# word of Latin capitals with at least 2 others ("RlLEY", caps_l), where
+# a reader takes it for a capital I. Either mark in the text itself is
+# read as U+FFFD first, in every reading of skeleton_fold.
 STROKE = "\ue002"
-STROKE_FORGERY = str.maketrans({STROKE: "\ufffd"})
+STROKE_CJK = "\ue003"
+STROKES = STROKE + STROKE_CJK
+CJK_STROKE = "\u4e28"
+STROKE_FORGERY = str.maketrans({STROKE: "\ufffd", STROKE_CJK: "\ufffd"})
+# A run of 2 or more ASCII digits stays digits in the name readings (fix
+# round 2): the table reads "1" as "l" and "0" as "O", which holds for a
+# digit written inside a word ("R1ley") but would make every "11" of a
+# date ("2026-11-01") the alias "Il" or "Li". The digits of a run are held
+# as private-use characters through the skeleton and given back after it.
+DIGIT_RUN = re.compile(r"[0-9]{2,}")
+DIGIT_HOLD = str.maketrans({str(d): chr(0xE010 + d) for d in range(10)})
+DIGIT_RELEASE = str.maketrans({chr(0xE010 + d): str(d) for d in range(10)})
+# Rule (a) of caps_l: a written "l" next to a Latin capital.
+CAPS_L = re.compile(r"[A-Z]l|l[A-Z]")
+CAPS_L_MIN = 2
 _STROKE_TABLE = None
 
 
 def stroke_table():
-    """The R1 table with every "l" of a target read as STROKE, built once
-    per loaded table."""
+    """The R1 table with every "l" of a target read as STROKE and every
+    U+4E28 as STROKE_CJK, plus U+4E28 itself (the prototype, so no source
+    of the table), built once per loaded table."""
     global _STROKE_TABLE
     table = confusable_tables()[0]
     if _STROKE_TABLE is None or _STROKE_TABLE[0] is not table:
-        _STROKE_TABLE = (table, {cp: target.replace("l", STROKE)
-                                 for cp, target in table.items()})
+        stroke = {cp: target.replace("l", STROKE).replace(CJK_STROKE, STROKE_CJK)
+                  for cp, target in table.items()}
+        stroke[ord(CJK_STROKE)] = STROKE_CJK
+        _STROKE_TABLE = (table, stroke)
     return _STROKE_TABLE[1]
+
+
+def caps_l(text):
+    """text with every written "l" of a word of Latin letters whose other
+    letters are all capitals, at least CAPS_L_MIN of them ("RlLEY",
+    "lVAN"), read as STROKE: there a reader takes it for a capital I. Two
+    capitals, so "Il" stays two letters."""
+    hits = [m.start() for m in CAPS_L.finditer(text)]
+    if not hits:
+        return text
+    chars = list(text)
+    done = set()
+    for at in hits:
+        a = at
+        while a > 0 and text[a - 1].isalpha():
+            a -= 1
+        if a in done:
+            continue
+        done.add(a)
+        b = at
+        while b < len(text) and text[b].isalpha():
+            b += 1
+        others = text[a:b].replace("l", "")
+        if sum(c.isupper() for c in others) >= CAPS_L_MIN and \
+                not any(c.islower() for c in others):
+            for k in range(a, b):
+                if text[k] == "l":
+                    chars[k] = STROKE
+    return "".join(chars)
 
 
 class CategoryTable(dict):
@@ -3871,8 +3945,12 @@ def skeleton_fold(text, capital_i=False, visual=False, stroke=False):
     (Lm) left over as a space (the table maps the tatweel U+0640 and NKo
     U+07FA to "_" itself), NFC, whitespace collapsed. name_fold matches the
     persona names with it (Replikanti/interviewscam#28 PR 2)."""
-    text = text.translate(STROKE_FORGERY)
+    text = DIGIT_RUN.sub(lambda m: m.group().translate(DIGIT_HOLD),
+                         text.translate(STROKE_FORGERY))
+    if stroke:
+        text = caps_l(text)
     folded = _skeleton(text, capital_i, True, visual, stroke).translate(LM_AS_SPACE)
+    folded = folded.translate(DIGIT_RELEASE)
     return " ".join(unicodedata.normalize("NFC", folded).split())
 
 
@@ -3952,7 +4030,7 @@ def reading_folds(texts, drawn, reading, memo, uncached):
         if reading == 0:
             out = [fold_words(t) for t in texts]
         elif reading in (1, 4):
-            out = [t.replace(STROKE, "l") for t in
+            out = [t.replace(STROKE, "l").replace(STROKE_CJK, CJK_STROKE) for t in
                    reading_folds(texts, drawn, reading + 2, memo, uncached)]
         elif NAME_READING_FORMS[reading][2]:
             out = ["" if form == texts[i]
@@ -3966,14 +4044,31 @@ def reading_folds(texts, drawn, reading, memo, uncached):
 
 def stroke_pattern(text, reading):
     """The regex of a folded name, token or label under a reading: the
-    text itself, and under R3 and V3 every "i" and "l" also as STROKE, a
-    STROKE as either, and a space also as STROKE (a stroke between two
-    words reads as their separator)."""
+    text itself, and under R3 and V3 an "i" or an "l" also as either
+    stroke, a stroke of the name (a capital I, folded to STROKE) as "i",
+    either stroke or an "l" that no other "l" follows, so a written "l" for
+    the capital I of a name ("lvan", "lan", "Mclntyre") matches while the
+    alias "Il" does not meet the "'ll" of "I'll" and a dotted "i" of the
+    name never meets a written "l" ("Ali", "all"), and a space also as
+    either stroke (a stroke between two words reads as their separator)
+    (fix rounds 1 and 2)."""
     if reading == 0 or not NAME_READING_FORMS[reading][1]:
         return re.escape(text)
-    classes = {"i": f"[i{STROKE}]", "l": f"[l{STROKE}]", STROKE: f"[il{STROKE}]",
-               " ": f"[ {STROKE}]"}
+    stroke = f"(?:[i{STROKES}]|l(?!l))"
+    classes = {"i": f"[i{STROKES}]", "l": f"[l{STROKES}]", STROKE: stroke,
+               STROKE_CJK: stroke, " ": f"[ {STROKES}]"}
     return "".join(classes.get(c) or re.escape(c) for c in text)
+
+
+def name_bounds(reading, word):
+    """The lookbehind and lookahead around a whole name under a reading:
+    no character that word (a one-character regex) matches right before or
+    after, and under R3 and V3 no stroke either, because a stroke
+    separates only a name's own tokens (fix round 2, delta review 1:
+    "Irene" read as STROKE + "rene" does not hold "Rene")."""
+    if reading and NAME_READING_FORMS[reading][1]:
+        word = f"{word}|[{STROKES}]"
+    return f"(?<!{word})", f"(?!{word})"
 
 
 @functools.lru_cache(maxsize=64)
@@ -4291,26 +4386,37 @@ def name_pattern(name, reading=0):
     and V3 an "i" or "l" of a token also matches a STROKE (stroke_pattern),
     and a STROKE is no letter, so between two tokens it separates them."""
     visual = reading != 0 and NAME_READING_FORMS[reading][2]
-    folded = fold_words(visual_order(name) if visual else name)
+    source = visual_order(name) if visual else name
+    folded = fold_words(source)
     tokens = NAME_TOKEN.findall(folded)
+    before, after = name_bounds(reading, r"[^\W_]")
     if not tokens:
-        whole = name_fold(visual_order(name) if visual else name, reading, drawn=True)
+        whole = name_fold(source, reading, drawn=True)
         if not whole and reading:
             return NEVER  # R0 keeps its old pattern, which fails closed
-        return re.compile(rf"(?<![^\W_]){stroke_pattern(whole, reading)}(?![^\W_])")
+        return re.compile(f"{before}{stroke_pattern(whole, reading)}{after}")
+    # The stroke readings fold each token as the name writes it, so a
+    # capital I keeps its stroke (fix round 2, delta review 2); the
+    # case-folded tokens of R0 stand in where NFKC and the case fold
+    # tokenise differently (U+0130 folds to "i" + a combining dot).
+    cased = None
+    if reading and NAME_READING_FORMS[reading][1]:
+        cased = NAME_TOKEN.findall(unicodedata.normalize("NFKC", source).translate(INVISIBLE))
+        if len(cased) != len(tokens):
+            cased = None
     joinable = all(sum(c.isalpha() for c in tok) >= JOIN_MIN_LETTERS for tok in tokens)
 
     def initial(tok):
         return len(tok) == 1 and tok.isalpha()
     parts = []
     for i, tok in enumerate(tokens):
-        text = name_fold(tok, reading, drawn=True)
+        text = name_fold(cased[i] if cased else tok, reading, drawn=True)
         if not text:
             return NEVER
         if i:
             parts.append(r"[\W_]*" if joinable or initial(tokens[i - 1]) else r"[\W_]+")
         parts.append(stroke_pattern(text, reading) + (r"\." if initial(tok) else ""))
-    return re.compile(rf"(?<![^\W_]){''.join(parts)}(?![^\W_])")
+    return re.compile(f"{before}{''.join(parts)}{after}")
 
 
 def document_titles(page):
