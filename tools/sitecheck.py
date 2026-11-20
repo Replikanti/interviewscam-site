@@ -4388,6 +4388,13 @@ def name_pattern(name, reading=0):
     visual = reading != 0 and NAME_READING_FORMS[reading][2]
     source = visual_order(name) if visual else name
     folded = fold_words(source)
+    if reading:
+        # Past R0 the combining marks drop after the case fold, as the
+        # readings drop them in the text (fix round 3): U+0130 folds to "i"
+        # + U+0307, and the mark, no word character, split "İvan" into the
+        # initial "i" and "van", so no reading found a bare "İvan Petrov".
+        folded = unicodedata.normalize(
+            "NFC", unicodedata.normalize("NFD", folded).translate(MARKS_DROPPED))
     tokens = NAME_TOKEN.findall(folded)
     before, after = name_bounds(reading, r"[^\W_]")
     if not tokens:
@@ -4397,8 +4404,8 @@ def name_pattern(name, reading=0):
         return re.compile(f"{before}{stroke_pattern(whole, reading)}{after}")
     # The stroke readings fold each token as the name writes it, so a
     # capital I keeps its stroke (fix round 2, delta review 2); the
-    # case-folded tokens of R0 stand in where NFKC and the case fold
-    # tokenise differently (U+0130 folds to "i" + a combining dot).
+    # case-folded tokens stand in where the name as written tokenises
+    # differently (a combining mark of its own between two letters).
     cased = None
     if reading and NAME_READING_FORMS[reading][1]:
         cased = NAME_TOKEN.findall(unicodedata.normalize("NFKC", source).translate(INVISIBLE))

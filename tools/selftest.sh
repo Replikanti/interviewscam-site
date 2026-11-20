@@ -1451,7 +1451,8 @@ row("name-stroke-reading", got == ([], [], [], [3], [0, 2, 3], [3], [3], [], [3]
 # text: no stroke as a name's outer boundary, a written "l" for a name's
 # capital I at the start, inside a word and in a word of capitals, U+4E28
 # and the strokes the table maps to it as a separator, digits of a number
-# as digits, and the accepted false positive "Ian" in "LAN".
+# as digits, the accepted false positive "Ian" in "LAN", and a name with
+# U+0130 (fix round 3: its case fold "i" + U+0307 no longer splits a token).
 pairs = [("Ali", "all", False), ("Il", "ill", False), ("Il", "I'll say", False),
          ("Li", "Il", False), ("Ali", "ALL", False), ("Rene", "Irene", False),
          ("Van", "Ivan", False), ("Van Le", "Ivan Le", False), ("Dan", "DANIEL", False),
@@ -1462,19 +1463,22 @@ pairs = [("Ali", "all", False), ("Il", "ill", False), ("Il", "I'll say", False),
          ("Avery Exampleton", "Avery⼁Exampleton", True),
          ("Avery Exampleton", "AveryㅣExampleton", True),
          ("Avery Exampleton", "AveryￜExampleton", True), ("Riley", "R1ley", True),
-         ("Ian", "LAN", True)]
+         ("Ian", "LAN", True), ("\u0130van Petrov", "\u0130van Petrov", True),
+         ("\u0130van Petrov", "Ivan Petrov", True)]
 bad = [(n, x) for n, x, want in pairs
        if bool(hits(n, x)) != want or (sc.r5_reading(sc.r5_patterns(n), x) is not None) != want]
 row("name-pairs", not bad, f"{len(pairs)} pairs, wrong: {bad!r}")
-# A name whose case fold has more tokens than the name as written (U+0130
-# folds to "i" + a combining dot): the stroke readings fall back to the
-# case-folded tokens instead of indexing past the written ones.
+# A name whose written form has more tokens than its case fold with the
+# marks dropped (a combining mark of its own between two letters): the
+# stroke readings fall back to the case-folded tokens instead of indexing
+# into the written ones, which would drop "Placeholder"; and a name with
+# U+0130 meets its own bare spelling under R2 and R3 (fix round 3).
 try:
-    got = [bool(sc.name_pattern("\u0130van Petrov", r).search(sc.name_fold("I.van Petrov", r)))
-           for r in range(4)]
+    got = (hits("Ri\u0307ley Placeholder", "R|ley Placeholder"),
+           hits("Ri\u0307ley Placeholder", "R|ley"), hits("\u0130van Petrov", "\u0130van Petrov"))
 except Exception as exc:  # noqa: BLE001 - the row reports any crash
     got = repr(exc)
-row("name-pattern-case-fold-split", got == [True, False, True, True], f"got {got!r}")
+row("name-pattern-case-fold-split", got == ([3], [], [2, 3]), f"got {got!r}")
 got = (sc.caps_l("RlLEY lVAN Il Ill all McLl"), sc.stroke_table()[0x4E28] == sc.STROKE_CJK,
        sorted(cp for cp, v in sc.confusable_tables()[0].items() if v == "丨")
        == sorted(cp for cp, v in sc.stroke_table().items() if v == sc.STROKE_CJK and cp != 0x4E28))
