@@ -1286,6 +1286,23 @@ bad = [cps for cps, levels, order in tests if sc.bidi_resolve(cps, classes, brac
 row("bidi-conformance", len(tests) == 45807 and not bad,
     f"{len(tests)} lines of BidiCharacterTest-18.0.0, LTR, no explicit formatting character; "
     f"{len(bad)} differ" + (f", first {' '.join(f'{c:04X}' for c in bad[0])}" if bad else ""))
+# Rules the conformance subset does not reach in a left-to-right paragraph
+# (implementer sweep round 5), each with its levels derived from UAX #9 by
+# hand: W1 (a mark after a right-to-left letter is R, so it sits at level
+# 1, not 0 as a neutral before L would), W5 (a terminator after a digit is
+# EN, level 2, not a neutral at 0), L1 (a segment separator and the
+# whitespace before it go back to level 0, not 1 between two R), and the
+# bracket pairs at depth 62, inside the 63 of BD16 (the closing brackets
+# between R and L resolve to R by N0 c, level 1, not to L by N2).
+hand = {
+    "w1": ([0x61, 0x20, 0x05D0, 0x0591, 0x20, 0x62], [0, 0, 1, 1, 0, 0]),
+    "w5": ([0x05D0, 0x31, 0x25], [1, 2, 2]),
+    "l1": ([0x05D0, 0x20, 0x09, 0x05D1], [1, 0, 0, 1]),
+    "bracket-depth-62": ([0x05D0] + [0x28] * 62 + [0x05D1] + [0x29] * 62 + [0x63], [1] * 126 + [0]),
+}
+for name, (cps, want) in hand.items():
+    got = sc.bidi_resolve(cps, classes, brackets)[0]
+    row(f"bidi-rule-{name}", got == want, f"levels {got[:8]}... want {want[:8]}...")
 row("bidi-classes", classes[0x05D0] == sc.BIDI_CLASSES.index("R")
     and classes[0x0627] == sc.BIDI_CLASSES.index("AL") and classes[0x0661] == sc.BIDI_CLASSES.index("AN")
     and classes[0x05FF] == sc.BIDI_CLASSES.index("R") and classes[0x20CF] == sc.BIDI_CLASSES.index("ET")
