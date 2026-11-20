@@ -1,0 +1,1 @@
+tools/unicode/confusables.txt: the confusables data tools/unicode/confusables.txt has the SHA-256

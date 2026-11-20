@@ -1,0 +1,34 @@
+# render rule 19 (Replikanti/interviewscam#28): no bidi control in a built
+# page or JSON file, in any text the checks read (raw text and comments,
+# entity- and percent-decoded text, attribute values, JSON-LD strings, every
+# JSON string, the path). One row per member of BIDI_CONTROLS
+# (render-bidi/coverage holds the table to the code) and per place, on a copy
+# of render/pass-report-pins (search_cases_runner, label render-bidi). Columns:
+# name, file, find, replace, expect. Every find string occurs exactly once in
+# its file.
+member-061C	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x؜y 	rule 19: holds the bidi control U+061C ARABIC LETTER MARK
+member-200E	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x‎y 	rule 19: holds the bidi control U+200E LEFT-TO-RIGHT MARK
+member-200F	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x‏y 	rule 19: holds the bidi control U+200F RIGHT-TO-LEFT MARK
+member-202A	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x‪y 	rule 19: holds the bidi control U+202A LEFT-TO-RIGHT EMBEDDING
+member-202B	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x‫y 	rule 19: holds the bidi control U+202B RIGHT-TO-LEFT EMBEDDING
+member-202C	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x‬y 	rule 19: holds the bidi control U+202C POP DIRECTIONAL FORMATTING
+member-202D	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x‭y 	rule 19: holds the bidi control U+202D LEFT-TO-RIGHT OVERRIDE
+member-202E	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x‮y 	rule 19: holds the bidi control U+202E RIGHT-TO-LEFT OVERRIDE
+member-2066	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x⁦y 	rule 19: holds the bidi control U+2066 LEFT-TO-RIGHT ISOLATE
+member-2067	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x⁧y 	rule 19: holds the bidi control U+2067 RIGHT-TO-LEFT ISOLATE
+member-2068	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x⁨y 	rule 19: holds the bidi control U+2068 FIRST STRONG ISOLATE
+member-2069	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x⁩y 	rule 19: holds the bidi control U+2069 POP DIRECTIONAL ISOLATE
+attribute	public/reports/example-abused-company/index.html	</main>	<p title="a‮b">x</p></main>	rule 19: holds the bidi control U+202E RIGHT-TO-LEFT OVERRIDE
+attribute-percent-encoded	public/reports/example-abused-company/index.html	</main>	<p title="a%E2%80%AEb">x</p></main>	rule 19: holds the bidi control U+202E RIGHT-TO-LEFT OVERRIDE
+attribute-entity	public/reports/example-abused-company/index.html	</main>	<p title="a&#x202E;b">x</p></main>	rule 19: holds the bidi control U+202E RIGHT-TO-LEFT OVERRIDE
+text-entity	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x&#x202E;y 	rule 19: holds the bidi control U+202E RIGHT-TO-LEFT OVERRIDE
+text-named-entity	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x&lrm;y 	rule 19: holds the bidi control U+200E LEFT-TO-RIGHT MARK
+comment	public/reports/example-abused-company/index.html	</main>	<!--‮--></main>	rule 19: holds the bidi control U+202E RIGHT-TO-LEFT OVERRIDE
+jsonld-string	public/reports/example-abused-company/index.html	"datePublished":"2026-10-30","description":"Messages	"datePublished":"2026-10-30","description":"\u202eMessages	rule 19: holds the bidi control U+202E RIGHT-TO-LEFT OVERRIDE
+feed-json-string	public/feed.json	"statement":"Linked to	"statement":"\u202eLinked to	rule 19: holds the bidi control U+202E RIGHT-TO-LEFT OVERRIDE
+svg-file	public/favicon.svg	<circle	<desc>⁧</desc><circle	rule 19: holds the bidi control U+2067 RIGHT-TO-LEFT ISOLATE
+xml-file	public/sitemap.xml	<urlset	<!--⁨--><urlset	rule 19: holds the bidi control U+2068 FIRST STRONG ISOLATE
+path	public/x‮.json	+	{}	rule 19: holds the bidi control U+202E RIGHT-TO-LEFT OVERRIDE
+pass-neighbour-200D	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x‍y 	PASS
+pass-neighbour-202F	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x y 	PASS
+pass-neighbour-206A	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x⁪y 	PASS

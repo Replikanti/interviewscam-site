@@ -348,7 +348,10 @@ PY
 # render rules 15 and 16 (the A to Z page, the Home search form and its
 # hidden result sections, ADR-0005 part 6) one branch and one flagging-set
 # member per row (M4 PR 2 and PR 3); with the label render-intake, rule 18
-# (the intake forms, M5b PR 3). A row is
+# (the intake forms, M5b PR 3); with the label render-bidi, rule 19. An
+# optional sixth argument names the command: render (the default) or
+# records, which runs the real cmd_records on the copied root instead
+# (records-bidi, records rule R16; Replikanti/interviewscam#28). A row is
 # name, file, find, replace and expect, tab-separated, with \n, \t, \r and
 # \0 in find and replace read as a newline, a tab, U+000D and U+0000 (fix
 # round 12: a table line cannot hold the last two), then optional further find
@@ -370,7 +373,7 @@ PY
 # base case changes. The last line, render-search/table, counts the rows.
 # -B: no tools/__pycache__.
 search_cases_runner() {
-  python3 -I -B - "$1" "$2" "$3" "$4" "${5:-render-search}" <<'PY'
+  python3 -I -B - "$1" "$2" "$3" "$4" "${5:-render-search}" "${6:-render}" <<'PY'
 import argparse
 import contextlib
 import importlib.util
@@ -389,6 +392,9 @@ table, base, schema_dir = Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]
 # in the fixture loop: the feed rules with a feed.txt, rules 15 and 16 with
 # a search.txt, rule 17 with a report-pins.txt, rule 18 with an intake.txt.
 label = sys.argv[5]
+command = sys.argv[6]
+if command not in ("render", "records"):
+    sys.exit(f"search_cases_runner: unknown command {command!r}")
 no_feed = not (base / "feed.txt").is_file()
 no_search = not (base / "search.txt").is_file()
 no_report_pins = not (base / "report-pins.txt").is_file()
@@ -440,10 +446,14 @@ for row in rows:
             path.write_text(text, encoding="utf-8")
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
-            rc = sitecheck.cmd_render(argparse.Namespace(
-                records=str(root), schemas=str(schema_dir), fixtures=None, no_feed=no_feed,
-                no_search=no_search, no_report_pins=no_report_pins, no_intake=no_intake,
-                public=str(root / "public")))
+            if command == "records":
+                rc = sitecheck.cmd_records(argparse.Namespace(root=str(root),
+                                                              schemas=str(schema_dir)))
+            else:
+                rc = sitecheck.cmd_render(argparse.Namespace(
+                    records=str(root), schemas=str(schema_dir), fixtures=None,
+                    no_feed=no_feed, no_search=no_search, no_report_pins=no_report_pins,
+                    no_intake=no_intake, public=str(root / "public")))
         output = buffer.getvalue()
     count = None
     if expect.startswith("COUNT="):
@@ -1027,6 +1037,281 @@ if missing:
           + ", ".join(missing))
 else:
     print(f"ok   site-intake/coverage ({len(want)} member rows)")
+PY
+}
+
+# bidi_coverage <sitecheck.py> <cases table> <label> [drop]
+# (Replikanti/interviewscam#28): the table has a row member-<XXXX> for
+# every code point of BIDI_CONTROLS, taken from the code, so a member left
+# without a row fails <label>/coverage. With drop, that row is left out of
+# the table first, so the line must fail (the negative proof). -B: no
+# tools/__pycache__.
+bidi_coverage() {
+  python3 -I -B - "$1" "$2" "$3" "${4:-}" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+label, drop = sys.argv[3], sys.argv[4]
+names = {line.split("\t", 1)[0] for line in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
+         if line and not line.startswith("#")} - {drop}
+want = {f"member-{cp:04X}" for cp in sitecheck.BIDI_CONTROLS}
+missing = sorted(want - names)
+if missing:
+    print(f"FAIL {label}/coverage: {len(missing)} member(s) without a row: " + ", ".join(missing))
+else:
+    print(f"ok   {label}/coverage ({len(want)} member rows)")
+PY
+}
+
+# confusables_runner <sitecheck.py> <render base case> <schema dir>
+# (Replikanti/interviewscam#28, ADR-0004 Numbers): the vendored
+# confusables data and the look-alike readings, through importlib, from
+# another working directory. The real file loads with its pins (version, 6712 entries, first source U+05AD
+# and last U+2FD5, so neither end line is lost); every loader branch is a
+# UsageError, each on a copy with its own SHA-256 so the branch itself is
+# reached (one byte changed, a missing, empty or non-UTF-8 file, the version
+# line changed or doubled, a source twice, a two-code-point source, a line
+# with two fields, an empty target, another type, a code point outside
+# Unicode, one entry less); the real command exits 2 with one ERROR line and
+# no traceback on a changed byte and a missing file; CAPITAL_L equals the
+# capitals the table maps to "l"; the skeleton loop settles in exactly
+# SKELETON_ROUNDS rounds and a chain one longer is a UsageError; R1 and R2
+# are idempotent, marks kept and dropped, on every source and target code
+# point of the table; no target holds rule 4's span markers; and the
+# guard's pin gives exactly its findings on built roots. -B: no
+# tools/__pycache__.
+confusables_runner() {
+  python3 -I -B - "$1" "$2" "$3" <<'PY'
+import contextlib
+import hashlib
+import importlib.util
+import io
+import os
+import sys
+import tempfile
+import traceback
+import unicodedata
+from pathlib import Path
+
+# From another working directory: the data path comes from sitecheck.py's
+# own location (CONFUSABLES_PATH), as records mode and the shards need.
+base, schema_dir = Path(sys.argv[2]).resolve(), Path(sys.argv[3]).resolve()
+script = Path(sys.argv[1]).resolve()
+os.chdir(tempfile.gettempdir())
+spec = importlib.util.spec_from_file_location("sitecheck", script)
+sc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sc)
+REAL = sc.CONFUSABLES_PATH
+real_bytes = REAL.read_bytes()
+REAL_PIN = (sc.CONFUSABLES_SHA256, sc.CONFUSABLES_VERSION, sc.CONFUSABLES_ENTRIES)
+
+
+def row(name, ok, detail=""):
+    print(f"{'ok  ' if ok else 'FAIL'} confusables/{name}" + (f": {detail}" if detail and not ok else (f" ({detail})" if detail else "")))
+
+
+def reset(tables=None):
+    sc._CONFUSABLES = tables
+    sc.skeleton_fold.cache_clear()
+    sc.sentence_folds.cache_clear()
+
+
+try:
+    table = sc.load_confusables(REAL, *REAL_PIN)
+    keys = list(table)
+    row("real-file", len(table) == 6712 and keys[0] == 0x05AD and keys[-1] == 0x2FD5
+        and sc.CONFUSABLES_VERSION == "18.0.0" and REAL == script.parent / "unicode/confusables.txt",
+        f"{len(table)} entries, first U+{keys[0]:04X}, last U+{keys[-1]:04X}")
+except Exception as exc:
+    row("real-file", False, repr(exc))
+    sys.exit(0)
+
+text = real_bytes.decode("utf-8")
+first = "05AD ;\t0596 ;\tMA"
+assert text.count(first) == 1
+lines = text.split("\n")
+data_at = next(i for i, line in enumerate(lines) if line.startswith(first))
+loader = {
+    # name: (bytes, own SHA-256, text the UsageError names)
+    "changed-byte": (real_bytes.replace(b"05AD ;\t0596", b"05AD ;\t0597", 1), False, "has the SHA-256"),
+    "missing-file": (None, False, "cannot read the confusables data"),
+    "empty-file": (b"", True, "carries the version line(s) []"),
+    "not-utf8": (real_bytes + b"\xff", True, "is not UTF-8"),
+    "version-line": (text.replace("# Version: 18.0.0", "# Version: 17.0.0", 1).encode(), True,
+                     "carries the version line(s) ['17.0.0']"),
+    "version-twice": (text.replace("# Version: 18.0.0", "# Version: 18.0.0\n# Version: 18.0.0", 1).encode(),
+                      True, "carries the version line(s) ['18.0.0', '18.0.0']"),
+    "source-twice": ("\n".join(lines[:data_at + 1] + [lines[data_at]] + lines[data_at + 1:]).encode(), True,
+                     "the source U+05AD is listed twice"),
+    "two-code-point-source": (text.replace(first, "05AD 05AE ;\t0596 ;\tMA", 1).encode(), True,
+                              "not a data line"),
+    "two-fields": (text.replace(first, "05AD ;\t0596", 1).encode(), True, "not a data line"),
+    "empty-target": (text.replace(first, "05AD ;\t ;\tMA", 1).encode(), True, "not a data line"),
+    "other-type": (text.replace(first, "05AD ;\t0596 ;\tSL", 1).encode(), True, "not a data line"),
+    "outside-unicode": (text.replace(first, "110000 ;\t0596 ;\tMA", 1).encode(), True,
+                        "a code point outside Unicode"),
+    "count-off-by-one": ("\n".join(lines[:data_at] + lines[data_at + 1:]).encode(), True,
+                         "holds 6711 entries, not 6712"),
+}
+with tempfile.TemporaryDirectory() as tmp:
+    for name, (data, own, want) in loader.items():
+        path = Path(tmp) / name / "confusables.txt"
+        path.parent.mkdir()
+        if data is not None:
+            path.write_bytes(data)
+        sha = hashlib.sha256(data).hexdigest() if own else REAL_PIN[0]
+        try:
+            sc.load_confusables(path, sha, *REAL_PIN[1:])
+            row(f"loader-{name}", False, "loaded without a UsageError")
+        except sc.UsageError as exc:
+            row(f"loader-{name}", want in str(exc), f"{exc}"[:160])
+        except Exception:
+            row(f"loader-{name}", False, "not a UsageError: " + traceback.format_exc().splitlines()[-1])
+    # The real command: exit 2, one ERROR line, no traceback.
+    argv = ["render", "--records", str(base), "--schemas", str(schema_dir), "--no-intake",
+            str(base / "public")]
+    for name in ("changed-byte", "missing-file"):
+        sc.CONFUSABLES_PATH = Path(tmp) / name / "confusables.txt"
+        reset()
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = sc.main(argv)
+            row(f"exit-2-{name}", rc == 2 and "sitecheck: ERROR: " in err.getvalue()
+                and "Traceback" not in out.getvalue() + err.getvalue(),
+                f"exit {rc}, stderr {err.getvalue().strip()[:160]!r}")
+        except BaseException:
+            row(f"exit-2-{name}", False, "raised: " + traceback.format_exc().splitlines()[-1])
+    sc.CONFUSABLES_PATH = REAL
+    reset()
+
+r1, r2 = sc.confusable_tables()
+derived = sorted(cp for cp, proto in r1.items() if proto == "l" and chr(cp) != chr(cp).casefold())
+row("capital-l-set", sorted(sc.CAPITAL_L) == derived and len(sc.CAPITAL_L) == 10,
+    "CAPITAL_L " + " ".join(f"U+{cp:04X}" for cp in sorted(sc.CAPITAL_L)) + " vs the table's "
+    + " ".join(f"U+{cp:04X}" for cp in derived))
+lower = {cp: unicodedata.normalize("NFD", chr(cp).casefold()).translate(r1) for cp in sc.CAPITAL_L}
+row("capital-l-reads-lower", all(r2[cp] == lower[cp] for cp in sc.CAPITAL_L)
+    and r2[0x49] == "i" and r2[0x0399] == "i" and {cp: p for cp, p in r2.items() if cp not in lower}
+    == {cp: p for cp, p in r1.items() if cp not in lower},
+    "R2 reads each CAPITAL_L member as the prototype of its case fold, I and Greek Iota as i, "
+    "and every other entry as R1")
+
+saved = sc.CAPITAL_L
+sc.CAPITAL_L = saved + (0x41,)
+reset()
+try:
+    sc.confusable_tables()
+    row("capital-l-guard", False, "a CAPITAL_L member whose prototype is not l loaded")
+except sc.UsageError as exc:
+    row("capital-l-guard", "U+0041" in str(exc), str(exc)[:160])
+sc.CAPITAL_L = saved
+reset()
+
+# SKELETON_ROUNDS, inclusive: a chain that changes in SKELETON_ROUNDS - 1
+# loop rounds and settles in the last one passes; one more step fails.
+letters = "abcdefg"
+n = sc.SKELETON_ROUNDS
+
+
+def chain(steps):
+    t = {ord(letters[i]): letters[i + 1] for i in range(steps)}
+    return t, t
+
+
+reset(chain(n))
+try:
+    got = sc._skeleton("a", False, False)
+    row("rounds-cap-inclusive", got == letters[n], f"{n} table steps settle on {got!r}")
+except sc.UsageError as exc:
+    row("rounds-cap-inclusive", False, f"a chain of {n} steps raised: {exc}")
+reset(chain(n + 1))
+try:
+    got = sc._skeleton("a", False, False)
+    row("rounds-cap", False, f"a chain of {n + 1} steps gave {got!r}, not a UsageError")
+except sc.UsageError as exc:
+    row("rounds-cap", "still changes after SKELETON_ROUNDS" in str(exc), str(exc)[:160])
+cycle = {ord("a"): "b", ord("b"): "a"}
+reset((cycle, cycle))
+try:
+    sc.sentence_folds("a")
+    row("rounds-cycle", False, "a two-letter cycle settled")
+except sc.UsageError as exc:
+    row("rounds-cycle", "still changes after SKELETON_ROUNDS" in str(exc), str(exc)[:160])
+reset()
+
+# Idempotence over every code point the table names (sources and targets).
+points = sorted(set(r1) | {ord(ch) for proto in r1.values() for ch in proto})
+bad = []
+for cp in points:
+    ch = chr(cp)
+    for capital_i in (False, True):
+        for marks in (False, True):
+            once = sc._skeleton(ch, capital_i, marks)
+            if sc._skeleton(once, capital_i, marks) != once:
+                bad.append(f"U+{cp:04X} capital_i={capital_i} marks={marks}")
+row("idempotent", not bad, f"{len(points)} code points x 4 readings, unicodedata "
+    f"{unicodedata.unidata_version}; not idempotent: {bad[:8]}" if bad else
+    f"{len(points)} code points x 4 readings, unicodedata {unicodedata.unidata_version}")
+markers = {sc.SPAN_OPEN, sc.SPAN_CLOSE}
+row("no-span-marker-target", not any(m in proto for proto in r1.values() for m in markers)
+    and not (set(map(ord, markers)) & set(r1)),
+    "no table source or target holds U+E000 or U+E001")
+
+# The guard's pin on built roots.
+def guard(root):
+    findings = sc.Findings()
+    sc.guard_confusables_pin(root, findings)
+    return sorted(item[len("FAIL: "):].split(": ", 1)[0] + ": " +
+                  item.split(": ", 2)[2][:40] for item in findings.items)
+
+
+licence = (REAL.parent / sc.CONFUSABLES_LICENSE).read_bytes()
+cases = {
+    "pass-real-copy": ({"data": real_bytes, "licence": licence}, []),
+    "no-tools": (None, []),
+    "data-changed": ({"data": loader["changed-byte"][0], "licence": licence},
+                     ["tools/unicode/confusables.txt: the confusables data tools/unic"]),
+    "data-short": ({"data": loader["count-off-by-one"][0], "licence": licence},
+                   ["tools/unicode/confusables.txt: the confusables data tools/unic"]),
+    "data-missing": ({"licence": licence},
+                     ["tools/unicode/confusables.txt: missing or not a regular file; t"]),
+    "data-symlink": ({"data-link": real_bytes, "licence": licence},
+                     ["tools/unicode/confusables.txt: missing or not a regular file; t"]),
+    "licence-missing": ({"data": real_bytes},
+                        ["tools/unicode/LICENSE: missing or not a regular file; the Uni"]),
+    "licence-changed": ({"data": real_bytes, "licence": licence + b"\n"},
+                        ["tools/unicode/LICENSE: the licence's SHA-256 is"]),
+    "unicode-dir-only": ({"no-script": True, "licence": licence},
+                         ["tools/unicode/confusables.txt: missing or not a regular file; t"]),
+    "unicode-dir-missing": ({"no-unicode": True},
+                            ["tools/unicode/LICENSE: missing or not a regular file; the Uni",
+                             "tools/unicode/confusables.txt: missing or not a regular file; t"]),
+}
+with tempfile.TemporaryDirectory() as tmp:
+    for name, (files, want) in cases.items():
+        root = Path(tmp) / name
+        root.mkdir()
+        if files is not None:
+            (root / "tools" / "unicode").mkdir(parents=True)
+            if files.get("no-unicode"):
+                (root / "tools" / "unicode").rmdir()
+            if not files.get("no-script"):
+                (root / "tools" / "sitecheck.py").write_text("# stand-in\n")
+            if "data" in files:
+                (root / "tools/unicode/confusables.txt").write_bytes(files["data"])
+            if "data-link" in files:
+                (root / "elsewhere.txt").write_bytes(files["data-link"])
+                os.symlink(root / "elsewhere.txt", root / "tools/unicode/confusables.txt")
+            if "licence" in files:
+                (root / "tools/unicode/LICENSE").write_bytes(files["licence"])
+        got = guard(root)
+        ok = len(got) == len(want) and all(g.startswith(w) for g, w in zip(got, sorted(want)))
+        row(f"guard-{name}", ok, f"findings {got}")
 PY
 }
 
@@ -4576,6 +4861,86 @@ PINNED
         n_failed=$((n_failed + 1))
       fi
     done
+  fi
+
+  if selftest_wants render-bidi; then
+    # render-bidi/<row> (Replikanti/interviewscam#28): render rule 19 from
+    # tests/fixtures/render/bidi-cases.tsv on a copy of
+    # render/pass-report-pins, one row per member of BIDI_CONTROLS and per
+    # place a page or JSON file can carry one; then the coverage of the
+    # table against BIDI_CONTROLS and its negative proof (a member row left
+    # out, the first and the last member).
+    search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/render/bidi-cases.tsv" "$FIXTURES/render/pass-report-pins" \
+      "$SELFTEST_ROOT/schema" render-bidi >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )render-bidi/table' "$out"; then
+      echo "FAIL render-bidi: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+  if selftest_wants records-bidi; then
+    # records-bidi/<row> (Replikanti/interviewscam#28): records rule R16 from
+    # tests/fixtures/records/bidi-cases.tsv on a copy of
+    # records/pass-fixture-site (search_cases_runner with the records
+    # command), one row per member of BIDI_CONTROLS, which covers all four
+    # ranges of the property, and per place a record carries text; then the
+    # coverage and its negative proof, as for render-bidi.
+    search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/records/bidi-cases.tsv" "$FIXTURES/records/pass-fixture-site" \
+      "$SELFTEST_ROOT/schema" records-bidi records >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )records-bidi/table' "$out"; then
+      echo "FAIL records-bidi: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+  local bidi_label bidi_table bidi_drop
+  for bidi_label in render-bidi records-bidi; do
+    selftest_wants "$bidi_label" || continue
+    bidi_table="$FIXTURES/${bidi_label%-bidi}/bidi-cases.tsv"
+    bidi_coverage "$SELFTEST_ROOT/tools/sitecheck.py" "$bidi_table" "$bidi_label" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE "^(ok   |FAIL )$bidi_label/coverage" "$out"; then
+      echo "FAIL $bidi_label/coverage: the coverage did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+    for bidi_drop in member-061C member-2069; do
+      bidi_coverage "$SELFTEST_ROOT/tools/sitecheck.py" "$bidi_table" "$bidi_label" \
+        "$bidi_drop" >"$out" 2>&1
+      if grep -q "^FAIL $bidi_label/coverage: 1 member(s) without a row: $bidi_drop\$" "$out"; then
+        echo "ok   $bidi_label/coverage-fails-on-missing-row ($bidi_drop)"
+        n_passed=$((n_passed + 1))
+      else
+        echo "FAIL $bidi_label/coverage-fails-on-missing-row: without $bidi_drop the coverage line did not fail; output:"
+        sed 's/^/     | /' "$out"
+        n_failed=$((n_failed + 1))
+      fi
+    done
+  done
+  if selftest_wants confusables; then
+    # confusables/<row> (Replikanti/interviewscam#28): the vendored data,
+    # its loader, the skeleton readings and the guard's pin
+    # (confusables_runner above).
+    confusables_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/render/pass-report-pins" "$SELFTEST_ROOT/schema" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )confusables/guard-unicode-dir-missing' "$out"; then
+      echo "FAIL confusables: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
   fi
 
   if selftest_wants render-search-count; then

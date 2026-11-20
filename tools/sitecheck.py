@@ -14,9 +14,10 @@ internal error, so a crash never reads as a finding or as a pass.
       artifact appears in no other string and no body of any record (R2).
       No record body carries a bare URL, a Markdown link or a <...> autolink
       (SPEC section 5); the rule fails closed. Then the record rules R4 to
-      R15 of ADR-0004 (slugs, persona names, references, dates, evidence,
+      R16 of ADR-0004 (slugs, persona names, references, dates, evidence,
       hostnames and IP forms in record text, _index.md, verdict phrases,
-      source hosts), with the retired slugs of DIR/record-policy.json.
+      source hosts, bidi controls), with the retired slugs of
+      DIR/record-policy.json.
   site --records DIR [--schemas DIR] PUBLIC
       The built site in PUBLIC makes no third-party request (D9). Every page
       carries exactly one CSP meta, right after <meta charset>, equal to
@@ -34,7 +35,8 @@ internal error, so a crash never reads as a finding or as a pass.
       campaign line and attribution with their source links, every artifact
       in an artifact element and only source and lookup links out, JSON-LD
       of the allowed types only and no ClaimReview, no hidden persona name in
-      any file, and the index lists on /reports/, /campaigns/ and Home.
+      any file, the index lists on /reports/, /campaigns/ and Home, and no
+      bidi control in any page or JSON file (rule 19).
   tokens [--root DIR]
       data/tokens.toml is well formed and every listed colour pair meets its
       WCAG 2.2 contrast minimum with the ratio it states. No colour literal
@@ -170,6 +172,22 @@ DEFAULT_IGNORABLE = (
 )
 INVISIBLE = dict.fromkeys(c for lo, hi in DEFAULT_IGNORABLE for c in range(lo, hi + 1))
 TO_DOT = str.maketrans(dict.fromkeys(DOT_CHARS, "."))
+# The bidi controls, Unicode's Bidi_Control property (PropList.txt): the
+# Arabic letter mark, the two marks, the five embeddings and overrides and
+# the four isolates, 1 + 2 + 5 + 4 = 12 code points. A browser draws text
+# around them in another order than it is stored (an override reverses a
+# sentence or a file name), while every fold here strips them as invisible,
+# so records rule R16 and render rule 19 refuse them instead
+# (Replikanti/interviewscam#28, ADR-0004).
+BIDI_CONTROLS = frozenset((0x061C, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
+                           0x2066, 0x2067, 0x2068, 0x2069))
+
+
+def bidi_names(text):
+    """The bidi controls text holds, in code point order, each as
+    "U+XXXX NAME"."""
+    return [f"U+{cp:04X} {unicodedata.name(chr(cp))}"
+            for cp in sorted({ord(ch) for ch in text} & BIDI_CONTROLS)]
 
 
 def norm(text):
@@ -1048,6 +1066,33 @@ def word_variants(text):
                      .casefold().split()) for v in variants}
 
 
+def bidi_forms(text):
+    """text as written, entity-decoded and percent-decoded (both, up to
+    three rounds), the forms a page can carry a stored string in (R16)."""
+    return {form for variant in (text, html.unescape(text))
+            for form in percent_decodings(variant)}
+
+
+def bidi_problems(record):
+    """R16: no bidi control (BIDI_CONTROLS) in any front-matter string,
+    artifacts and source URLs included, or in the body, as written,
+    entity-decoded or percent-decoded."""
+    problems = []
+    why = ("; record text carries no bidi controls, because a browser draws the text "
+           "around one in another order than it is stored: drop it, and where the "
+           "trick matters (a reversed file name) describe it in evidence (R16)")
+    for path, text in iter_strings(record.data, ""):
+        names = sorted({n for form in bidi_forms(text) for n in bidi_names(form)})
+        if names:
+            problems.append(f"{path}: holds the bidi control {', '.join(names)}{why}")
+    for offset, line in enumerate(record.body.split("\n")):
+        names = sorted({n for form in bidi_forms(line) for n in bidi_names(form)})
+        if names:
+            problems.append(f"body line {record.body_line + offset}: holds the bidi "
+                            f"control {', '.join(names)}{why}")
+    return problems
+
+
 def record_text(record):
     """(path, string) of every front-matter string that is record text (R11):
     neither an x-defang field nor params.sources[].url."""
@@ -1360,6 +1405,8 @@ def cmd_records(args):
     for record in records:
         for problem in body_problems(record) + front_matter_problems(record):
             findings.add(record.rel, problem)
+        for problem in bidi_problems(record):
+            findings.add(record.rel, problem)
     forms = live_forms(records)
     for live, origin, path, value in forms:
         targets = {live, idna_fold(live), nontransitional_fold(refang(value))}
@@ -1389,7 +1436,7 @@ def cmd_records(args):
     for record, problem in persona_problems(records) + source_problems(records):
         findings.add(record.rel, problem)
     for page in index_pages:
-        for problem in index_problems(page):
+        for problem in index_problems(page) + bidi_problems(page):
             findings.add(page.rel, problem)
     n_reports = sum(r.section == "reports" for r in records)
     n_artifacts = sum(len(declared_artifacts(r)) for r in records)
@@ -3128,9 +3175,188 @@ def squash(text):
 
 
 def fold_words(text):
-    """NFKC, invisibles dropped, case-folded, whitespace collapsed (R5)."""
+    """NFKC, invisibles dropped, case-folded, whitespace collapsed (R5).
+    Reading R0, "plain", of the look-alike matcher (skeleton_fold)."""
     return " ".join(unicodedata.normalize("NFKC", text).translate(INVISIBLE)
                     .casefold().split())
+
+
+# Look-alike readings (Replikanti/interviewscam#28, ADR-0005 part 6 and
+# ADR-0004 Numbers). A text matches a name or a state sentence when any of
+# three readings matches: R0 is the plain fold above; R1, "skeleton", is the
+# UTS #39 confusables skeleton from the vendored, pinned confusables.txt;
+# R2, "skeleton, capital I", is R1 with the capital letters whose prototype
+# is "l" read as their lower case first, so an upper-case text written
+# with a Greek capital Iota still reads as "I". The match stays exact on
+# each reading (no edit distance, ADR-0005 part 6). The data file sits next
+# to this script, so records mode, the self-test's importlib loads and the
+# sweep shards all find it; it is loaded on the first fold, so a command
+# that folds nothing never reads it, and the guard checks the same pin on
+# every run (guard_confusables_pin).
+CONFUSABLES_DIR = "tools/unicode"
+CONFUSABLES_PATH = Path(__file__).resolve().parent / "unicode" / "confusables.txt"
+CONFUSABLES_LICENSE = "LICENSE"
+CONFUSABLES_VERSION = "18.0.0"
+CONFUSABLES_SHA256 = "6ed3ee967c9dfdf6677d563c9985182fbc50a2efb7d6059cd57b2e2ce18f5b92"
+# The Unicode License V3 text, verbatim from https://www.unicode.org/license.txt.
+CONFUSABLES_LICENSE_SHA256 = "e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96"
+CONFUSABLES_ENTRIES = 6712
+CONFUSABLES_HEX = r"[0-9A-F]{4,6}"
+CONFUSABLES_DATA = re.compile(rf"({CONFUSABLES_HEX}) ;\t({CONFUSABLES_HEX}(?: {CONFUSABLES_HEX})*) ;\tMA")
+# The capital code points whose prototype in confusables.txt is "l" (R2):
+# I, fullwidth I, Roman numeral one, small capital I, Latin capital iota,
+# Greek capital iota, Coptic Iauda, Cyrillic I, palochka and Old Hungarian
+# capital esz. Fixed here rather than derived, so the set does not move with
+# the runner's case-folding tables; the self-test derives it from the table
+# and compares (confusables/capital-l-set).
+CAPITAL_L = (0x0049, 0xFF29, 0x2160, 0xA7AE, 0x0196, 0x0399, 0x2C92, 0x0406, 0x04C0,
+             0x10CA5)
+# Twice the measured need: 87 code points take 2 changing rounds of the
+# loop in _skeleton, every other one 0 or 1, on Unicode 15.0 and 16.0
+# (ADR-0004 Numbers). A text still changing after the last round is a
+# usage error, never a silent result.
+SKELETON_ROUNDS = 4
+_CONFUSABLES = None
+
+
+def load_confusables(path, sha256, version, entries):
+    """The confusables table of path as {code point: prototype}, in file
+    order. The bytes must hash to sha256, the header must carry exactly one
+    "# Version: <version>" line, every data line must read
+    "<one code point> ;<tab><code points> ;<tab>MA", no source may repeat and
+    the table must hold exactly entries sources. Anything else is a
+    UsageError (exit 2), never a finding."""
+    rel = f"{CONFUSABLES_DIR}/{path.name}"
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise UsageError(f"cannot read the confusables data {rel}: {exc}") from None
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != sha256:
+        raise UsageError(f"the confusables data {rel} has the SHA-256 {digest}, not the "
+                         f"pinned {sha256} (CONFUSABLES_SHA256); an upgrade sets the "
+                         "version, the SHA-256 and the entry count together")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise UsageError(f"the confusables data {rel} is not UTF-8: {exc}") from None
+    table, versions = {}, []
+    for n, line in enumerate(text.split("\n"), 1):
+        if line.startswith("#"):
+            if line.startswith("# Version:"):
+                versions.append(line[len("# Version:"):].strip())
+            continue
+        if not line:
+            continue
+        match = CONFUSABLES_DATA.fullmatch(line.split("\t#", 1)[0])
+        if match is None:
+            raise UsageError(f"{rel}:{n}: not a data line of the form "
+                             "'<code point> ;<tab><code points> ;<tab>MA'")
+        try:
+            source = int(match.group(1), 16)
+            target = "".join(chr(int(cp, 16)) for cp in match.group(2).split())
+            chr(source)
+        except (ValueError, OverflowError):
+            raise UsageError(f"{rel}:{n}: a code point outside Unicode") from None
+        if source in table:
+            raise UsageError(f"{rel}:{n}: the source U+{source:04X} is listed twice")
+        table[source] = target
+    if versions != [version]:
+        raise UsageError(f"the confusables data {rel} carries the version line(s) "
+                         f"{versions!r}, not exactly one '# Version: {version}' "
+                         "(CONFUSABLES_VERSION)")
+    if len(table) != entries:
+        raise UsageError(f"the confusables data {rel} holds {len(table)} entries, not "
+                         f"{entries} (CONFUSABLES_ENTRIES)")
+    return table
+
+
+def confusable_tables():
+    """(R1 table, R2 table) for str.translate, loaded once (load_confusables).
+    The R2 table maps each CAPITAL_L member to the prototype of its case fold."""
+    global _CONFUSABLES
+    if _CONFUSABLES is None:
+        table = load_confusables(CONFUSABLES_PATH, CONFUSABLES_SHA256, CONFUSABLES_VERSION,
+                                 CONFUSABLES_ENTRIES)
+        capital = dict(table)
+        for cp in CAPITAL_L:
+            if table.get(cp) != "l":
+                raise UsageError(f"CAPITAL_L names U+{cp:04X}, whose prototype in the "
+                                 "confusables data is not 'l'")
+            capital[cp] = unicodedata.normalize("NFD", chr(cp).casefold()).translate(table)
+        _CONFUSABLES = (table, capital)
+    return _CONFUSABLES
+
+
+class CategoryTable(dict):
+    """A str.translate table filled per character on first use: value for
+    a character whose General_Category passes test, the character itself
+    otherwise. Never built by scanning every code point."""
+
+    def __init__(self, test, value):
+        super().__init__()
+        self.test, self.value = test, value
+
+    def __missing__(self, cp):
+        out = self.value if self.test(unicodedata.category(chr(cp))) else cp
+        self[cp] = out
+        return out
+
+
+MARKS_DROPPED = CategoryTable(lambda cat: cat[0] == "M", None)
+LM_AS_SPACE = CategoryTable(lambda cat: cat == "Lm", " ")
+
+
+class AlnumTable(dict):
+    """str.translate table that keeps a character when str.isalnum holds and
+    it is not a modifier letter (Lm), and drops it otherwise."""
+
+    def __missing__(self, cp):
+        ch = chr(cp)
+        out = cp if ch.isalnum() and unicodedata.category(ch) != "Lm" else None
+        self[cp] = out
+        return out
+
+
+ALNUM_ONLY = AlnumTable()
+
+
+def _skeleton(text, capital_i, marks):
+    """The skeleton loop of R1 (R2 with capital_i): NFD, invisibles dropped,
+    the table (with capital_i the R2 table, so a capital whose prototype is
+    "l" reads as its lower case), NFD; then {case fold, NFKC, NFD,
+    invisibles dropped, the table, NFD} until nothing changes. NFKC sits
+    inside the loop, after the first table pass: before it, it turns
+    U+03F2 (the lunate sigma, drawn as "c") into a sigma, which reads as
+    "o". With marks, every General_Category M character is dropped right
+    after the first NFD and after every round."""
+    table, capital = confusable_tables()
+    normalize = unicodedata.normalize
+    s = normalize("NFD", text).translate(INVISIBLE)
+    if marks:
+        s = s.translate(MARKS_DROPPED)
+    s = normalize("NFD", s.translate(capital if capital_i else table))
+    for _ in range(SKELETON_ROUNDS):
+        t = normalize("NFD", normalize("NFD", normalize("NFKC", s.casefold()))
+                      .translate(INVISIBLE).translate(table))
+        if marks:
+            t = t.translate(MARKS_DROPPED)
+        if t == s:
+            return s
+        s = t
+    raise UsageError(f"the skeleton fold of {show(text, 60)} still changes after "
+                     f"SKELETON_ROUNDS = {SKELETON_ROUNDS} rounds; the confusables data "
+                     "or the fold changed (ADR-0004 Numbers)")
+
+
+@functools.lru_cache(maxsize=8192)
+def skeleton_fold(text, capital_i=False):
+    """Reading R1 of a name (R2 with capital_i): the skeleton loop with the
+    combining marks kept, every modifier letter (Lm) left over as a space
+    (the table maps the tatweel U+0640 and NKo U+07FA to "_" itself), NFC,
+    whitespace collapsed."""
+    folded = _skeleton(text, capital_i, False).translate(LM_AS_SPACE)
+    return " ".join(unicodedata.normalize("NFC", folded).split())
 
 
 # M4 PR 3 fix round 10 (delta review 9 finding 1): foreign content. Python's
@@ -4272,10 +4498,11 @@ def percent_decodings(text):
     return out
 
 
-def file_scans(rel, data, page):
-    """The R3 scan set of one built file, folded for word matching: the
-    file's path (every directory and file name), raw, entity-decoded and
-    percent-decoded text, joined text (hidden and <template> content
+def file_texts(rel, data, page):
+    """The R3 scan set of one built file, as read (cmd_render folds it with
+    fold_words for rule 9's word matching): the file's path (every
+    directory and file name), raw, entity-decoded and percent-decoded text
+    (comments included), joined text (hidden and <template> content
     included), attribute values, JSON-LD strings, and every string of a
     file that parses as JSON whatever its name. A file that is not UTF-8 is
     read with replacement characters, so its text is scanned too."""
@@ -4295,7 +4522,27 @@ def file_scans(rel, data, page):
             scans += list(json_strings(json.loads(text)))
         except (json.JSONDecodeError, RecursionError):
             pass  # not JSON; a broken .json file is sitecheck site's finding
-    return [fold_words(s) for s in scans]
+    return scans
+
+
+# Rule 19 reads these files: every page (HTML and XML suffixes, SVG among
+# them) and every JSON file, /feed.json among them. A raster image read with
+# replacement characters could hold the three bytes of a control by chance.
+BIDI_SUFFIXES = HTML_SUFFIXES | XML_SUFFIXES | {".json"}
+
+
+def bidi_file_problems(texts):
+    """Rule 19 (Replikanti/interviewscam#28): no bidi control
+    (BIDI_CONTROLS) in a built page or JSON file, in any text of its R3
+    scan set as read (texts, from file_texts: its path, raw text and comments, entity- and
+    percent-decoded text, attribute values, JSON-LD strings and every JSON
+    string), whatever template, label or data produced it."""
+    names = sorted({n for text in texts for n in bidi_names(text)})
+    if not names:
+        return []
+    return [f"rule 19: holds the bidi control {', '.join(names)}; a built page carries "
+            "no bidi controls, because a browser draws the text around one in another "
+            "order than the checks read it (ADR-0004, render rule 19)"]
 
 
 def hidden_name_problems(scans, hidden):
@@ -5581,60 +5828,61 @@ def report_page_problems(page, record):
 
 
 # Rule 17, the state sentences folded (fix round 2, delta review finding
-# 1): both sides compared the way the search folds a query (ADR-0005 part
-# 3: NFKC, the invisible characters removed, case folded), then on letters
-# and digits only, so a soft hyphen, a zero width character, a case change
-# (`| lower`), a compatibility form, punctuation, line breaks and markup
-# splits (`<b>com</b>pany,<br>person`) cannot hide a sentence; the
-# canonical form is NFD instead of the search's NFC, so the letters-and-
-# digits filter drops the combining marks and an accented copy ("Nó réal
-# company") cannot either (both sentences are basic Latin, so NFC could
-# only ever make a page's letter differ from a sentence's);
-# and with the Cyrillic and Greek lowercase letters that draw like a basic
-# Latin letter of the two sentences mapped to it (STATE_LOOKALIKES; a
-# look-alike of a letter neither sentence holds cannot hide one), so a
-# Cyrillic "о" in "No" cannot either.
-STATE_LOOKALIKES = str.maketrans({
-    "\u0430": "a", "\u0435": "e", "\u0455": "s", "\u0456": "i", "\u043e": "o",
-    "\u0440": "p", "\u0441": "c", "\u0443": "y", "\u04bb": "h", "\u0501": "d",
-    "\u051d": "w", "\u04cf": "l", "\u03b1": "a", "\u03bf": "o", "\u03c1": "p",
-    "\u03b9": "i", "\u03bd": "v", "\u03c5": "u", "\u03f2": "c",
-})
-
-
-def sentence_fold(text):
-    """text folded for the state sentence comparison (see STATE_LOOKALIKES):
-    NFKC, invisibles removed, NFD, case folded, look-alikes mapped, and
-    only its letters and digits kept (combining marks are not letters)."""
-    # The look-alikes before NFKC too: it turns some of them (U+03F2, the
-    # lunate sigma, which draws like "c") into letters that look like no
-    # Latin one.
-    text = unicodedata.normalize("NFKC", text.translate(STATE_LOOKALIKES)).translate(INVISIBLE)
-    text = unicodedata.normalize("NFD", text).casefold().translate(STATE_LOOKALIKES)
-    return "".join(ch for ch in text if unicodedata.category(ch)[0] in "LN")
+# 1; Replikanti/interviewscam#28): both sides read three ways
+# (sentence_folds), and a sentence counts under a reading when that
+# reading of the page holds that reading of the sentence. R0, "plain", is
+# the search's fold (ADR-0005 part 3: NFKC, the invisible characters
+# removed, case folded) on letters and digits only, so a soft hyphen, a zero
+# width character, a case change (`| lower`), a compatibility form,
+# punctuation, line breaks and markup splits (`<b>com</b>pany,<br>person`)
+# cannot hide a sentence; its canonical form is NFD instead of the search's
+# NFC, so the letters-and-digits filter drops the combining marks and an
+# accented copy ("Nó réal company") cannot either. R1 and R2 are the
+# skeleton readings (_skeleton) with every combining mark dropped right
+# after the first NFD and after every round, then only str.isalnum
+# characters kept and every modifier letter (Lm) dropped: so a look-alike
+# letter of any script and case ("Νo" with a Greek capital Nu, "reaI" with
+# a capital I, U+0345 after a letter, which the case fold turns into an
+# iota) cannot hide one either. The bidi controls stay stripped here as
+# invisibles; records rule R16 and render rule 19 refuse them outright.
+# What remains is a paraphrase, an ASCII multi-letter look-alike that
+# confusables.txt does not list ("vv" for "w", "cl" for "d") and a
+# lower-case "l" for the "I" of an upper-case text (ADR-0005 part 6).
+@functools.lru_cache(maxsize=8192)
+def sentence_folds(text):
+    """(R0, R1, R2) of text for the state sentence comparison."""
+    plain = unicodedata.normalize("NFKC", text).translate(INVISIBLE)
+    plain = unicodedata.normalize("NFD", plain).casefold()
+    plain = "".join(ch for ch in plain if unicodedata.category(ch)[0] in "LN")
+    return (plain, _skeleton(text, False, True).translate(ALNUM_ONLY),
+            _skeleton(text, True, True).translate(ALNUM_ONLY))
 
 
 def state_text_problems(page, record):
-    """Rule 17, the complement of the trees (fix rounds 1 and 2): folded
-    (sentence_fold), the page's visible text holds its own state sentence
-    exactly once, and no text of the page, hidden content, JSON-LD strings
-    and attribute values included, holds the other state's sentence, so no
-    other element of the page (a lead, a body paragraph, a footer line)
-    states the other state, however it is spelt."""
+    """Rule 17, the complement of the trees (fix rounds 1 and 2): under each
+    reading of sentence_folds, the page's visible text holds its own state
+    sentence exactly once, and no text of the page, hidden content, JSON-LD
+    strings and attribute values included, holds the other state's
+    sentence, so no other element of the page (a lead, a body paragraph, a
+    footer line) states the other state, however it is spelt."""
     state = record.params.get("state")
     if state not in STATE_SENTENCE:
         return []
-    shown = sentence_fold(page.root.text(" "))
-    own = sentence_fold(STATE_SENTENCE[state])
-    texts = [sentence_fold(page.root.text(" ", shown=False))]
-    texts += [sentence_fold(t) for t in page_texts(page)]
+    shown = sentence_folds(page.root.text(" "))
+    own = sentence_folds(STATE_SENTENCE[state])
+    texts = [sentence_folds(page.root.text(" ", shown=False))]
+    texts += [sentence_folds(t) for t in page_texts(page)]
     problems = []
-    if shown.count(own) != 1:
+    counts = [reading.count(sentence) for reading, sentence in zip(shown, own)]
+    deviating = next((n for n in counts if n != 1), None)
+    if deviating is not None:
         problems.append(f"rule 17: the report page shows its state sentence "
-                        f"{shown.count(own)} times (folded to letters and digits); the "
+                        f"{deviating} times (folded to letters and digits); the "
                         "templates emit it exactly once (D6)")
     for other, sentence in STATE_SENTENCE.items():
-        if other != state and any(sentence_fold(sentence) in t for t in texts):
+        folds = sentence_folds(sentence)
+        if other != state and any(fold in reading for t in texts
+                                  for fold, reading in zip(folds, t)):
             problems.append(f"rule 17: the report page of a {state} record shows the "
                             f"{other} sentence {show(sentence, 90)} (folded to letters and "
                             "digits); a page states only its own state (D6)")
@@ -5735,8 +5983,11 @@ def cmd_render(args):
                 # finding found later left a page with foreign content read
                 # by the own-page exemptions of rule 4.
                 page.markup = foreign_markup_problems(page)
-        scans = file_scans(rel, data, page)
+        texts = file_texts(rel, data, page)
+        scans = [fold_words(t) for t in texts]
         problems = []
+        if suffix in BIDI_SUFFIXES:
+            problems += bidi_file_problems(texts)
         # Rule 8: the retired fact-check type appears nowhere, in any form.
         if any("claimreview" in s for s in scans):
             problems.append("rule 8: contains ClaimReview; it is never used (ADR-0004 "
@@ -14763,6 +15014,49 @@ def guard_worker_pins(root, findings):
                          "ADR-0006 part 10)")
 
 
+def guard_confusables_pin(root, findings):
+    """The confusables pin (Replikanti/interviewscam#28): under a root that
+    holds tools/sitecheck.py or tools/unicode/, the data file must be a
+    regular file that load_confusables accepts with the pins of this
+    script (SHA-256, version line, entry count, data line form), and the
+    licence a regular file with the SHA-256 of the Unicode License V3 text,
+    so a tampered or dropped table fails the guard step even on a run that
+    folds nothing. A guard fixture root without either leaves it alone."""
+    base = root / CONFUSABLES_DIR
+    if not (root / "tools" / "sitecheck.py").is_file() and not base.exists() \
+            and not base.is_symlink():
+        return
+    why = ("the Unicode confusables data of the look-alike readings is vendored here "
+           "and pinned in tools/sitecheck.py (CONFUSABLES_PATH)")
+    data = base / CONFUSABLES_PATH.name
+    rel = f"{CONFUSABLES_DIR}/{CONFUSABLES_PATH.name}"
+    if data.is_symlink() or not data.is_file():
+        findings.add(rel, f"missing or not a regular file; {why}")
+    else:
+        try:
+            load_confusables(data, CONFUSABLES_SHA256, CONFUSABLES_VERSION,
+                             CONFUSABLES_ENTRIES)
+        except UsageError as exc:
+            findings.add(rel, str(exc))
+    licence = base / CONFUSABLES_LICENSE
+    rel = f"{CONFUSABLES_DIR}/{CONFUSABLES_LICENSE}"
+    if licence.is_symlink() or not licence.is_file():
+        findings.add(rel, "missing or not a regular file; the Unicode License V3 allows "
+                     "the copy of confusables.txt only with its notice, so the licence "
+                     "text sits next to it")
+        return
+    try:
+        digest = hashlib.sha256(licence.read_bytes()).hexdigest()
+    except OSError as exc:
+        findings.add(rel, f"cannot read the licence: {exc}")
+        return
+    if digest != CONFUSABLES_LICENSE_SHA256:
+        findings.add(rel, f"the licence's SHA-256 is {digest}, not that of the Unicode "
+                     "License V3 text pinned in tools/sitecheck.py "
+                     "(CONFUSABLES_LICENSE_SHA256); it is copied verbatim from "
+                     "https://www.unicode.org/license.txt")
+
+
 def guard_records_templates(root, findings):
     """The template pin of the records workflows (ADR-0007 part 5, PR E):
     every entry of RECORDS_TEMPLATE_DIR, read from the disk, is a regular
@@ -15270,6 +15564,7 @@ def cmd_guard(args):
     guard_lighthouse_workflow(root, files, findings)
     guard_stylesheet_pins(root, findings)
     guard_worker_pins(root, findings)
+    guard_confusables_pin(root, findings)
     guard_records_templates(root, findings)
     n_workflows = sum(f.startswith(".github/workflows/") for f in files)
     return findings.report(f"guard checked: {len(files)} files, "

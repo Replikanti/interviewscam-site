@@ -1,0 +1,31 @@
+# records rule R16 (Replikanti/interviewscam#28): no bidi control in any
+# front-matter string or body of a record or an _index.md page, as written,
+# entity-decoded or percent-decoded. One row per member of BIDI_CONTROLS
+# (records-bidi/coverage holds the table to the code) and per place, on a copy
+# of records/pass-fixture-site (search_cases_runner with the records
+# command). Columns: name, file, find, replace, expect. Every find string
+# occurs exactly once in its file.
+member-061C	content/reports/example-front-company.md	The take-home task in	The take-home؜ task in	body line 64: holds the bidi control U+061C ARABIC LETTER MARK
+member-200E	content/reports/example-front-company.md	The take-home task in	The take-home‎ task in	body line 64: holds the bidi control U+200E LEFT-TO-RIGHT MARK
+member-200F	content/reports/example-front-company.md	The take-home task in	The take-home‏ task in	body line 64: holds the bidi control U+200F RIGHT-TO-LEFT MARK
+member-202A	content/reports/example-front-company.md	The take-home task in	The take-home‪ task in	body line 64: holds the bidi control U+202A LEFT-TO-RIGHT EMBEDDING
+member-202B	content/reports/example-front-company.md	The take-home task in	The take-home‫ task in	body line 64: holds the bidi control U+202B RIGHT-TO-LEFT EMBEDDING
+member-202C	content/reports/example-front-company.md	The take-home task in	The take-home‬ task in	body line 64: holds the bidi control U+202C POP DIRECTIONAL FORMATTING
+member-202D	content/reports/example-front-company.md	The take-home task in	The take-home‭ task in	body line 64: holds the bidi control U+202D LEFT-TO-RIGHT OVERRIDE
+member-202E	content/reports/example-front-company.md	The take-home task in	The take-home‮ task in	body line 64: holds the bidi control U+202E RIGHT-TO-LEFT OVERRIDE
+member-2066	content/reports/example-front-company.md	The take-home task in	The take-home⁦ task in	body line 64: holds the bidi control U+2066 LEFT-TO-RIGHT ISOLATE
+member-2067	content/reports/example-front-company.md	The take-home task in	The take-home⁧ task in	body line 64: holds the bidi control U+2067 RIGHT-TO-LEFT ISOLATE
+member-2068	content/reports/example-front-company.md	The take-home task in	The take-home⁨ task in	body line 64: holds the bidi control U+2068 FIRST STRONG ISOLATE
+member-2069	content/reports/example-front-company.md	The take-home task in	The take-home⁩ task in	body line 64: holds the bidi control U+2069 POP DIRECTIONAL ISOLATE
+string-first	content/reports/example-front-company.md	summary = "A recruiting	summary = "‮A recruiting	params.summary: holds the bidi control U+202E RIGHT-TO-LEFT OVERRIDE
+string-last	content/reports/example-front-company.md	video interview."	video interview.⁩"	params.summary: holds the bidi control U+2069 POP DIRECTIONAL ISOLATE
+artifact-value	content/reports/example-front-company.md	"FrontCoMeet[.]dmg"	"FrontCoMeet‮gmd[.]exe"	params.artifacts.file_names[1]: holds the bidi control U+202E RIGHT-TO-LEFT OVERRIDE
+source-url	content/reports/example-front-company.md	https://vendor.example/research/fake-meeting-apps	https://vendor.example/research/fake‏-meeting-apps	params.sources[0].url: holds the bidi control U+200F RIGHT-TO-LEFT MARK
+source-url-percent-encoded	content/reports/example-front-company.md	https://vendor.example/research/fake-meeting-apps	https://vendor.example/research/fake%E2%80%AE-meeting-apps	params.sources[0].url: holds the bidi control U+202E RIGHT-TO-LEFT OVERRIDE
+body-entity	content/reports/example-front-company.md	The take-home task in	The take-home&#x202E; task in	body line 64: holds the bidi control U+202E RIGHT-TO-LEFT OVERRIDE
+body-named-entity	content/reports/example-front-company.md	The take-home task in	The take-home&rlm; task in	body line 64: holds the bidi control U+200F RIGHT-TO-LEFT MARK
+body-line-first	content/reports/example-front-company.md	The take-home task in	⁦The take-home task in	body line 64: holds the bidi control U+2066 LEFT-TO-RIGHT ISOLATE
+index-description	content/campaigns/_index.md	The campaign families	The؜ campaign families	description: holds the bidi control U+061C ARABIC LETTER MARK
+pass-neighbour-200D	content/reports/example-front-company.md	The take-home task in	The take-home‍ task in	PASS
+pass-neighbour-202F	content/reports/example-front-company.md	The take-home task in	The take-home  task in	PASS
+pass-neighbour-206A	content/reports/example-front-company.md	The take-home task in	The take-home⁪ task in	PASS
