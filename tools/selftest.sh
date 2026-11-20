@@ -1432,14 +1432,20 @@ got = (hits("M. Page", "m page"), hits("M. Page", "M. Page"), hits("M. Page", "m
 row("name-pattern-initial", got == ([], list(R), list(R), [], [1, 2, 3, 4, 5, 6]), f"got {got!r}")
 got = (sc.name_pattern("ˌ", 0) is sc.NEVER, sc.name_pattern("ˌ", 1) is sc.NEVER,
        sc.name_pattern("⠀", 0) is sc.NEVER, sc.name_pattern("⠀", 1) is sc.NEVER,
-       hits("⠀", "x ⠀ y"))
-row("name-pattern-folds-to-nothing", got == (False, True, False, True, [0]), f"got {got!r}")
+       hits("⠀", "x ⠀ y"), sc.name_pattern("\u200b", 0) is sc.NEVER, hits("\u200b", "a, b"))
+# A name of invisibles alone folds to nothing under R0 as well: R0 keeps
+# its old pattern, which matches every text (fails closed).
+row("name-pattern-folds-to-nothing", got == (False, True, False, True, [0], False, [0]),
+    f"got {got!r}")
 O, C = sc.SPAN_OPEN, sc.SPAN_CLOSE
 got = (sc.visual_spans(f"x {O}אב{C} y"), sc.visual_spans(f"א{O}בc{C}"),
        sc.visual_spans(f"x {O}ab{C} y"), sc.visual_spans("x אב y"))
 row("visual-spans", got == (f"x {O}בא{C} y", f"{O}ב{C}א{O}c{C}",
                             f"x {O}ab{C} y", "x בא y"), f"got {got!r}")
-texts = ["Riley Placehוסder", "RΙLEY |nfo", "plain text", "Mоrgan א"]
+# U+10CA5, the one capital of CAPITAL_L that R2 reads as neither "i" nor
+# "l", tells R3 (from R1) from a fold of R2.
+texts = ["Riley Placehוסder", "RΙLEY |nfo", "plain text", "Mоrgan א",
+         "\U00010ca5ay"]
 drawn = [sc.visual_order(t) for t in texts]
 memo = {}
 bad = [r for r in R if sc.reading_folds(texts, drawn, r, memo, 2)
