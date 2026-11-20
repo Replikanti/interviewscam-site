@@ -1,0 +1,1 @@
+rule 12: the params.name of the persona record content/reports/persona-1.md appears in reports[0].artifacts.handles[2].value; in the feed it may appear only as its own entry's name and aliases, with name_label set, and in that entry's artifacts (D10) (a look-alike spelling, matched through the Unicode confusables skeleton, UTS #39)

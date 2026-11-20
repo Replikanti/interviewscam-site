@@ -17,15 +17,16 @@ jobs:
     # ADR-0004 Numbers, "check.sh workflow timeouts": derived from the job
     # duration, which timeout-minutes counts, on a bucketed base (M5b PR 2
     # fix rounds 9 and 10, Replikanti/interviewscam#13; re-derived in
-    # Replikanti/interviewscam#40 PR 2): the slowest green job, 1757 s
-    # (ci.yml check, run 44511244749), plus 46 s of drift, rounded up to
-    # the next 5-minute step, 2100 s, sets both terms.
-    # Cap >= max(2 x 2100 s = 4200 s, 2100 s + 2 x 75 s
-    # (REFLOW_LAUNCH_TIMEOUT) + 70 s = 2320 s), so 70 min. Re-derive only
-    # when a green job takes more than 2054 s.
+    # Replikanti/interviewscam#40 PR 2 and Replikanti/interviewscam#28 PR 2):
+    # the slowest green job, 2718 s (ci.yml check, run 44728075445), plus
+    # 46 s of drift, rounded up to the next 5-minute step, 3000 s, sets
+    # both terms.
+    # Cap >= max(2 x 3000 s = 6000 s, 3000 s + 2 x 75 s
+    # (REFLOW_LAUNCH_TIMEOUT) + 70 s = 3220 s), so 100 min. Re-derive only
+    # when a green job takes more than 2954 s.
     # M3 has no external links to fetch yet (the fixture build's links stay
     # offline); revisit once milestone 5 adds sources.
-    timeout-minutes: 70
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

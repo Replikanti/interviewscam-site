@@ -1403,6 +1403,132 @@ got = (sc.skeleton_fold("Аvery Exampleton"), sc.skeleton_fold("AveryˌExampleto
 row("skeleton-fold", got == ("avery exarnpleton", "avery exarnpleton", "avery exarnpleton",
                              "avery exarnpleotn", "ivery"), f"got {got!r}")
 
+# The persona-name readings (Replikanti/interviewscam#28 PR 2): the note
+# each reading adds (none for R0, so an R0 message stays byte for byte),
+# the token structure taken from R0 (the skeleton reads "m" as "rn": "Tim"
+# stays a 3-letter token that does not join, "M." stays an initial that
+# needs its period), a name that folds to nothing under a reading, the
+# span markers through the drawn order, and the shared folds of
+# reading_folds against name_fold.
+notes = [sc.reading_note(r) for r in range(len(sc.NAME_READINGS))]
+row("name-reading-notes", sc.NAME_READINGS == ("R0", "R1", "R2", "R3", "V1", "V2", "V3")
+    and notes == [""] + [sc.LOOKALIKE_NOTE] * 3 + [sc.DRAWN_NOTE] * 3
+    and sc.NAME_READING_FORMS == {1: (False, False, False), 2: (True, False, False),
+                                  3: (False, True, False), 4: (False, False, True),
+                                  5: (True, False, True), 6: (False, True, True)},
+    f"{len(notes)} notes")
+R = range(len(sc.NAME_READINGS))
+
+
+def hits(name, text):
+    return [r for r in R if sc.name_pattern(name, r).search(sc.name_fold(text, r))]
+
+
+# V1 to V3 read only a text that draws in another order, so a
+# left-to-right text hits under R0 to R3 at most.
+STORED = [0, 1, 2, 3]
+got = (hits("Tim Kim", "TimKim"), hits("Tim Kim", "Tim Kim"), hits("Tim Kim", "Tim-Kim"),
+       hits("Avery Exampleton", "AveryExampleton"), hits("Li Kensington", "LiKensington"),
+       hits("Li Kensington", "Li Kensington"))
+row("name-pattern-join-min-letters", got == ([], STORED, STORED, STORED, [], STORED),
+    f"got {got!r}")
+got = (hits("M. Page", "m page"), hits("M. Page", "M. Page"), hits("M. Page", "m.page"),
+       hits("M. Page", "rn page"), hits("M. Page", "rn. page"))
+row("name-pattern-initial", got == ([], STORED, STORED, [], [1, 2, 3]), f"got {got!r}")
+# The stroke reading R3 (fix round 1, review findings A2 and C): a stroke
+# stands for "i", for "l" or for a separator, a written "l" or a dotted
+# "i" keeps its letter, and a left-to-right text gives V1 to V3 nothing.
+got = (hits("Ali", "all"), hits("Ali", "Of all things"), hits("Neil", "nell"),
+       hits("Riley Placeholder", "R|ley Placeholder"), hits("Riley Placeholder", "RILEY PLACEHOLDER"),
+       hits("Avery Exampleton", "Avery\u01c0Exampleton"), hits("Avery Exampleton", "Avery\u04c0Exampleton"),
+       hits("Avery Exampleton", "AverylExampleton"), hits("Ali", "Al|"),
+       hits("Riley Placeholder", "Ri\u0307ley Placeholder"), hits("Zo\u00eb", "Zoe"),
+       sc.name_fold("Riley Placeh\u05d5\u05e1der", 4))
+row("name-stroke-reading", got == ([], [], [], [3], [0, 2, 3], [3], [3], [], [3], [1, 2, 3],
+                                    [1, 2, 3], "riley placeholder"), f"got {got!r}")
+# Fix round 2 (delta review 1 to 3): the matcher of rules 4, 9 and 12
+# (name_pattern) and R5's (r5_patterns) agree on every pair, a name and a
+# text: no stroke as a name's outer boundary, a written "l" for a name's
+# capital I at the start, inside a word and in a word of capitals, U+4E28
+# and the strokes the table maps to it as a separator, digits of a number
+# as digits, the accepted false positive "Ian" in "LAN", and a name with
+# U+0130 (fix round 3: its case fold "i" + U+0307 no longer splits a token).
+pairs = [("Ali", "all", False), ("Il", "ill", False), ("Il", "I'll say", False),
+         ("Li", "Il", False), ("Ali", "ALL", False), ("Rene", "Irene", False),
+         ("Van", "Ivan", False), ("Van Le", "Ivan Le", False), ("Dan", "DANIEL", False),
+         ("Tem", "ListItem", False), ("Li", "2026-11-01", False), ("Il", "2026-11-01", False),
+         ("Ivan Petrov", "lvan Petrov", True), ("Ian McIntyre", "lan McIntyre", True),
+         ("Ian McIntyre", "Ian Mclntyre", True), ("Riley Placeholder", "RlLEY PLACEHOLDER", True),
+         ("Ivan Petrov", "lVAN PETROV", True), ("Avery Exampleton", "Avery丨Exampleton", True),
+         ("Avery Exampleton", "Avery⼁Exampleton", True),
+         ("Avery Exampleton", "AveryㅣExampleton", True),
+         ("Avery Exampleton", "AveryￜExampleton", True), ("Riley", "R1ley", True),
+         ("Ian", "LAN", True), ("\u0130van Petrov", "\u0130van Petrov", True),
+         ("\u0130van Petrov", "Ivan Petrov", True), ("Kelly Brooks", "Ke11y Br00ks", True),
+         ("Ollie", "011ie", True), ("Bill Lloyd", "Bi11 11oyd", True), ("Li", "11:11", False),
+         ("Il", "+1 555 0101", False), ("Li", "room 101", False),
+         ("Avery Exampleton", "Avery 12 Exampleton", False)]
+bad = [(n, x) for n, x, want in pairs
+       if bool(hits(n, x)) != want or (sc.r5_reading(sc.r5_patterns(n), x) is not None) != want]
+row("name-pairs", not bad, f"{len(pairs)} pairs, wrong: {bad!r}")
+# Fix round 4 (QA's survivors of run 44777095416): the exact readings that
+# hit, where a reading set can lose an edge: a stroke as the outer
+# boundary under V3 too (Irene before right-to-left text) and the CJK
+# stroke there, a word with exactly CAPS_L_MIN other capitals, digits glued
+# to a name, a held digit run given back (else "12" would join two tokens
+# as no word character), and U+0130 under V2 and V3.
+got = (hits("Rene", "Irene \u05d0\u05d1"), hits("Rene", "\u4e28rene"), hits("Lin", "LlN"),
+       hits("Lin Wu", "LlN WU"), hits("Rene", "Rene12"), hits("Rene", "12Rene"),
+       hits("Avery Exampleton", "Avery 12 Exampleton"),
+       hits("\u0130van Petrov", "\u0130van Petrov \u05d0\u05d1"))
+row("name-pattern-edges", got == ([], [], [3], [3], [], [], [], [2, 3, 5, 6]), f"got {got!r}")
+# A name whose written form has more tokens than its case fold with the
+# marks dropped (a combining mark of its own between two letters): the
+# stroke readings fall back to the case-folded tokens instead of indexing
+# into the written ones, which would drop "Placeholder"; and a name with
+# U+0130 meets its own bare spelling under R2 and R3 (fix round 3).
+try:
+    got = (hits("Ri\u0307ley Placeholder", "R|ley Placeholder"),
+           hits("Ri\u0307ley Placeholder", "R|ley"), hits("\u0130van Petrov", "\u0130van Petrov"))
+except Exception as exc:  # noqa: BLE001 - the row reports any crash
+    got = repr(exc)
+row("name-pattern-case-fold-split", got == ([3], [], [2, 3]), f"got {got!r}")
+got = (sc.caps_l("RlLEY lVAN Il Ill all McLl"), sc.stroke_table()[0x4E28] == sc.STROKE_CJK,
+       sorted(cp for cp, v in sc.confusable_tables()[0].items() if v == "丨")
+       == sorted(cp for cp, v in sc.stroke_table().items() if v == sc.STROKE_CJK and cp != 0x4E28))
+row("name-caps-l-and-cjk-stroke", got == (f"R{sc.STROKE}LEY {sc.STROKE}VAN Il Ill all McLl", True, True),
+    f"got {got!r}")
+
+# R1 is R3 with every STROKE read as "l" (reading_folds derives it so):
+# every source and target code point of the table, alone, between two
+# letters and before a combining mark.
+cps = sorted(set(table) | {ord(c) for v in table.values() for c in v})
+bad = [f"U+{cp:04X}" for cp in cps for x in (chr(cp), f"a{chr(cp)}b", chr(cp) + "\u0301")
+       if sc.skeleton_fold(x) != sc.skeleton_fold(x, stroke=True).replace(sc.STROKE, "l")
+       .replace(sc.STROKE_CJK, sc.CJK_STROKE)]
+row("stroke-to-r1", not bad and len(cps) > 8000, f"{len(cps)} code points, differ: {bad[:5]}")
+got = (sc.name_pattern("ˌ", 0) is sc.NEVER, sc.name_pattern("ˌ", 1) is sc.NEVER,
+       sc.name_pattern("⠀", 0) is sc.NEVER, sc.name_pattern("⠀", 1) is sc.NEVER,
+       hits("⠀", "x ⠀ y"), sc.name_pattern("\u200b", 0) is sc.NEVER, hits("\u200b", "a, b"))
+# A name of invisibles alone folds to nothing under R0 as well: R0 keeps
+# its old pattern, which matches every text (fails closed).
+row("name-pattern-folds-to-nothing", got == (False, True, False, True, [0], False, [0]),
+    f"got {got!r}")
+O, C = sc.SPAN_OPEN, sc.SPAN_CLOSE
+got = (sc.visual_spans(f"x {O}אב{C} y"), sc.visual_spans(f"א{O}בc{C}"),
+       sc.visual_spans(f"x {O}ab{C} y"), sc.visual_spans("x אב y"))
+row("visual-spans", got == (f"x {O}בא{C} y", f"{O}ב{C}א{O}c{C}",
+                            f"x {O}ab{C} y", "x בא y"), f"got {got!r}")
+# U+10CA5, the one capital of CAPITAL_L that R2 reads as neither "i" nor
+# "l", tells R3 (from R1) from a fold of R2.
+texts = ["Riley Placehוסder", "RΙLEY |nfo", "plain text", "Mоrgan א",
+         "\U00010ca5ay", "Ali|א \ue002", "Avery\u4e28Exampleton \u2f01 \ue003 RlLEY 2026-11-01"]
+drawn = [sc.visual_order(t) for t in texts]
+memo = {}
+bad = [r for r in R if sc.reading_folds(texts, drawn, r, memo, 2)
+       != [sc.name_fold(t, r) for t in texts]]
+row("reading-folds", not bad, f"readings that differ from name_fold: {bad}")
+
 # The guard's pin on built roots: every vendored file is copied unless the
 # case names it.
 def guard(root):
@@ -5078,6 +5204,39 @@ PINNED
       n_failed=$((n_failed + 1))
     fi
   fi
+  # render-persona/<row> and records-persona/<row> (Replikanti/interviewscam#28
+  # PR 2): the persona names under the look-alike readings, render rules 4,
+  # 9 and 12 from tests/fixtures/render/persona-cases.tsv on a copy of
+  # render/pass-report-pins, and records rule R5 from
+  # tests/fixtures/records/persona-cases.tsv on a copy of
+  # records/pass-fixture-site (search_cases_runner, the records command for
+  # R5): one row per reading class a name can hide behind (a look-alike
+  # letter, a blank, the tatweel and a modifier letter between tokens, an
+  # upper-case capital iota, a pipe for a space or for an "i", a
+  # right-to-left run stored reversed and its stored-order control), per
+  # place (body text, hidden content, an own box, the <title>, JSON-LD, an
+  # attribute, the feed, a hidden persona's name, a second persona whose
+  # name has the same skeleton) and the PASS rows that hold the exemptions.
+  local persona_label persona_base persona_command
+  for persona_label in render-persona records-persona; do
+    selftest_wants "$persona_label" || continue
+    if [[ "$persona_label" == render-persona ]]; then
+      persona_base="$FIXTURES/render/pass-report-pins" persona_command=render
+    else
+      persona_base="$FIXTURES/records/pass-fixture-site" persona_command=records
+    fi
+    search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/${persona_label%-persona}/persona-cases.tsv" "$persona_base" \
+      "$SELFTEST_ROOT/schema" "$persona_label" "$persona_command" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE "^(ok   |FAIL )$persona_label/table" "$out"; then
+      echo "FAIL $persona_label: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  done
   local bidi_label bidi_table bidi_drop
   for bidi_label in render-bidi records-bidi; do
     selftest_wants "$bidi_label" || continue
