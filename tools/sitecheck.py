@@ -3381,10 +3381,11 @@ ALNUM_ONLY = AlnumTable()
 # separators, and a tab of a <pre> and U+001F stay segment separators (fix
 # rounds 2 and 3). Two things are not modelled: a browser's soft wrap of a
 # right-to-left run across two lines, which draws each part reversed on its
-# own, and an element the stylesheet makes a block or a flex item outside
-# BIDI_BLOCK_TAGS (.artifact, .artifact-meta, the items of .record-list and
-# .checklist), where today fixed left-to-right copy or a list item sits next
-# to every record string (ADR-0005 part 6).
+# own, and an element the stylesheet makes a block, a flex item or an
+# inline-block outside BIDI_BLOCK_TAGS (.artifact, .artifact-meta, the items
+# of .record-list and .checklist; .record-list a and .state-chip), where
+# today fixed left-to-right copy or a list item sits next to every record
+# string (ADR-0005 part 6).
 UNICODE_DIR = Path(__file__).resolve().parent / "unicode"
 UNICODE_DATA_VERSION = "18.0.0"
 BIDI_CLASS_PATH = UNICODE_DIR / "DerivedBidiClass.txt"
@@ -6336,7 +6337,11 @@ def state_text_problems(page, record):
         return []
     shown = sentence_folds(page.root.bidi_text())
     own = sentence_folds(STATE_SENTENCE[state])
-    texts = [sentence_folds(page.root.bidi_text(shown=False))]
+    # The other sentence in the shown text, in the text with hidden content
+    # (fix round 4, delta review 4: either alone misses a sentence split by
+    # what the other holds, a hidden span or the hidden Copy button between
+    # two boxes), and in every attribute value and JSON-LD string.
+    texts = [shown, sentence_folds(page.root.bidi_text(shown=False))]
     texts += [sentence_folds(t) for t in page_value_texts(page)]
     problems = []
     counts = [reading.count(sentence) for reading, sentence in zip(shown, own)]
