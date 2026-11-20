@@ -541,7 +541,10 @@ HUGO_CONFIG_PINNED	disableHugoGeneratorInject	true
 HUGO_CONFIG_PINNED	disableKinds	["taxonomy", "term", "rss"]
 HUGO_CONFIG_PINNED	locale	en
 HUGO_CONFIG_PINNED	markup.goldmark.extensions.linkify	false
+HUGO_CONFIG_PINNED	markup.goldmark.parser.attribute.block	false
+HUGO_CONFIG_PINNED	markup.goldmark.parser.attribute.title	false
 HUGO_CONFIG_PINNED	markup.goldmark.renderer.unsafe	false
+HUGO_CONFIG_PINNED	markup.highlight.codeFences	false
 HUGO_CONFIG_PINNED	markup.highlight.noClasses	false
 HUGO_CONFIG_PINNED	outputFormats.feed.baseName	feed
 HUGO_CONFIG_PINNED	outputFormats.feed.isPlainText	true

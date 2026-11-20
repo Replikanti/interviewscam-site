@@ -1,0 +1,1 @@
+effective Hugo config (hugo config): markup.goldmark.parser.attribute.title is true, must be false

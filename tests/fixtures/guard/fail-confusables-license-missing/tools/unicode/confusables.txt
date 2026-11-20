@@ -1,0 +1,4 @@
+# confusables.txt (a stand-in for the guard fixture, not Unicode data)
+# Version: 18.0.0
+
+0041 ;	0061 ;	MA	# stand-in

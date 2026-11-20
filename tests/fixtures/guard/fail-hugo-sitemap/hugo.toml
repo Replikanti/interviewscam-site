@@ -27,6 +27,14 @@ unsafe = false
 # Bare https:// and www. text in a record must stay inert text (D8).
 linkify = false
 
+[markup.goldmark.parser.attribute]
+# No {attribute} syntax after a heading (title, on by default) or a block:
+# it would let record Markdown set dir, class, id, title or lang on a page,
+# and {dir="rtl"} on a heading draws its words in another order than every
+# check reads them (render rule 19, Replikanti/interviewscam#28).
+title = false
+block = false
+
 [security.exec]
 # No Hugo function may start an external program (D3).
 allow = ["none"]
@@ -57,3 +65,6 @@ csp = "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; 
 # sitemap.xml prints this value.
 [sitemap]
 changeFreq = "send it"
+
+[markup.highlight]
+codeFences = false

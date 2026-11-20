@@ -1,0 +1,1 @@
+effective Hugo config (hugo config): markup.highlight.codeFences is true, must be false
