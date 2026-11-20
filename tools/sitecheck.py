@@ -3328,14 +3328,20 @@ def _skeleton(text, capital_i, marks):
     invisibles dropped, the table, NFD} until nothing changes. NFKC sits
     inside the loop, after the first table pass: before it, it turns
     U+03F2 (the lunate sigma, drawn as "c") into a sigma, which reads as
-    "o". With marks, every General_Category M character is dropped right
-    after the first NFD and after every round."""
+    "o". With marks, the first table pass reads the combining marks too,
+    and only then every remaining General_Category M character is dropped
+    and the table applied again, before the first case fold; the marks are
+    dropped after every round as well. Why this order: the table maps 18
+    marks to a letter or digit (U+0C02, the Telugu anusvara, to "o"), which
+    a drop before it would hide, and it maps U+0345, the one mark that the
+    case fold turns into a letter (an iota), to U+0328, another mark, so
+    U+0345 never reaches the case fold."""
     table, capital = confusable_tables()
+    first = capital if capital_i else table
     normalize = unicodedata.normalize
-    s = normalize("NFD", text).translate(INVISIBLE)
+    s = normalize("NFD", normalize("NFD", text).translate(INVISIBLE).translate(first))
     if marks:
-        s = s.translate(MARKS_DROPPED)
-    s = normalize("NFD", s.translate(capital if capital_i else table))
+        s = normalize("NFD", s.translate(MARKS_DROPPED).translate(first))
     for _ in range(SKELETON_ROUNDS):
         t = normalize("NFD", normalize("NFD", normalize("NFKC", s.casefold()))
                       .translate(INVISIBLE).translate(table))
@@ -5838,12 +5844,14 @@ def report_page_problems(page, record):
 # cannot hide a sentence; its canonical form is NFD instead of the search's
 # NFC, so the letters-and-digits filter drops the combining marks and an
 # accented copy ("Nó réal company") cannot either. R1 and R2 are the
-# skeleton readings (_skeleton) with every combining mark dropped right
-# after the first NFD and after every round, then only str.isalnum
+# skeleton readings (_skeleton) with every combining mark the first table
+# pass leaves dropped before the first case fold and after every round,
+# then only str.isalnum
 # characters kept and every modifier letter (Lm) dropped: so a look-alike
 # letter of any script and case ("Νo" with a Greek capital Nu, "reaI" with
-# a capital I, U+0345 after a letter, which the case fold turns into an
-# iota) cannot hide one either. The bidi controls stay stripped here as
+# a capital I, U+0345 after a letter, which the case fold would turn into
+# an iota, a mark the table reads as a letter, such as U+0C02 for "o")
+# cannot hide one either. The bidi controls stay stripped here as
 # invisibles; records rule R16 and render rule 19 refuse them outright.
 # What remains is a paraphrase, an ASCII multi-letter look-alike that
 # confusables.txt does not list ("vv" for "w", "cl" for "d") and a

@@ -1070,16 +1070,19 @@ PY
 # confusables_runner <sitecheck.py> <render base case> <schema dir>
 # (Replikanti/interviewscam#28, ADR-0004 Numbers): the vendored
 # confusables data and the look-alike readings, through importlib, from
-# another working directory. The real file loads with its pins (version, 6712 entries, first source U+05AD
-# and last U+2FD5, so neither end line is lost); every loader branch is a
+# another working directory. The real file loads with its pins (version,
+# 6712 entries, first source U+05AD and last U+2FD5, so neither end line is
+# lost); every loader branch is a
 # UsageError, each on a copy with its own SHA-256 so the branch itself is
 # reached (one byte changed, a missing, empty or non-UTF-8 file, the version
 # line changed or doubled, a source twice, a two-code-point source, a line
 # with two fields, an empty target, another type, a code point outside
 # Unicode, one entry less); the real command exits 2 with one ERROR line and
 # no traceback on a changed byte and a missing file; CAPITAL_L equals the
-# capitals the table maps to "l"; the skeleton loop settles in exactly
-# SKELETON_ROUNDS rounds and a chain one longer is a UsageError; R1 and R2
+# capitals the table maps to "l"; the marks are dropped before the first
+# case fold even with a table that does not map U+0345; the skeleton loop
+# settles in exactly SKELETON_ROUNDS rounds and a chain one longer is a
+# UsageError; R1 and R2
 # are idempotent, marks kept and dropped, on every source and target code
 # point of the table; no target holds rule 4's span markers; and the
 # guard's pin gives exactly its findings on built roots. -B: no
@@ -1210,6 +1213,15 @@ try:
 except sc.UsageError as exc:
     row("capital-l-guard", "U+0041" in str(exc), str(exc)[:160])
 sc.CAPITAL_L = saved
+reset()
+
+# Marks dropped before the first case fold, whatever the table holds: with
+# an empty test table, U+0345 (the one mark the case fold turns into a
+# letter, an iota) after "a" must fold to "a". The real table maps U+0345
+# to U+0328, another mark, so only a test table reaches this drop.
+reset(({}, {}))
+got = sc.sentence_folds("a\u0345")
+row("marks-before-casefold", got[1:] == ("a", "a"), f"R1 and R2 of a + U+0345 with an empty table: {got[1:]!r}")
 reset()
 
 # SKELETON_ROUNDS, inclusive, against the number of ADR-0004 Numbers (4,

@@ -122,7 +122,9 @@ state-fold-lookalike-with-accent	public/reports/example-abused-company/index.htm
 # Replikanti/interviewscam#28: the three readings of sentence_folds (R0 plain,
 # R1 skeleton, R2 skeleton with the capital I look-alikes read as lower case),
 # one row per spelling (a) to (f) of the issue and per reading that alone
-# catches one; the state-lookalike-* rows above stay as regression rows of
+# catches one, and per script of a combining mark that the table reads as a
+# letter (state-mark-letter-*); the state-lookalike-* rows above stay as
+# regression rows of
 # the former table, which R1 now covers.
 state-skeleton-capital-nu	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>Νo real company, person or product was found behind this name. 	rule 17: the report page of a name_abused record shows the front sentence
 state-skeleton-capital-tau-this	public/reports/example-front-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>Τhis name belongs to someone else. The campaign used it without their involvement. 	rule 17: the report page of a front record shows the name_abused sentence
@@ -143,3 +145,6 @@ state-pipe-between-words	public/reports/example-abused-company/index.html	<h2 id
 state-lm-02cc-inside-word	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>No real comˌpany, person or product was found behind this name. 	rule 17: the report page of a name_abused record shows the front sentence
 state-own-twice-skeleton	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>Τhis name belongs to someone else. The campaign used it without their involvement. 	rule 17: the report page shows its state sentence 2 times
 state-own-hidden-only	public/reports/example-abused-company/index.html	<p class=state-sentence>	<p class=state-sentence hidden>	rule 17: the report page shows its state sentence 0 times
+state-mark-letter-0c02	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>Nం real company, person or product was found behind this name. 	rule 17: the report page of a name_abused record shows the front sentence
+state-mark-letter-0d02	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>No real company, persംn or product was found behind this name. 	rule 17: the report page of a name_abused record shows the front sentence
+state-mark-letter-0c82-other-direction	public/reports/example-front-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>This name belongs to sಂmeone else. The campaign used it without their involvement. 	rule 17: the report page of a front record shows the name_abused sentence
