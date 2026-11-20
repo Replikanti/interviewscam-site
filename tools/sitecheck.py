@@ -2878,6 +2878,35 @@ class Element:
             elif child.tag not in ("script", "style"):
                 yield from child.strings(shown, spans)
 
+    def paragraph_strings(self, shown=True):
+        """strings(shown) with BIDI_PARAGRAPH at the start and the end of
+        every element of BIDI_BLOCK_TAGS and at every <br> (bidi_text)."""
+        closed = shown and self.tag == "details" and "open" not in self.attrs
+        for child in self.children:
+            if isinstance(child, str):
+                if not closed:
+                    yield child
+            elif shown and (child.tag in NO_TEXT_ELEMENTS or child.hides()):
+                continue
+            elif child.tag == "br":
+                yield BIDI_PARAGRAPH
+            elif child.tag in BIDI_BLOCK_TAGS:
+                yield BIDI_PARAGRAPH
+                yield from child.paragraph_strings(shown)
+                yield BIDI_PARAGRAPH
+            elif child.tag not in ("script", "style"):
+                yield from child.paragraph_strings(shown)
+
+    def bidi_text(self, sep="", shown=True):
+        """text(sep, shown) with one BIDI_PARAGRAPH between the paragraphs a
+        browser resolves on their own (fix round 2, delta review finding 1):
+        every block element and every <br> ends one, each paragraph's
+        whitespace collapsed and empty ones dropped. The letters and digits
+        are those of text(), so only the visual readings see the
+        difference."""
+        parts = sep.join(self.paragraph_strings(shown)).split(BIDI_PARAGRAPH)
+        return BIDI_PARAGRAPH.join(p for p in (squash(part) for part in parts) if p)
+
     def text(self, sep="", shown=True, spans=frozenset()):
         """The text inside the element, whitespace collapsed, hidden content
         left out (shown=False keeps it). sep="" joins the text pieces as a
@@ -3336,9 +3365,11 @@ ALNUM_ONLY = AlnumTable()
 # self-test confusables/bidi-conformance). The classes come from the vendored
 # DerivedBidiClass.txt of the same Unicode version as the confusables, not
 # from the runner's unicodedata (15.0 on CI). Each text is read as one
-# paragraph per paragraph separator and one line: a browser that wraps a
-# right-to-left run across two lines draws each part reversed on its own,
-# which this reading does not model (ADR-0005 part 6).
+# paragraph per paragraph separator and one line; rule 17 puts a separator
+# between the blocks and at every <br> of a page (Element.bidi_text, fix
+# round 2), so only a browser's soft wrap of a right-to-left run across two
+# lines, which draws each part reversed on its own, is not modelled
+# (ADR-0005 part 6).
 UNICODE_DIR = Path(__file__).resolve().parent / "unicode"
 UNICODE_DATA_VERSION = "18.0.0"
 BIDI_CLASS_PATH = UNICODE_DIR / "DerivedBidiClass.txt"
@@ -3367,6 +3398,21 @@ BIDI_TEST_LINE = re.compile(rf"({BIDI_HEX}(?: {BIDI_HEX})*);0;0;((?:[0-9]+|x)(?:
 # The 63 of BD16: the bracket stack depth at which pairing stops.
 BIDI_BRACKET_STACK = 63
 _BIDI = None
+# The paragraph separator the page texts of rule 17 carry between blocks
+# (Element.bidi_text): Bidi_Class B, so visual_order resolves each block on
+# its own, and no letter or digit, so the other readings drop it.
+BIDI_PARAGRAPH = "\u2029"
+# The elements a browser lays out as a block of their own (the HTML
+# rendering section's display: block, list-item and the table parts), each
+# a bidi paragraph; a <br> also ends one (CSS Writing Modes 3, 2.4). The
+# stylesheet is pinned, so no rule there turns an inline element into a
+# block outside this list unnoticed.
+BIDI_BLOCK_TAGS = frozenset((
+    "address", "article", "aside", "blockquote", "body", "caption", "dd", "details",
+    "dialog", "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form",
+    "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "html", "legend", "li",
+    "main", "menu", "nav", "ol", "p", "pre", "search", "section", "summary", "table",
+    "tbody", "td", "tfoot", "th", "thead", "tr", "ul"))
 
 
 def unicode_text(path, sha256, header):
@@ -4314,14 +4360,17 @@ def chip_problems(page, chips, report_page):
     return problems
 
 
-def page_texts(page, spans=frozenset()):
+def page_texts(page, spans=frozenset(), blocks=False):
     """Every text of a page a reader or a search engine sees: the joined
     visible text (tight and spaced), each JSON-LD string and every attribute
     value, as written and percent-decoded (an alt, an aria-description, a
     search link). The joined text keeps the text of the elements in spans
     (rule 4's exemptions) between SPAN_OPEN and SPAN_CLOSE; their
     attributes are scanned as usual."""
-    texts = [page.root.text(spans=spans), page.root.text(" ", spans=spans)]
+    if blocks:  # rule 17: one bidi paragraph per block (Element.bidi_text)
+        texts = [page.root.bidi_text(), page.root.bidi_text(" ")]
+    else:
+        texts = [page.root.text(spans=spans), page.root.text(" ", spans=spans)]
     for _, value, _ in jsonld_values(page):
         if value is not None:
             texts += list(json_strings(value))
@@ -6250,10 +6299,10 @@ def state_text_problems(page, record):
     state = record.params.get("state")
     if state not in STATE_SENTENCE:
         return []
-    shown = sentence_folds(page.root.text(" "))
+    shown = sentence_folds(page.root.bidi_text(" "))
     own = sentence_folds(STATE_SENTENCE[state])
-    texts = [sentence_folds(page.root.text(" ", shown=False))]
-    texts += [sentence_folds(t) for t in page_texts(page)]
+    texts = [sentence_folds(page.root.bidi_text(" ", shown=False))]
+    texts += [sentence_folds(t) for t in page_texts(page, blocks=True)]
     problems = []
     counts = [reading.count(sentence) for reading, sentence in zip(shown, own)]
     deviating = next((n for n in counts if n != 1), None)
@@ -14333,6 +14382,9 @@ HUGO_CONFIG_PINNED = {
     "markup.goldmark.parser.attribute.title": False,
     "markup.goldmark.parser.attribute.block": False,
     "markup.highlight.noClasses": False,
+    # No fence highlighting: Hugo copies a fence's info-string attributes
+    # onto the highlight wrapper (render rule 19, Replikanti/interviewscam#28).
+    "markup.highlight.codeFences": False,
     "security.exec.allow": ["none"],
     "security.http.urls": ["none"],
     **{f"privacy.{key}.disable": True for key in HUGO_PRIVACY},
@@ -14567,6 +14619,10 @@ def guard_hugo_config(root, hugo_bin, findings):
     if unsafe not in (None, False):
         findings.add(where, f"markup.goldmark.renderer.unsafe is "
                             f"{json.dumps(unsafe)}, must be false (ADR-0001, D8)")
+    fences = dig(effective, "markup", "highlight", "codefences")
+    if fences not in (None, False):
+        findings.add(where, f"markup.highlight.codeFences is {json.dumps(fences)}, must be "
+                            "false (render rule 19: a fence's attributes reach the page)")
     for key in ("title", "block"):
         value = dig(effective, "markup", "goldmark", "parser", "attribute", key)
         if value not in (None, False):
@@ -15435,8 +15491,9 @@ def guard_confusables_pin(root, findings):
     accepts with the pins of this script (SHA-256, header or version line,
     entry count, line form), and the licence a regular file with the
     SHA-256 of the Unicode License V3 text, so a tampered or dropped file
-    fails the guard even on a run that reads none. A guard fixture root
-    without either leaves it alone."""
+    fails the guard even on a run that reads none; any other entry of the
+    directory fails too. A guard fixture root without either leaves it
+    alone."""
     base = root / CONFUSABLES_DIR
     if not (root / "tools" / "sitecheck.py").is_file() and not base.exists() \
             and not base.is_symlink():
@@ -15453,6 +15510,17 @@ def guard_confusables_pin(root, findings):
             load(data)
         except UsageError as exc:
             findings.add(rel, str(exc))
+    # The directory is closed (fix round 2, QA B3), as RECORDS_TEMPLATE_DIR
+    # is: an entry that is not a pinned file or the licence fails, so no
+    # unpinned copy of Unicode data can sit next to the pinned ones.
+    pinned = {name for name, _ in unicode_pins()} | {CONFUSABLES_LICENSE}
+    if base.is_dir() and not base.is_symlink():
+        for entry in sorted(base.iterdir()):
+            if entry.name not in pinned:
+                findings.add(f"{CONFUSABLES_DIR}/{entry.name}", "an entry of tools/unicode/ that "
+                             "is not pinned: the directory holds only the files of "
+                             "unicode_pins and LICENSE, so adding one is a tools/sitecheck.py "
+                             "change with the safety-net review")
     licence = base / CONFUSABLES_LICENSE
     rel = f"{CONFUSABLES_DIR}/{CONFUSABLES_LICENSE}"
     if licence.is_symlink() or not licence.is_file():

@@ -54,3 +54,6 @@ disable = true
 # The single source of the Content Security Policy every page carries as a
 # meta tag; GitHub Pages cannot set response headers (D9, SPEC section 8).
 csp = "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'"
+
+[markup.highlight]
+codeFences = false

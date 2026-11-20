@@ -67,3 +67,6 @@ csp = "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; 
 # still sees allow = ["none"].
 [Security.Exec]
 allow = ["^go$"]
+
+[markup.highlight]
+codeFences = false

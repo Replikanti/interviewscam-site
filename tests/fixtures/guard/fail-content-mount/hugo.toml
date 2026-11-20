@@ -68,3 +68,6 @@ target = "content"
 [[module.mounts]]
 source = "content"
 target = "content"
+
+[markup.highlight]
+codeFences = false

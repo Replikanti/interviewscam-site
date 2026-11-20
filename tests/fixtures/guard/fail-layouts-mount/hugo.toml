@@ -65,3 +65,6 @@ csp = "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; 
 [[module.mounts]]
 source = "docs/tpl"
 target = "layouts"
+
+[markup.highlight]
+codeFences = false

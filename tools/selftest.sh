@@ -1293,12 +1293,17 @@ row("bidi-conformance", len(tests) == 45807 and not bad,
 # EN, level 2, not a neutral at 0), L1 (a segment separator and the
 # whitespace before it go back to level 0, not 1 between two R), and the
 # bracket pairs at depth 63, the most the stack of BD16 holds (the closing brackets
-# between R and L resolve to R by N0 c, level 1, not to L by N2).
+# between R and L resolve to R by N0 c, level 1, not to L by N2), and at
+# depth 64, one past it (BD16 stops at the 64th opener before any closer, so
+# no pair forms: the openers between two R are R by N1, the closers before
+# the final L are L by N2, level 0; fix round 2, delta review finding 2).
 hand = {
     "w1": ([0x61, 0x20, 0x05D0, 0x0591, 0x20, 0x62], [0, 0, 1, 1, 0, 0]),
     "w5": ([0x05D0, 0x31, 0x25], [1, 2, 2]),
     "l1": ([0x05D0, 0x20, 0x09, 0x05D1], [1, 0, 0, 1]),
     "bracket-depth-63": ([0x05D0] + [0x28] * 63 + [0x05D1] + [0x29] * 63 + [0x63], [1] * 128 + [0]),
+    "bracket-depth-64": ([0x05D0] + [0x28] * 64 + [0x05D1] + [0x29] * 64 + [0x63],
+                         [1] * 66 + [0] * 65),
 }
 for name, (cps, want) in hand.items():
     got = sc.bidi_resolve(cps, classes, brackets)[0]
@@ -1397,6 +1402,10 @@ cases = {
                               ["tools/unicode/BidiBrackets.txt: missing or not a regular file; t"]),
     "bidi-test-symlink": ({"data": real_bytes, "licence": licence, "link": "BidiCharacterTest-ltr.txt"},
                           ["tools/unicode/BidiCharacterTest-ltr.txt: missing or not a regular file; t"]),
+    "extra-file": ({"data": real_bytes, "licence": licence, "extra": "BidiTest.txt"},
+                   ["tools/unicode/BidiTest.txt: an entry of tools/unicode/ that is no"]),
+    "extra-directory": ({"data": real_bytes, "licence": licence, "extra-dir": "old"},
+                        ["tools/unicode/old: an entry of tools/unicode/ that is no"]),
     "unicode-dir-only": ({"no-script": True, "licence": licence},
                          ["tools/unicode/confusables.txt: missing or not a regular file; t"]),
     "unicode-dir-missing": ({"no-unicode": True},
@@ -1434,6 +1443,10 @@ with tempfile.TemporaryDirectory() as tmp:
                 os.symlink(root / "elsewhere.txt", unicode_dir / "confusables.txt")
             if "licence" in files:
                 (unicode_dir / "LICENSE").write_bytes(files["licence"])
+            if "extra" in files:
+                (unicode_dir / files["extra"]).write_text("# not pinned\n")
+            if "extra-dir" in files:
+                (unicode_dir / files["extra-dir"]).mkdir()
             if "licence-link" in files:
                 (root / "licence.txt").write_bytes(files["licence-link"])
                 os.symlink(root / "licence.txt", unicode_dir / "LICENSE")

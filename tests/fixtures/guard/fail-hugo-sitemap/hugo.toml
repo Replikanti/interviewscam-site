@@ -65,3 +65,6 @@ csp = "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; 
 # sitemap.xml prints this value.
 [sitemap]
 changeFreq = "send it"
+
+[markup.highlight]
+codeFences = false

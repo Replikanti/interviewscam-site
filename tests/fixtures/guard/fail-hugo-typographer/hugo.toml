@@ -63,3 +63,6 @@ csp = "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; 
 # check reads them (render rule 19, Replikanti/interviewscam#28).
 title = false
 block = false
+
+[markup.highlight]
+codeFences = false
