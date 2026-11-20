@@ -55,3 +55,11 @@ disable = true
 # The single source of the Content Security Policy every page carries as a
 # meta tag; GitHub Pages cannot set response headers (D9, SPEC section 8).
 csp = "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'"
+
+[markup.goldmark.parser.attribute]
+# No {attribute} syntax after a heading (title, on by default) or a block:
+# it would let record Markdown set dir, class, id, title or lang on a page,
+# and {dir="rtl"} on a heading draws its words in another order than every
+# check reads them (render rule 19, Replikanti/interviewscam#28).
+title = false
+block = false

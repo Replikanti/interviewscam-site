@@ -32,3 +32,19 @@ path	public/x‮.json	+	{}	rule 19: holds the bidi control U+202E RIGHT-TO-LEFT 
 pass-neighbour-200D	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x‍y 	PASS
 pass-neighbour-202F	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x y 	PASS
 pass-neighbour-206A	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x⁪y 	PASS
+# Fix round 1 (review finding 3): the direction markup, every member of
+# BIDI_ELEMENTS and BIDI_ATTRS, the CSS properties in a style attribute, a
+# <style> element and a built stylesheet, and the review's heading row.
+element-bdo	public/reports/example-abused-company/index.html	</main>	<p><bdo dir=rtl>x</bdo></p></main>	rule 19: holds a <bdo> element
+element-bdi	public/reports/example-abused-company/index.html	</main>	<p><bdi>x</bdi></p></main>	rule 19: holds a <bdi> element
+attribute-dir	public/reports/example-abused-company/index.html	</main>	<p dir=rtl>x</p></main>	rule 19: <p> carries the attribute dir
+attribute-dir-auto	public/reports/example-abused-company/index.html	</main>	<p dir=auto>x</p></main>	rule 19: <p> carries the attribute dir
+attribute-direction-svg	public/favicon.svg	<circle	<text direction=rtl>x</text><circle	rule 19: <text> carries the attribute direction
+attribute-unicode-bidi-svg	public/favicon.svg	<circle	<text unicode-bidi=bidi-override>x</text><circle	rule 19: <text> carries the attribute unicode-bidi
+style-attribute-direction	public/reports/example-abused-company/index.html	</main>	<p style="direction: rtl">x</p></main>	rule 19: <p> declares the CSS property direction
+style-element-unicode-bidi	public/reports/example-abused-company/index.html	</main>	<style>p{unicode-bidi:bidi-override}</style></main>	rule 19: <style> declares the CSS property unicode-bidi
+stylesheet-direction	public/css/x.css	+	p{direction:rtl}	rule 19: declares the CSS property direction
+stylesheet-direction-escaped	public/css/x.css	+	p{\64irection:rtl}	rule 19: declares the CSS property direction
+stylesheet-unicode-bidi	public/css/x.css	+	p{unicode-bidi:isolate}	rule 19: declares the CSS property unicode-bidi
+pass-stylesheet-flex-direction	public/css/x.css	+	p{flex-direction:row}/* direction:rtl */	PASS
+dir-rtl-heading-word-swap	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h3 dir=rtl id=no-real-company>this name׀No real company, person or product was found behind</h3><h2 id=evidence>Evidence reviewed</h2><p>	rule 19: <h3> carries the attribute dir

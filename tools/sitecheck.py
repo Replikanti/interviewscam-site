@@ -3321,7 +3321,324 @@ class AlnumTable(dict):
 ALNUM_ONLY = AlnumTable()
 
 
-def _skeleton(text, capital_i, marks):
+# The visual-order readings (Replikanti/interviewscam#28 fix round 1, review
+# finding 1): a right-to-left letter reorders the text around it without any
+# bidi control, so a run of Hebrew or NKo look-alikes stored as "o rn" draws
+# as "rn o". The readings V1 to V3 fold the order a browser draws: the
+# Unicode Bidirectional Algorithm (UAX #9) for one left-to-right paragraph
+# without explicit formatting characters, which R16 and render rule 19
+# refuse, so rules X1 to X8 never apply (every character starts at level 0
+# in one isolating run sequence with sos = eos = L). bidi_resolve implements
+# X9 (BN removed), W1 to W7, N0 (paired brackets, BidiBrackets.txt, compared
+# through canonical equivalents), N1, N2, I1, L1 and L2, and is held to every
+# line of Unicode's conformance test with paragraph direction LTR and no
+# explicit formatting character (BidiCharacterTest-ltr.txt, 45,807 lines,
+# self-test confusables/bidi-conformance). The classes come from the vendored
+# DerivedBidiClass.txt of the same Unicode version as the confusables, not
+# from the runner's unicodedata (15.0 on CI). Each text is read as one
+# paragraph per paragraph separator and one line: a browser that wraps a
+# right-to-left run across two lines draws each part reversed on its own,
+# which this reading does not model (ADR-0005 part 6).
+UNICODE_DIR = Path(__file__).resolve().parent / "unicode"
+UNICODE_DATA_VERSION = "18.0.0"
+BIDI_CLASS_PATH = UNICODE_DIR / "DerivedBidiClass.txt"
+BIDI_CLASS_SHA256 = "d9e23222522551348ea1ccfbb4f62efbf98982afb95840f8959c08ed992c5607"
+BIDI_CLASS_ENTRIES = 2356
+BIDI_BRACKETS_PATH = UNICODE_DIR / "BidiBrackets.txt"
+BIDI_BRACKETS_SHA256 = "4b3b62e4a14b84ee752808c810c602534921c09a4a1bf78cfbee566d66c125b3"
+BIDI_BRACKETS_ENTRIES = 130
+BIDI_TEST_PATH = UNICODE_DIR / "BidiCharacterTest-ltr.txt"
+BIDI_TEST_SHA256 = "694641c96362aacb1131f393a2c028fafaeb39ba9c1e930c90c18a88473420e5"
+BIDI_TEST_ROWS = 45807
+# The full BidiCharacterTest-18.0.0.txt the subset is derived from (its
+# header names it, and an upgrade re-derives the subset from it).
+BIDI_TEST_SOURCE_SHA256 = "045b24d2c8ab066951bd32fe8c6b4de34647f72b5b1c7df0265f24ab53573e01"
+BIDI_CLASSES = ("L", "R", "AL", "EN", "ES", "ET", "AN", "CS", "NSM", "BN", "B", "S", "WS",
+                "ON", "LRE", "LRO", "RLE", "RLO", "PDF", "LRI", "RLI", "FSI", "PDI")
+BIDI_EXPLICIT = frozenset(("LRE", "LRO", "RLE", "RLO", "PDF", "LRI", "RLI", "FSI", "PDI"))
+BIDI_DEFAULT_NAMES = {"Left_To_Right": "L", "Right_To_Left": "R", "Arabic_Letter": "AL",
+                      "European_Terminator": "ET"}
+BIDI_HEX = r"[0-9A-F]{4,6}"
+BIDI_CLASS_LINE = re.compile(rf"({BIDI_HEX})(?:\.\.({BIDI_HEX}))? *; ([A-Z]{{1,3}}) # .*")
+BIDI_MISSING_LINE = re.compile(rf"# @missing: ({BIDI_HEX})\.\.({BIDI_HEX}); ([A-Za-z_]+)")
+BIDI_BRACKET_LINE = re.compile(rf"({BIDI_HEX}); ({BIDI_HEX}); ([oc]) # .*")
+BIDI_TEST_LINE = re.compile(rf"({BIDI_HEX}(?: {BIDI_HEX})*);0;0;((?:[0-9]+|x)(?: (?:[0-9]+|x))*);"
+                            r"([0-9]*(?: [0-9]+)*)")
+# The 63 of BD16: the bracket stack depth at which pairing stops.
+BIDI_BRACKET_STACK = 63
+_BIDI = None
+
+
+def unicode_text(path, sha256, header):
+    """The text of a vendored Unicode data file, after its SHA-256 and its
+    first line (header) are checked; anything else is a UsageError."""
+    rel = f"{CONFUSABLES_DIR}/{path.name}"
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise UsageError(f"cannot read the Unicode data {rel}: {exc}") from None
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != sha256:
+        raise UsageError(f"the Unicode data {rel} has the SHA-256 {digest}, not the pinned "
+                         f"{sha256}; an upgrade sets every pin of tools/unicode/ together")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise UsageError(f"the Unicode data {rel} is not UTF-8: {exc}") from None
+    if text.split("\n", 1)[0] != header:
+        raise UsageError(f"the Unicode data {rel} does not start with {header!r}")
+    return text
+
+
+def load_bidi_classes(path, sha256, version, entries):
+    """DerivedBidiClass.txt as a bytearray of BIDI_CLASSES indices for every
+    code point: the @missing defaults in file order, then every data line;
+    a line of another form, an unknown class or another count of data lines
+    is a UsageError."""
+    text = unicode_text(path, sha256, f"# DerivedBidiClass-{version}.txt")
+    rel = f"{CONFUSABLES_DIR}/{path.name}"
+    codes = {name: i for i, name in enumerate(BIDI_CLASSES)}
+    table = bytearray(0x110000)
+    data = []
+    for n, line in enumerate(text.split("\n"), 1):
+        if line.startswith("# @missing:"):
+            match = BIDI_MISSING_LINE.fullmatch(line)
+            if match is None or match.group(3) not in BIDI_DEFAULT_NAMES:
+                raise UsageError(f"{rel}:{n}: not an @missing line with a known class")
+            lo, hi = int(match.group(1), 16), int(match.group(2), 16)
+            table[lo:hi + 1] = bytes([codes[BIDI_DEFAULT_NAMES[match.group(3)]]]) * (hi - lo + 1)
+        elif line and not line.startswith("#"):
+            match = BIDI_CLASS_LINE.fullmatch(line)
+            if match is None or match.group(3) not in codes:
+                raise UsageError(f"{rel}:{n}: not a data line '<range> ; <class> # ...' "
+                                 "with a known class")
+            data.append(match)
+    if len(data) != entries:
+        raise UsageError(f"{rel} holds {len(data)} data lines, not {entries} "
+                         "(BIDI_CLASS_ENTRIES)")
+    for match in data:
+        lo = int(match.group(1), 16)
+        hi = int(match.group(2) or match.group(1), 16)
+        if not lo <= hi <= 0x10FFFF:
+            raise UsageError(f"{rel}: the range {match.group(0)[:20]!r} is not one")
+        table[lo:hi + 1] = bytes([codes[match.group(3)]]) * (hi - lo + 1)
+    return table
+
+
+def load_bidi_brackets(path, sha256, version, entries):
+    """BidiBrackets.txt as {code point: (paired code point, "o" or "c")}."""
+    text = unicode_text(path, sha256, f"# BidiBrackets-{version}.txt")
+    rel = f"{CONFUSABLES_DIR}/{path.name}"
+    pairs = {}
+    for n, line in enumerate(text.split("\n"), 1):
+        if not line or line.startswith("#"):
+            continue
+        match = BIDI_BRACKET_LINE.fullmatch(line)
+        if match is None:
+            raise UsageError(f"{rel}:{n}: not a data line '<cp>; <cp>; o|c # ...'")
+        cp = int(match.group(1), 16)
+        if cp in pairs:
+            raise UsageError(f"{rel}:{n}: U+{cp:04X} is listed twice")
+        pairs[cp] = (int(match.group(2), 16), match.group(3))
+    if len(pairs) != entries:
+        raise UsageError(f"{rel} holds {len(pairs)} brackets, not {entries} "
+                         "(BIDI_BRACKETS_ENTRIES)")
+    return pairs
+
+
+def load_bidi_test(path, sha256, version, rows):
+    """The rows of the conformance subset as (code points, levels, order):
+    the header must name its source file and BIDI_TEST_SOURCE_SHA256, and
+    every data line must be an LTR line of BidiCharacterTest.txt."""
+    text = unicode_text(path, sha256, f"# BidiCharacterTest-{version}.txt")
+    rel = f"{CONFUSABLES_DIR}/{path.name}"
+    if f"# {BIDI_TEST_SOURCE_SHA256}\n" not in text:
+        raise UsageError(f"{rel} does not name the SHA-256 of its source file "
+                         "(BIDI_TEST_SOURCE_SHA256)")
+    out = []
+    for n, line in enumerate(text.split("\n"), 1):
+        if not line or line.startswith("#"):
+            continue
+        match = BIDI_TEST_LINE.fullmatch(line)
+        if match is None:
+            raise UsageError(f"{rel}:{n}: not a data line of paragraph direction 0")
+        out.append(([int(x, 16) for x in match.group(1).split()],
+                    [None if x == "x" else int(x) for x in match.group(2).split()],
+                    [int(x) for x in match.group(3).split()]))
+    if len(out) != rows:
+        raise UsageError(f"{rel} holds {len(out)} rows, not {rows} (BIDI_TEST_ROWS)")
+    return out
+
+
+def bidi_tables():
+    """(classes, brackets, the pattern of R, AL and AN code points), loaded
+    once."""
+    global _BIDI
+    if _BIDI is None:
+        classes = load_bidi_classes(BIDI_CLASS_PATH, BIDI_CLASS_SHA256, UNICODE_DATA_VERSION,
+                                    BIDI_CLASS_ENTRIES)
+        brackets = load_bidi_brackets(BIDI_BRACKETS_PATH, BIDI_BRACKETS_SHA256,
+                                      UNICODE_DATA_VERSION, BIDI_BRACKETS_ENTRIES)
+        rtl = {BIDI_CLASSES.index(c) for c in ("R", "AL", "AN")}
+        ranges, start = [], None
+        for cp in range(0x110001):
+            inside = cp < 0x110000 and classes[cp] in rtl and not 0xD800 <= cp <= 0xDFFF
+            if inside and start is None:
+                start = cp
+            elif not inside and start is not None:
+                ranges.append(f"{re.escape(chr(start))}-{re.escape(chr(cp - 1))}")
+                start = None
+        _BIDI = (classes, brackets, re.compile("[" + "".join(ranges) + "]"))
+    return _BIDI
+
+
+def bidi_resolve(cps, classes, brackets):
+    """(levels, order) of one left-to-right paragraph and line without
+    explicit formatting characters (UAX #9): the level of every input index
+    (None for a BN, removed by X9) and the retained indices from left to
+    right."""
+    original = [BIDI_CLASSES[classes[cp]] for cp in cps]
+    idx = [i for i, c in enumerate(original) if c != "BN"]
+    first = [original[i] for i in idx]
+    t = list(first)
+    n = len(t)
+    prev = "L"  # W1: a mark takes the type before it, sos (L) at the start
+    for k in range(n):
+        if t[k] == "NSM":
+            t[k] = prev
+        prev = t[k]
+    last = "L"  # W2: EN after AL, back to sos, is AN
+    for k in range(n):
+        if t[k] in ("L", "R", "AL"):
+            last = t[k]
+        elif t[k] == "EN" and last == "AL":
+            t[k] = "AN"
+    t = ["R" if c == "AL" else c for c in t]  # W3
+    for k in range(1, n - 1):  # W4
+        if t[k] == "ES" and t[k - 1] == "EN" and t[k + 1] == "EN":
+            t[k] = "EN"
+        elif t[k] == "CS" and t[k - 1] == t[k + 1] and t[k - 1] in ("EN", "AN"):
+            t[k] = t[k - 1]
+    k = 0  # W5: a run of ET next to EN is EN
+    while k < n:
+        if t[k] != "ET":
+            k += 1
+            continue
+        j = k
+        while j < n and t[j] == "ET":
+            j += 1
+        if (k > 0 and t[k - 1] == "EN") or (j < n and t[j] == "EN"):
+            t[k:j] = ["EN"] * (j - k)
+        k = j
+    t = ["ON" if c in ("ES", "ET", "CS") else c for c in t]  # W6
+    last = "L"  # W7: EN after L, back to sos, is L
+    for k in range(n):
+        if t[k] in ("L", "R"):
+            last = t[k]
+        elif t[k] == "EN" and last == "L":
+            t[k] = "L"
+
+    def strong(c):
+        return "L" if c == "L" else ("R" if c in ("R", "EN", "AN") else None)
+
+    pairs, stack = [], []  # N0: BD16 pairs among the ON brackets
+    for k in range(n):
+        bracket = brackets.get(cps[idx[k]]) if t[k] == "ON" else None
+        if bracket is None:
+            continue
+        if bracket[1] == "o":
+            if len(stack) == BIDI_BRACKET_STACK:
+                break
+            stack.append((unicodedata.normalize("NFD", chr(bracket[0])), k))
+        else:
+            me = unicodedata.normalize("NFD", chr(cps[idx[k]]))
+            for s in range(len(stack) - 1, -1, -1):
+                if stack[s][0] == me:
+                    pairs.append((stack[s][1], k))
+                    del stack[s:]
+                    break
+    for a, b in sorted(pairs):
+        inside = {strong(t[m]) for m in range(a + 1, b)} - {None}
+        if "L" in inside:  # N0 b: the embedding direction (L) inside
+            new = "L"
+        elif "R" in inside:  # N0 c: the opposite inside, so the context decides
+            before = next((strong(t[m]) for m in range(a - 1, -1, -1) if strong(t[m])), "L")
+            new = "R" if before == "R" else "L"
+        else:
+            continue
+        for pos in (a, b):
+            t[pos] = new
+            m = pos + 1
+            while m < n and first[m] == "NSM":
+                t[m] = new
+                m += 1
+    neutral = ("B", "S", "WS", "ON", "LRI", "RLI", "FSI", "PDI")
+    k = 0  # N1 and N2
+    while k < n:
+        if t[k] not in neutral:
+            k += 1
+            continue
+        j = k
+        while j < n and t[j] in neutral:
+            j += 1
+        before = "L" if k == 0 else strong(t[k - 1])
+        after = "L" if j == n else strong(t[j])
+        t[k:j] = [before if before == after else "L"] * (j - k)
+        k = j
+    levels = [0 if c == "L" else (1 if c == "R" else 2) for c in t]  # I1
+    trailing = True  # L1, on the original types
+    for k in range(n - 1, -1, -1):
+        if first[k] in ("S", "B"):
+            levels[k] = 0
+            trailing = True
+        elif first[k] in ("WS", "LRI", "RLI", "FSI", "PDI"):
+            if trailing:
+                levels[k] = 0
+        else:
+            trailing = False
+    order = list(range(n))  # L2
+    for level in range(max(levels, default=0), 0, -1):
+        k = 0
+        while k < n:
+            if levels[order[k]] < level:
+                k += 1
+                continue
+            j = k
+            while j < n and levels[order[j]] >= level:
+                j += 1
+            order[k:j] = order[k:j][::-1]
+            k = j
+    out = [None] * len(cps)
+    for k, i in enumerate(idx):
+        out[i] = levels[k]
+    return out, [idx[k] for k in order]
+
+
+@functools.lru_cache(maxsize=8192)
+def visual_order(text):
+    """text in the order a browser draws it (bidi_resolve), one paragraph
+    per paragraph separator (Bidi_Class B, kept in place); a paragraph with
+    no R, AL or AN character keeps its stored order, because every level
+    is then 0."""
+    if text.isascii():
+        return text
+    classes, brackets, rtl = bidi_tables()
+    if rtl.search(text) is None:
+        return text
+    out, para = [], []
+    b_class = BIDI_CLASSES.index("B")
+    for ch in text + "\n":
+        if classes[ord(ch)] != b_class:
+            para.append(ord(ch))
+            continue
+        _, order = bidi_resolve(para, classes, brackets)
+        out.extend(chr(para[i]) for i in order)
+        out.append(ch)
+        para = []
+    return "".join(out[:-1])
+
+
+def _skeleton(text, capital_i, marks, visual=False):
     """The skeleton loop of R1 (R2 with capital_i): NFD, invisibles dropped,
     the table (with capital_i the R2 table, so a capital whose prototype is
     "l" reads as its lower case), NFD; then {case fold, NFKC, NFD,
@@ -3335,9 +3652,12 @@ def _skeleton(text, capital_i, marks):
     marks to a letter or digit (U+0C02, the Telugu anusvara, to "o"), which
     a drop before it would hide, and it maps U+0345, the one mark that the
     case fold turns into a letter (an iota), to U+0328, another mark, so
-    U+0345 never reaches the case fold."""
+    U+0345 never reaches the case fold. With visual, the text is read in
+    the order a browser draws it first (visual_order)."""
     table, capital = confusable_tables()
     first = capital if capital_i else table
+    if visual:
+        text = visual_order(text)
     normalize = unicodedata.normalize
     s = normalize("NFD", normalize("NFD", text).translate(INVISIBLE).translate(first))
     if marks:
@@ -3356,12 +3676,13 @@ def _skeleton(text, capital_i, marks):
 
 
 @functools.lru_cache(maxsize=8192)
-def skeleton_fold(text, capital_i=False):
-    """Reading R1 of a name (R2 with capital_i): the skeleton loop with the
-    combining marks kept, every modifier letter (Lm) left over as a space
-    (the table maps the tatweel U+0640 and NKo U+07FA to "_" itself), NFC,
-    whitespace collapsed."""
-    folded = _skeleton(text, capital_i, False).translate(LM_AS_SPACE)
+def skeleton_fold(text, capital_i=False, visual=False):
+    """Reading R1 of a name (R2 with capital_i, V1 or V2 with visual): the
+    skeleton loop with the combining marks kept, every modifier letter (Lm)
+    left over as a space (the table maps the tatweel U+0640 and NKo U+07FA
+    to "_" itself), NFC, whitespace collapsed. PR 2 of
+    Replikanti/interviewscam#28 matches the persona names with it."""
+    folded = _skeleton(text, capital_i, False, visual).translate(LM_AS_SPACE)
     return " ".join(unicodedata.normalize("NFC", folded).split())
 
 
@@ -4549,6 +4870,51 @@ def bidi_file_problems(texts):
     return [f"rule 19: holds the bidi control {', '.join(names)}; a built page carries "
             "no bidi controls, because a browser draws the text around one in another "
             "order than the checks read it (ADR-0004, render rule 19)"]
+
+
+# Rule 19, the direction markup (fix round 1, review finding 3): a dir
+# attribute, <bdo> or <bdi>, an SVG direction or unicode-bidi attribute, or a
+# CSS direction or unicode-bidi declaration sets the direction of a run or a
+# paragraph, so left-to-right runs separated by one right-to-left letter
+# draw in swapped order while every reading reads the stored order (the
+# visual-order readings assume a left-to-right paragraph). The templates and
+# the stylesheet emit none, so every one is refused; Goldmark's attribute
+# syntax ({dir="rtl"} after a heading) is off in hugo.toml, which the guard
+# holds (HUGO_CONFIG_PINNED).
+BIDI_ELEMENTS = frozenset(("bdo", "bdi"))
+BIDI_ATTRS = frozenset(("dir", "direction", "unicode-bidi"))
+BIDI_CSS = re.compile(r"(?i)(?<![\w-])(direction|unicode-bidi)\s*:")
+
+
+def bidi_css_names(css):
+    """The direction properties a stylesheet text declares, its comments
+    stripped (strings kept, so a string that reads like one fails closed)
+    and its escapes decoded."""
+    text = CSS_COMMENT_OR_STRING.sub(lambda m: m.group(0) if m.group(1) else " ", css)
+    return sorted({m.group(1).lower() for m in BIDI_CSS.finditer(css_unescape(text))})
+
+
+def bidi_markup_problems(page):
+    """Rule 19 on one page: no element of BIDI_ELEMENTS, no attribute of
+    BIDI_ATTRS on any element, and no direction property in a style
+    attribute or a <style> element."""
+    problems = []
+    why = ("; a built page sets no text direction, because a right-to-left run or "
+           "paragraph draws text in another order than the checks read it (ADR-0004, "
+           "render rule 19)")
+    for el in page.root.walk():
+        if el.tag in BIDI_ELEMENTS:
+            problems.append(f"rule 19: holds a <{el.tag}> element{why}")
+        for name in sorted(BIDI_ATTRS & set(el.attrs)):
+            problems.append(f"rule 19: <{el.tag}> carries the attribute {name}{why}")
+        css = []
+        if "style" in el.attrs:
+            css.append(el.attrs["style"])
+        if el.tag == "style":
+            css.append("".join(c for c in el.children if isinstance(c, str)))
+        for name in bidi_css_names(" ".join(css)):
+            problems.append(f"rule 19: <{el.tag}> declares the CSS property {name}{why}")
+    return problems
 
 
 def hidden_name_problems(scans, hidden):
@@ -5858,12 +6224,20 @@ def report_page_problems(page, record):
 # lower-case "l" for the "I" of an upper-case text (ADR-0005 part 6).
 @functools.lru_cache(maxsize=8192)
 def sentence_folds(text):
-    """(R0, R1, R2) of text for the state sentence comparison."""
+    """(R0, R1, R2, R3, V1, V2, V3) of text for the state sentence
+    comparison: R3 is R1 with every "i" read as "l", and V1 to V3 are R1 to
+    R3 over the visual order (visual_order)."""
     plain = unicodedata.normalize("NFKC", text).translate(INVISIBLE)
     plain = unicodedata.normalize("NFD", plain).casefold()
     plain = "".join(ch for ch in plain if unicodedata.category(ch)[0] in "LN")
-    return (plain, _skeleton(text, False, True).translate(ALNUM_ONLY),
-            _skeleton(text, True, True).translate(ALNUM_ONLY))
+    r1 = _skeleton(text, False, True).translate(ALNUM_ONLY)
+    r2 = _skeleton(text, True, True).translate(ALNUM_ONLY)
+    if visual_order(text) == text:
+        v1, v2 = r1, r2
+    else:
+        v1 = _skeleton(text, False, True, True).translate(ALNUM_ONLY)
+        v2 = _skeleton(text, True, True, True).translate(ALNUM_ONLY)
+    return (plain, r1, r2, r1.replace("i", "l"), v1, v2, v1.replace("i", "l"))
 
 
 def state_text_problems(page, record):
@@ -5996,6 +6370,10 @@ def cmd_render(args):
         problems = []
         if suffix in BIDI_SUFFIXES:
             problems += bidi_file_problems(texts)
+        if suffix == ".css":
+            problems += [f"rule 19: declares the CSS property {name}; a built stylesheet sets "
+                         "no text direction (ADR-0004, render rule 19)"
+                         for name in bidi_css_names(data.decode("utf-8", "replace"))]
         # Rule 8: the retired fact-check type appears nowhere, in any form.
         if any("claimreview" in s for s in scans):
             problems.append("rule 8: contains ClaimReview; it is never used (ADR-0004 "
@@ -6006,6 +6384,7 @@ def cmd_render(args):
             if any("download" in n.attrs for n in page.root.walk()):
                 problems.append("rule 7: an element carries the download attribute; "
                                 "the site never offers a file download (D8)")
+            problems += bidi_markup_problems(page)
             problems += url_problems(page)
             problems += internal_link_problems(page, page_path)
             problems += copy_button_problems(page, by_page.get(rel), contact)
@@ -13949,6 +14328,10 @@ HUGO_CONFIG_PINNED = {
     "outputFormats.feed.isPlainText": True,
     "markup.goldmark.renderer.unsafe": False,
     "markup.goldmark.extensions.linkify": False,
+    # Goldmark's attribute syntax ({dir="rtl"} after a heading) off for
+    # headings and blocks (render rule 19, Replikanti/interviewscam#28).
+    "markup.goldmark.parser.attribute.title": False,
+    "markup.goldmark.parser.attribute.block": False,
     "markup.highlight.noClasses": False,
     "security.exec.allow": ["none"],
     "security.http.urls": ["none"],
@@ -14184,6 +14567,12 @@ def guard_hugo_config(root, hugo_bin, findings):
     if unsafe not in (None, False):
         findings.add(where, f"markup.goldmark.renderer.unsafe is "
                             f"{json.dumps(unsafe)}, must be false (ADR-0001, D8)")
+    for key in ("title", "block"):
+        value = dig(effective, "markup", "goldmark", "parser", "attribute", key)
+        if value not in (None, False):
+            findings.add(where, f"markup.goldmark.parser.attribute.{key} is "
+                                f"{json.dumps(value)}, must be false (render rule 19: no "
+                                "Markdown attribute such as dir)")
     for key in HUGO_PRIVACY:
         disable = dig(effective, "privacy", key.lower(), "disable")
         if disable is not True:
@@ -15022,36 +15411,54 @@ def guard_worker_pins(root, findings):
                          "ADR-0006 part 10)")
 
 
+def unicode_pins():
+    """(file name, loader call) of every vendored Unicode data file of
+    tools/unicode/, each read with the pins of this script."""
+    v = UNICODE_DATA_VERSION
+    return [
+        (CONFUSABLES_PATH.name, lambda path: load_confusables(
+            path, CONFUSABLES_SHA256, CONFUSABLES_VERSION, CONFUSABLES_ENTRIES)),
+        (BIDI_CLASS_PATH.name, lambda path: load_bidi_classes(
+            path, BIDI_CLASS_SHA256, v, BIDI_CLASS_ENTRIES)),
+        (BIDI_BRACKETS_PATH.name, lambda path: load_bidi_brackets(
+            path, BIDI_BRACKETS_SHA256, v, BIDI_BRACKETS_ENTRIES)),
+        (BIDI_TEST_PATH.name, lambda path: load_bidi_test(
+            path, BIDI_TEST_SHA256, v, BIDI_TEST_ROWS)),
+    ]
+
+
 def guard_confusables_pin(root, findings):
-    """The confusables pin (Replikanti/interviewscam#28): under a root that
-    holds tools/sitecheck.py or tools/unicode/, the data file must be a
-    regular file that load_confusables accepts with the pins of this
-    script (SHA-256, version line, entry count, data line form), and the
-    licence a regular file with the SHA-256 of the Unicode License V3 text,
-    so a tampered or dropped table fails the guard step even on a run that
-    folds nothing. A guard fixture root without either leaves it alone."""
+    """The Unicode data pin (Replikanti/interviewscam#28): under a root that
+    holds tools/sitecheck.py or tools/unicode/, every data file of
+    unicode_pins (the confusables, the bidi classes, the bidi brackets and
+    the bidi conformance subset) must be a regular file that its loader
+    accepts with the pins of this script (SHA-256, header or version line,
+    entry count, line form), and the licence a regular file with the
+    SHA-256 of the Unicode License V3 text, so a tampered or dropped file
+    fails the guard even on a run that reads none. A guard fixture root
+    without either leaves it alone."""
     base = root / CONFUSABLES_DIR
     if not (root / "tools" / "sitecheck.py").is_file() and not base.exists() \
             and not base.is_symlink():
         return
-    why = ("the Unicode confusables data of the look-alike readings is vendored here "
-           "and pinned in tools/sitecheck.py (CONFUSABLES_PATH)")
-    data = base / CONFUSABLES_PATH.name
-    rel = f"{CONFUSABLES_DIR}/{CONFUSABLES_PATH.name}"
-    if data.is_symlink() or not data.is_file():
-        findings.add(rel, f"missing or not a regular file; {why}")
-    else:
+    why = ("the Unicode data of the look-alike and visual-order readings is vendored "
+           "here and pinned in tools/sitecheck.py (unicode_pins)")
+    for name, load in unicode_pins():
+        data = base / name
+        rel = f"{CONFUSABLES_DIR}/{name}"
+        if data.is_symlink() or not data.is_file():
+            findings.add(rel, f"missing or not a regular file; {why}")
+            continue
         try:
-            load_confusables(data, CONFUSABLES_SHA256, CONFUSABLES_VERSION,
-                             CONFUSABLES_ENTRIES)
+            load(data)
         except UsageError as exc:
             findings.add(rel, str(exc))
     licence = base / CONFUSABLES_LICENSE
     rel = f"{CONFUSABLES_DIR}/{CONFUSABLES_LICENSE}"
     if licence.is_symlink() or not licence.is_file():
         findings.add(rel, "missing or not a regular file; the Unicode License V3 allows "
-                     "the copy of confusables.txt only with its notice, so the licence "
-                     "text sits next to it")
+                     "the copies under tools/unicode/ only with its notice, so the licence "
+                     "text sits next to them")
         return
     try:
         digest = hashlib.sha256(licence.read_bytes()).hexdigest()

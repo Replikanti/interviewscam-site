@@ -1221,7 +1221,8 @@ reset()
 # to U+0328, another mark, so only a test table reaches this drop.
 reset(({}, {}))
 got = sc.sentence_folds("a\u0345")
-row("marks-before-casefold", got[1:] == ("a", "a"), f"R1 and R2 of a + U+0345 with an empty table: {got[1:]!r}")
+row("marks-before-casefold", got[1:] == ("a",) * 6,
+    f"every skeleton reading of a + U+0345 with an empty table: {got[1:]!r}")
 reset()
 
 # SKELETON_ROUNDS, inclusive, against the number of ADR-0004 Numbers (4,
@@ -1276,7 +1277,76 @@ row("no-span-marker-target", not any(m in proto for proto in r1.values() for m i
     and not (set(map(ord, markers)) & set(r1)),
     "no table source or target holds U+E000 or U+E001")
 
-# The guard's pin on built roots.
+# The visual-order reading (fix round 1, review finding 1): bidi_resolve
+# against every line of the vendored conformance subset (levels and order),
+# each bidi loader branch, and visual_order on its paragraph and fast paths.
+classes, brackets, _ = sc.bidi_tables()
+tests = sc.load_bidi_test(sc.BIDI_TEST_PATH, sc.BIDI_TEST_SHA256, "18.0.0", 45807)
+bad = [cps for cps, levels, order in tests if sc.bidi_resolve(cps, classes, brackets) != (levels, order)]
+row("bidi-conformance", len(tests) == 45807 and not bad,
+    f"{len(tests)} lines of BidiCharacterTest-18.0.0, LTR, no explicit formatting character; "
+    f"{len(bad)} differ" + (f", first {' '.join(f'{c:04X}' for c in bad[0])}" if bad else ""))
+row("bidi-classes", classes[0x05D0] == sc.BIDI_CLASSES.index("R")
+    and classes[0x0627] == sc.BIDI_CLASSES.index("AL") and classes[0x0661] == sc.BIDI_CLASSES.index("AN")
+    and classes[0x05FF] == sc.BIDI_CLASSES.index("R") and classes[0x20CF] == sc.BIDI_CLASSES.index("ET")
+    and classes[0x0041] == sc.BIDI_CLASSES.index("L") and len(brackets) == 130,
+    "Hebrew R, Arabic AL and AN, the R default of an unassigned Hebrew code point, the ET "
+    "default of U+20CF, Latin L, 130 brackets")
+bidi_files = {
+    "classes": (sc.BIDI_CLASS_PATH, sc.load_bidi_classes, sc.BIDI_CLASS_ENTRIES),
+    "brackets": (sc.BIDI_BRACKETS_PATH, sc.load_bidi_brackets, sc.BIDI_BRACKETS_ENTRIES),
+    "test": (sc.BIDI_TEST_PATH, sc.load_bidi_test, sc.BIDI_TEST_ROWS),
+}
+with tempfile.TemporaryDirectory() as tmp:
+    for kind, (path, load, count) in bidi_files.items():
+        real = path.read_bytes()
+        text = real.decode("utf-8")
+        lines = text.split("\n")
+        data_at = next(i for i, line in enumerate(lines) if line and not line.startswith("#"))
+        variants = {
+            "changed-byte": (real[:-2] + b"\n\n", False, "has the SHA-256"),
+            "header": (text.replace("18.0.0", "17.0.0", 1).encode(), True, "does not start with"),
+            "line-form": ("\n".join(lines[:data_at] + ["x" + lines[data_at]] + lines[data_at + 1:]).encode(),
+                          True, ":" + str(data_at + 1) + ": not"),
+            "count": ("\n".join(lines[:data_at] + lines[data_at + 1:]).encode(), True, f"not {count}"),
+        }
+        if kind == "classes":
+            variants["unknown-class"] = (text.replace("; L #", "; Q #", 1).encode(), True, "a known class")
+            variants["missing-line"] = (text.replace("; Right_To_Left", "; Right_To_Lefty", 1).encode(),
+                                        True, "not an @missing line")
+        if kind == "brackets":
+            variants["twice"] = ("\n".join(lines[:data_at + 1] + [lines[data_at]] + lines[data_at + 1:]).encode(),
+                                 True, "listed twice")
+        if kind == "test":
+            variants["source-sha"] = (text.replace(sc.BIDI_TEST_SOURCE_SHA256, "0" * 64).encode(), True,
+                                      "does not name the SHA-256 of its source")
+        for name, (data, own, want) in variants.items():
+            target = Path(tmp) / f"{kind}-{name}" / path.name
+            target.parent.mkdir()
+            target.write_bytes(data)
+            sha = hashlib.sha256(data).hexdigest() if own else hashlib.sha256(real).hexdigest()
+            try:
+                load(target, sha, "18.0.0", count)
+                row(f"bidi-loader-{kind}-{name}", False, "loaded without a UsageError")
+            except sc.UsageError as exc:
+                row(f"bidi-loader-{kind}-{name}", want in str(exc), str(exc)[:160])
+            except Exception:
+                row(f"bidi-loader-{kind}-{name}", False, "not a UsageError: "
+                    + traceback.format_exc().splitlines()[-1])
+row("visual-order", sc.visual_order("ab אב cd") == "ab בא cd"
+    and sc.visual_order("אב\nגד") == "בא\nדג"
+    and sc.visual_order("café x") == "café x" and sc.visual_order("a​b") == "a​b",
+    "one reversed run, a paragraph separator kept in place, the stored order without R, AL or AN")
+# skeleton_fold, the name reading PR 2 wires (QA B2): a Cyrillic look-alike,
+# a modifier letter as a separator, and the visual order of an RTL run.
+got = (sc.skeleton_fold("Аvery Exampleton"), sc.skeleton_fold("AveryˌExampleton"),
+       sc.skeleton_fold("Avery Exampleסߠn", visual=True),
+       sc.skeleton_fold("Avery Exampleסߠn"), sc.skeleton_fold("ΙVERY", True))
+row("skeleton-fold", got == ("avery exarnpleton", "avery exarnpleton", "avery exarnpleton",
+                             "avery exarnpleotn", "ivery"), f"got {got!r}")
+
+# The guard's pin on built roots: every vendored file is copied unless the
+# case names it.
 def guard(root):
     findings = sc.Findings()
     sc.guard_confusables_pin(root, findings)
@@ -1285,6 +1355,7 @@ def guard(root):
 
 
 licence = (REAL.parent / sc.CONFUSABLES_LICENSE).read_bytes()
+others = {path.name: path.read_bytes() for path, _, _ in bidi_files.values()}
 cases = {
     "pass-real-copy": ({"data": real_bytes, "licence": licence}, []),
     "no-tools": (None, []),
@@ -1300,10 +1371,22 @@ cases = {
                         ["tools/unicode/LICENSE: missing or not a regular file; the Uni"]),
     "licence-changed": ({"data": real_bytes, "licence": licence + b"\n"},
                         ["tools/unicode/LICENSE: the licence's SHA-256 is"]),
+    "licence-symlink": ({"data": real_bytes, "licence-link": licence},
+                        ["tools/unicode/LICENSE: missing or not a regular file; the Uni"]),
+    "bidi-classes-changed": ({"data": real_bytes, "licence": licence,
+                              "replace": ("DerivedBidiClass.txt", others["DerivedBidiClass.txt"] + b"\n")},
+                             ["tools/unicode/DerivedBidiClass.txt: the Unicode data tools/unicode"]),
+    "bidi-brackets-missing": ({"data": real_bytes, "licence": licence, "drop": "BidiBrackets.txt"},
+                              ["tools/unicode/BidiBrackets.txt: missing or not a regular file; t"]),
+    "bidi-test-symlink": ({"data": real_bytes, "licence": licence, "link": "BidiCharacterTest-ltr.txt"},
+                          ["tools/unicode/BidiCharacterTest-ltr.txt: missing or not a regular file; t"]),
     "unicode-dir-only": ({"no-script": True, "licence": licence},
                          ["tools/unicode/confusables.txt: missing or not a regular file; t"]),
     "unicode-dir-missing": ({"no-unicode": True},
-                            ["tools/unicode/LICENSE: missing or not a regular file; the Uni",
+                            ["tools/unicode/BidiBrackets.txt: missing or not a regular file; t",
+                             "tools/unicode/BidiCharacterTest-ltr.txt: missing or not a regular file; t",
+                             "tools/unicode/DerivedBidiClass.txt: missing or not a regular file; t",
+                             "tools/unicode/LICENSE: missing or not a regular file; the Uni",
                              "tools/unicode/confusables.txt: missing or not a regular file; t"]),
 }
 with tempfile.TemporaryDirectory() as tmp:
@@ -1311,18 +1394,32 @@ with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / name
         root.mkdir()
         if files is not None:
-            (root / "tools" / "unicode").mkdir(parents=True)
+            unicode_dir = root / "tools" / "unicode"
+            unicode_dir.mkdir(parents=True)
             if files.get("no-unicode"):
-                (root / "tools" / "unicode").rmdir()
+                unicode_dir.rmdir()
             if not files.get("no-script"):
                 (root / "tools" / "sitecheck.py").write_text("# stand-in\n")
+            if not files.get("no-unicode"):
+                for other, data in others.items():
+                    if other == files.get("drop"):
+                        continue
+                    if other == files.get("link"):
+                        (root / other).write_bytes(data)
+                        os.symlink(root / other, unicode_dir / other)
+                        continue
+                    replace = files.get("replace")
+                    (unicode_dir / other).write_bytes(replace[1] if replace and replace[0] == other else data)
             if "data" in files:
-                (root / "tools/unicode/confusables.txt").write_bytes(files["data"])
+                (unicode_dir / "confusables.txt").write_bytes(files["data"])
             if "data-link" in files:
                 (root / "elsewhere.txt").write_bytes(files["data-link"])
-                os.symlink(root / "elsewhere.txt", root / "tools/unicode/confusables.txt")
+                os.symlink(root / "elsewhere.txt", unicode_dir / "confusables.txt")
             if "licence" in files:
-                (root / "tools/unicode/LICENSE").write_bytes(files["licence"])
+                (unicode_dir / "LICENSE").write_bytes(files["licence"])
+            if "licence-link" in files:
+                (root / "licence.txt").write_bytes(files["licence-link"])
+                os.symlink(root / "licence.txt", unicode_dir / "LICENSE")
         got = guard(root)
         ok = len(got) == len(want) and all(g.startswith(w) for g, w in zip(got, sorted(want)))
         row(f"guard-{name}", ok, f"findings {got}")
