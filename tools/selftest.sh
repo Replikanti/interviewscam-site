@@ -1424,12 +1424,35 @@ def hits(name, text):
     return [r for r in R if sc.name_pattern(name, r).search(sc.name_fold(text, r))]
 
 
+# V1 to V3 read only a text that draws in another order, so a
+# left-to-right text hits under R0 to R3 at most.
+STORED = [0, 1, 2, 3]
 got = (hits("Tim Kim", "TimKim"), hits("Tim Kim", "Tim Kim"), hits("Tim Kim", "Tim-Kim"),
-       hits("Avery Exampleton", "AveryExampleton"))
-row("name-pattern-join-min-letters", got == ([], list(R), list(R), list(R)), f"got {got!r}")
+       hits("Avery Exampleton", "AveryExampleton"), hits("Li Kensington", "LiKensington"),
+       hits("Li Kensington", "Li Kensington"))
+row("name-pattern-join-min-letters", got == ([], STORED, STORED, STORED, [], STORED),
+    f"got {got!r}")
 got = (hits("M. Page", "m page"), hits("M. Page", "M. Page"), hits("M. Page", "m.page"),
        hits("M. Page", "rn page"), hits("M. Page", "rn. page"))
-row("name-pattern-initial", got == ([], list(R), list(R), [], [1, 2, 3, 4, 5, 6]), f"got {got!r}")
+row("name-pattern-initial", got == ([], STORED, STORED, [], [1, 2, 3]), f"got {got!r}")
+# The stroke reading R3 (fix round 1, review findings A2 and C): a stroke
+# stands for "i", for "l" or for a separator, a written "l" or a dotted
+# "i" keeps its letter, and a left-to-right text gives V1 to V3 nothing.
+got = (hits("Ali", "all"), hits("Ali", "Of all things"), hits("Neil", "nell"),
+       hits("Riley Placeholder", "R|ley Placeholder"), hits("Riley Placeholder", "RILEY PLACEHOLDER"),
+       hits("Avery Exampleton", "Avery\u01c0Exampleton"), hits("Avery Exampleton", "Avery\u04c0Exampleton"),
+       hits("Avery Exampleton", "AverylExampleton"), hits("Ali", "Al|"),
+       hits("Riley Placeholder", "Ri\u0307ley Placeholder"), hits("Zo\u00eb", "Zoe"),
+       sc.name_fold("Riley Placeh\u05d5\u05e1der", 4))
+row("name-stroke-reading", got == ([], [], [], [3], [0, 2, 3], [3], [3], [], [3], [1, 2, 3],
+                                    [1, 2, 3], "riley placeholder"), f"got {got!r}")
+# R1 is R3 with every STROKE read as "l" (reading_folds derives it so):
+# every source and target code point of the table, alone, between two
+# letters and before a combining mark.
+cps = sorted(set(table) | {ord(c) for v in table.values() for c in v})
+bad = [f"U+{cp:04X}" for cp in cps for x in (chr(cp), f"a{chr(cp)}b", chr(cp) + "\u0301")
+       if sc.skeleton_fold(x) != sc.skeleton_fold(x, stroke=True).replace(sc.STROKE, "l")]
+row("stroke-to-r1", not bad and len(cps) > 8000, f"{len(cps)} code points, differ: {bad[:5]}")
 got = (sc.name_pattern("ˌ", 0) is sc.NEVER, sc.name_pattern("ˌ", 1) is sc.NEVER,
        sc.name_pattern("⠀", 0) is sc.NEVER, sc.name_pattern("⠀", 1) is sc.NEVER,
        hits("⠀", "x ⠀ y"), sc.name_pattern("\u200b", 0) is sc.NEVER, hits("\u200b", "a, b"))
@@ -1445,7 +1468,7 @@ row("visual-spans", got == (f"x {O}בא{C} y", f"{O}ב{C}א{O}c{C}",
 # U+10CA5, the one capital of CAPITAL_L that R2 reads as neither "i" nor
 # "l", tells R3 (from R1) from a fold of R2.
 texts = ["Riley Placehוסder", "RΙLEY |nfo", "plain text", "Mоrgan א",
-         "\U00010ca5ay"]
+         "\U00010ca5ay", "Ali|א \ue002"]
 drawn = [sc.visual_order(t) for t in texts]
 memo = {}
 bad = [r for r in R if sc.reading_folds(texts, drawn, r, memo, 2)

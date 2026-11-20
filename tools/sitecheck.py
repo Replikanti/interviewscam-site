@@ -1055,15 +1055,18 @@ def slugify(name):
     return re.sub(r"[^a-z0-9]+", "-", folded.lower()).strip("-")
 
 
-def word_variants(text, reading=0):
+def word_variants(text, reading=0, name=False):
     """The text as written, entity-decoded, Markdown-unescaped and with its
     markup stripped: NFKC, case-folded, invisibles dropped, whitespace
     collapsed (R5, R14); with a reading other than R0, each variant under
     that reading of NAME_READINGS instead (R5, Replikanti/interviewscam#28
-    PR 2)."""
+    PR 2). With name, the text is a persona name, which V1 to V3 read in
+    its drawn order whether or not that differs from the stored one."""
     variants = {text, html.unescape(text)}
     variants |= {MD_ESCAPE.sub(r"\1", v) for v in list(variants)}
     variants |= {strip_markup(v) for v in list(variants)}
+    if reading and name and NAME_READING_FORMS[reading][2]:
+        return {name_fold(visual_order(v), reading, drawn=True) for v in variants}
     if reading:
         return {name_fold(v, reading) for v in variants}
     return {" ".join(unicodedata.normalize("NFKC", v).translate(INVISIBLE)
@@ -1327,8 +1330,8 @@ def persona_problems(records):
         for field, name in names:
             patterns = []
             for reading in range(len(NAME_READINGS)):
-                folded = word_variants(name, reading) if isinstance(name, str) else set()
-                patterns.append([re.compile(rf"(?<!\w){re.escape(text)}(?!\w)")
+                folded = word_variants(name, reading, True) if isinstance(name, str) else set()
+                patterns.append([re.compile(rf"(?<!\w){stroke_pattern(text, reading)}(?!\w)")
                                  for text in sorted(t for t in folded if t)])
             personas.append((persona, field, patterns))
     variants = {}
@@ -3359,6 +3362,32 @@ def confusable_tables():
     return _CONFUSABLES
 
 
+# The stroke reading of the persona names (Replikanti/interviewscam#28 PR 2
+# fix round 1, review findings A2 and C): every "l" a table target holds
+# becomes STROKE, so a character that draws as a vertical stroke (I, |, 1,
+# U+01C0, the palochka, and the rest of the 115 sources whose prototype is
+# "l") stays apart from a written lower-case "l". STROKE is a private-use
+# character, so a pattern reads it as no letter: name_pattern lets it
+# stand for "i" or "l" inside a token and as a separator between tokens,
+# and a written "l" or a dotted "i" keeps its own letter ("all" is not
+# "Ali"). A STROKE in the text itself is read as U+FFFD first, in every
+# reading of skeleton_fold, so R1 stays R3 with the strokes read as "l".
+STROKE = "\ue002"
+STROKE_FORGERY = str.maketrans({STROKE: "\ufffd"})
+_STROKE_TABLE = None
+
+
+def stroke_table():
+    """The R1 table with every "l" of a target read as STROKE, built once
+    per loaded table."""
+    global _STROKE_TABLE
+    table = confusable_tables()[0]
+    if _STROKE_TABLE is None or _STROKE_TABLE[0] is not table:
+        _STROKE_TABLE = (table, {cp: target.replace("l", STROKE)
+                                 for cp, target in table.items()})
+    return _STROKE_TABLE[1]
+
+
 class CategoryTable(dict):
     """A str.translate table filled per character on first use: value for
     a character whose General_Category passes test, the character itself
@@ -3792,7 +3821,7 @@ def visual_spans(text):
     return "".join(out)
 
 
-def _skeleton(text, capital_i, marks, visual=False):
+def _skeleton(text, capital_i, marks, visual=False, stroke=False):
     """The skeleton loop of R1 (R2 with capital_i): NFD, invisibles dropped,
     the table (with capital_i the R2 table, so a capital whose prototype is
     "l" reads as its lower case), NFD; then {case fold, NFKC, NFD,
@@ -3809,6 +3838,8 @@ def _skeleton(text, capital_i, marks, visual=False):
     U+0345 never reaches the case fold. With visual, the text is read in
     the order a browser draws it first (visual_order)."""
     table, capital = confusable_tables()
+    if stroke:
+        table = stroke_table()
     first = capital if capital_i else table
     if visual:
         text = visual_order(text)
@@ -3830,36 +3861,45 @@ def _skeleton(text, capital_i, marks, visual=False):
 
 
 @functools.lru_cache(maxsize=8192)
-def skeleton_fold(text, capital_i=False, visual=False):
-    """Reading R1 of a name (R2 with capital_i, V1 or V2 with visual): the
-    skeleton loop with the combining marks kept, every modifier letter (Lm)
-    left over as a space (the table maps the tatweel U+0640 and NKo U+07FA
-    to "_" itself), NFC, whitespace collapsed. name_fold matches the
+def skeleton_fold(text, capital_i=False, visual=False, stroke=False):
+    """Reading R1 of a name (R2 with capital_i, the stroke reading R3 with
+    stroke, V1 to V3 with visual): the skeleton loop with the combining
+    marks handled as for the state sentences (fix round 1 of PR 2, review
+    finding A1: the table reads the marks first, then every mark left is
+    dropped, so "Ri" + U+0307 + "ley", whose dot above replaces the dot of
+    the i, reads "riley", and "Zoë" reads as "Zoe"), every modifier letter
+    (Lm) left over as a space (the table maps the tatweel U+0640 and NKo
+    U+07FA to "_" itself), NFC, whitespace collapsed. name_fold matches the
     persona names with it (Replikanti/interviewscam#28 PR 2)."""
-    folded = _skeleton(text, capital_i, False, visual).translate(LM_AS_SPACE)
+    text = text.translate(STROKE_FORGERY)
+    folded = _skeleton(text, capital_i, True, visual, stroke).translate(LM_AS_SPACE)
     return " ".join(unicodedata.normalize("NFC", folded).split())
 
 
 # The persona names (Replikanti/interviewscam#28 PR 2, ADR-0004 part 5
-# amendment): rules 4, 9 and 12 and R5 read a name and a text the seven
-# ways rule 17 reads the state sentences (sentence_folds), each the
-# reading of the same index of NAME_READINGS: R0 is fold_words, the plain
-# fold of before, so no earlier finding moves and a separator the
-# skeleton reads as a letter ("Avery|Exampleton", "|" read as "l") still
-# separates; R1 is skeleton_fold, R2 that with capital_i, R3 R1 with every
-# "i" read as "l" on both sides; V1 to V3 are R1 to R3 over the order a
-# browser draws the text in (visual_order), so a right-to-left look-alike
-# stored reversed is read as drawn. Unlike the sentences, a name keeps its
-# combining marks ("Zoë" is not "Zoe"; out of scope, as in PR #27) and its
-# punctuation, which name_pattern reads as separators: the skeleton maps
-# the tatweel U+0640 to "_" and turns every modifier letter (Lm) into a
-# space, so either between two tokens separates them as a space does,
-# where R0 read both as letters. The readings are tried in this order and
-# the first that matches reports, so an R0 message is the message of
-# before; every other reading appends LOOKALIKE_NOTE (R1 to R3) or
-# DRAWN_NOTE (V1 to V3).
+# amendment): rules 4, 9 and 12 and R5 read a name and a text seven ways,
+# each the reading of the same index of NAME_READINGS. R0 is fold_words,
+# the plain fold of before, so no earlier finding moves. R1 is
+# skeleton_fold, R2 that with capital_i (the capitals of CAPITAL_L read as
+# their lower case), R3 the stroke reading (stroke_table: a character
+# that draws as a vertical stroke stands for "i", for "l" or for a
+# separator, while a written "l" and a dotted "i" keep their letter; fix
+# round 1, review findings A2 and C). V1 to V3 are R1 to R3 over the order
+# a browser draws the text in (visual_order), and read only a text whose
+# drawn order differs from its stored order, so a right-to-left
+# look-alike stored reversed is read as drawn and DRAWN_NOTE names only
+# that case. As for the state sentences, the combining marks are dropped
+# after the first table pass (fix round 1, review finding A1). The
+# skeleton maps the tatweel U+0640 to "_" and turns every modifier letter
+# (Lm) into a space, so either between two tokens separates them, where
+# R0 read both as letters. The readings are tried in this order and the
+# first that matches reports, so an R0 message is the message of before;
+# every other reading appends LOOKALIKE_NOTE (R1 to R3) or DRAWN_NOTE (V1
+# to V3). Each reading finds a case no other one does (ADR-0004 Numbers
+# "Name readings"): the label after a name is read with the same reading,
+# and R1 and V1 read fewer spellings of it than R2, R3, V2 and V3.
 NAME_READINGS = ("R0", "R1", "R2", "R3", "V1", "V2", "V3")
-# (capital_i, "i" read as "l", visual) of each reading but R0.
+# (capital_i, stroke, visual) of each reading but R0.
 NAME_READING_FORMS = {1: (False, False, False), 2: (True, False, False),
                       3: (False, True, False), 4: (False, False, True),
                       5: (True, False, True), 6: (False, True, True)}
@@ -3884,40 +3924,63 @@ def reading_note(reading):
 def name_fold(text, reading, drawn=False, cache=True):
     """text under one reading of NAME_READINGS. With drawn, text is
     already in the order a browser draws it (visual_spans, or a name
-    token), so V1 to V3 do not reorder it again. Without cache, the fold
-    bypasses skeleton_fold's cache: rules 4 and 9 fold whole pages and
-    files once each, and a cache of them only holds memory."""
+    token), so V1 to V3 do not reorder it again; without it, V1 to V3 give
+    "" for a text that draws as stored, which R1 to R3 read. Without cache,
+    the fold bypasses the caches: rules 4 and 9 fold whole pages and files
+    once each, and a cache of them only holds memory."""
     if reading == 0:
         return fold_words(text)
-    capital_i, i_as_l, visual = NAME_READING_FORMS[reading]
+    capital_i, stroke, visual = NAME_READING_FORMS[reading]
+    if visual and not drawn:
+        order = visual_order if cache else visual_order.__wrapped__
+        if order(text) == text:
+            return ""
     fold = skeleton_fold if cache else skeleton_fold.__wrapped__
-    folded = fold(text, capital_i, visual and not drawn)
-    return folded.replace("i", "l") if i_as_l else folded
+    return fold(text, capital_i, visual and not drawn, stroke)
 
 
 def reading_folds(texts, drawn, reading, memo, uncached):
     """[name_fold(t, reading) for t in texts], with the work shared between
-    the readings through memo (reading to list): R3 and V3 are R1 and V1
-    with every "i" read as "l", and V1 and V2 read each text in its drawn
-    form (drawn, a list of the same length: the text in the order a
-    browser draws it), which for a text that draws as stored is the fold
-    R1 or R2 already made. The first uncached texts are folded without
-    skeleton_fold's cache (whole pages and files, read once)."""
+    the readings through memo (reading to list): R1 and V1 are R3 and V3
+    with every STROKE read as "l" (stroke_table differs from the R1 table
+    only there; confusables/stroke-to-r1 holds that for every code point
+    of the table), and V1 to V3 read each text in its drawn form (drawn, a
+    list of the same length: the text in the order a browser draws it),
+    "" where it draws as stored. The first uncached texts are folded
+    without the caches (whole pages and files, read once)."""
     if reading not in memo:
         if reading == 0:
             out = [fold_words(t) for t in texts]
-        elif NAME_READING_FORMS[reading][1]:
-            out = [t.replace("i", "l") for t in
-                   reading_folds(texts, drawn, reading - 2, memo, uncached)]
+        elif reading in (1, 4):
+            out = [t.replace(STROKE, "l") for t in
+                   reading_folds(texts, drawn, reading + 2, memo, uncached)]
         elif NAME_READING_FORMS[reading][2]:
-            plain = reading_folds(texts, drawn, reading - 3, memo, uncached)
-            out = [plain[i] if form == texts[i]
+            out = ["" if form == texts[i]
                    else name_fold(form, reading, drawn=True, cache=i >= uncached)
                    for i, form in enumerate(drawn)]
         else:
             out = [name_fold(t, reading, cache=i >= uncached) for i, t in enumerate(texts)]
         memo[reading] = out
     return memo[reading]
+
+
+def stroke_pattern(text, reading):
+    """The regex of a folded name, token or label under a reading: the
+    text itself, and under R3 and V3 every "i" and "l" also as STROKE, a
+    STROKE as either, and a space also as STROKE (a stroke between two
+    words reads as their separator)."""
+    if reading == 0 or not NAME_READING_FORMS[reading][1]:
+        return re.escape(text)
+    classes = {"i": f"[i{STROKE}]", "l": f"[l{STROKE}]", STROKE: f"[il{STROKE}]",
+               " ": f"[ {STROKE}]"}
+    return "".join(classes.get(c) or re.escape(c) for c in text)
+
+
+@functools.lru_cache(maxsize=64)
+def label_pattern(reading):
+    """The D10 label after a name, with its space, under a reading."""
+    return re.compile(stroke_pattern(" " + name_fold(PERSONA_LABEL, reading, drawn=True),
+                                     reading))
 
 
 # M4 PR 3 fix round 10 (delta review 9 finding 1): foreign content. Python's
@@ -4224,7 +4287,9 @@ def name_pattern(name, reading=0):
     only each token's text is folded with the reading
     (Replikanti/interviewscam#28 PR 2): the skeleton reads "m" as "rn", so
     a structure taken from it would make "Tim" a joinable 4-letter token
-    and the initial "M." an "rn" that matches without its period."""
+    and the initial "M." an "rn" that matches without its period. Under R3
+    and V3 an "i" or "l" of a token also matches a STROKE (stroke_pattern),
+    and a STROKE is no letter, so between two tokens it separates them."""
     visual = reading != 0 and NAME_READING_FORMS[reading][2]
     folded = fold_words(visual_order(name) if visual else name)
     tokens = NAME_TOKEN.findall(folded)
@@ -4232,7 +4297,7 @@ def name_pattern(name, reading=0):
         whole = name_fold(visual_order(name) if visual else name, reading, drawn=True)
         if not whole and reading:
             return NEVER  # R0 keeps its old pattern, which fails closed
-        return re.compile(rf"(?<![^\W_]){re.escape(whole)}(?![^\W_])")
+        return re.compile(rf"(?<![^\W_]){stroke_pattern(whole, reading)}(?![^\W_])")
     joinable = all(sum(c.isalpha() for c in tok) >= JOIN_MIN_LETTERS for tok in tokens)
 
     def initial(tok):
@@ -4244,7 +4309,7 @@ def name_pattern(name, reading=0):
             return NEVER
         if i:
             parts.append(r"[\W_]*" if joinable or initial(tokens[i - 1]) else r"[\W_]+")
-        parts.append(re.escape(text) + (r"\." if initial(tok) else ""))
+        parts.append(stroke_pattern(text, reading) + (r"\." if initial(tok) else ""))
     return re.compile(rf"(?<![^\W_]){''.join(parts)}(?![^\W_])")
 
 
@@ -4755,16 +4820,16 @@ def persona_label_problems(page, personas, own=None):
         return hidden[reading]
 
     def bare_at(persona, names, pattern, reading):
-        label = " " + name_fold(PERSONA_LABEL, reading)
+        label = label_pattern(reading)
         for text, joined in (own_texts if persona is own else texts).get(reading):
-            matches = [m for m in pattern.finditer(text) if not text.startswith(label, m.end())]
+            matches = [m for m in pattern.finditer(text) if not label.match(text, m.end())]
             if not matches:
                 continue
             # A shorter name inside a labelled longer one (an alias that
             # is part of the name) is covered by that label.
             covered = [(m.start(), m.end()) for _, other in names
                        for m in name_pattern(other, reading).finditer(text)
-                       if text.startswith(label, m.end())]
+                       if label.match(text, m.end())]
             # The span exemption applies to the joined texts only:
             # attribute values and JSON-LD strings get none, so a marker
             # forged there exempts nothing.
