@@ -1212,10 +1212,11 @@ except sc.UsageError as exc:
 sc.CAPITAL_L = saved
 reset()
 
-# SKELETON_ROUNDS, inclusive: a chain that changes in SKELETON_ROUNDS - 1
-# loop rounds and settles in the last one passes; one more step fails.
+# SKELETON_ROUNDS, inclusive, against the number of ADR-0004 Numbers (4,
+# written here, not read from the module): a chain that changes in 3 loop
+# rounds and settles in the 4th passes; one more step fails.
 letters = "abcdefg"
-n = sc.SKELETON_ROUNDS
+n = 4
 
 
 def chain(steps):
@@ -1226,7 +1227,8 @@ def chain(steps):
 reset(chain(n))
 try:
     got = sc._skeleton("a", False, False)
-    row("rounds-cap-inclusive", got == letters[n], f"{n} table steps settle on {got!r}")
+    row("rounds-cap-inclusive", got == letters[n] and sc.SKELETON_ROUNDS == n,
+        f"{n} table steps settle on {got!r}, SKELETON_ROUNDS {sc.SKELETON_ROUNDS}")
 except sc.UsageError as exc:
     row("rounds-cap-inclusive", False, f"a chain of {n} steps raised: {exc}")
 reset(chain(n + 1))
