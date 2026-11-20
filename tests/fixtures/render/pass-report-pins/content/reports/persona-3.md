@@ -13,6 +13,7 @@ first_seen = 2026-10-02
 last_seen = 2026-10-12
 last_reviewed = 2026-10-20
 independent_reports = 1
+labelled_artifacts = ["@riley_placeholder_zoë"]
 
 [params.campaign]
 slug = "example-campaign-family"
@@ -21,6 +22,7 @@ basis = "artifact"
 artifact = "@riley_placeholder_zoë"
 
 [params.artifacts]
+file_names = ["Entrevista técnica[.]zip"]
 handles = [
   { platform = "telegram", value = "@riley_placeholder_zoë" },
 ]

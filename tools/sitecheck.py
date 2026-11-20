@@ -1112,9 +1112,11 @@ def record_text(record):
 
 def free_text(record):
     """(path, string) of every front-matter string except the declared
-    artifacts and the source URLs, so names and aliases count (R5, R14)."""
+    artifacts, the list of labelled artifacts that repeats some of them
+    (R17) and the source URLs, so names and aliases count (R5, R14)."""
     return [(path, text) for path, text in iter_strings(record.data, "")
-            if not path.startswith("params.artifacts.") and not is_source_url(path)]
+            if not path.startswith(("params.artifacts.", "params.labelled_artifacts["))
+            and not is_source_url(path)]
 
 
 def declared_artifacts(record):
@@ -1252,6 +1254,57 @@ def reference_problems(record, campaign_slugs, report_slugs):
         elif slug not in report_slugs:
             problems.append(f"params.related[{i}] {show(slug)} names no report "
                             "record content/reports/<slug>.md (R7)")
+    return problems
+
+
+def labelled_artifact_problems(record):
+    """R17 (Replikanti/interviewscam#28 PR 3, ADR-0004 part 5 amendment):
+    params.labelled_artifacts, the list box-label.html reads to put the D10
+    label after a box, is a persona record's only. On a hidden persona it
+    is inert (no box shows a name there; hiding stays the one-line change
+    of R6) and is not compared. On a visible persona it equals the set of
+    declared artifact values whose box carries the label
+    (box_carries_label: a character outside U+0021 to U+007E, and a name or
+    alias of the persona under some reading of NAME_READINGS), with no
+    entry twice; absent, it is the empty set. A finding names each entry
+    that is not declared, listed twice, plain printable ASCII or without a
+    name, and each value that is missing."""
+    params = record.params
+    listed = params.get("labelled_artifacts")
+    if "labelled_artifacts" in params and not is_persona(record):
+        return ["params.labelled_artifacts: only a persona record lists the artifacts "
+                "whose box carries the D10 label (R17)"]
+    if not is_persona(record) or is_hidden(record):
+        return []
+    if listed is None:
+        listed = []
+    if not isinstance(listed, list):
+        return []  # the schema's finding
+    problems = []
+    values = [v for _, v in declared_artifacts(record)]
+    seen = set()
+    for i, value in enumerate(listed):
+        if not isinstance(value, str):
+            continue  # the schema's finding
+        where = f"params.labelled_artifacts[{i}]: {show(value)}"
+        if value in seen:
+            problems.append(f"{where} is listed twice (R17)")
+        elif value not in values:
+            problems.append(f"{where} is none of this record's declared artifact "
+                            "values (R17)")
+        elif all(c in BOX_CHARS for c in value):
+            problems.append(f"{where} is plain printable ASCII (U+0021 to U+007E only), "
+                            "and such a box carries no D10 label (R17)")
+        elif name_reading_in(record, value) is None:
+            problems.append(f"{where} holds no name or alias of this persona under any "
+                            "reading, so its box carries no D10 label (R17)")
+        seen.add(value)
+    for value in dict.fromkeys(values):
+        if value not in seen and box_carries_label(record, value):
+            problems.append(f"params.labelled_artifacts: lacks {show(value)}, a declared "
+                            "artifact that holds a name or alias of this persona and has a "
+                            "character outside U+0021 to U+007E, so its box carries the D10 "
+                            "label (R17)" + reading_note(name_reading_in(record, value)))
     return problems
 
 
@@ -1477,7 +1530,7 @@ def cmd_records(args):
         problems += reference_problems(record, campaign_slugs, report_slugs)
         problems += date_problems(record)
         if record.section == "reports":
-            problems += report_problems(record)
+            problems += report_problems(record) + labelled_artifact_problems(record)
         problems += text_problems(record) + verdict_problems(record)
         for problem in problems:
             findings.add(record.rel, problem)
@@ -4840,6 +4893,116 @@ def labelled_box(el):
     return False
 
 
+def name_reading_in(record, text):
+    """The first reading of NAME_READINGS under which text holds a name or
+    alias of record, matched as rule 4 matches them (name_pattern over
+    name_fold, the text read as one paragraph), or None."""
+    names = record_names(record)
+    for reading in range(len(NAME_READINGS)):
+        folded = name_fold(text, reading)
+        if folded and any(name_pattern(name, reading).search(folded) for _, name in names):
+            return reading
+    return None
+
+
+def box_carries_label(record, value):
+    """The D10 box label (Replikanti/interviewscam#28 PR 3, ADR-0004 part 5
+    amendment): the box of an own artifact value carries the label right
+    after it exactly when the record is a visible persona, the value has a
+    character outside BOX_CHARS (a plain printable-ASCII box stays
+    unlabelled, PR 6) and the value holds a name or alias of the persona
+    under some reading (name_reading_in). One helper for records rule R17,
+    which holds params.labelled_artifacts (the list box-label.html reads)
+    to this set, and render rules 4, 6 and 17, which compute it from the
+    record without reading that field, so neither side can drift."""
+    return (is_persona(record) and not is_hidden(record) and isinstance(value, str)
+            and any(c not in BOX_CHARS for c in value)
+            and name_reading_in(record, value) is not None)
+
+
+def label_after(el):
+    """The persona-label element a reader sees right after the box el, or
+    None: the first content after el in document order, past
+    whitespace-only text and hidden elements (a Copy button without its
+    script is hidden, so a label after it still reads as the box's), into
+    elements and out of el's ancestors; any other text or element first
+    means no label follows."""
+    def first(items):
+        for item in items:
+            if isinstance(item, str):
+                if item.strip(" \t\n\r\f"):
+                    return False
+                continue
+            if item.tag in NO_TEXT_ELEMENTS or item.hides():
+                continue
+            if "persona-label" in item.classes:
+                return item
+            found = first(item.children)
+            if found is not None:
+                return found
+        return None
+    child = el
+    while child.parent is not None:
+        siblings = child.parent.children
+        index = next(i for i, c in enumerate(siblings) if c is child)
+        found = first(siblings[index + 1:])
+        if found is not None:
+            return found or None
+        child = child.parent
+    return None
+
+
+def box_label_problems(page, own):
+    """Rule 4, the D10 box label in both directions (Replikanti/interviewscam#28
+    PR 3): every <code> box that a visible persona-label follows
+    (label_after), hidden or not, is an own artifact of the visible persona
+    whose page this is, and its value carries the label
+    (box_carries_label); and on that page every own-artifact box (a
+    visible <code> of the class artifact or the <code> of the single
+    campaign line, whose text equals a declared value) whose value carries
+    the label has it right after it (labelled_box). A box's text is mapped
+    back to the declared values it shows (squash), so the stored value
+    decides."""
+    problems = []
+    visible = own is not None and is_persona(own) and not is_hidden(own)
+    stored = {}
+    for _, value in declared_artifacts(own) if visible else []:
+        stored.setdefault(squash(value), []).append(value)
+    lines = by_class(page, "campaign-line")
+    line = lines[0] if len(lines) == 1 else None
+    for el in by_tag(page, "code"):
+        # A hidden box is never an own-artifact box, but a visible label
+        # after it still reads as a box label, so it is checked too.
+        text = el.text()
+        own_box = not el.concealed() and text in stored and \
+            ("artifact" in el.classes or (line is not None and el.parent is line))
+        carries = own_box and any(box_carries_label(own, v) for v in stored[text])
+        if label_after(el) is not None and not carries:
+            if not visible:
+                problems.append(f"rule 4: the box {show(text)} is followed by the persona "
+                                "label, but this is no visible persona's own page; only an "
+                                "own artifact that holds the persona's name carries it (D7, "
+                                "D10)")
+            elif not own_box:
+                problems.append(f"rule 4: the box {show(text)} is followed by the persona "
+                                f"label, but it is no own artifact box of {own.rel}; only "
+                                "an own artifact that holds the persona's name carries it "
+                                "(D7, D10)")
+            else:
+                problems.append(f"rule 4: the box {show(text)} carries the persona label, "
+                                "but it is plain printable ASCII or holds no name or alias "
+                                f"of {own.rel} under any reading, so the label would be "
+                                "false (D7, D10; box_carries_label)")
+        elif carries and not labelled_box(el):
+            reading = min(name_reading_in(own, v) for v in stored[text]
+                          if box_carries_label(own, v))
+            problems.append(f"rule 4: the box {show(text)} holds a name or alias of "
+                            f"{own.rel} and has a character outside U+0021 to U+007E, "
+                            f"so the label {show(PERSONA_LABEL)} follows it right after "
+                            "it (D10, ADR-0004 part 5)" + reading_note(reading))
+    return problems
+
+
 def own_artifact_boxes(page, record):
     """Rule 4 on a visible persona's own page (ADR-0004 part 5): the code
     boxes that may hold the persona's own name, as its own artifacts do.
@@ -5031,9 +5194,10 @@ def campaign_line_problems(page, record, campaigns, page_path):
     if campaign.get("basis") == "artifact" and isinstance(campaign.get("artifact"), str):
         want += CAMPAIGN_LINE_ARTIFACT.format(artifact=campaign["artifact"])
         # The labelled variant (rule 4): on a visible persona's page an
-        # artifact that is not pure printable ASCII carries the label.
-        if is_persona(record) and not is_hidden(record) and \
-                any(c not in BOX_CHARS for c in campaign["artifact"]):
+        # artifact that holds its name and is not pure printable ASCII
+        # carries the label (box_carries_label, Replikanti/interviewscam#28
+        # PR 3).
+        if box_carries_label(record, campaign["artifact"]):
             want += " " + PERSONA_LABEL
     want = squash(want)
     if el.text() != want:
@@ -6588,8 +6752,7 @@ def campaign_line_tree(record):
     artifact = campaign.get("artifact")
     if campaign.get("basis") == "artifact" and isinstance(artifact, str):
         kids.append(tree("code"))
-        if is_persona(record) and not is_hidden(record) \
-                and not (artifact and all(c in BOX_CHARS for c in artifact)):
+        if box_carries_label(record, artifact):
             kids.append(tree("span", {"class": "persona-label"}))
     return tree("p", {"class": "campaign-line"}, *kids)
 
@@ -6916,6 +7079,7 @@ def cmd_render(args):
             problems += copy_button_problems(page, by_page.get(rel), contact)
             problems += persona_label_problems(page, personas,
                                                own_record(by_page, rel, page))
+            problems += box_label_problems(page, own_record(by_page, rel, page))
             # JSON-LD does not depend on element nesting, so rule 8 reads the
             # page's own record even when the page has a markup: finding.
             problems += structured_data_problems(page, SITE_ORIGIN + page_path,

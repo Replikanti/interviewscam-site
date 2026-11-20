@@ -1,0 +1,1 @@
+rule 4: the box 'Entrevista técnica[.]zip' carries the persona label, but it is plain printable ASCII or holds no name or alias of content/reports/persona-1.md under any reading
