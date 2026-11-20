@@ -1464,10 +1464,24 @@ pairs = [("Ali", "all", False), ("Il", "ill", False), ("Il", "I'll say", False),
          ("Avery Exampleton", "AveryㅣExampleton", True),
          ("Avery Exampleton", "AveryￜExampleton", True), ("Riley", "R1ley", True),
          ("Ian", "LAN", True), ("\u0130van Petrov", "\u0130van Petrov", True),
-         ("\u0130van Petrov", "Ivan Petrov", True)]
+         ("\u0130van Petrov", "Ivan Petrov", True), ("Kelly Brooks", "Ke11y Br00ks", True),
+         ("Ollie", "011ie", True), ("Bill Lloyd", "Bi11 11oyd", True), ("Li", "11:11", False),
+         ("Il", "+1 555 0101", False), ("Li", "room 101", False),
+         ("Avery Exampleton", "Avery 12 Exampleton", False)]
 bad = [(n, x) for n, x, want in pairs
        if bool(hits(n, x)) != want or (sc.r5_reading(sc.r5_patterns(n), x) is not None) != want]
 row("name-pairs", not bad, f"{len(pairs)} pairs, wrong: {bad!r}")
+# Fix round 4 (QA's survivors of run 44777095416): the exact readings that
+# hit, where a reading set can lose an edge: a stroke as the outer
+# boundary under V3 too (Irene before right-to-left text) and the CJK
+# stroke there, a word with exactly CAPS_L_MIN other capitals, digits glued
+# to a name, a held digit run given back (else "12" would join two tokens
+# as no word character), and U+0130 under V2 and V3.
+got = (hits("Rene", "Irene \u05d0\u05d1"), hits("Rene", "\u4e28rene"), hits("Lin", "LlN"),
+       hits("Lin Wu", "LlN WU"), hits("Rene", "Rene12"), hits("Rene", "12Rene"),
+       hits("Avery Exampleton", "Avery 12 Exampleton"),
+       hits("\u0130van Petrov", "\u0130van Petrov \u05d0\u05d1"))
+row("name-pattern-edges", got == ([], [], [3], [3], [], [], [], [2, 3, 5, 6]), f"got {got!r}")
 # A name whose written form has more tokens than its case fold with the
 # marks dropped (a combining mark of its own between two letters): the
 # stroke readings fall back to the case-folded tokens instead of indexing

@@ -3405,12 +3405,15 @@ STROKE_CJK = "\ue003"
 STROKES = STROKE + STROKE_CJK
 CJK_STROKE = "\u4e28"
 STROKE_FORGERY = str.maketrans({STROKE: "\ufffd", STROKE_CJK: "\ufffd"})
-# A run of 2 or more ASCII digits stays digits in the name readings (fix
-# round 2): the table reads "1" as "l" and "0" as "O", which holds for a
-# digit written inside a word ("R1ley") but would make every "11" of a
-# date ("2026-11-01") the alias "Il" or "Li". The digits of a run are held
+# A run of 2 or more ASCII digits that no letter or digit touches stays
+# digits in the name readings (fix rounds 2 and 4): the table reads "1" as
+# "l" and "0" as "O", which holds for digits written inside a word
+# ("R1ley", "Ke11y Br00ks") but would make every "11" of a date
+# ("2026-11-01") the alias "Il" or "Li". The digits of such a run are held
 # as private-use characters through the skeleton and given back after it.
-DIGIT_RUN = re.compile(r"[0-9]{2,}")
+# The lookahead refuses a digit too, so "011ie" is not cut back to a held
+# "01" (delta review 3 finding 1).
+DIGIT_RUN = re.compile(r"(?<![^\W_])[0-9]{2,}(?![^\W_])")
 DIGIT_HOLD = str.maketrans({str(d): chr(0xE010 + d) for d in range(10)})
 DIGIT_RELEASE = str.maketrans({chr(0xE010 + d): str(d) for d in range(10)})
 # Rule (a) of caps_l: a written "l" next to a Latin capital.
