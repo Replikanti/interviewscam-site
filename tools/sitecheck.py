@@ -1055,13 +1055,17 @@ def slugify(name):
     return re.sub(r"[^a-z0-9]+", "-", folded.lower()).strip("-")
 
 
-def word_variants(text):
+def word_variants(text, reading=0):
     """The text as written, entity-decoded, Markdown-unescaped and with its
     markup stripped: NFKC, case-folded, invisibles dropped, whitespace
-    collapsed (R5, R14)."""
+    collapsed (R5, R14); with a reading other than R0, each variant under
+    that reading of NAME_READINGS instead (R5, Replikanti/interviewscam#28
+    PR 2)."""
     variants = {text, html.unescape(text)}
     variants |= {MD_ESCAPE.sub(r"\1", v) for v in list(variants)}
     variants |= {strip_markup(v) for v in list(variants)}
+    if reading:
+        return {name_fold(v, reading) for v in variants}
     return {" ".join(unicodedata.normalize("NFKC", v).translate(INVISIBLE)
                      .casefold().split()) for v in variants}
 
@@ -1302,7 +1306,14 @@ def verdict_problems(record):
 
 def persona_problems(records):
     """R5: (record, problem) for every persona name or alias in the free text
-    or body of any record, so hide_name can remove it in one line."""
+    or body of any record, so hide_name can remove it in one line. Names
+    and texts are read under every reading of NAME_READINGS
+    (word_variants; Replikanti/interviewscam#28 PR 2), and the first
+    reading that finds a name reports it with its reading_note. The word
+    boundary stays \\w in every reading, so "_" (the tatweel's prototype
+    too) joins as in R0: a handle such as riley_placeholder_zoë in
+    params.campaign.artifact is no name here, and render rules 4 and 9,
+    whose name_pattern reads "_" as a separator, hold the rendered page."""
     found = []
     personas = []
     for persona in records:
@@ -1314,21 +1325,33 @@ def persona_problems(records):
         names += [(f"params.aliases[{i}]", a)
                   for i, a in enumerate(aliases if isinstance(aliases, list) else [])]
         for field, name in names:
-            folded = word_variants(name) if isinstance(name, str) else set()
-            for text in sorted(t for t in folded if t):
-                personas.append((persona, field, re.compile(
-                    rf"(?<!\w){re.escape(text)}(?!\w)")))
+            patterns = []
+            for reading in range(len(NAME_READINGS)):
+                folded = word_variants(name, reading) if isinstance(name, str) else set()
+                patterns.append([re.compile(rf"(?<!\w){re.escape(text)}(?!\w)")
+                                 for text in sorted(t for t in folded if t)])
+            personas.append((persona, field, patterns))
+    variants = {}
+
+    def variants_at(text, reading):
+        if (text, reading) not in variants:
+            variants[text, reading] = word_variants(text, reading)
+        return variants[text, reading]
     for record in records:
         texts = free_text(record) + [("body", record.body)]
-        for persona, field, pattern in personas:
+        for persona, field, patterns in personas:
             for path, text in texts:
                 if record is persona and (path == "params.name"
                                           or path.startswith("params.aliases[")):
                     continue
-                if any(pattern.search(v) for v in word_variants(text)):
+                hit = next((r for r, at in enumerate(patterns)
+                            if any(pattern.search(v) for pattern in at
+                                   for v in variants_at(text, r))), None)
+                if hit is not None:
                     found.append((record, f"{path}: contains the {field} of the persona "
                                   f"record {persona.rel}; a persona name renders only "
-                                  "from that record, so hide_name can remove it (R5)"))
+                                  "from that record, so hide_name can remove it (R5)"
+                                  + reading_note(hit)))
     return list(dict.fromkeys(found))
 
 
@@ -2878,30 +2901,38 @@ class Element:
             elif child.tag not in ("script", "style"):
                 yield from child.strings(shown, spans)
 
-    def paragraph_strings(self, shown=True, preserve=False):
+    def paragraph_strings(self, shown=True, preserve=False, spans=frozenset()):
         """strings(shown) as a browser lays them out before the bidi
         algorithm (bidi_text): outside an element of BIDI_PRESERVE_TAGS
         every run of CSS collapsible whitespace (BIDI_COLLAPSIBLE) is one
         space, inside one the text stays as it is; BIDI_PARAGRAPH at the
         start and the end of every element of BIDI_BLOCK_TAGS and at every
-        <br>."""
+        <br>. The elements in spans are marked as strings() marks them
+        (rule 4's names, Replikanti/interviewscam#28 PR 2)."""
         closed = shown and self.tag == "details" and "open" not in self.attrs
         for child in self.children:
             if isinstance(child, str):
                 if not closed:
-                    yield child if preserve else BIDI_COLLAPSIBLE.sub(" ", child)
+                    text = child if preserve else BIDI_COLLAPSIBLE.sub(" ", child)
+                    yield text.translate(SPAN_FORGERY) if spans else text
             elif shown and (child.tag in NO_TEXT_ELEMENTS or child.hides()):
                 continue
             elif child.tag == "br":
                 yield BIDI_PARAGRAPH
-            elif child.tag in BIDI_BLOCK_TAGS:
-                yield BIDI_PARAGRAPH
-                yield from child.paragraph_strings(shown, preserve or child.tag in BIDI_PRESERVE_TAGS)
-                yield BIDI_PARAGRAPH
             elif child.tag not in ("script", "style"):
-                yield from child.paragraph_strings(shown, preserve or child.tag in BIDI_PRESERVE_TAGS)
+                block, marked = child.tag in BIDI_BLOCK_TAGS, child in spans
+                if marked:
+                    yield SPAN_OPEN
+                if block:
+                    yield BIDI_PARAGRAPH
+                yield from child.paragraph_strings(
+                    shown, preserve or child.tag in BIDI_PRESERVE_TAGS, spans)
+                if block:
+                    yield BIDI_PARAGRAPH
+                if marked:
+                    yield SPAN_CLOSE
 
-    def bidi_text(self, shown=True):
+    def bidi_text(self, shown=True, spans=frozenset()):
         """The text a browser hands the bidi algorithm (fix rounds 2 and 3,
         delta reviews 2 and 3, finding 1): joined tight, as inline text lays
         out, with one BIDI_PARAGRAPH between the paragraphs a browser
@@ -2912,8 +2943,10 @@ class Element:
         visual_order, and a tab of a <pre> or a U+001F stays a segment
         separator (Bidi_Class S, rule L1). Never str.split(), which takes all
         of them for spaces. The letters and digits are those of text(), so
-        only the visual readings see the difference."""
-        joined = re.sub(" {2,}", " ", "".join(self.paragraph_strings(shown)))
+        only the visual readings see the difference. With spans, the text of
+        each element in spans sits between SPAN_OPEN and SPAN_CLOSE, as in
+        text() (rule 4's names)."""
+        joined = re.sub(" {2,}", " ", "".join(self.paragraph_strings(shown, spans=spans)))
         return BIDI_PARAGRAPH_RUN.sub(BIDI_PARAGRAPH, joined).strip(" " + BIDI_PARAGRAPH)
 
     def text(self, sep="", shown=True, spans=frozenset()):
@@ -3698,20 +3731,65 @@ def visual_order(text):
     is then 0."""
     if text.isascii():
         return text
-    classes, brackets, rtl = bidi_tables()
-    if rtl.search(text) is None:
+    if bidi_tables()[2].search(text) is None:
         return text
+    return "".join(text[i] for i in visual_indices(text))
+
+
+def visual_indices(text):
+    """The indices of text in the order visual_order draws its characters,
+    each paragraph separator in place (a BN character, which X9 removes,
+    has none)."""
+    classes, brackets, _ = bidi_tables()
     out, para = [], []
     b_class = BIDI_CLASSES.index("B")
-    for ch in text + "\n":
+    for i, ch in enumerate(text + "\n"):
         if classes[ord(ch)] != b_class:
-            para.append(ord(ch))
+            para.append(i)
             continue
-        _, order = bidi_resolve(para, classes, brackets)
-        out.extend(chr(para[i]) for i in order)
-        out.append(ch)
+        _, order = bidi_resolve([ord(text[j]) for j in para], classes, brackets)
+        out.extend(para[k] for k in order)
+        out.append(i)
         para = []
-    return "".join(out[:-1])
+    return out[:-1]
+
+
+def visual_spans(text):
+    """visual_order of a text that carries rule 4's span markers
+    (Replikanti/interviewscam#28 PR 2): the markers stay out of the bidi
+    algorithm, because as private-use characters (class L) they would
+    change the order around them, and are set again around every run of
+    characters of one span in the drawn order. So a name drawn wholly
+    inside one own-artifact box stays exempt, and a reordering that
+    carries it across a box's edge leaves it in the scan."""
+    if SPAN_OPEN not in text and SPAN_CLOSE not in text:
+        return visual_order(text)
+    chars, owner, stack, count = [], [], [], 0
+    for ch in text:
+        if ch == SPAN_OPEN:
+            count += 1
+            stack.append(count)
+        elif ch == SPAN_CLOSE:
+            if stack:
+                stack.pop()
+        else:
+            chars.append(ch)
+            owner.append(stack[-1] if stack else 0)
+    plain = "".join(chars)
+    if visual_order(plain) == plain:
+        return text
+    out, current = [], 0
+    for i in visual_indices(plain):
+        if owner[i] != current:
+            if current:
+                out.append(SPAN_CLOSE)
+            if owner[i]:
+                out.append(SPAN_OPEN)
+            current = owner[i]
+        out.append(plain[i])
+    if current:
+        out.append(SPAN_CLOSE)
+    return "".join(out)
 
 
 def _skeleton(text, capital_i, marks, visual=False):
@@ -3756,10 +3834,90 @@ def skeleton_fold(text, capital_i=False, visual=False):
     """Reading R1 of a name (R2 with capital_i, V1 or V2 with visual): the
     skeleton loop with the combining marks kept, every modifier letter (Lm)
     left over as a space (the table maps the tatweel U+0640 and NKo U+07FA
-    to "_" itself), NFC, whitespace collapsed. PR 2 of
-    Replikanti/interviewscam#28 matches the persona names with it."""
+    to "_" itself), NFC, whitespace collapsed. name_fold matches the
+    persona names with it (Replikanti/interviewscam#28 PR 2)."""
     folded = _skeleton(text, capital_i, False, visual).translate(LM_AS_SPACE)
     return " ".join(unicodedata.normalize("NFC", folded).split())
+
+
+# The persona names (Replikanti/interviewscam#28 PR 2, ADR-0004 part 5
+# amendment): rules 4, 9 and 12 and R5 read a name and a text the seven
+# ways rule 17 reads the state sentences (sentence_folds), each the
+# reading of the same index of NAME_READINGS: R0 is fold_words, the plain
+# fold of before, so no earlier finding moves and a separator the
+# skeleton reads as a letter ("Avery|Exampleton", "|" read as "l") still
+# separates; R1 is skeleton_fold, R2 that with capital_i, R3 R1 with every
+# "i" read as "l" on both sides; V1 to V3 are R1 to R3 over the order a
+# browser draws the text in (visual_order), so a right-to-left look-alike
+# stored reversed is read as drawn. Unlike the sentences, a name keeps its
+# combining marks ("Zoë" is not "Zoe"; out of scope, as in PR #27) and its
+# punctuation, which name_pattern reads as separators: the skeleton maps
+# the tatweel U+0640 to "_" and turns every modifier letter (Lm) into a
+# space, so either between two tokens separates them as a space does,
+# where R0 read both as letters. The readings are tried in this order and
+# the first that matches reports, so an R0 message is the message of
+# before; every other reading appends LOOKALIKE_NOTE (R1 to R3) or
+# DRAWN_NOTE (V1 to V3).
+NAME_READINGS = ("R0", "R1", "R2", "R3", "V1", "V2", "V3")
+# (capital_i, "i" read as "l", visual) of each reading but R0.
+NAME_READING_FORMS = {1: (False, False, False), 2: (True, False, False),
+                      3: (False, True, False), 4: (False, False, True),
+                      5: (True, False, True), 6: (False, True, True)}
+LOOKALIKE_NOTE = (" (a look-alike spelling, matched through the Unicode confusables "
+                  "skeleton, UTS #39)")
+DRAWN_NOTE = (" (a look-alike spelling in the order a browser draws it, matched "
+              "through the Unicode confusables skeleton, UTS #39, and the bidi "
+              "algorithm, UAX #9)")
+# A pattern that matches nothing: a reading under which a name folds to no
+# text (a token of modifier letters only) cannot see it; R0 still can.
+NEVER = re.compile(r"(?!)")
+
+
+def reading_note(reading):
+    """The text a finding of a name rule adds for the reading that found
+    it: none for R0, so its message stays byte for byte."""
+    if reading == 0:
+        return ""
+    return DRAWN_NOTE if NAME_READING_FORMS[reading][2] else LOOKALIKE_NOTE
+
+
+def name_fold(text, reading, drawn=False, cache=True):
+    """text under one reading of NAME_READINGS. With drawn, text is
+    already in the order a browser draws it (visual_spans, or a name
+    token), so V1 to V3 do not reorder it again. Without cache, the fold
+    bypasses skeleton_fold's cache: rules 4 and 9 fold whole pages and
+    files once each, and a cache of them only holds memory."""
+    if reading == 0:
+        return fold_words(text)
+    capital_i, i_as_l, visual = NAME_READING_FORMS[reading]
+    fold = skeleton_fold if cache else skeleton_fold.__wrapped__
+    folded = fold(text, capital_i, visual and not drawn)
+    return folded.replace("i", "l") if i_as_l else folded
+
+
+def reading_folds(texts, drawn, reading, memo, uncached):
+    """[name_fold(t, reading) for t in texts], with the work shared between
+    the readings through memo (reading to list): R3 and V3 are R1 and V1
+    with every "i" read as "l", and V1 and V2 read each text in its drawn
+    form (drawn, a list of the same length: the text in the order a
+    browser draws it), which for a text that draws as stored is the fold
+    R1 or R2 already made. The first uncached texts are folded without
+    skeleton_fold's cache (whole pages and files, read once)."""
+    if reading not in memo:
+        if reading == 0:
+            out = [fold_words(t) for t in texts]
+        elif NAME_READING_FORMS[reading][1]:
+            out = [t.replace("i", "l") for t in
+                   reading_folds(texts, drawn, reading - 2, memo, uncached)]
+        elif NAME_READING_FORMS[reading][2]:
+            plain = reading_folds(texts, drawn, reading - 3, memo, uncached)
+            out = [plain[i] if form == texts[i]
+                   else name_fold(form, reading, drawn=True, cache=i >= uncached)
+                   for i, form in enumerate(drawn)]
+        else:
+            out = [name_fold(t, reading, cache=i >= uncached) for i, t in enumerate(texts)]
+        memo[reading] = out
+    return memo[reading]
 
 
 # M4 PR 3 fix round 10 (delta review 9 finding 1): foreign content. Python's
@@ -4053,26 +4211,40 @@ def lookup_urls(record):
     return listed, possible
 
 
-def name_pattern(name):
-    """A name as whole words (NFKC, case-folded): its alphanumeric tokens in
-    order, with a run of other characters between them (or none, when
-    every token has JOIN_MIN_LETTERS letters), and no letter or digit right
-    before or after (rules 4 and 9). An initial (a single-letter token)
-    matches only with a period right after it ("A. Page", "a.page"), so it
-    never meets ordinary copy such as "a page"."""
-    folded = fold_words(name)
+@functools.lru_cache(maxsize=4096)
+def name_pattern(name, reading=0):
+    """A name as whole words under one reading of NAME_READINGS (rules 4, 9
+    and 12): its alphanumeric tokens in order, with a run of other
+    characters between them (or none, when every token has
+    JOIN_MIN_LETTERS letters), and no letter or digit right before or
+    after. An initial (a single-letter token) matches only with a period
+    right after it ("A. Page", "a.page"), so it never meets ordinary copy
+    such as "a page". The tokens, the initials and the letter counts come
+    from the name as R0 reads it (in the drawn order for V1 to V3), and
+    only each token's text is folded with the reading
+    (Replikanti/interviewscam#28 PR 2): the skeleton reads "m" as "rn", so
+    a structure taken from it would make "Tim" a joinable 4-letter token
+    and the initial "M." an "rn" that matches without its period."""
+    visual = reading != 0 and NAME_READING_FORMS[reading][2]
+    folded = fold_words(visual_order(name) if visual else name)
     tokens = NAME_TOKEN.findall(folded)
     if not tokens:
-        return re.compile(rf"(?<![^\W_]){re.escape(folded)}(?![^\W_])")
+        whole = name_fold(visual_order(name) if visual else name, reading, drawn=True)
+        if not whole and reading:
+            return NEVER  # R0 keeps its old pattern, which fails closed
+        return re.compile(rf"(?<![^\W_]){re.escape(whole)}(?![^\W_])")
     joinable = all(sum(c.isalpha() for c in tok) >= JOIN_MIN_LETTERS for tok in tokens)
 
     def initial(tok):
         return len(tok) == 1 and tok.isalpha()
     parts = []
     for i, tok in enumerate(tokens):
+        text = name_fold(tok, reading, drawn=True)
+        if not text:
+            return NEVER
         if i:
             parts.append(r"[\W_]*" if joinable or initial(tokens[i - 1]) else r"[\W_]+")
-        parts.append(re.escape(tok) + (r"\." if initial(tok) else ""))
+        parts.append(re.escape(text) + (r"\." if initial(tok) else ""))
     return re.compile(rf"(?<![^\W_]){''.join(parts)}(?![^\W_])")
 
 
@@ -4416,12 +4588,17 @@ def page_value_texts(page):
     return texts
 
 
-def hidden_texts(page):
+def hidden_texts(page, bidi=False):
     """The text of every outermost element that hides its content
-    (HIDDEN_CONTENT), <template> content included."""
-    texts = [el.text(sep, shown=False) for el in page.root.walk()
-             if el.hides() and not (el.parent is not None and el.parent.concealed())
-             for sep in ("", " ")]
+    (HIDDEN_CONTENT), <template> content included. With bidi, each
+    element's text as Element.bidi_text joins it, for the drawn readings
+    of rule 4 (Replikanti/interviewscam#28 PR 2)."""
+    outer = [el for el in page.root.walk()
+             if el.hides() and not (el.parent is not None and el.parent.concealed())]
+    if bidi:
+        texts = [el.bidi_text(shown=False) for el in outer]
+    else:
+        texts = [el.text(sep, shown=False) for el in outer for sep in ("", " ")]
     # The loose text of a closed <details> (outside its <summary>) is hidden
     # too; its element children are collected above, since they hide.
     texts += [squash(sep.join(c for c in el.children if isinstance(c, str)))
@@ -4512,56 +4689,112 @@ def in_one_span(text, match):
     return text.rfind(SPAN_OPEN, 0, match.start()) > text.rfind(SPAN_CLOSE, 0, match.start())
 
 
+class NameTexts:
+    """The texts of one page that rule 4 reads the persona names in, folded
+    per reading of NAME_READINGS on first use (reading_folds;
+    Replikanti/interviewscam#28 PR 2): the joined text tight, spaced and as
+    Element.bidi_text joins it, each once without and once with hidden
+    content (fix round 4 of PR 1: either alone misses a name split by what
+    the other holds, a hidden span inside it or the hidden Copy button
+    between two boxes), then every attribute value and JSON-LD string
+    (page_value_texts). V1 to V3 read the two bidi_text forms through
+    visual_spans, each block a paragraph of its own, and each value as one
+    paragraph; the tight and spaced texts they read as stored. The joined
+    texts keep the elements in spans between SPAN_OPEN and SPAN_CLOSE;
+    get() flags them, because only they take the span exemption."""
+
+    def __init__(self, page, spans=frozenset()):
+        root = page.root
+        stored = [root.text(spans=spans), root.text(" ", spans=spans),
+                  root.bidi_text(spans=spans), root.text(shown=False, spans=spans),
+                  root.text(" ", shown=False, spans=spans),
+                  root.bidi_text(shown=False, spans=spans)]
+        values = list(dict.fromkeys(page_value_texts(page)))
+        self.joined = len(stored)
+        self.texts = stored + values
+        self.drawn = [visual_spans(t) if i in (2, 5) else t for i, t in enumerate(stored)] + \
+            [visual_order(v) for v in values]
+        self.memo, self.pairs = {}, {}
+
+    def get(self, reading):
+        """[(text, joined)] under the reading."""
+        if reading not in self.pairs:
+            folded = reading_folds(self.texts, self.drawn, reading, self.memo, self.joined)
+            self.pairs[reading] = [(t, i < self.joined) for i, t in enumerate(folded)]
+        return self.pairs[reading]
+
+
 def persona_label_problems(page, personas, own=None):
     """Rule 4 (D10): every whole-word occurrence of a visible persona's name
     or alias is followed by the persona label, and none sits in hidden
     content, where a label does not count. own is the record whose own page
     this is (own_record): for that persona's names alone a match that lies
     wholly inside the label-first <title> or one own-artifact box is
-    exempt; a match that runs across a box's edge is not."""
+    exempt; a match that runs across a box's edge is not. Each check runs
+    under every reading of NAME_READINGS in turn (NameTexts), and the first
+    reading that flags a field reports it, with its reading_note."""
     problems = []
-    label = " " + fold_words(PERSONA_LABEL)
     for el in by_class(page, "persona-label"):
         if el.text() != PERSONA_LABEL:
             problems.append(f"rule 4: a persona-label element reads {show(el.text())}, "
                             f"the label is {show(PERSONA_LABEL)} (D10)")
-    texts = [fold_words(t) for t in page_texts(page)]
+    if not personas:
+        return problems
+    texts = NameTexts(page)
     own_texts = texts
     if own is not None and any(own is p for p in personas):
         spans = frozenset(head_exemption(page, own) | own_artifact_boxes(page, own))
         if spans:
-            own_texts = [fold_words(t) for t in page_texts(page, spans)]
-    hidden = [fold_words(t) for t in hidden_texts(page)]
+            own_texts = NameTexts(page, spans)
+    hidden = {}
+
+    def hidden_at(reading):
+        if reading not in hidden:
+            visual = reading != 0 and NAME_READING_FORMS[reading][2]
+            hidden[reading] = [name_fold(t, reading) for t in hidden_texts(page, visual)]
+        return hidden[reading]
+
+    def bare_at(persona, names, pattern, reading):
+        label = " " + name_fold(PERSONA_LABEL, reading)
+        for text, joined in (own_texts if persona is own else texts).get(reading):
+            matches = [m for m in pattern.finditer(text) if not text.startswith(label, m.end())]
+            if not matches:
+                continue
+            # A shorter name inside a labelled longer one (an alias that
+            # is part of the name) is covered by that label.
+            covered = [(m.start(), m.end()) for _, other in names
+                       for m in name_pattern(other, reading).finditer(text)
+                       if text.startswith(label, m.end())]
+            # The span exemption applies to the joined texts only:
+            # attribute values and JSON-LD strings get none, so a marker
+            # forged there exempts nothing.
+            if any(not any(s <= m.start() and m.end() <= e and (s, e) != m.span()
+                           for s, e in covered)
+                   and not (persona is own and joined and in_one_span(text, m))
+                   for m in matches):
+                return True
+        return False
+
     for persona in personas:
         names = record_names(persona)
         for field, name in names:
-            pattern = name_pattern(name)
-            if any(pattern.search(text) for text in hidden):
+            found = next((r for r in range(len(NAME_READINGS))
+                          if any(name_pattern(name, r).search(text) for text in hidden_at(r))),
+                         None)
+            if found is not None:
                 problems.append(f"rule 4: the {field} of the persona record "
                                 f"{persona.rel} appears in hidden content "
-                                f"({HIDDEN_CONTENT}), where no label counts (D10)")
-            # The span exemption applies to the two joined texts (indexes 0
-            # and 1) only: attribute values and JSON-LD strings get none, so
-            # a marker forged there exempts nothing.
-            for i, text in enumerate(own_texts if persona is own else texts):
-                # A shorter name inside a labelled longer one (an alias that
-                # is part of the name) is covered by that label.
-                covered = [(m.start(), m.end()) for _, other in names
-                           for m in name_pattern(other).finditer(text)
-                           if text.startswith(label, m.end())]
-                bare = [m for m in pattern.finditer(text)
-                        if not text.startswith(label, m.end())
-                        and not any(s <= m.start() and m.end() <= e and (s, e) != m.span()
-                                    for s, e in covered)
-                        and not (persona is own and i < 2 and in_one_span(text, m))]
-                if bare:
-                    problems.append(f"rule 4: the {field} of the persona record "
-                                    f"{persona.rel} renders without the label "
-                                    f"{show(PERSONA_LABEL)} right after it (D10; the "
-                                    "only exemptions are the label-first <title> of its "
-                                    "own page and its own artifact boxes there, "
-                                    "ADR-0004 parts 4 and 5)")
-                    break
+                                f"({HIDDEN_CONTENT}), where no label counts (D10)"
+                                + reading_note(found))
+            found = next((r for r in range(len(NAME_READINGS))
+                          if bare_at(persona, names, name_pattern(name, r), r)), None)
+            if found is not None:
+                problems.append(f"rule 4: the {field} of the persona record "
+                                f"{persona.rel} renders without the label "
+                                f"{show(PERSONA_LABEL)} right after it (D10; the "
+                                "only exemptions are the label-first <title> of its "
+                                "own page and its own artifact boxes there, "
+                                "ADR-0004 parts 4 and 5)" + reading_note(found))
     return problems
 
 
@@ -4911,18 +5144,25 @@ def percent_decodings(text):
 
 
 def file_texts(rel, data, page):
-    """The R3 scan set of one built file, as read (cmd_render folds it with
-    fold_words for rule 9's word matching): the file's path (every
+    """The R3 scan set of one built file, as read (rule 9 folds it per
+    reading of NAME_READINGS for its word matching): the file's path (every
     directory and file name), raw, entity-decoded and percent-decoded text
-    (comments included), joined text (hidden and <template> content
-    included), attribute values, JSON-LD strings, and every string of a
+    (comments included), joined text (with and without hidden and
+    <template> content, tight, spaced and as Element.bidi_text joins it),
+    attribute values, JSON-LD strings, and every string of a
     file that parses as JSON whatever its name. A file that is not UTF-8 is
     read with replacement characters, so its text is scanned too."""
     text = data.decode("utf-8", "replace")
     unescaped = html.unescape(text)
     scans = percent_decodings(rel) + [text] + percent_decodings(unescaped)
     if page is not None:
-        scans += [page.root.text(shown=False), page.root.text(" ", shown=False)]
+        # The shown text and both bidi_text forms too (Replikanti/interviewscam#28
+        # PR 2): hidden content inside a name splits it in the text with
+        # hidden content but not in the shown text, and the drawn readings
+        # of rule 9 resolve each block on its own.
+        scans += [page.root.text(shown=False), page.root.text(" ", shown=False),
+                  page.root.text(), page.root.text(" "), page.root.bidi_text(),
+                  page.root.bidi_text(shown=False)]
         for el in page.root.walk():
             for value in el.attrs.values():
                 scans += percent_decodings(value)
@@ -5002,17 +5242,28 @@ def bidi_markup_problems(page):
     return problems
 
 
-def hidden_name_problems(scans, hidden):
+def hidden_name_problems(texts, hidden):
     """Rule 9: no name or alias of a hidden persona in the file, its path
-    included. The finding names the field, never the name."""
-    problems = []
+    included, under any reading of NAME_READINGS (texts as file_texts reads
+    them, folded per reading on first use; Replikanti/interviewscam#28 PR
+    2). The finding names the field, never the name; the first reading that
+    finds it adds its reading_note."""
+    problems, memo = [], {}
+    texts = list(dict.fromkeys(texts))
+    drawn = []
+
+    def scans_at(reading):
+        if not drawn:
+            drawn.extend(visual_order.__wrapped__(t) for t in texts)
+        return reading_folds(texts, drawn, reading, memo, len(texts))
     for persona in hidden:
         for field, name in record_names(persona):
-            pattern = name_pattern(name)
-            if any(pattern.search(s) for s in scans):
+            found = next((r for r in range(len(NAME_READINGS))
+                          if any(name_pattern(name, r).search(s) for s in scans_at(r))), None)
+            if found is not None:
                 problems.append(f"rule 9: the {field} of {persona.rel} is hidden "
                                 "(hide_name) and appears in this file or its path "
-                                "(ADR-0004 part 5)")
+                                "(ADR-0004 part 5)" + reading_note(found))
     return problems
 
 
@@ -5402,18 +5653,23 @@ def feed_problems(public, schema_dir, records, personas, pages):
         out.append((FEED_REL, f"rule 12: updated is {show(feed['updated'])}, the latest "
                     f"record date or review date is {show(updated)}"))
     # Rule 12, D10 (#23 STOP 2 decision 1): a visible persona's name, matched
-    # as rule 4 matches it, appears only inside its own labelled entry.
+    # as rule 4 matches it (under every reading of NAME_READINGS, the first
+    # that finds it reporting; Replikanti/interviewscam#28 PR 2), appears
+    # only inside its own labelled entry.
     strings = list(iter_strings(feed, ""))
     for persona in personas:
         for field, name in record_names(persona):
-            pattern = name_pattern(name)
             for where, text in strings:
-                if pattern.search(fold_words(text)) and \
-                        not feed_name_exempt(where, feed["reports"], persona):
+                if feed_name_exempt(where, feed["reports"], persona):
+                    continue
+                found = next((r for r in range(len(NAME_READINGS))
+                              if name_pattern(name, r).search(name_fold(text, r))), None)
+                if found is not None:
                     out.append((FEED_REL, f"rule 12: the {field} of the persona record "
                                 f"{persona.rel} appears in {where}; in the feed it may "
                                 "appear only as its own entry's name and aliases, with "
-                                "name_label set, and in that entry's artifacts (D10)"))
+                                "name_label set, and in that entry's artifacts (D10)"
+                                + reading_note(found)))
     return out, summary
 
 
@@ -6467,7 +6723,7 @@ def cmd_render(args):
         if any("claimreview" in s for s in scans):
             problems.append("rule 8: contains ClaimReview; it is never used (ADR-0004 "
                             "part 8, SPEC section 5)")
-        problems += hidden_name_problems(scans, hidden)
+        problems += hidden_name_problems(texts, hidden)
         page_path = own_path(rel.removeprefix("public/"))
         if page is not None:
             if any("download" in n.attrs for n in page.root.walk()):

@@ -1403,6 +1403,49 @@ got = (sc.skeleton_fold("Аvery Exampleton"), sc.skeleton_fold("AveryˌExampleto
 row("skeleton-fold", got == ("avery exarnpleton", "avery exarnpleton", "avery exarnpleton",
                              "avery exarnpleotn", "ivery"), f"got {got!r}")
 
+# The persona-name readings (Replikanti/interviewscam#28 PR 2): the note
+# each reading adds (none for R0, so an R0 message stays byte for byte),
+# the token structure taken from R0 (the skeleton reads "m" as "rn": "Tim"
+# stays a 3-letter token that does not join, "M." stays an initial that
+# needs its period), a name that folds to nothing under a reading, the
+# span markers through the drawn order, and the shared folds of
+# reading_folds against name_fold.
+notes = [sc.reading_note(r) for r in range(len(sc.NAME_READINGS))]
+row("name-reading-notes", sc.NAME_READINGS == ("R0", "R1", "R2", "R3", "V1", "V2", "V3")
+    and notes == [""] + [sc.LOOKALIKE_NOTE] * 3 + [sc.DRAWN_NOTE] * 3
+    and sc.NAME_READING_FORMS == {1: (False, False, False), 2: (True, False, False),
+                                  3: (False, True, False), 4: (False, False, True),
+                                  5: (True, False, True), 6: (False, True, True)},
+    f"{len(notes)} notes")
+R = range(len(sc.NAME_READINGS))
+
+
+def hits(name, text):
+    return [r for r in R if sc.name_pattern(name, r).search(sc.name_fold(text, r))]
+
+
+got = (hits("Tim Kim", "TimKim"), hits("Tim Kim", "Tim Kim"), hits("Tim Kim", "Tim-Kim"),
+       hits("Avery Exampleton", "AveryExampleton"))
+row("name-pattern-join-min-letters", got == ([], list(R), list(R), list(R)), f"got {got!r}")
+got = (hits("M. Page", "m page"), hits("M. Page", "M. Page"), hits("M. Page", "m.page"),
+       hits("M. Page", "rn page"), hits("M. Page", "rn. page"))
+row("name-pattern-initial", got == ([], list(R), list(R), [], [1, 2, 3, 4, 5, 6]), f"got {got!r}")
+got = (sc.name_pattern("ˌ", 0) is sc.NEVER, sc.name_pattern("ˌ", 1) is sc.NEVER,
+       sc.name_pattern("⠀", 0) is sc.NEVER, sc.name_pattern("⠀", 1) is sc.NEVER,
+       hits("⠀", "x ⠀ y"))
+row("name-pattern-folds-to-nothing", got == (False, True, False, True, [0]), f"got {got!r}")
+O, C = sc.SPAN_OPEN, sc.SPAN_CLOSE
+got = (sc.visual_spans(f"x {O}אב{C} y"), sc.visual_spans(f"א{O}בc{C}"),
+       sc.visual_spans(f"x {O}ab{C} y"), sc.visual_spans("x אב y"))
+row("visual-spans", got == (f"x {O}בא{C} y", f"{O}ב{C}א{O}c{C}",
+                            f"x {O}ab{C} y", "x בא y"), f"got {got!r}")
+texts = ["Riley Placehוסder", "RΙLEY |nfo", "plain text", "Mоrgan א"]
+drawn = [sc.visual_order(t) for t in texts]
+memo = {}
+bad = [r for r in R if sc.reading_folds(texts, drawn, r, memo, 2)
+       != [sc.name_fold(t, r) for t in texts]]
+row("reading-folds", not bad, f"readings that differ from name_fold: {bad}")
+
 # The guard's pin on built roots: every vendored file is copied unless the
 # case names it.
 def guard(root):
@@ -5078,6 +5121,39 @@ PINNED
       n_failed=$((n_failed + 1))
     fi
   fi
+  # render-persona/<row> and records-persona/<row> (Replikanti/interviewscam#28
+  # PR 2): the persona names under the look-alike readings, render rules 4,
+  # 9 and 12 from tests/fixtures/render/persona-cases.tsv on a copy of
+  # render/pass-report-pins, and records rule R5 from
+  # tests/fixtures/records/persona-cases.tsv on a copy of
+  # records/pass-fixture-site (search_cases_runner, the records command for
+  # R5): one row per reading class a name can hide behind (a look-alike
+  # letter, a blank, the tatweel and a modifier letter between tokens, an
+  # upper-case capital iota, a pipe for a space or for an "i", a
+  # right-to-left run stored reversed and its stored-order control), per
+  # place (body text, hidden content, an own box, the <title>, JSON-LD, an
+  # attribute, the feed, a hidden persona's name, a second persona whose
+  # name has the same skeleton) and the PASS rows that hold the exemptions.
+  local persona_label persona_base persona_command
+  for persona_label in render-persona records-persona; do
+    selftest_wants "$persona_label" || continue
+    if [[ "$persona_label" == render-persona ]]; then
+      persona_base="$FIXTURES/render/pass-report-pins" persona_command=render
+    else
+      persona_base="$FIXTURES/records/pass-fixture-site" persona_command=records
+    fi
+    search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/${persona_label%-persona}/persona-cases.tsv" "$persona_base" \
+      "$SELFTEST_ROOT/schema" "$persona_label" "$persona_command" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE "^(ok   |FAIL )$persona_label/table" "$out"; then
+      echo "FAIL $persona_label: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  done
   local bidi_label bidi_table bidi_drop
   for bidi_label in render-bidi records-bidi; do
     selftest_wants "$bidi_label" || continue
