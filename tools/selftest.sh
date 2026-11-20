@@ -1466,6 +1466,15 @@ pairs = [("Ali", "all", False), ("Il", "ill", False), ("Il", "I'll say", False),
 bad = [(n, x) for n, x, want in pairs
        if bool(hits(n, x)) != want or (sc.r5_reading(sc.r5_patterns(n), x) is not None) != want]
 row("name-pairs", not bad, f"{len(pairs)} pairs, wrong: {bad!r}")
+# A name whose case fold has more tokens than the name as written (U+0130
+# folds to "i" + a combining dot): the stroke readings fall back to the
+# case-folded tokens instead of indexing past the written ones.
+try:
+    got = [bool(sc.name_pattern("\u0130van Petrov", r).search(sc.name_fold("I.van Petrov", r)))
+           for r in range(4)]
+except Exception as exc:  # noqa: BLE001 - the row reports any crash
+    got = repr(exc)
+row("name-pattern-case-fold-split", got == [True, False, True, True], f"got {got!r}")
 got = (sc.caps_l("RlLEY lVAN Il Ill all McLl"), sc.stroke_table()[0x4E28] == sc.STROKE_CJK,
        sorted(cp for cp, v in sc.confusable_tables()[0].items() if v == "丨")
        == sorted(cp for cp, v in sc.stroke_table().items() if v == sc.STROKE_CJK and cp != 0x4E28))
