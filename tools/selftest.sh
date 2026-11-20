@@ -354,7 +354,9 @@ PY
 # (records-bidi, records rule R16; Replikanti/interviewscam#28). A row is
 # name, file, find, replace and expect, tab-separated, with \n, \t, \r and
 # \0 in find and replace read as a newline, a tab, U+000D and U+0000 (fix
-# round 12: a table line cannot hold the last two), then optional further find
+# round 12: a table line cannot hold the last two), and \u{XXXX} as that code
+# point (Replikanti/interviewscam#28 fix round 3: U+001C to U+001E, U+0085 and
+# U+2029 end a line for str.splitlines), then optional further find
 # and replace pairs, applied in order (fix round 9: a wrapper row closes its
 # wrapper, because an element an ancestor's end tag closes is a markup:
 # finding). It copies the base case to
@@ -378,6 +380,7 @@ import argparse
 import contextlib
 import importlib.util
 import io
+import re
 import shutil
 import sys
 import tempfile
@@ -402,6 +405,7 @@ no_intake = not (base / "intake.txt").is_file()
 
 
 def unescape(text):
+    text = re.sub(r"\\u\{([0-9A-F]{4,6})\}", lambda m: chr(int(m.group(1), 16)), text)
     return (text.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
             .replace("\\0", "\x00"))
 
@@ -1359,6 +1363,38 @@ row("visual-order", sc.visual_order("ab אב cd") == "ab בא cd"
     and sc.visual_order("אב\nגד") == "בא\nדג"
     and sc.visual_order("café x") == "café x" and sc.visual_order("a​b") == "a​b",
     "one reversed run, a paragraph separator kept in place, the stored order without R, AL or AN")
+# The paragraphs of Element.bidi_text (fix rounds 2 and 3): every member of
+# BIDI_BLOCK_TAGS, written out here and compared with the code, opens and
+# closes a paragraph (a <br> and <hr> one each), an inline element none;
+# every member of BIDI_PRESERVE_TAGS keeps its line feed and tab, other text
+# collapses them to a space; and U+001C to U+001F and U+0085 reach the text
+# as written (delta reviews 2 and 3, QA B4).
+blocks = ("address article aside blockquote body caption dd details dialog div dl dt fieldset "
+          "figcaption figure footer form h1 h2 h3 h4 h5 h6 header hgroup hr html legend li main "
+          "menu nav ol p pre search section summary table tbody td tfoot th thead tr ul").split()
+preserve = ("listing", "plaintext", "pre", "textarea", "xmp")
+P = sc.BIDI_PARAGRAPH
+
+
+def bidi(body):
+    return sc.parse_render_page(f"<!doctype html><html><body><main>{body}</main></body></html>").root.bidi_text()
+
+
+row("bidi-block-tags", sorted(sc.BIDI_BLOCK_TAGS) == sorted(blocks) and len(blocks) == 46,
+    f"{len(sc.BIDI_BLOCK_TAGS)} members, the written list {len(blocks)}")
+opened = {"details": " open", "dialog": " open"}  # closed ones hide their text
+bad = [t for t in blocks if bidi(f"a<{t}{opened.get(t, '')}>b</{t}>c" if t != "hr" else "a<hr>c")
+       != (f"a{P}b{P}c" if t != "hr" else f"a{P}c")]
+bad += [t for t in ("span", "b", "a", "code", "em") if bidi(f"a<{t}>b</{t}>c") != "abc"]
+bad += ["br"] if bidi("a<br>c") != f"a{P}c" else []
+row("bidi-block-paragraphs", not bad, f"every member a paragraph, br one, inline none; wrong: {bad}")
+row("bidi-preserve-tags", sorted(sc.BIDI_PRESERVE_TAGS) == sorted(preserve),
+    f"{sorted(sc.BIDI_PRESERVE_TAGS)}")
+bad = [t for t in preserve if f"x\ny\tz" not in bidi(f"<{t}>x\ny\tz</{t}>")]
+bad += ["p"] if bidi("<p>x\ny\tz\r\f w</p>") != "x y z w" else []
+bad += ["controls"] if bidi("<p>a\x1cb\x1dc\x1ed\x1fe\x85f\u2029g</p>") != "a\x1cb\x1dc\x1ed\x1fe\x85f" + P + "g" else []
+row("bidi-whitespace", not bad, f"pre keeps line feed and tab, p collapses CSS whitespace, controls kept; wrong: {bad}")
+
 # skeleton_fold, the name reading PR 2 wires (QA B2): a Cyrillic look-alike,
 # a modifier letter as a separator, and the visual order of an RTL run.
 got = (sc.skeleton_fold("Аvery Exampleton"), sc.skeleton_fold("AveryˌExampleton"),

@@ -2878,34 +2878,43 @@ class Element:
             elif child.tag not in ("script", "style"):
                 yield from child.strings(shown, spans)
 
-    def paragraph_strings(self, shown=True):
-        """strings(shown) with BIDI_PARAGRAPH at the start and the end of
-        every element of BIDI_BLOCK_TAGS and at every <br> (bidi_text)."""
+    def paragraph_strings(self, shown=True, preserve=False):
+        """strings(shown) as a browser lays them out before the bidi
+        algorithm (bidi_text): outside an element of BIDI_PRESERVE_TAGS
+        every run of CSS collapsible whitespace (BIDI_COLLAPSIBLE) is one
+        space, inside one the text stays as it is; BIDI_PARAGRAPH at the
+        start and the end of every element of BIDI_BLOCK_TAGS and at every
+        <br>."""
         closed = shown and self.tag == "details" and "open" not in self.attrs
         for child in self.children:
             if isinstance(child, str):
                 if not closed:
-                    yield child
+                    yield child if preserve else BIDI_COLLAPSIBLE.sub(" ", child)
             elif shown and (child.tag in NO_TEXT_ELEMENTS or child.hides()):
                 continue
             elif child.tag == "br":
                 yield BIDI_PARAGRAPH
             elif child.tag in BIDI_BLOCK_TAGS:
                 yield BIDI_PARAGRAPH
-                yield from child.paragraph_strings(shown)
+                yield from child.paragraph_strings(shown, preserve or child.tag in BIDI_PRESERVE_TAGS)
                 yield BIDI_PARAGRAPH
             elif child.tag not in ("script", "style"):
-                yield from child.paragraph_strings(shown)
+                yield from child.paragraph_strings(shown, preserve or child.tag in BIDI_PRESERVE_TAGS)
 
-    def bidi_text(self, sep="", shown=True):
-        """text(sep, shown) with one BIDI_PARAGRAPH between the paragraphs a
-        browser resolves on their own (fix round 2, delta review finding 1):
-        every block element and every <br> ends one, each paragraph's
-        whitespace collapsed and empty ones dropped. The letters and digits
-        are those of text(), so only the visual readings see the
-        difference."""
-        parts = sep.join(self.paragraph_strings(shown)).split(BIDI_PARAGRAPH)
-        return BIDI_PARAGRAPH.join(p for p in (squash(part) for part in parts) if p)
+    def bidi_text(self, shown=True):
+        """The text a browser hands the bidi algorithm (fix rounds 2 and 3,
+        delta reviews 2 and 3, finding 1): joined tight, as inline text lays
+        out, with one BIDI_PARAGRAPH between the paragraphs a browser
+        resolves on their own (every block element and every <br>), the
+        whitespace collapsed only as CSS collapses it, so a line feed or a
+        carriage return of a <pre> and every other paragraph separator
+        (U+001C to U+001E, U+0085, U+2029) stays a paragraph separator for
+        visual_order, and a tab of a <pre> or a U+001F stays a segment
+        separator (Bidi_Class S, rule L1). Never str.split(), which takes all
+        of them for spaces. The letters and digits are those of text(), so
+        only the visual readings see the difference."""
+        joined = re.sub(" {2,}", " ", "".join(self.paragraph_strings(shown)))
+        return BIDI_PARAGRAPH_RUN.sub(BIDI_PARAGRAPH, joined).strip(" " + BIDI_PARAGRAPH)
 
     def text(self, sep="", shown=True, spans=frozenset()):
         """The text inside the element, whitespace collapsed, hidden content
@@ -3365,11 +3374,17 @@ ALNUM_ONLY = AlnumTable()
 # self-test confusables/bidi-conformance). The classes come from the vendored
 # DerivedBidiClass.txt of the same Unicode version as the confusables, not
 # from the runner's unicodedata (15.0 on CI). Each text is read as one
-# paragraph per paragraph separator and one line; rule 17 puts a separator
-# between the blocks and at every <br> of a page (Element.bidi_text, fix
-# round 2), so only a browser's soft wrap of a right-to-left run across two
-# lines, which draws each part reversed on its own, is not modelled
-# (ADR-0005 part 6).
+# paragraph per paragraph separator (Bidi_Class B) and one line. Rule 17
+# reads a page through Element.bidi_text: a separator between the blocks
+# and at every <br>, and whitespace collapsed only as CSS collapses it, so a
+# line feed of a <pre> and U+001C to U+001E and U+0085 anywhere stay
+# separators, and a tab of a <pre> and U+001F stay segment separators (fix
+# rounds 2 and 3). Two things are not modelled: a browser's soft wrap of a
+# right-to-left run across two lines, which draws each part reversed on its
+# own, and an element the stylesheet makes a block or a flex item outside
+# BIDI_BLOCK_TAGS (.artifact, .artifact-meta, the items of .record-list and
+# .checklist), where today fixed left-to-right copy or a list item sits next
+# to every record string (ADR-0005 part 6).
 UNICODE_DIR = Path(__file__).resolve().parent / "unicode"
 UNICODE_DATA_VERSION = "18.0.0"
 BIDI_CLASS_PATH = UNICODE_DIR / "DerivedBidiClass.txt"
@@ -3402,11 +3417,25 @@ _BIDI = None
 # (Element.bidi_text): Bidi_Class B, so visual_order resolves each block on
 # its own, and no letter or digit, so the other readings drop it.
 BIDI_PARAGRAPH = "\u2029"
+# A run of separators the joined text collapses to one (Element.bidi_text).
+BIDI_PARAGRAPH_RUN = re.compile(f" ?{BIDI_PARAGRAPH}[ {BIDI_PARAGRAPH}]*")
+# CSS collapsible whitespace (white-space: normal): space, tab, line feed,
+# carriage return and form feed; every other character, U+001C to U+001F
+# and U+0085 among them, reaches the bidi algorithm as written.
+BIDI_COLLAPSIBLE = re.compile("[ \t\n\r\f]+")
+# The elements whose text keeps its whitespace (the HTML rendering
+# section's white-space: pre; the stylesheet sets white-space only to
+# nowrap and normal, which collapse): a line feed there ends a paragraph and
+# a tab is a segment separator.
+BIDI_PRESERVE_TAGS = frozenset(("pre", "listing", "plaintext", "xmp", "textarea"))
 # The elements a browser lays out as a block of their own (the HTML
 # rendering section's display: block, list-item and the table parts), each
 # a bidi paragraph; a <br> also ends one (CSS Writing Modes 3, 2.4). The
-# stylesheet is pinned, so no rule there turns an inline element into a
-# block outside this list unnoticed.
+# stylesheet makes some more elements blocks or flex items (.artifact,
+# .artifact-meta, the items of .record-list and .checklist): there fixed
+# left-to-right copy or a list item sits next to every record string today,
+# but a template change that puts two record fields into adjacent flex items
+# would split them in the browser and not here (fix round 3, delta review 3).
 BIDI_BLOCK_TAGS = frozenset((
     "address", "article", "aside", "blockquote", "body", "caption", "dd", "details",
     "dialog", "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form",
@@ -4360,17 +4389,23 @@ def chip_problems(page, chips, report_page):
     return problems
 
 
-def page_texts(page, spans=frozenset(), blocks=False):
+def page_texts(page, spans=frozenset()):
     """Every text of a page a reader or a search engine sees: the joined
     visible text (tight and spaced), each JSON-LD string and every attribute
     value, as written and percent-decoded (an alt, an aria-description, a
     search link). The joined text keeps the text of the elements in spans
     (rule 4's exemptions) between SPAN_OPEN and SPAN_CLOSE; their
     attributes are scanned as usual."""
-    if blocks:  # rule 17: one bidi paragraph per block (Element.bidi_text)
-        texts = [page.root.bidi_text(), page.root.bidi_text(" ")]
-    else:
-        texts = [page.root.text(spans=spans), page.root.text(" ", spans=spans)]
+    return [page.root.text(spans=spans), page.root.text(" ", spans=spans)] + \
+        page_value_texts(page)
+
+
+def page_value_texts(page):
+    """The texts of page_texts that are not the joined page text: each
+    JSON-LD string and every attribute value, as written and
+    percent-decoded. Rule 17 reads the joined text itself, through
+    Element.bidi_text."""
+    texts = []
     for _, value, _ in jsonld_values(page):
         if value is not None:
             texts += list(json_strings(value))
@@ -6299,10 +6334,10 @@ def state_text_problems(page, record):
     state = record.params.get("state")
     if state not in STATE_SENTENCE:
         return []
-    shown = sentence_folds(page.root.bidi_text(" "))
+    shown = sentence_folds(page.root.bidi_text())
     own = sentence_folds(STATE_SENTENCE[state])
-    texts = [sentence_folds(page.root.bidi_text(" ", shown=False))]
-    texts += [sentence_folds(t) for t in page_texts(page, blocks=True)]
+    texts = [sentence_folds(page.root.bidi_text(shown=False))]
+    texts += [sentence_folds(t) for t in page_value_texts(page)]
     problems = []
     counts = [reading.count(sentence) for reading, sentence in zip(shown, own)]
     deviating = next((n for n in counts if n != 1), None)
