@@ -109,3 +109,5 @@ pass-alias-category-no	content/reports/persona-1.md	aliases = ["A. Exampleton", 
 pass-alias-category-lo-with-lm	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{30E6}\u{30FC}\u{30AD}"]	PASS
 pass-labelled-artifacts-whitespace-twins-both-listed	content/reports/persona-3.md	file_names = ["Entrevista técnica[.]zip"]	file_names = ["Entrevista técnica[.]zip", "Riley Placeholder[.]zip", "Riley  Placeholder[.]zip"]	PASS	labelled_artifacts = ["@riley_placeholder_zoë"]	labelled_artifacts = ["@riley_placeholder_zoë", "Riley Placeholder[.]zip", "Riley  Placeholder[.]zip"]
 pass-labelled-artifacts-whitespace-twins-neither-listed	content/reports/persona-3.md	file_names = ["Entrevista técnica[.]zip"]	file_names = ["Entrevista técnica[.]zip", "Entrevista  técnica[.]zip"]	PASS
+# Fix round 2, sweep round 3 survivor r18-no-nfkc: U+3392 (So) counts only through NFKC, which reads it as MHz.
+pass-alias-nfkc-square-mhz	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{3392}"]	PASS
