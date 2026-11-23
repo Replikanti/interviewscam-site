@@ -14,9 +14,10 @@ internal error, so a crash never reads as a finding or as a pass.
       artifact appears in no other string and no body of any record (R2).
       No record body carries a bare URL, a Markdown link or a <...> autolink
       (SPEC section 5); the rule fails closed. Then the record rules R4 to
-      R16 of ADR-0004 (slugs, persona names, references, dates, evidence,
+      R18 of ADR-0004 (slugs, persona names, references, dates, evidence,
       hostnames and IP forms in record text, _index.md, verdict phrases,
-      source hosts, bidi controls), with the retired slugs of
+      source hosts, bidi controls, labelled artifacts, names with text),
+      with the retired slugs of
       DIR/record-policy.json.
   site --records DIR [--schemas DIR] PUBLIC
       The built site in PUBLIC makes no third-party request (D9). Every page
@@ -1282,6 +1283,15 @@ def labelled_artifact_problems(record):
         return []  # the schema's finding
     problems = []
     values = [v for _, v in declared_artifacts(record)]
+    keyed = {}
+    for value in dict.fromkeys(values):
+        keyed.setdefault(box_key(value), []).append(value)
+    for key, group in keyed.items():
+        if len(group) > 1:
+            problems.append(f"params.artifacts: the declared values "
+                            f"{' and '.join(map(show, group))} differ only in whitespace, "
+                            f"so both show as the box {show(key)} and one D10 label "
+                            "decision cannot hold for both; drop or rewrite one (R17)")
     seen = set()
     for i, value in enumerate(listed):
         if not isinstance(value, str):
@@ -1305,6 +1315,35 @@ def labelled_artifact_problems(record):
                             "artifact that holds a name or alias of this persona and has a "
                             "character outside U+0021 to U+007E, so its box carries the D10 "
                             "label (R17)" + reading_note(name_reading_in(record, value)))
+    return problems
+
+
+def blank_name_problems(record):
+    """R18 (Replikanti/interviewscam#28 PR 3 fix round 1, review finding 2):
+    the params.name and every alias of a persona record hold a letter or a
+    digit once NFKC is applied and every whitespace character (any Unicode
+    White_Space, U+00A0, U+2007 and U+3000 among them), every format
+    character (Cf) and every invisible (INVISIBLE) is dropped. A name
+    without one renders as the D10 label next to nothing, a label that
+    states something about no name (D7), while the name rules, which read
+    only names with text (record_names), never see it."""
+    if not is_persona(record):
+        return []
+    names = [("params.name", record.params.get("name"))]
+    aliases = record.params.get("aliases")
+    names += [(f"params.aliases[{i}]", a)
+              for i, a in enumerate(aliases if isinstance(aliases, list) else [])]
+    problems = []
+    for field, name in names:
+        if not isinstance(name, str):
+            continue  # the schema's finding
+        # No whitespace or format character is a letter or digit, so only
+        # NFKC (U+037A folds to a space and a mark) and the invisibles (the
+        # Hangul fillers are letters, Lo) need handling before the test.
+        text = unicodedata.normalize("NFKC", name).translate(INVISIBLE)
+        if not any(c.isalnum() for c in text):
+            problems.append(f"{field}: {show(name)} holds no letter or digit, so it would "
+                            "render as the D10 label next to no name (R18)")
     return problems
 
 
@@ -1531,6 +1570,7 @@ def cmd_records(args):
         problems += date_problems(record)
         if record.section == "reports":
             problems += report_problems(record) + labelled_artifact_problems(record)
+            problems += blank_name_problems(record)
         problems += text_problems(record) + verdict_problems(record)
         for problem in problems:
             findings.add(record.rel, problem)
@@ -4893,6 +4933,16 @@ def labelled_box(el):
     return False
 
 
+def box_key(value):
+    """The one key of a box value for records rule R17 and render rule 4
+    (Replikanti/interviewscam#28 PR 3 fix round 1, review finding 1): the
+    text render reads the box as (Element.text collapses every whitespace
+    run, squash), so two declared values that differ only in whitespace
+    show as the same box. R17 refuses such a pair on a persona record, and
+    rule 4 maps a box back to its declared value by this key."""
+    return squash(value)
+
+
 def name_reading_in(record, text):
     """The first reading of NAME_READINGS under which text holds a name or
     alias of record, matched as rule 4 matches them (name_pattern over
@@ -4922,15 +4972,19 @@ def box_carries_label(record, value):
 
 def label_after(el):
     """The persona-label element a reader sees right after the box el, or
-    None: the first content after el in document order, past
-    whitespace-only text and hidden elements (a Copy button without its
+    None: the first content after el in document order, past text that
+    holds only whitespace (any Unicode White_Space) and invisibles, and
+    hidden elements (a Copy button without its
     script is hidden, so a label after it still reads as the box's), into
     elements and out of el's ancestors; any other text or element first
     means no label follows."""
     def first(items):
         for item in items:
             if isinstance(item, str):
-                if item.strip(" \t\n\r\f"):
+                # Every Unicode whitespace character and every invisible
+                # counts as blank (fix round 1, QA survivor I): an &nbsp;
+                # between a box and a label still draws them side by side.
+                if item.translate(INVISIBLE).strip():
                     return False
                 continue
             if item.tag in NO_TEXT_ELEMENTS or item.hides():
@@ -4967,7 +5021,8 @@ def box_label_problems(page, own):
     visible = own is not None and is_persona(own) and not is_hidden(own)
     stored = {}
     for _, value in declared_artifacts(own) if visible else []:
-        stored.setdefault(squash(value), []).append(value)
+        if value not in stored.setdefault(box_key(value), []):
+            stored[box_key(value)].append(value)
     lines = by_class(page, "campaign-line")
     line = lines[0] if len(lines) == 1 else None
     for el in by_tag(page, "code"):
@@ -4976,7 +5031,13 @@ def box_label_problems(page, own):
         text = el.text()
         own_box = not el.concealed() and text in stored and \
             ("artifact" in el.classes or (line is not None and el.parent is line))
-        carries = own_box and any(box_carries_label(own, v) for v in stored[text])
+        if own_box and len(stored[text]) > 1:
+            problems.append(f"rule 4: the box {show(text)} shows the declared values "
+                            f"{' and '.join(map(show, stored[text]))} of {own.rel}, which "
+                            "differ only in whitespace, so no box label can be decided for "
+                            "it (R17 refuses the pair)")
+            continue
+        carries = own_box and box_carries_label(own, stored[text][0])
         if label_after(el) is not None and not carries:
             if not visible:
                 problems.append(f"rule 4: the box {show(text)} is followed by the persona "
@@ -4994,8 +5055,7 @@ def box_label_problems(page, own):
                                 f"of {own.rel} under any reading, so the label would be "
                                 "false (D7, D10; box_carries_label)")
         elif carries and not labelled_box(el):
-            reading = min(name_reading_in(own, v) for v in stored[text]
-                          if box_carries_label(own, v))
+            reading = name_reading_in(own, stored[text][0])
             problems.append(f"rule 4: the box {show(text)} holds a name or alias of "
                             f"{own.rel} and has a character outside U+0021 to U+007E, "
                             f"so the label {show(PERSONA_LABEL)} follows it right after "
