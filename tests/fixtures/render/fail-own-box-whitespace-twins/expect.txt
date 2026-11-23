@@ -1,1 +1,1 @@
-of content/reports/persona-1.md, which differ only in whitespace, so no box label can be decided for it (R17 refuses the pair)
+the first carries the D10 label and the second does not, so the box cannot show one decision for both (R17 refuses the pair)

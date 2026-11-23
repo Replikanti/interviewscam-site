@@ -1286,12 +1286,17 @@ def labelled_artifact_problems(record):
     keyed = {}
     for value in dict.fromkeys(values):
         keyed.setdefault(box_key(value), []).append(value)
+    listed_set = {v for v in listed if isinstance(v, str)}
     for key, group in keyed.items():
-        if len(group) > 1:
-            problems.append(f"params.artifacts: the declared values "
-                            f"{' and '.join(map(show, group))} differ only in whitespace, "
-                            f"so both show as the box {show(key)} and one D10 label "
-                            "decision cannot hold for both; drop or rewrite one (R17)")
+        on = [v for v in group if v in listed_set]
+        off = [v for v in group if v not in listed_set]
+        if on and off:
+            problems.append(f"params.artifacts: the declared values {show(on[0])} and "
+                            f"{show(off[0])} differ only in whitespace and show as the "
+                            f"same box {show(key)}, but the first is listed in "
+                            "params.labelled_artifacts and the second is not, so one box "
+                            "would carry the D10 label and the other would not; list both "
+                            "or neither, or rewrite one (R17)")
     seen = set()
     for i, value in enumerate(listed):
         if not isinstance(value, str):
@@ -1318,12 +1323,22 @@ def labelled_artifact_problems(record):
     return problems
 
 
+# R18: the general categories that count as the text of a name: the
+# letters but the modifier letters (Lm, which draw as punctuation) and the
+# numbers.
+NAME_TEXT_CATEGORIES = frozenset({"Lu", "Ll", "Lt", "Lo", "Nd", "Nl", "No"})
+
+
 def blank_name_problems(record):
     """R18 (Replikanti/interviewscam#28 PR 3 fix round 1, review finding 2):
-    the params.name and every alias of a persona record hold a letter or a
-    digit once NFKC is applied and every whitespace character (any Unicode
-    White_Space, U+00A0, U+2007 and U+3000 among them), every format
-    character (Cf) and every invisible (INVISIBLE) is dropped. A name
+    the params.name and every alias of a persona record hold a character
+    of NAME_TEXT_CATEGORIES (a letter other than a modifier letter, or a
+    number) once NFKC is applied and every invisible (INVISIBLE) is
+    dropped; no whitespace (any Unicode White_Space, U+00A0, U+2007 and
+    U+3000 among them) or format character (Cf) is one. A modifier letter
+    (Lm: the tatweel U+0640, U+30FC, U+02D0, U+07FA) draws as punctuation,
+    so alone it is no name either (fix round 2, closure review finding 1);
+    next to other letters ("ユーキ") it stays part of the name. A name
     without one renders as the D10 label next to nothing, a label that
     states something about no name (D7), while the name rules, which read
     only names with text (record_names), never see it."""
@@ -1337,13 +1352,13 @@ def blank_name_problems(record):
     for field, name in names:
         if not isinstance(name, str):
             continue  # the schema's finding
-        # No whitespace or format character is a letter or digit, so only
-        # NFKC (U+037A folds to a space and a mark) and the invisibles (the
-        # Hangul fillers are letters, Lo) need handling before the test.
+        # Only NFKC (U+037A folds to a space and a mark) and the invisibles
+        # (the Hangul fillers are letters, Lo) need handling before the test.
         text = unicodedata.normalize("NFKC", name).translate(INVISIBLE)
-        if not any(c.isalnum() for c in text):
-            problems.append(f"{field}: {show(name)} holds no letter or digit, so it would "
-                            "render as the D10 label next to no name (R18)")
+        if not any(unicodedata.category(c) in NAME_TEXT_CATEGORIES for c in text):
+            problems.append(f"{field}: {show(name)} holds no letter or number (a "
+                            "modifier letter alone does not count), so it would render "
+                            "as the D10 label next to no name (R18)")
     return problems
 
 
@@ -4938,8 +4953,11 @@ def box_key(value):
     (Replikanti/interviewscam#28 PR 3 fix round 1, review finding 1): the
     text render reads the box as (Element.text collapses every whitespace
     run, squash), so two declared values that differ only in whitespace
-    show as the same box. R17 refuses such a pair on a persona record, and
-    rule 4 maps a box back to its declared value by this key."""
+    show as the same box. R17 refuses such a pair on a persona record when
+    one is listed in params.labelled_artifacts and the other is not, rule 4
+    when one carries the label and the other does not (fix round 2: a pair
+    with one decision is fine), and rule 4 maps a box back to its declared
+    values by this key."""
     return squash(value)
 
 
@@ -5031,11 +5049,15 @@ def box_label_problems(page, own):
         text = el.text()
         own_box = not el.concealed() and text in stored and \
             ("artifact" in el.classes or (line is not None and el.parent is line))
-        if own_box and len(stored[text]) > 1:
+        decisions = {v: box_carries_label(own, v) for v in stored[text]} if own_box else {}
+        if len(set(decisions.values())) > 1:
+            on = next(v for v, d in decisions.items() if d)
+            off = next(v for v, d in decisions.items() if not d)
             problems.append(f"rule 4: the box {show(text)} shows the declared values "
-                            f"{' and '.join(map(show, stored[text]))} of {own.rel}, which "
-                            "differ only in whitespace, so no box label can be decided for "
-                            "it (R17 refuses the pair)")
+                            f"{show(on)} and {show(off)} of {own.rel}, which differ only in "
+                            "whitespace, but the first carries the D10 label and the second "
+                            "does not, so the box cannot show one decision for both (R17 "
+                            "refuses the pair)")
             continue
         carries = own_box and box_carries_label(own, stored[text][0])
         if label_after(el) is not None and not carries:
@@ -5055,7 +5077,7 @@ def box_label_problems(page, own):
                                 f"of {own.rel} under any reading, so the label would be "
                                 "false (D7, D10; box_carries_label)")
         elif carries and not labelled_box(el):
-            reading = name_reading_in(own, stored[text][0])
+            reading = min(name_reading_in(own, v) for v in stored[text])
             problems.append(f"rule 4: the box {show(text)} holds a name or alias of "
                             f"{own.rel} and has a character outside U+0021 to U+007E, "
                             f"so the label {show(PERSONA_LABEL)} follows it right after "
