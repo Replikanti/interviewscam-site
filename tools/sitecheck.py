@@ -2269,6 +2269,11 @@ HIDDEN_RULE_NAMES = " and ".join(f"the {sel} rule" for sel in HIDDEN_RULES)
 # link titles, footnotes and task lists. The hidden attribute and the class
 # visually-hidden are in no set: visibility_problems allows them only at
 # their pinned placements (P1 to P4), and <title> only in <head> (P10).
+# One closed exception (Replikanti/interviewscam#44, ADR-0009 part 2): the
+# attribute property passes on a <meta> exactly where render rule 8's one
+# RDFa exception lets it stand (preview_property: a direct child of <head>,
+# exactly property and content, a key of PREVIEW_PROPERTIES), and nowhere
+# else; it is in no set below.
 VISIBLE_ELEMENTS = {tag: frozenset(names.split()) for tag, names in {
     "a": "aria-current class href",
     "blockquote": "",
@@ -3300,10 +3305,13 @@ LABEL_REPORTED = "Reported {n} times, evidence reviewed on {date}"
 LABEL_REPORTED_ONCE = "Reported once, evidence reviewed on {date}"
 LABEL_ONE_SOURCE = "Named in 1 cited source, reviewed on {date}"
 LABEL_SOURCES = "Named in {k} cited sources, reviewed on {date}"
-# Render rule 20 (Replikanti/interviewscam#44, ADR-0009 part 1): the link
-# preview description of a record's own page is its factual sentence, then
-# its summary; a report's fact is its D7 label, a campaign's its dates. The
-# facts list's two date terms, which the campaign fact repeats.
+# Render rule 21 (Replikanti/interviewscam#44, ADR-0009 part 1): the link
+# preview description of a record's own page states its facts, then its
+# summary: a report's D6 state chip and D7 label (preview.report_description,
+# operator decision 5 at STOP 1), a campaign's dates (preview.description
+# over preview.campaign_fact). The facts list's two date terms, which the
+# campaign fact repeats.
+PREVIEW_REPORT_DESCRIPTION = "{chip}. {label}. {summary}"
 PREVIEW_DESCRIPTION = "{fact}. {summary}"
 PREVIEW_CAMPAIGN_FACT = "First seen {first}, last seen {last}"
 FACT_FIRST_SEEN = "First seen"
@@ -3492,7 +3500,14 @@ SPAN_FORGERY = str.maketrans({SPAN_OPEN: "\ufffd", SPAN_CLOSE: "\ufffd"})
 
 
 class Element:
-    """One element of a built page: tag, attributes, children (Element or str)."""
+    """One element of a built page: tag, attributes, children (Element or str).
+    An element the parser read from the page also has its source position
+    (pos: line, column), its raw start tag (start_tag) and the attribute
+    names its start tag repeats (repeated; attrs keeps the first value, as
+    the HTML parser does), which site rule (o8) reads."""
+    pos = None
+    start_tag = None
+    repeated = ()
 
     def __init__(self, tag, attrs, parent):
         self.tag = tag
@@ -3747,10 +3762,14 @@ class RenderPage(Page):
         return bool(self.unclosed or self.markup)
 
     def _tree_element(self, tag, attrs):
-        first = {}
+        first, repeated = {}, []
         for name, value in attrs:
+            if name in first and name not in repeated:
+                repeated.append(name)
             first.setdefault(name, value if value is not None else "")
         el = Element(tag, first, self._open[-1])
+        el.pos, el.start_tag, el.repeated = self.getpos(), self.get_starttag_text(), \
+            tuple(repeated)
         self._open[-1].children.append(el)
         return el
 
@@ -5836,43 +5855,53 @@ def page_facts(page):
     return facts
 
 
-def preview_record_problems(page, record):
-    """Rule 20 (Replikanti/interviewscam#44, ADR-0009 part 3) on a record's
+def preview_record_problems(page, record, chips):
+    """Rule 21 (Replikanti/interviewscam#44, ADR-0009 part 3) on a record's
     own page: og:title is the <title> form of the record (head_title, so the
-    label first for a visible persona), and og:description is
-    PREVIEW_DESCRIPTION over the record's fact and summary, where a report's
-    fact is its D7 label and equals the page's record-label element, and a
-    campaign's is PREVIEW_CAMPAIGN_FACT over first_seen and last_seen, which
-    equal the page's First seen and Last seen facts."""
+    label first for a visible persona), and og:description states the
+    record's facts and then its summary. A report's is
+    PREVIEW_REPORT_DESCRIPTION over its state chip, which equals the page's
+    own state chip (chips: the page's chips outside report list items), its
+    D7 label, which equals the page's record-label element, and its
+    summary; a campaign's is PREVIEW_DESCRIPTION over PREVIEW_CAMPAIGN_FACT
+    (first_seen and last_seen, which equal the page's First seen and Last
+    seen facts) and its summary."""
     problems = []
     title = preview_meta_content(page, "property", "og:title")
     want = head_title(record)
     if title is not None and title != want:
-        problems.append(f"rule 20: og:title reads {show(title)}; on the record's own page it "
+        problems.append(f"rule 21: og:title reads {show(title)}; on the record's own page it "
                         f"is the <title> form {show(want)} (ADR-0009 part 1)")
     summary = text_param(record, "summary")
+    want = None
     if record.section == "reports":
-        fact = record_label(record)
-        el, _ = one_of_class(page, "record-label", "rule 20")
-        if fact is not None and el is not None and el.text() != fact:
-            problems.append(f"rule 20: the D7 label of og:description, {show(fact)}, is not "
+        label = record_label(record)
+        el, _ = one_of_class(page, "record-label", "rule 21")
+        if label is not None and el is not None and el.text() != label:
+            problems.append(f"rule 21: the D7 label of og:description, {show(label)}, is not "
                             f"the page's record-label {show(el.text())}")
+        chip = STATE_CHIP.get(record.params.get("state"))
+        shown, _ = shown_one(chips, "state-chip", "rule 21")
+        if chip is not None and shown is not None and shown.text() != chip:
+            problems.append(f"rule 21: the state chip of og:description, {show(chip)}, is not "
+                            f"the page's state chip {show(shown.text())} (D6)")
+        if chip is not None and label is not None and summary is not None:
+            want = PREVIEW_REPORT_DESCRIPTION.format(chip=chip, label=label, summary=summary)
     else:
         first, last = text_param(record, "first_seen"), text_param(record, "last_seen")
-        fact = None if first is None or last is None else \
-            PREVIEW_CAMPAIGN_FACT.format(first=first, last=last)
         facts = page_facts(page)
         for term, value in ((FACT_FIRST_SEEN, first), (FACT_LAST_SEEN, last)):
             if value is not None and facts.get(term) != value:
-                problems.append(f"rule 20: the page's {term} fact reads "
+                problems.append(f"rule 21: the page's {term} fact reads "
                                 f"{show(facts.get(term))}, not the {show(value)} that "
                                 "og:description states")
+        if first is not None and last is not None and summary is not None:
+            want = PREVIEW_DESCRIPTION.format(
+                fact=PREVIEW_CAMPAIGN_FACT.format(first=first, last=last), summary=summary)
     description = preview_meta_content(page, "property", "og:description")
-    if fact is not None and summary is not None and description is not None:
-        want = PREVIEW_DESCRIPTION.format(fact=fact, summary=summary)
-        if squash(description) != squash(want):
-            problems.append(f"rule 20: og:description reads {show(description)}; on the "
-                            f"record's own page it is {show(want)} (ADR-0009 part 1)")
+    if want is not None and description is not None and squash(description) != squash(want):
+        problems.append(f"rule 21: og:description reads {show(description)}; on the "
+                        f"record's own page it is {show(want)} (ADR-0009 part 1)")
     return problems
 
 
@@ -6514,7 +6543,8 @@ def visibility_problems(page, counts=None):
     """Rule 20 on one HTML page (Replikanti/interviewscam#51, ADR-0004 part
     14): every element outside <svg> and <math> (foreign_markup_problems
     pins or refuses those) is in VISIBLE_ELEMENTS and carries only its
-    attributes; hidden only at a placement of hidden_placement (P1 to P3)
+    attributes (and property only on a link preview <meta>, preview_property);
+    hidden only at a placement of hidden_placement (P1 to P3)
     and the class visually-hidden only on the skip link (P4, is_skip_link);
     <title> only right inside <head> (P10); and (PR 2) the values of the
     text-bearing attributes it admits and the Copy buttons as pinned
@@ -6539,7 +6569,7 @@ def visibility_problems(page, counts=None):
             note(f"<{el.tag}>", VISIBILITY_WHY)
             continue
         for name in el.attrs:
-            if name != "hidden" and name not in allowed:
+            if name != "hidden" and name not in allowed and not preview_property(el, name):
                 note(f"the attribute {name} on <{el.tag}>", VISIBILITY_WHY)
         if "hidden" in el.attrs:
             place = hidden_placement(el)
@@ -8104,10 +8134,10 @@ def cmd_render(args):
                     problems += attribution_problems(page, record)
                 problems += sources_list_problems(page, record)
                 problems += external_link_problems(page, record)
-                # Rule 20 with the real-build pins: the hand-made render
+                # Rule 21 with the real-build pins: the hand-made render
                 # fixtures' record pages predate the link preview metadata.
                 if own is record and not args.no_report_pins:
-                    problems += preview_record_problems(page, record)
+                    problems += preview_record_problems(page, record, chips)
             elif section is not None:
                 problems += title_problems(page, SECTION_TITLES[section])
                 problems += verdict_page_problems(page)
@@ -12361,15 +12391,47 @@ PREVIEW_KEY_PREFIXES = ("og:", "twitter:")
 PREVIEW_URL = re.compile(re.escape(SITE_ORIGIN) + r"/[^?#\\\s]*")
 # (o7) a protocol-relative URL (//host at the start of a value or after a
 # space, a quote or an opening bracket; the // of a defanged hxxps:// is
-# no match) and a scheme of FILE_SCHEMES or mailto: followed by anything
-# but whitespace, in any case (so "the file: setup" stays text).
+# no match) and any RFC 3986 scheme token (review run 1 finding 3): a run
+# ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) that starts the value or
+# follows a character outside that set, then ":" and a character that is
+# not whitespace, in any case, unless the run is the defanged hxxp or
+# hxxps. A messaging app may linkify its own scheme (tg:, tel:, sms:,
+# skype:, intent:, magnet:, ipfs:, ...), so no list of schemes is closed.
+# Prose stays text: "Note: x" has a space after the colon, "10:30" starts
+# with a digit, and in "2026-11-02T10:30" the run T10 follows a digit, so
+# it is no token start. A colon right after a word ("Re:x", a defanged
+# host with a port, "evil[.]example:8080") is a finding: write it with a
+# space or without the port.
 PREVIEW_PROTOCOL_RELATIVE = re.compile(r"(?:^|(?<=[\s\"'(<\[]))//(?=[^\s/])")
-PREVIEW_SCHEME = re.compile(r"(?i)(?<![\w.+-])(?:mailto|" + "|".join(FILE_SCHEMES)
-                            + r"):(?!\s)")
-# (o8) what a scraper that reads the raw page with a regular expression
-# takes for a preview key: one match per <meta> start tag.
-PREVIEW_SCRAPER = re.compile(r"(?i)<meta\b[^>]*?\b(?:property|name)\s*=\s*[\"']?(?:og|twitter):")
-# (o6) a record's own page, whose og:description render rule 20 pins.
+PREVIEW_SCHEME = re.compile(r"(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*):(?=\S)")
+PREVIEW_DEFANGED_SCHEMES = frozenset({"hxxp", "hxxps"})
+# (o8) the scraper's view (review run 1 finding 2). A scraper that reads
+# the raw page with a regular expression takes every "<meta" for a tag, in
+# a comment, an attribute value or a script too, may read the attributes of
+# a tag in any order, and may keep the last of two equal attribute names
+# where the HTML parser keeps the first. So every "<meta", in any case,
+# starts a <meta> element the parser read at that same source position
+# (positions, not counts: a tag only the parser reads cannot offset one
+# only the scraper reads); each preview meta is exactly the start tag the
+# template and the pinned minifier write (preview_tag: the key attribute
+# first, then content, nothing else); and no element anywhere repeats an
+# attribute name.
+PREVIEW_RAW_META = re.compile(r"(?i)<meta")
+
+
+def preview_tag(attr, key):
+    """(o8) the start tag of the preview meta key on attr, as the template
+    writes it and the pinned minifier (hugo --minify) keeps it: lower case,
+    one space before each attribute, property="key" in double quotes, name=
+    bare or in double quotes (the minifier drops the quotes of name= and
+    keeps those of property=; the self-test's hand-made heads keep both),
+    content in double quotes, or in single quotes when the value holds a
+    double quote (the minifier then picks the quote that needs no escape),
+    and no slash."""
+    k = re.escape(key)
+    key_form = f'"{k}"' if attr == "property" else f'(?:"{k}"|{k})'
+    return re.compile(f'<meta {attr}={key_form} content=(?:"[^"]*"|\'[^\']*"[^\']*\')>')
+# (o6) a record's own page, whose og:description render rule 21 pins.
 PREVIEW_RECORD_PAGE = re.compile(r"public/(?:reports|campaigns)/[^/]+/index\.html")
 
 
@@ -12409,10 +12471,44 @@ def preview_text_problems(key, value):
             problems.append(f"(o7) {key} holds a live URL (D8: write hxxps://)")
         if PREVIEW_PROTOCOL_RELATIVE.search(variant):
             problems.append(f"(o7) {key} holds a protocol-relative URL (//host; D8)")
-        match = PREVIEW_SCHEME.search(variant)
+        # Every variant is case-folded (norm), so HXXPS reads as hxxps.
+        match = next((m for m in PREVIEW_SCHEME.finditer(variant)
+                      if m.group(1) not in PREVIEW_DEFANGED_SCHEMES), None)
         if match:
             problems.append(f"(o7) {key} holds the scheme {show(match.group())}, which a "
-                            "card app may turn into a link (D8)")
+                            "card app may turn into a link (D8: defang it as hxxps://, or "
+                            "write a space after the colon)")
+    return list(dict.fromkeys(problems))
+
+
+def preview_scraper_problems(text, tree):
+    """(o8) on one page (see PREVIEW_RAW_META): raw "<meta" that starts no
+    parsed <meta>, a preview meta not in its exact start-tag form, and any
+    element that repeats an attribute name."""
+    problems, starts, line_starts = [], set(), [0]
+    line_starts += [m.end() for m in re.finditer("\n", text)]
+    for el in tree.root.walk():
+        if el.pos is None:
+            continue
+        if el.tag == "meta":
+            starts.add(line_starts[el.pos[0] - 1] + el.pos[1])
+            for attr in ("property", "name"):
+                key = el.attrs.get(attr)
+                if key in PREVIEW_KEYS and PREVIEW_KEYS[key] == attr \
+                        and not preview_tag(attr, key).fullmatch(el.start_tag):
+                    problems.append(f"(o8) the start tag {show(el.start_tag, 120)} is not "
+                                    f"the exact form <meta {attr}={key} content=...> (the "
+                                    "key first, then content, nothing else); a scraper "
+                                    "may read another key or value than the parser")
+        for name in el.repeated:
+            problems.append(f"(o8) <{el.tag}> repeats the attribute {name}; the parser keeps "
+                            "the first value, a scraper may keep the last")
+    stray = [m.start() for m in PREVIEW_RAW_META.finditer(text) if m.start() not in starts]
+    if stray:
+        problems.append(f"(o8) the raw page holds {len(stray)} \"<meta\" that start(s) no "
+                        f"<meta> element the parser reads (first at offset {stray[0]}: "
+                        f"{show(text[stray[0]:stray[0] + 60], 80)}); in a comment, an "
+                        "attribute value or a script a scraper still takes it for a tag")
     return list(dict.fromkeys(problems))
 
 
@@ -12427,15 +12523,7 @@ def preview_problems(text, rel, built):
         for value in values:
             if value is not None:
                 problems += preview_text_problems(key, value)
-    parsed = sum(1 for el in tree.root.walk() if el.tag == "meta" and any(
-        ascii_lower(el.attrs.get(a) or "").startswith(PREVIEW_KEY_PREFIXES)
-        for a in ("property", "name")))
-    scraped = len(PREVIEW_SCRAPER.findall(text))
-    if scraped != parsed:
-        problems.append(f"(o8) the raw page holds {scraped} <meta> start tag(s) that a "
-                        f"regular-expression scraper reads as a link preview key, the parsed "
-                        f"page {parsed}; a key in a comment, an attribute value or a script "
-                        "would reach a card that no check reads")
+    problems += preview_scraper_problems(text, tree)
     if not built:
         return problems
     if rel == NOT_FOUND_REL:

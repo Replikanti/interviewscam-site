@@ -335,12 +335,15 @@ reported_once = "Reported once, evidence reviewed on %s"
 one_source = "Named in 1 cited source, reviewed on %s"
 sources = "Named in %d cited sources, reviewed on %s"
 
-# The link preview of a record page (SPEC section 6, ADR-0009 part 1): the
-# description is the record's factual sentence (%s first: a report's D7
-# label, a campaign's campaign_fact) and then its summary (%s second);
-# campaign_fact takes params.first_seen and params.last_seen. Facts, never
-# a verdict (D7).
+# The link preview of a record page (SPEC section 6, ADR-0009 part 1). A
+# report's description is its D6 state chip (state.<state>.chip, %s first),
+# its D7 label (%s second) and its summary (%s third), so a card that
+# travels without the page still says which state the name is in. A
+# campaign's description is its campaign_fact (%s first) and its summary
+# (%s second); campaign_fact takes params.first_seen and
+# params.last_seen. Facts, never a verdict (D7).
 [preview]
+report_description = "%s. %s. %s"
 description = "%s. %s"
 campaign_fact = "First seen %s, last seen %s"
 

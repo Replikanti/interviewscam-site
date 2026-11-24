@@ -5862,9 +5862,9 @@ PINNED
 
   if selftest_wants render-preview; then
     # render-preview/<row> (Replikanti/interviewscam#44, ADR-0009 parts 2
-    # and 3): render rules 4, 8, 9 and 20 on the link preview metadata from
+    # and 3): render rules 4, 8, 9 and 21 on the link preview metadata from
     # tests/fixtures/render/preview-cases.tsv on a copy of
-    # render/pass-report-pins (search_cases_runner, rule 20 on through its
+    # render/pass-report-pins (search_cases_runner, rule 21 on through its
     # report-pins.txt); then render-preview/coverage: a row
     # rdfa-extra-<attribute> for every member of RDFA_ATTRS (each on a
     # preview meta, outside rule 8's exception) and a pass-d7-<branch> row
