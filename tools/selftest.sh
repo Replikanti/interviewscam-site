@@ -5185,7 +5185,8 @@ PINNED
     # padding; the sitemap shape, each element name in one of its two
     # families. Fix round 1 of Replikanti/interviewscam-site#22: the input
     # and textarea extra-off rows (QA: the tag family had only select), a
-    # control outside the form and the form-owner literal rows. 59 drops.
+    # control outside the form and the form-owner literal rows. Fix round 2:
+    # the in-template and id-shadowed form-owner literal rows. 61 drops.
     for drop in render:b-report-scam_alias-renamed render:b-correction-email-required \
         render:b-report-headers-maxlength-above render:b-correction-request-hint-reworded \
         render:b-correction-files-accept-without-webp render:d-error-doubled \
@@ -5213,6 +5214,7 @@ PINNED
         render:f-report-select-extra-off render:f-report-input-extra-off \
         render:f-report-textarea-extra-off render:f-report-details-off-space-000c \
         render:f-correction-website-outside-form render:f-report-website-form-attr-not-a-form \
+        render:f-report-website-in-template render:f-report-website-form-attr-id-shadowed \
         render:d-sitemap-urlset-misplaced render:d-sitemap-lastmod-misplaced \
         render:d-sitemap-url-attribute render:d-sitemap-loc-attribute \
         site:fail-intake-host-in-data site:fail-input-formaction-intake \
