@@ -13280,15 +13280,8 @@ def _isolation_problems(snapshot, region_id):
             if i in chain:
                 if types[i] != 1:
                     continue
-                visibility, outline, decoration, overflow_x, overflow_y, resize = style
-                for prop, value, shows in (
-                        ("outline-style", outline, outline != "none"),
-                        ("text-decoration-line", decoration, decoration != "none"),
-                        ("overflow-x", overflow_x, overflow_x in REFLOW_SCROLLBAR_OVERFLOW),
-                        ("overflow-y", overflow_y, overflow_y in REFLOW_SCROLLBAR_OVERFLOW),
-                        ("resize", resize, resize != "none")):
-                    if shows:
-                        paint.setdefault((d, i, prop), f"{label(d, i)} {prop} {value}")
+                for item in ancestor_paint_items(label(d, i), style[1:]):
+                    paint.setdefault((d, i, item), item)
                 continue
             if parents[i] in chain and (types[i] == 3 or i in pseudo):
                 ancestor.setdefault((d, i), label(d, i))
@@ -13300,6 +13293,74 @@ def _isolation_problems(snapshot, region_id):
     return [(kind, list(items.values())) for kind, items in
             (("outside", outside), ("frame", frame), ("ancestor", ancestor),
              ("paint", paint)) if items]
+
+
+def ancestor_paint_items(label, values):
+    """The closed list of an ancestor's box paint that draws above the
+    region (REFLOW_SNAPSHOT_STYLES after visibility; ADR-0005 Numbers, "The
+    ancestor paint above the region"), read on its computed values in that
+    order: one "<label> <property> <value>" per member that paints."""
+    outline, decoration, overflow_x, overflow_y, resize = values
+    return [f"{label} {prop} {value}" for prop, value, shows in (
+        ("outline-style", outline, outline != "none"),
+        ("text-decoration-line", decoration, decoration != "none"),
+        ("overflow-x", overflow_x, overflow_x in REFLOW_SCROLLBAR_OVERFLOW),
+        ("overflow-y", overflow_y, overflow_y in REFLOW_SCROLLBAR_OVERFLOW),
+        ("resize", resize, resize != "none")) if shows]
+
+
+def pseudo_paint_items(reads):
+    """ancestor_paint_items over the isolate step's reads of every
+    ancestor's ::first-line and ::first-letter ([label, values]); a read of
+    another shape fails closed as an item of its own."""
+    width = len(REFLOW_SNAPSHOT_STYLES) - 1
+    items = []
+    for entry in reads if isinstance(reads, list) else [reads]:
+        if not (isinstance(entry, list) and len(entry) == 2 and isinstance(entry[0], str)
+                and isinstance(entry[1], list) and len(entry[1]) == width
+                and all(isinstance(v, str) for v in entry[1])):
+            items.append("an ancestor pseudo-element read of another shape")
+            continue
+        items.extend(ancestor_paint_items(entry[0], entry[1]))
+    return items
+
+
+def pixel_uniform(shot, tolerance=REFLOW_PAINT_TOLERANCE):
+    """None when every pixel of a screenshot (base64 PNG) is within
+    tolerance of its most common colour, else the count of the pixels off
+    it, their bounding box and the largest difference. The third capture
+    of the pixel occlusion check, taken with every element hidden, must
+    show the canvas alone (Replikanti/interviewscam#39 fix round 1)."""
+    width, _height, channels, rows = png_rows(base64.b64decode(shot))
+    counts = {}
+    for row in rows:
+        first = bytes(row[:channels])
+        if row == first * width:
+            counts[first] = counts.get(first, 0) + width
+            continue
+        for x in range(0, width * channels, channels):
+            px = bytes(row[x:x + channels])
+            counts[px] = counts.get(px, 0) + 1
+    if not counts:
+        return None
+    canvas = max(counts, key=counts.get)
+    plain = canvas * width
+    count, xs, ys, most = 0, [], [], 0
+    for y, row in enumerate(rows):
+        if row == plain:
+            continue
+        for x in range(width):
+            px = row[x * channels:(x + 1) * channels]
+            delta = max(abs(a - b) for a, b in zip(px, canvas))
+            if delta > tolerance:
+                count += 1
+                xs.append(x)
+                ys.append(y)
+                most = max(most, delta)
+    if not count:
+        return None
+    return (f"{count} pixel(s) off the canvas colour, x {min(xs)} to {max(xs)}, y {min(ys)} "
+            f"to {max(ys)} of the slice, by up to {most} of 255")
 
 
 def reflow_named(items):
@@ -13321,6 +13382,12 @@ def isolation_message(kind, items, what):
                 "the hiding (a layered !important rule, an id rule), a transition or "
                 "animation holds the old value, or a nested document or a shadow tree draws "
                 "it, so the region's pixels are not compared")
+    if kind == "blank":
+        return (f"(isolation) with every element hidden, the slice of {what} still shows "
+                f"paint ({items[0]}): a part that no element's visibility reaches (a "
+                "user-agent part set visible such as a progress bar, a details slot or a "
+                "placeholder, a pseudo-element whose box sits beside its element such as a "
+                "scroll marker group) paints there, so the region's pixels are not compared")
     if kind == "frame":
         return (f"(isolation) outside {what}, frame owner(s) hold a document the hiding "
                 f"cannot reach: {reflow_named(items)}; a nested document is not hidden with "
@@ -14053,23 +14120,34 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
   }
   if (mode === "scroll") window.scrollTo(0, %(y)s);
   // The pixel occlusion check (fix round 2, Replikanti/interviewscam#39):
-  // "freeze" blurs the focused element before the first capture (hiding a
-  // focused element moves the focus, and :has(:focus) can read that, so
-  // both captures are taken without it) and returns the running
-  // animations, which must be none. "isolate" adopts one constructed
+  // "freeze" blurs a focused element outside the region before the first
+  // capture (hiding a focused element moves the focus, and :has(:focus)
+  // can read that, so both captures are taken without it) and returns the
+  // running animations, which must be none. A focused element inside the
+  // region stays focused, so the captures show what the visitor sees (case
+  // (8) moves the focus to the revealed section's heading), unless it can
+  // hold a caret, which blinks between captures. "isolate" adopts one constructed
   // stylesheet that hides every element outside the region and its
   // ancestors (visibility, so the layout holds): a structural selector per
   // ancestor, so no attribute selector of the page can tell the hidden
   // capture from the rendered one. It returns whether the region moved and
   // the animations that run after the hiding (a transition the hiding
-  // starts). The DOM snapshot after it proves that everything outside
-  // shows nothing (isolation_problems). "unisolate", after the second
+  // starts), and the closed list of ancestor paint on every ancestor's
+  // ::first-line and ::first-letter. The DOM snapshot after it proves that
+  // everything outside shows nothing (isolation_problems). "blank", after
+  // the second capture, hides every element, the region and its ancestors
+  // too, for a third capture that must show the canvas alone
+  // (pixel_uniform), so paint that no element's visibility reaches is
+  // found whatever it is. "unisolate", after the third
   // capture, reads the box and the animations again, restores the
   // original adoptedStyleSheets and the focus, and returns whether both
   // are back.
   if (el && mode === "freeze") {
     var f = document.activeElement;
-    window.__iscFocus = f && f !== document.body && f !== document.documentElement ? f : null;
+    var kept = f && el.contains(f) && !(f.isContentEditable ||
+      /^(input|textarea|select)$/.test(f.localName));
+    window.__iscFocus = f && f !== document.body && f !== document.documentElement && !kept
+      ? f : null;
     if (window.__iscFocus && window.__iscFocus.blur) window.__iscFocus.blur();
     extra = {running: running()};
   } else if (el && mode === "isolate") {
@@ -14092,23 +14170,28 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
       window.__iscBox = before;
       window.__iscSheets = Array.prototype.slice.call(document.adoptedStyleSheets);
       document.adoptedStyleSheets = window.__iscSheets.concat([sheet]);
-      // The user-agent shadow content of a form control is not in CI's DOM
-      // snapshot (row iso-placeholder-visible), so the two pseudo-elements
-      // that style it are read here, for every control outside the region:
-      // [label, computed visibility], which reflow_hits holds to
-      // REFLOW_HIDDEN_VISIBILITY.
-      var controls = [];
-      Array.prototype.forEach.call(document.querySelectorAll("input, textarea"), function (c) {
-        if (el.contains(c)) return;
-        controls.push([label(c) + "::placeholder",
-                       getComputedStyle(c, "::placeholder").visibility]);
-        if (c.localName === "input" && c.type === "file")
-          controls.push([label(c) + "::file-selector-button",
-                         getComputedStyle(c, "::file-selector-button").visibility]);
-      });
+      // An ancestor's ::first-line and ::first-letter carry its paint onto
+      // the region's first line and letter (a decoration it propagates),
+      // and the snapshot reads no style of theirs: [label, the values of
+      // REFLOW_SNAPSHOT_STYLES after visibility], for pseudo_paint_items.
+      var lines = [];
+      for (var up = el.parentElement; up; up = up.parentElement) {
+        ["::first-line", "::first-letter"].forEach(function (ps) {
+          var cs = getComputedStyle(up, ps);
+          lines.push([label(up) + ps, __PAINT_PROPS__.map(function (q) {
+            return cs.getPropertyValue(q);
+          })]);
+        });
+      }
       extra = {moved: box(el) !== before, running: running(), rules: sheet.cssRules.length,
-               controls: controls};
+               lines: lines};
     }
+  } else if (el && mode === "blank") {
+    var all = new CSSStyleSheet();
+    all.replaceSync("*{visibility:hidden!important}");
+    document.adoptedStyleSheets =
+      Array.prototype.slice.call(document.adoptedStyleSheets).concat([all]);
+    extra = {rules: all.cssRules.length};
   } else if (mode === "unisolate") {
     var sheets = window.__iscSheets, back = window.__iscFocus;
     if (el && window.__iscBox !== undefined)
@@ -14142,6 +14225,11 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
   return {x: scrollX, y: scrollY, vh: innerHeight, saved: old, extra: extra};
 })()
 """
+# The properties the isolate step reads on each ancestor's ::first-line and
+# ::first-letter: the closed list of ancestor paint, REFLOW_SNAPSHOT_STYLES
+# after visibility, so the script and the snapshot read the same list.
+REFLOW_REGION_PAINT_SCRIPT = REFLOW_REGION_PAINT_SCRIPT.replace(
+    "__PAINT_PROPS__", json.dumps(list(REFLOW_SNAPSHOT_STYLES[1:])))
 # The Page events of a navigation of the page's own frame (case (8)).
 SEARCH_NAVIGATION_EVENTS = frozenset({"Page.frameRequestedNavigation",
                                       "Page.frameStartedNavigating",
@@ -14306,12 +14394,25 @@ def reflow_hits(tools, session, findings, where, revealed=None):
             for kind, items in isolation_problems(snapshot, region_id):
                 findings.add(where, isolation_message(kind, items, what))
                 blocked = blocked or kind != "paint"
-            shown = [str(name) for name, value in (hidden.get("controls") or [])
-                     if value not in REFLOW_HIDDEN_VISIBILITY]
-            if shown:
-                findings.add(where, isolation_message("outside", shown, what))
-                blocked = True
+            lines = pseudo_paint_items(hidden.get("lines") or [])
+            if lines:
+                findings.add(where, isolation_message("paint", lines, what))
             second = capture()
+            # The third capture (fix round 1, review finding 2): every element
+            # hidden, the slice must show the canvas alone. The snapshot
+            # lists no user-agent part and not every pseudo-element (a
+            # progress bar, a details slot, a scroll marker group), so this
+            # reads their paint by its outcome, not by a list of names.
+            blank = step("blank")
+            third = capture()
+            if blank.get("rules") != 1:
+                findings.add(where, f"(isolation) the stylesheet that hides every element for "
+                             f"{what} holds {show(blank.get('rules'))} rules, not 1, so its "
+                             "pixels are not compared")
+                blocked = True
+            elif (left := pixel_uniform(third)):
+                findings.add(where, isolation_message("blank", [left], what))
+                blocked = True
             back = step("unisolate")
             if back.get("moved"):
                 moved = blocked = True

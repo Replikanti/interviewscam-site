@@ -10,10 +10,15 @@ importlib. The browser rows of reflow-search pin the shape Chrome really
 returns; these cases pin every branch and every member of the sets.
 """
 
+import base64
 import importlib.util
+import re
+import struct
 import sys
 import unittest
+import zlib
 from pathlib import Path
+from unittest import mock
 
 sys.dont_write_bytecode = True
 
@@ -391,6 +396,7 @@ class Broken(unittest.TestCase):
             "a bool for an int": lambda r, d: d["nodes"]["nodeType"].__setitem__(0, True),
             "a float for an int": lambda r, d: d["nodes"]["parentIndex"].__setitem__(1, 0.0),
             "a bool for a layout entry": lambda r, d: d["layout"]["nodeIndex"].__setitem__(1, True),
+            "a negative layout entry": lambda r, d: d["layout"]["nodeIndex"].__setitem__(1, -1),
             "parent after child": lambda r, d: d["nodes"]["parentIndex"].__setitem__(1, 5),
             "parent is self": lambda r, d: d["nodes"]["parentIndex"].__setitem__(1, 1),
             "parent below -1": lambda r, d: d["nodes"]["parentIndex"].__setitem__(1, -2),
@@ -426,6 +432,15 @@ class Broken(unittest.TestCase):
             with self.subTest(reply=reply):
                 self.assertBroken(reply, why="the DOM snapshot cannot be read")
 
+    def test_unexpected_error_fails_closed(self):
+        # The snapshot is checked before it is read, so no reply reaches
+        # these; any that a later edit lets through still fails closed.
+        snap, _, _ = page()
+        for error in (TypeError, ValueError, KeyError, IndexError, AttributeError):
+            with self.subTest(error=error.__name__):
+                with mock.patch.object(sitecheck, "snapshot_rare", side_effect=error("x")):
+                    self.assertBroken(snap.reply(), why=f"cannot be read: {error.__name__}")
+
     def test_optional_tables_absent(self):
         snap, doc, _ = page(sibling=PLAIN)
         doc["nodes"].pop("pseudoType")
@@ -457,6 +472,233 @@ class Messages(unittest.TestCase):
     def test_names_defanged(self):
         text = sitecheck.isolation_message("outside", ["p.lead"], "r")
         self.assertIn("'p[.]lead' (1 in all)", text)
+
+
+
+VALUES = {"outline-style": "none", "text-decoration-line": "none", "overflow-x": "visible",
+          "overflow-y": "visible", "resize": "none"}
+
+
+def read(label, **values):
+    """One read of the isolate step: [label, the closed-list values]."""
+    full = dict(VALUES, **{k.replace("_", "-"): v for k, v in values.items()})
+    return [label, [full[p] for p in sitecheck.REFLOW_SNAPSHOT_STYLES[1:]]]
+
+
+class PseudoPaint(unittest.TestCase):
+    def test_each_member_on_each_pseudo_element(self):
+        for pseudo in ("::first-line", "::first-letter"):
+            for prop, value in (("outline-style", "solid"), ("text-decoration-line", "underline"),
+                                ("overflow-x", "scroll"), ("overflow-x", "auto"),
+                                ("overflow-y", "scroll"), ("overflow-y", "auto"),
+                                ("resize", "both")):
+                with self.subTest(pseudo=pseudo, prop=prop, value=value):
+                    label = "main#main.container" + pseudo
+                    self.assertEqual(sitecheck.pseudo_paint_items([read(label, **{prop: value})]),
+                                     [f"{label} {prop} {value}"])
+
+    def test_nothing_painted(self):
+        self.assertEqual(sitecheck.pseudo_paint_items([read("main::first-line"),
+                                                       read("body::first-letter",
+                                                            overflow_x="hidden")]), [])
+        self.assertEqual(sitecheck.pseudo_paint_items([]), [])
+
+    def test_read_of_another_shape_fails_closed(self):
+        bad = "an ancestor pseudo-element read of another shape"
+        for entry in (["main::first-line"], ["main", ["none"] * 4], [1, ["none"] * 5],
+                      ["main", ["none"] * 4 + [None]], "main", None):
+            with self.subTest(entry=entry):
+                self.assertEqual(sitecheck.pseudo_paint_items([entry]), [bad])
+        self.assertEqual(sitecheck.pseudo_paint_items({"x": 1}), [bad])
+
+
+GROUND = (0xF3, 0xF6, 0xFC)
+
+
+def png(width=40, height=20, pixel=GROUND, marks=()):
+    """A base64 RGB PNG of one colour with (x, y, colour) marks."""
+    raw = b""
+    for y in range(height):
+        row = bytearray(bytes(pixel) * width)
+        for mx, my, colour in marks:
+            if my == y:
+                row[mx * 3:mx * 3 + 3] = bytes(colour)
+        raw += b"\x00" + bytes(row)
+
+    def chunk(kind, body):
+        return (struct.pack(">I", len(body)) + kind + body
+                + struct.pack(">I", zlib.crc32(kind + body)))
+
+    data = (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+    return base64.b64encode(data).decode()
+
+
+class Uniform(unittest.TestCase):
+    def test_canvas_alone(self):
+        self.assertIsNone(sitecheck.pixel_uniform(png()))
+
+    def test_tolerance_bounds(self):
+        at = (GROUND[0] - 8,) + GROUND[1:]
+        above = (GROUND[0] - 9,) + GROUND[1:]
+        self.assertIsNone(sitecheck.pixel_uniform(png(marks=[(3, 4, at)])))
+        self.assertEqual(sitecheck.pixel_uniform(png(marks=[(3, 4, above)])),
+                         "1 pixel(s) off the canvas colour, x 3 to 3, y 4 to 4 of the slice, "
+                         "by up to 9 of 255")
+
+    def test_band_against_the_most_common_colour(self):
+        band = [(x, y, (0xDD, 0, 0)) for y in range(5, 9) for x in range(40)]
+        got = sitecheck.pixel_uniform(png(marks=band))
+        self.assertEqual(got, "160 pixel(s) off the canvas colour, x 0 to 39, y 5 to 8 of "
+                              "the slice, by up to 252 of 255")
+        # The first pixel is no reference: a band on the first row still is.
+        got = sitecheck.pixel_uniform(png(marks=[(x, 0, (0xDD, 0, 0)) for x in range(40)]))
+        self.assertTrue(got.startswith("40 pixel(s) off"), got)
+
+
+REGION_ROW = {"kind": "a pinned line", "label": "p.lead", "index": 0, "controls": 0,
+              "misses": [], "over": [], "pseudo": [], "top": 0, "height": 10, "left": 0,
+              "width": 40, "content": True}
+SHOWN = png(marks=[(x, 3, (0x0F, 0x17, 0x2A)) for x in range(5, 30)])
+
+
+class FakeTools:
+    """The DevTools calls reflow_hits makes, answered from a scenario: the
+    extras of each step mode, the snapshot, and the six screenshots of a
+    slice (as rendered, hidden outside, every element hidden, then the
+    paint check's three)."""
+
+    def __init__(self, extras=None, snapshot=None, shots=None):
+        self.extras = dict({"freeze": {"running": []},
+                            "isolate": {"moved": False, "running": [], "rules": 1, "lines": []},
+                            "blank": {"rules": 1},
+                            "unisolate": {"moved": False, "running": [], "sheets": True,
+                                          "focus": True}}, **(extras or {}))
+        self.snapshot = snapshot if snapshot is not None else page()[0].reply()
+        self.shots = list(shots or [SHOWN, SHOWN, png(), SHOWN, png(), SHOWN])
+        self.calls = []
+
+    def send(self, method, params=None, session=None, budget=None):
+        params = params or {}
+        self.calls.append(method)
+        if method == "Runtime.evaluate" and not params.get("returnByValue"):
+            return {"result": {"objectId": "o1"}}
+        if method == "DOM.describeNode":
+            return {"described": {"backendNodeId": REGION}}
+        if method == "DOMSnapshot.captureSnapshot":
+            return self.snapshot
+        if method == "Page.captureScreenshot":
+            return {"data": self.shots.pop(0)}
+        if method != "Runtime.evaluate":
+            return {}
+        expression = params["expression"]
+        if "window.__iscRegions = regions" in expression:
+            return {"result": {"value": [dict(REGION_ROW)]}}
+        if "return {vh: innerHeight}" in expression:
+            return {"result": {"value": {"vh": 640}}}
+        found = re.search(r'var mode = "(\w+)"', expression)
+        mode = found.group(1) if found else None
+        value = {"x": 0, "y": 0, "vh": 640, "saved": None, "extra": {}}
+        if mode in self.extras:
+            value["extra"] = self.extras[mode]
+        elif mode == "hide":
+            value["saved"] = [["", ""], ["", ""], False]
+        return {"result": {"value": value}}
+
+
+def run(tools):
+    findings = sitecheck.Findings()
+    sitecheck.reflow_hits(tools, "s", findings, "w")
+    return findings.items
+
+
+PIXELS = "(occlusion) the pixels of"
+
+
+class Plumbing(unittest.TestCase):
+    """reflow_hits against FakeTools: each guard reports and blocks the
+    comparison of the slice; a paint-only finding does not block it."""
+
+    def test_clean_slice(self):
+        self.assertEqual(run(FakeTools()), [])
+
+    def test_restore_checked(self):
+        for extra, lost in (({"sheets": False}, "its stylesheets did not come back"),
+                            ({"focus": False}, "the focus did not come back"),
+                            ({"sheets": None}, "its stylesheets did not come back"),
+                            ({"focus": None}, "the focus did not come back")):
+            with self.subTest(extra=extra):
+                back = {"moved": False, "running": [], "sheets": True, "focus": True}
+                back.update(extra)
+                for key in [k for k, v in back.items() if v is None]:
+                    del back[key]
+                items = run(FakeTools({"unisolate": back}))
+                self.assertEqual(len(items), 1, items)
+                self.assertIn("was not restored after the captures", items[0])
+                self.assertIn(lost, items[0])
+
+    def differing(self, extras=None, snapshot=None):
+        # The hidden capture differs from the rendered one, so a slice that
+        # is compared gives the pixel finding.
+        return run(FakeTools(extras, snapshot, [SHOWN, png(), png(), SHOWN, png(), SHOWN]))
+
+    def test_compared_when_clean(self):
+        items = self.differing()
+        self.assertEqual(len(items), 1, items)
+        self.assertIn(PIXELS, items[0])
+
+    def test_each_guard_reports_and_blocks(self):
+        moved = "moved when everything outside it was hidden"
+        cases = (
+            ({"freeze": {"running": ["CSSAnimation of h1"]}}, "(animation) before the first capture"),
+            ({"isolate": {"moved": False, "running": ["CSSTransition of h1"], "rules": 1}},
+             "(animation) after the hiding"),
+            ({"unisolate": {"moved": False, "running": ["CSSTransition of h1"], "sheets": True,
+                            "focus": True}}, "(animation) at the second capture"),
+            ({"isolate": {"moved": True, "running": [], "rules": 1}}, moved),
+            ({"unisolate": {"moved": True, "running": [], "sheets": True, "focus": True}}, moved),
+            ({"isolate": {"broken": "the region is not in the document's element tree"}},
+             "(isolation)"),
+            ({"isolate": {"moved": False, "running": [], "rules": 0}}, "rules, not 1, so everything outside"),
+            ({"blank": {"rules": 0}}, "that hides every element"),
+        )
+        for extras, text in cases:
+            with self.subTest(text=text):
+                items = self.differing(extras)
+                self.assertTrue(any(text in item for item in items), items)
+                self.assertFalse(any(PIXELS in item for item in items), items)
+
+    def test_moved_reported_once(self):
+        items = self.differing({"isolate": {"moved": True, "running": [], "rules": 1},
+                                "unisolate": {"moved": True, "running": [], "sheets": True,
+                                              "focus": True}})
+        self.assertEqual(sum("moved when everything" in item for item in items), 1, items)
+
+    def test_snapshot_problems_block_but_paint_does_not(self):
+        snap, _, _ = page(sibling=PLAIN)
+        items = self.differing(snapshot=snap.reply())
+        self.assertTrue(any("still show" in item for item in items), items)
+        self.assertFalse(any(PIXELS in item for item in items), items)
+        snap, _, _ = page(main_style=dict(PLAIN, **{"outline-style": "solid"}))
+        items = self.differing(snapshot=snap.reply())
+        self.assertTrue(any("(ancestor paint)" in item for item in items), items)
+        self.assertTrue(any(PIXELS in item for item in items), items)
+
+    def test_first_line_paint_reported_not_blocking(self):
+        lines = [read("main#main.container::first-line", text_decoration_line="line-through")]
+        items = self.differing({"isolate": {"moved": False, "running": [], "rules": 1,
+                                            "lines": lines}})
+        self.assertTrue(any("'main#main[.]container::first-line text-decoration-line "
+                            "line-through'" in item for item in items), items)
+        self.assertTrue(any(PIXELS in item for item in items), items)
+
+    def test_blank_capture_must_be_the_canvas(self):
+        band = png(marks=[(x, 5, (0xDD, 0, 0)) for x in range(40)])
+        items = run(FakeTools(shots=[SHOWN, png(), band, SHOWN, png(), SHOWN]))
+        self.assertTrue(any("with every element hidden, the slice of" in item
+                            for item in items), items)
+        self.assertFalse(any(PIXELS in item for item in items), items)
 
 
 if __name__ == "__main__":
