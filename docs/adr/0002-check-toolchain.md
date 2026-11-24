@@ -103,6 +103,19 @@ Data: external sources are third-party sites. 9 of the 10 source URLs in SPEC §
 - Gating every PR on external links. A third-party outage would block a removal.
 - A daily schedule. It cuts the unflagged exposure from 7 days to 1, but it brings 7 scheduled runs per week instead of 1 (7 times the outage noise) for a milestone 1 site that has no external links.
 
+*Amended 2026-11-24 (Replikanti/interviewscam#6):* the bot-walled source decision reserved above for milestone 5 is neither "accept" nor "exclude". A cited source must answer 2xx to lychee from the operator host (QA's local `--external` run) and from GitHub's runners (`links-external.yml`, dispatched on the branch of the records PR that adds the source). A source that answers 403 or another non-2xx status from either side is replaced by another source that states the same fact, or the fact is left out of the record. `lychee.toml` keeps lychee's default accepted statuses and gains no exclude for a source.
+
+**Why:** an accepted 403 also accepts a page that a block page or a login wall has replaced, so a rotted or removed source would stay green. An exclude never checks the link again, so its rot goes unseen for good. Both turn the external-link run into a check that no longer reads the source. Replacing a source costs one records PR.
+
+**Data:** candidate source pages for the first campaign records, fetched with `curl -A lychee/0.24.2` from the operator host on 2026-11-24: 7 of 7 answered 200 between 02:40 and 02:55 CET, 6 of them answered 2xx again at 03:27 CET (one through a single 302 redirect, which lychee follows), and the 6 pages the first records PR cites (5 of the candidates and one later find) answered 200 at 03:39 CET. No page needed a bot-wall decision. Runner datacenter IPs are measured by the `links-external.yml` dispatch on the records PR before it merges.
+
+**Weak point:** a source that turns bot-walled after its records PR merged reddens the weekly run until a records PR replaces it. That is the intended signal, at the cost of one records PR per such source.
+
+**Rejected:**
+
+- Accepting 403 (`accept` in `lychee.toml`). It keeps a block page or a login wall green, so the run no longer shows whether the source still says what the record cites.
+- An exclude per bot-walled URL. The link is never checked again, and a later removal of the source goes unseen.
+
 ## Numbers
 
 | Number | Derivation | What breaks at another value |

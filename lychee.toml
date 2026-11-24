@@ -18,7 +18,9 @@ extensions = ["html", "css"]
 # Non-interactive output for CI logs.
 no_progress = true
 
-# Reserved for M5: accept or exclude bot-walled 403 sources (ADR-0002 part 7).
+# Bot-walled sources (ADR-0002 part 7, amended 2026-11-24): no accept and no
+# exclude. A cited source answers 2xx from the operator host and from the
+# runners, or a records PR replaces it.
 
 # The intake endpoint (ADR-0006, M5b PR 3), the action of the two forms:
 # lychee reads <form action> as a link and sends a GET, which the POST-only
