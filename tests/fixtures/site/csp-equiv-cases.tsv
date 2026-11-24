@@ -20,8 +20,9 @@
 # PARSER_ONLY_SPACE between the CSP meta's attributes (site rule (i) fails
 # it before any parser's reading matters, so the verdict is the same on
 # every html.parser), pass rows with TAB, LF, FF and CR there and U+00A0 in
-# text, and rows after a quoted '>', inside a quoted value, in an end tag
-# and in the DOCTYPE.
+# text, and rows after a quoted '>', after two inside one quoted value
+# (a reader that left the quotes at the first would end the tag at the
+# second), inside a quoted value, in an end tag and in the DOCTYPE.
 only/leading-space	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv=" Content-Security-Policy" 	expected exactly one Content-Security-Policy meta, found 0
 first/leading-space	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8><meta http-equiv=" Content-Security-Policy" content="default-src 'none'">	the Content-Security-Policy meta is not the first element after <meta charset>
 intake/leading-space	public/report-a-scam/index.html	<meta name=viewport 	<meta http-equiv=" Content-Security-Policy" content="default-src 'none'; form-action 'self'"><meta name=viewport 	PASS
@@ -88,6 +89,7 @@ tag-space/pass-ff	public/report-a-scam/index.html	<meta http-equiv=Content-Secur
 tag-space/pass-cr	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv=Content-Security-Policy\u{000D}content=	PASS
 tag-space/pass-text	public/report-a-scam/index.html	<title>Report a 	<title>Report\u{00A0}a 	PASS
 tag-space/after-quoted-gt	public/report-a-scam/index.html	<meta name=viewport 	<meta name=x-test content="a>b"\u{00A0}data-x=1><meta name=viewport 	(i) U+00A0 in tag markup (<meta...>)
+tag-space/quoted-gt-twice	public/report-a-scam/index.html	<meta name=viewport 	<meta name=x-test content="a>b>\u{00A0}c"><meta name=viewport 	(i) U+00A0 in tag markup (<meta...>)
 tag-space/in-quoted-value	public/report-a-scam/index.html	<meta name=description content="How to report	<meta name=description content="How\u{00A0}to report	(i) U+00A0 in tag markup (<meta...>)
 tag-space/end-tag	public/report-a-scam/index.html	</title>	</title\u{00A0}>	(i) U+00A0 in tag markup (</title...>)
 tag-space/doctype	public/report-a-scam/index.html	<!doctype html>	<!doctype\u{00A0}html>	(i) U+00A0 in tag markup (<!...>)
