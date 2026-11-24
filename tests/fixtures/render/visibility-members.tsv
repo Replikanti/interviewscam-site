@@ -20,3 +20,8 @@ title-attr	<span title="Tooltip text">x</span>	rule 20: the attribute title on <
 img-alt	<img alt="Alt text">	rule 20: <img>
 placeholder	<input placeholder="Placeholder text">	rule 20: the attribute placeholder on <input>
 aria-description	<span aria-description="Announced text">x</span>	rule 20: the attribute aria-description on <span>
+nav-aria-label	<nav aria-label="Announced text">x</nav>	rule 20: the value of aria-label on <nav>
+input-value	<input type="text" value="Drawn text">	rule 20: the attribute value on a drawn <input>
+section-labelledby	<section aria-labelledby="vis-name"><p id="vis-name">Announced text</p></section>	rule 20: aria-labelledby on <section>
+span-role-img	<span role="img">Hidden text</span>	rule 20: the value of role on <span>
+copy-out-of-place	<span id="vis-copy">x</span><em>y</em><button type="button" class="copy" hidden data-copy-target="vis-copy" data-copy-done="Copied" data-copy-failed="Copy failed, select the text instead">Copy</button>	rule 20: a Copy button out of place

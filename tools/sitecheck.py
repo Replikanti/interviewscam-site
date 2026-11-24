@@ -3250,7 +3250,12 @@ HIDING_TAGS = {"template", "noscript", "select", "datalist"}
 OPTIONAL_END = ("li", "p", "dt", "dd", "tr", "td", "th", "option")
 # Text a reader may never see: content in these never meets a requirement
 # (a chip, a state sentence, a persona label), and a persona name in it is a
-# finding (rules 3 to 6).
+# finding (rules 3 to 6). Render rule 20 (Replikanti/interviewscam#51,
+# ADR-0004 part 14) confines the members on a page that passes to the
+# placements P1 to P4 (hidden on a Copy button, on search-out and on the
+# honeypot <div>; visually-hidden on the skip link), where the browser hides
+# exactly what Element.hides reads as hidden; every other member is refused
+# there, and its branch in hides() stays as defence in depth.
 HIDDEN_CONTENT = ("hidden, aria-hidden, visually-hidden, <template>, <noscript>, "
                   "<select>, an SVG <title>, a closed <dialog> or <details>")
 # Rule 7 on every page: URL schemes that carry or open a file in place.
@@ -3399,7 +3404,14 @@ class Element:
         visually-hidden, <template>, <noscript>, a <select> or <datalist>
         (option text is no inline copy), an SVG <title> or <desc> (a
         tooltip), a <dialog> without open, and every child of a <details>
-        without open except its <summary>."""
+        without open except its <summary>. On a page that passes render
+        rule 20 (Replikanti/interviewscam#51, ADR-0004 part 14) only the
+        placements P1 to P4 reach this reading: hidden on a Copy button
+        (whose revealed text, statuses and place P1' pins), on an element
+        of the class search-out and on the honeypot <div> of an intake
+        form, and visually-hidden on the skip link; there the browser
+        without the script hides what this says it hides. The branches for
+        the refused constructs stay as defence in depth."""
         parent = self.parent
         return (self.tag in HIDING_TAGS or "hidden" in self.attrs
                 or self.attrs.get("aria-hidden", "").strip().lower() == "true"
@@ -6146,19 +6158,137 @@ def is_skip_link(el):
             and next((c for c in parent.children if isinstance(c, Element)), None) is el)
 
 
+# Render rule 20, PR 2 of Replikanti/interviewscam#51 (ADR-0004 part 14): the
+# values of the text-bearing attributes the vocabulary keeps, and the Copy
+# button's revealed text, place and statuses, are pinned, so no reader's
+# region can carry free text a screen reader announces or copy.js reveals.
+VISIBILITY_VALUE_WHY = ("; a text-bearing attribute holds only its pinned value: a <nav> "
+                        "aria-label is a pinned navigation label, value sits only on an "
+                        "<input> of type hidden or checkbox, which never draw it, role is "
+                        "search on a <form> and status on a <span>, because a screen reader "
+                        "announces the value as the element's name or role (ADR-0004 part "
+                        "14, render rule 20, P5, P6 and P9)")
+VISIBILITY_LABELLEDBY_WHY = ("; aria-labelledby on a <section> is one id that names exactly "
+                             "one element, an <h2> or <h3> inside that section, because a "
+                             "screen reader announces the named element's text, hidden or not, "
+                             "as the section's name (ADR-0004 part 14, render rule 20, P7)")
+VISIBILITY_DESCRIBEDBY_WHY = ("; aria-describedby sits only on an <input> or <textarea> inside "
+                              "a <form> with the class intake, and each of its ids appears once "
+                              "and names exactly one element, a <p> with the class hint in that "
+                              "form, because a screen reader announces the named elements' "
+                              "text, hidden or not (ADR-0004 part 14, render rule 20, P8)")
+VISIBILITY_COPY_WHY = ("; a Copy button (class copy) holds exactly the text Copy, carries "
+                       "exactly the pinned statuses in data-copy-done and data-copy-failed, and "
+                       "sits right after its data-copy-target element or right after the "
+                       "persona label (<span class=\"persona-label\">) that follows that element, "
+                       "because copy.js reveals its text and writes a status into the live "
+                       "region, and a button between a box and its label would split what the "
+                       "label rules read as one (ADR-0004 part 14, render rule 20, P1')")
+VALUE_INPUT_TYPES = ("hidden", "checkbox")
+LABELLEDBY_TAGS = ("h2", "h3")
+ROLE_VALUES = {"form": "search", "span": "status"}
+PERSONA_LABEL_CLASS = "persona-label"
+DESCRIBEDBY_HINT_CLASS = "hint"
+
+
+def previous_element(el):
+    """The element sibling right before el (text between them skipped), or
+    None, as nextElementSibling and previousElementSibling read it."""
+    if el.parent is None:
+        return None
+    before = None
+    for child in el.parent.children:
+        if child is el:
+            return before
+        if isinstance(child, Element):
+            before = child
+    return None
+
+
+def inside_element(el, ancestor):
+    """el is a descendant of ancestor (not ancestor itself)."""
+    up = el.parent
+    while up is not None:
+        if up is ancestor:
+            return True
+        up = up.parent
+    return False
+
+
+def named_one(ids, token):
+    """The one element whose id is exactly token, or None when token is
+    empty (getElementById("") is null, whatever id="" the page holds) or
+    the page has none or several (getElementById would pick the first)."""
+    found = ids.get(token, []) if token else []
+    return found[0] if len(found) == 1 else None
+
+
+def value_pin_heads(el, ids, allowed):
+    """P1' and P5 to P9 on one element of the vocabulary: the (head, why)
+    of every pinned value it breaks. ids maps every id of the page to the
+    elements that carry it; allowed is the element's attribute set in
+    VISIBLE_ELEMENTS, and an attribute outside it is the vocabulary's
+    finding alone, so it gets no second one here."""
+    heads = []
+    attrs = {name: value for name, value in el.attrs.items() if name in allowed}
+    if el.tag == "nav" and "aria-label" in attrs \
+            and attrs["aria-label"] not in (HEADER_NAV_LABEL, FOOTER_NAV_LABEL, BREADCRUMB_LABEL):
+        heads.append(("the value of aria-label on <nav>", VISIBILITY_VALUE_WHY))
+    if "value" in attrs and not (el.tag == "input"
+                                 and ascii_lower(attrs.get("type", "")) in VALUE_INPUT_TYPES):
+        heads.append((f"the attribute value on a drawn <{el.tag}>", VISIBILITY_VALUE_WHY))
+    if "role" in attrs and ROLE_VALUES.get(el.tag) != attrs["role"]:
+        heads.append((f"the value of role on <{el.tag}>", VISIBILITY_VALUE_WHY))
+    if "aria-labelledby" in attrs:
+        tokens = [t for t in ASCII_WHITESPACE_RUN.split(attrs["aria-labelledby"]) if t]
+        named = named_one(ids, tokens[0]) if len(tokens) == 1 else None
+        if el.tag != "section" or named is None or named.tag not in LABELLEDBY_TAGS \
+                or not inside_element(named, el):
+            heads.append((f"aria-labelledby on <{el.tag}>", VISIBILITY_LABELLEDBY_WHY))
+    if "aria-describedby" in attrs:
+        tokens = [t for t in ASCII_WHITESPACE_RUN.split(attrs["aria-describedby"]) if t]
+        form = el.nearest("form")
+        named = [named_one(ids, t) for t in tokens]
+        if el.tag not in ("input", "textarea") or form is None \
+                or "intake" not in form.classes or not tokens \
+                or len(set(tokens)) != len(tokens) \
+                or any(n is None or n.tag != "p" or DESCRIBEDBY_HINT_CLASS not in n.classes
+                       or not inside_element(n, form) for n in named):
+            heads.append((f"aria-describedby on <{el.tag}>", VISIBILITY_DESCRIBEDBY_WHY))
+    if el.tag == "button" and COPY_CLASS in el.classes:
+        copy, done, failed = INTAKE_COPY_TEXTS
+        if el.children != [copy]:
+            heads.append(("the content of a Copy button", VISIBILITY_COPY_WHY))
+        if attrs.get("data-copy-done") != done or attrs.get("data-copy-failed") != failed:
+            heads.append(("the statuses of a Copy button", VISIBILITY_COPY_WHY))
+        target = named_one(ids, attrs.get(COPY_TARGET, ""))
+        before = previous_element(el)
+        if before is not None and before is not target and before.tag == "span" \
+                and before.classes == [PERSONA_LABEL_CLASS]:
+            before = previous_element(before)
+        if target is None or before is not target:
+            heads.append(("a Copy button out of place", VISIBILITY_COPY_WHY))
+    return heads
+
+
 def visibility_problems(page, counts=None):
     """Rule 20 on one HTML page (Replikanti/interviewscam#51, ADR-0004 part
     14): every element outside <svg> and <math> (foreign_markup_problems
     pins or refuses those) is in VISIBLE_ELEMENTS and carries only its
     attributes; hidden only at a placement of hidden_placement (P1 to P3)
     and the class visually-hidden only on the skip link (P4, is_skip_link);
-    <title> only right inside <head>
-    (P10). One finding per kind and page, with the count. counts, a list
-    as long as VISIBILITY_PLACEMENTS, adds up the placements met."""
-    kinds = {}
+    <title> only right inside <head> (P10); and (PR 2) the values of the
+    text-bearing attributes it admits and the Copy buttons as pinned
+    (value_pin_heads: P1' and P5 to P9). One finding per kind and page,
+    with the count. counts, a list as long as VISIBILITY_PLACEMENTS, adds
+    up the placements met."""
+    kinds, ids = {}, {}
 
     def note(head, why):
         kinds[head] = (kinds.get(head, (0, why))[0] + 1, why)
+    for el in page.root.walk():
+        if "id" in el.attrs:
+            ids.setdefault(el.attrs["id"], []).append(el)
     stack = [c for c in reversed(page.root.children) if isinstance(c, Element)]
     while stack:
         el = stack.pop()
@@ -6185,6 +6315,8 @@ def visibility_problems(page, counts=None):
                 counts[3] += 1
         if el.tag == "title" and (el.parent is None or el.parent.tag != "head"):
             note("<title> outside <head>", VISIBILITY_TITLE_WHY)
+        for head, why in value_pin_heads(el, ids, allowed):
+            note(head, why)
     return [f"rule 20: {head} ({n} element(s)){why}" for head, (n, why) in kinds.items()]
 
 
