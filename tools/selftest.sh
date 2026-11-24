@@ -5278,7 +5278,9 @@ PINNED
     # families. Fix round 1 of Replikanti/interviewscam-site#22: the input
     # and textarea extra-off rows (QA: the tag family had only select), a
     # control outside the form and the form-owner literal rows. Fix round 2:
-    # the in-template and id-shadowed form-owner literal rows. 61 drops.
+    # the in-template and id-shadowed form-owner literal rows. Review 3:
+    # the other five form-owner literal rows, so every member of that
+    # literal set has its drop. 66 drops.
     for drop in render:b-report-scam_alias-renamed render:b-correction-email-required \
         render:b-report-headers-maxlength-above render:b-correction-request-hint-reworded \
         render:b-correction-files-accept-without-webp render:d-error-doubled \
@@ -5307,6 +5309,9 @@ PINNED
         render:f-report-textarea-extra-off render:f-report-details-off-space-000c \
         render:f-correction-website-outside-form render:f-report-website-form-attr-not-a-form \
         render:f-report-website-in-template render:f-report-website-form-attr-id-shadowed \
+        render:f-report-scam_alias-renamed-with-decoy render:f-report-scam_alias-other-form \
+        render:f-report-website-form-attr-elsewhere render:f-report-website-form-attr-empty \
+        render:f-report-website-form-attr-intake \
         render:d-sitemap-urlset-misplaced render:d-sitemap-lastmod-misplaced \
         render:d-sitemap-url-attribute render:d-sitemap-loc-attribute \
         site:fail-intake-host-in-data site:fail-input-formaction-intake \
