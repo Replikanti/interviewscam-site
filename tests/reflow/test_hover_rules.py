@@ -217,6 +217,11 @@ class CommentBlind(unittest.TestCase):
     def test_comment_hides_nothing_in_a_string(self):
         self.assertEqual(problems("a{content:'/* :hover */'}"), [])
 
+    def test_comment_opener_in_a_string_starts_no_comment(self):
+        self.assertTrue(problems("a{content:'/*'}body:hover{position:fixed}"))
+        self.assertTrue(problems('a{content:"/*"}body:hover{position:fixed}'))
+        self.assertEqual(problems("a{content:'*/'}b{x:y}"), [])
+
     def test_unterminated_comment(self):
         self.assertEqual(problems(TODAY + "/* body:hover{position:fixed}"), [])
         self.assertTrue(problems("body:/**/hover{position:fixed}/* x"))

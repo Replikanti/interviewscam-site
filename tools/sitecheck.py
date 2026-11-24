@@ -2272,7 +2272,7 @@ HOVER_VARS = {name: HOVER_VAR_VALUES[name]
 def css_strip_comments(css):
     """css with every comment removed, as a browser reads it (a comment is
     no token, so `:/**/hover` is `:hover`); css_rules turns a comment into a
-    space instead, which keeps `a/**/b` two words. Strings are kept."""
+    space instead. Strings are kept (a `/*` inside one starts no comment)."""
     return CSS_COMMENT_OR_STRING.sub(lambda m: m.group(0) if m.group(1) else "", css)
 
 
@@ -2348,17 +2348,11 @@ def hover_var_problems(rules):
 
 def css_hover_problems(css):
     """The findings of the closed list of :hover rules (HOVER_RULES) and of
-    the custom properties they read (HOVER_VARS) on one stylesheet. Read both
-    ways a comment can be read, as a space (css_rules) and as nothing (a
-    browser: `:/**/hover` is `:hover`), the findings of either; a finding
-    that both give counts once."""
-    problems = []
-    for text in (css, css_strip_comments(css)):
-        rules = css_rules(text)
-        for problem in hover_rule_problems(rules) + hover_var_problems(rules):
-            if problem not in problems:
-                problems.append(problem)
-    return problems
+    the custom properties they read (HOVER_VARS) on one stylesheet, read as a
+    browser reads it: with the comments removed, so `:/**/hover` is `:hover`
+    (css_rules alone would turn the comment into a space and miss it)."""
+    rules = css_rules(css_strip_comments(css))
+    return hover_rule_problems(rules) + hover_var_problems(rules)
 
 
 class CssRuleResult:
