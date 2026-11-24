@@ -12270,14 +12270,14 @@ REFLOW_HEIGHT = 640
 # attempt alone outlasts the longest stall seen, at most 70.3 s (PR 5 job
 # 20, image 20261101), so it is absorbed whether a killed Chrome keeps its
 # progress, the stall lies outside the VM, or only a fresh Chrome helps.
-# Upper bound: the 110-minute workflow cap (derived from the job duration
-# on a bucketed base of 3300 s, the slowest green job, 3163 s, plus 46 s of
+# Upper bound: the 140-minute workflow cap (derived from the job duration
+# on a bucketed base of 4200 s, the slowest green job, 3874 s, plus 46 s of
 # drift, rounded up to the next 5 minutes; M5b PR 2 fix rounds 9 and 10,
-# re-derived in Replikanti/interviewscam#40 PR 2, #28 PR 2 and #39, ADR-0004
-# Numbers) holds the base, a fully used window (2 x L) and one more 70 s
-# stall, so L is at most 1615 s; 75 s leaves 3080 s of the cap.
-# Below 71 s job 20's shape depends on a restart helping again; above 1615 s
-# an absorbed window plus a second stall is cancelled at 110 minutes.
+# re-derived in Replikanti/interviewscam#40 PR 2, #28 PR 2, #39 and twice
+# in #58, ADR-0004 Numbers) holds the base, a fully used window (2 x L) and
+# one more 70 s stall, so L is at most 2065 s; 75 s leaves 3980 s of the
+# cap. Below 71 s job 20's shape depends on a restart helping again; above
+# 2065 s an absorbed window plus a second stall is cancelled at 140 minutes.
 REFLOW_LAUNCH_TIMEOUT = 75
 # The budget of every later answer (ADR-0003 Numbers). A 23-page call makes
 # about 70 page-level calls in 1.9 to 2.8 s on the runner, and no later call
@@ -12362,9 +12362,37 @@ REFLOW_PAINT_TOLERANCE = 8
 # painting order (CSS 2.1 Appendix E) draws above its descendants or that
 # no spec places in it (scroll bars, the resize control): an outline, a
 # text decoration it propagates, a scroll bar on either axis, a resize
-# control. Its background, border and box shadow paint below them.
-REFLOW_SNAPSHOT_STYLES = ("visibility", "outline-style", "text-decoration-line",
-                          "overflow-x", "overflow-y", "resize")
+# control. Its background, border and box shadow paint below them. The
+# rest (Replikanti/interviewscam#58 fix round 1, review finding 1) are
+# REFLOW_BACKDROP_ROOT_STYLES.
+REFLOW_PAINT_STYLES = ("outline-style", "text-decoration-line", "overflow-x", "overflow-y",
+                       "resize")
+# The Backdrop Root triggers of Filter Effects 2 section 3.1, each with the
+# computed value that is no trigger (ADR-0005 part 6, amendment of
+# Replikanti/interviewscam#58, fix round 1): a filter, opacity below 1, a
+# mask (mask-image; Chrome has no unprefixed mask-border, its source is
+# -webkit-mask-box-image-source), a clip-path, a blend mode, a backdrop
+# filter, will-change (any value but auto, since it names any property,
+# prefixed aliases and shorthands of the triggers included) and a view
+# transition name (a Backdrop Root in Chrome 147). A part's backdrop-filter
+# reads only what is painted inside its nearest Backdrop Root, so with an
+# ancestor of the region, the region itself or an element in it as one,
+# the blank captures hide everything the filter reads and the stripes
+# never reach it: a filter that erases a pinned line passes every capture.
+# Such an element whose computed value differs (an unreadable one
+# included) fails closed; the templates give the regions and their
+# ancestors none.
+REFLOW_BACKDROP_ROOT_STYLES = {"filter": "none", "opacity": "1", "mask-image": "none",
+                               "-webkit-mask-box-image-source": "none", "clip-path": "none",
+                               "mix-blend-mode": "normal", "backdrop-filter": "none",
+                               "will-change": "auto", "view-transition-name": "none"}
+# The view-transition-name Chrome's user-agent stylesheet gives the root
+# element (:root{view-transition-name:root}; every page's <html> computes
+# it). The root element is a Backdrop Root by definition, so its own name
+# adds none, and only there does the value pass.
+REFLOW_ROOT_VIEW_TRANSITION_NAME = "root"
+REFLOW_SNAPSHOT_STYLES = (("visibility",) + REFLOW_PAINT_STYLES
+                          + tuple(REFLOW_BACKDROP_ROOT_STYLES))
 # The computed visibility values that paint nothing (CSS 2.1 section 11.2:
 # collapse is hidden outside tables and flex items, and inside them it
 # removes the row or item without painting it).
@@ -12381,16 +12409,34 @@ REFLOW_SCROLLBAR_OVERFLOW = frozenset({"scroll", "auto"})
 # region with a layout object fails closed, whatever its visibility, as
 # does any entry the snapshot gives a contentDocumentIndex.
 REFLOW_FRAME_OWNERS = frozenset({"iframe", "frame", "object", "embed"})
-# The canvas colours of the two blank captures (fix round 2): black and
-# white are as far apart as two colours get in every channel (255), so no
-# paint of any colour lies within REFLOW_PAINT_TOLERANCE of both, and paint
-# in the page's own canvas colour (an eraser over the region's words) shows
-# in at least one. A page rule that outranks the forced background leaves a
-# capture off its forced colour, which fails closed. They find any visible
-# part's own paint, of any colour, not a filter of what lies below it: a
-# part with only a backdrop-filter keeps the flat canvas flat
-# (Replikanti/interviewscam#58).
+# The canvases of the three blank captures. The first two are flat (fix
+# round 2 of Replikanti/interviewscam#39): black and white are as far apart
+# as two colours get in every channel (255), so no paint of any colour lies
+# within REFLOW_PAINT_TOLERANCE of both, and paint in the page's own canvas
+# colour (an eraser over the region's words) shows in at least one; they
+# find a visible part's own paint. The third (Replikanti/interviewscam#58,
+# ADR-0005 part 6) is 1 px vertical stripes of the 13 distinct opaque
+# colours of data/tokens.toml, which a flat canvas cannot be: a visible
+# part that filters or blends what lies below it (a backdrop-filter, a
+# mix-blend-mode) changes the stripes, and pixel_pattern reads them. The
+# palette, because `sitecheck tokens` refuses colour literals anywhere else,
+# so every pixel of a pinned line is a palette colour or a blend of two.
+# The order is the cyclic one whose neighbours differ most: by 122 at least
+# (the largest any order reaches; no cycle has all neighbours 123 apart),
+# with a second difference |left + right - 2 own| of 244 at least, so a
+# one-sided mix shows above 8/122 = 6.6 % and a blur() above 8/244 = 3.3 %
+# per neighbour. One 13 x 1 px tile per period, so the root's width never
+# cuts a period short, with stops on whole pixels, so each pixel is one
+# colour. A page rule that outranks a forced background leaves a capture
+# off it (flat, or stripes of another width), which fails closed.
 REFLOW_BLANK_CANVAS = ("#000000", "#ffffff")
+REFLOW_BLANK_PATTERN = ("#0F172A", "#F3F6FC", "#C2410C", "#EEF2F9", "#2350C8", "#FFFFFF",
+                        "#8592A6", "#FFEAD5", "#475569", "#E3EAFB", "#1E3A8A", "#DCE3EF",
+                        "#9A3412")
+REFLOW_BLANK_PATTERN_CSS = (
+    "linear-gradient(90deg," + ",".join(f"{c} {i}px {i + 1}px" for i, c in
+                                        enumerate(REFLOW_BLANK_PATTERN))
+    + f") 0 0/{len(REFLOW_BLANK_PATTERN)}px 1px")
 # Case (6), state S1 (ADR-0003 part 6): the script URLs blocked, so the page
 # loads with scripting on and its script not run, as after a failed load.
 REFLOW_BLOCKED_SCRIPTS = ("*.js", "*.mjs")
@@ -13498,8 +13544,11 @@ def isolation_problems(snapshot, region_id):
     characters (they paint above the region and cannot be hidden without
     it); "frame", the labels of the frame owners outside
     (REFLOW_FRAME_OWNERS or a contentDocumentIndex) with a layout object,
-    whatever their visibility; "paint", label, property and value of each
-    ancestor element's box
+    whatever their visibility; "backdrop", label, property and value of
+    each Backdrop Root trigger (REFLOW_BACKDROP_ROOT_STYLES) of an ancestor
+    element or an element of the region's subtree, the region and its
+    pseudo-elements included; "paint", label, property and value of
+    each ancestor element's box
     paint of the closed list (an outline, a text decoration, a scroll bar
     on either axis, a resize control). Never raises."""
     try:
@@ -13597,7 +13646,8 @@ def _isolation_problems(snapshot, region_id):
         name += "".join("." + c for c in re.split(r"[\t\n\f\r ]+", attrs.get("class", "")) if c)
         return name + where
 
-    outside, ancestor, paint, frame = {}, {}, {}, {}
+    outside, ancestor, backdrop, paint, frame = {}, {}, {}, {}, {}
+    paint_end = 1 + len(REFLOW_PAINT_STYLES)
     for d, (parents, types, names, ids, pseudo, attributes, boxes, styles,
             frames) in enumerate(docs):
         inside, chain = [False] * len(parents), set()
@@ -13614,11 +13664,19 @@ def _isolation_problems(snapshot, region_id):
                 raise SnapshotError(f"document {d} gives a layout object other than a "
                                     "document no computed style")
             if inside[i]:
+                # A Backdrop Root in the region (the region itself
+                # included) holds the parts inside it as an ancestor does.
+                if types[i] == 1:
+                    for item in backdrop_root_items(label(d, i), style[paint_end:]):
+                        backdrop.setdefault((d, i, item), item)
                 continue
             if i in chain:
                 if types[i] != 1:
                     continue
-                for item in ancestor_paint_items(label(d, i), style[1:]):
+                root = parents[i] >= 0 and types[parents[i]] == 9
+                for item in backdrop_root_items(label(d, i), style[paint_end:], root):
+                    backdrop.setdefault((d, i, item), item)
+                for item in ancestor_paint_items(label(d, i), style[1:paint_end]):
                     paint.setdefault((d, i, item), item)
                 continue
             if parents[i] in chain and (types[i] == 3 or i in pseudo):
@@ -13630,12 +13688,27 @@ def _isolation_problems(snapshot, region_id):
                 outside.setdefault((d, i), label(d, i))
     return [(kind, list(items.values())) for kind, items in
             (("outside", outside), ("frame", frame), ("ancestor", ancestor),
-             ("paint", paint)) if items]
+             ("backdrop", backdrop), ("paint", paint)) if items]
+
+
+def backdrop_root_items(label, values, root=False):
+    """The Backdrop Root triggers of an element (REFLOW_BACKDROP_ROOT_STYLES,
+    ADR-0005 part 6, amendment of Replikanti/interviewscam#58, fix round 1),
+    read on its computed values in that order: one "<label> <property>
+    <value>" per member whose value is not the one that makes no Backdrop
+    Root, an unreadable (empty) value included. root: the element is the
+    document's root element, which is a Backdrop Root anyway and whose
+    view-transition-name Chrome's user-agent stylesheet sets to root
+    (REFLOW_ROOT_VIEW_TRANSITION_NAME), so that value passes there."""
+    return [f"{label} {prop} {value}" for (prop, plain), value in
+            zip(REFLOW_BACKDROP_ROOT_STYLES.items(), values, strict=True)
+            if value != plain and not (root and prop == "view-transition-name"
+                                       and value == REFLOW_ROOT_VIEW_TRANSITION_NAME)]
 
 
 def ancestor_paint_items(label, values):
     """The closed list of an ancestor's box paint that draws above the
-    region (REFLOW_SNAPSHOT_STYLES after visibility; ADR-0005 Numbers, "The
+    region (REFLOW_PAINT_STYLES; ADR-0005 Numbers, "The
     ancestor paint above the region"), read on its computed values in that
     order: one "<label> <property> <value>" per member that paints."""
     outline, decoration, overflow_x, overflow_y, resize = values
@@ -13651,7 +13724,7 @@ def pseudo_paint_items(reads):
     """ancestor_paint_items over the isolate step's reads of every
     ancestor's ::first-line and ::first-letter ([label, values]); a read of
     another shape fails closed as an item of its own."""
-    width = len(REFLOW_SNAPSHOT_STYLES) - 1
+    width = len(REFLOW_PAINT_STYLES)
     items = []
     for entry in reads if isinstance(reads, list) else [reads]:
         if not (isinstance(entry, list) and len(entry) == 2 and isinstance(entry[0], str)
@@ -13670,8 +13743,8 @@ def pixel_canvas(shot, colour, tolerance=REFLOW_PAINT_TOLERANCE):
     the pixel occlusion check, taken with every element hidden and the
     canvas forced to each of REFLOW_BLANK_CANVAS, must show that colour
     alone (Replikanti/interviewscam#39 fix rounds 1 and 2). That finds a
-    visible part's own paint, not a backdrop-filter, which leaves a flat
-    canvas flat (Replikanti/interviewscam#58)."""
+    visible part's own paint; a filter or blend of what lies below it is
+    read on the stripes by pixel_pattern (Replikanti/interviewscam#58)."""
     width, _height, channels, rows = png_rows(base64.b64decode(shot))
     want = bytes.fromhex(colour.lstrip("#"))
     plain = (want + b"\xff" * (channels - 3)) * width
@@ -13691,6 +13764,62 @@ def pixel_canvas(shot, colour, tolerance=REFLOW_PAINT_TOLERANCE):
         return None
     return (f"{count} pixel(s) off the forced canvas colour {colour}, x {min(xs)} to "
             f"{max(xs)}, y {min(ys)} to {max(ys)} of the slice, by up to {most} of 255")
+
+
+def pixel_pattern(shot, colours=REFLOW_BLANK_PATTERN, tolerance=REFLOW_PAINT_TOLERANCE):
+    """None when a screenshot (base64 PNG) is the 1 px vertical stripes of
+    colours ("#rrggbb", cyclic) in some horizontal phase p: every pixel x of
+    every row within tolerance in each RGB channel of colours[(x + p) % n],
+    alpha ignored. Else the count of the pixels off the stripes, their
+    bounding box and the largest difference, for the phase with the fewest
+    off. The third blank capture of the pixel occlusion check, every element
+    hidden and the canvas forced to REFLOW_BLANK_PATTERN_CSS, must show the
+    stripes alone, so a part that filters or blends what lies below it is
+    found (Replikanti/interviewscam#58). A row that passes costs no Python
+    loop per pixel: each column class x mod n and channel is one strided
+    slice, mapped by bytes.translate to 0 (within tolerance) or 1."""
+    width, _height, channels, rows = png_rows(base64.b64decode(shot))
+    want = [bytes.fromhex(c.lstrip("#")) for c in colours]
+    n, step = len(want), len(want) * channels
+    tables = {v: bytes(0 if abs(b - v) <= tolerance else 1 for b in range(256))
+              for c in want for v in c}
+
+    def masks(row, phase):
+        # Per column class k, the 0/1 mask of its pixels off the stripes.
+        for k in range(n):
+            colour = want[(k + phase) % n]
+            yield k, [row[k * channels + ch::step].translate(tables[colour[ch]])
+                      for ch in range(3)]
+
+    def fits(row, phase):
+        return all(1 not in m for _k, ms in masks(row, phase) for m in ms)
+
+    def off(row, phase):
+        return sum((int.from_bytes(ms[0]) | int.from_bytes(ms[1]) | int.from_bytes(ms[2]))
+                   .bit_count() for _k, ms in masks(row, phase))
+
+    phases = [p for p in range(n) if fits(rows[0], p)] if rows else []
+    for row in rows[1:]:
+        phases = [p for p in phases if fits(row, p)]
+        if not phases:
+            break
+    if phases or not rows:
+        return None
+    counts = [sum(off(row, p) for row in rows) for p in range(n)]
+    phase = counts.index(min(counts))
+    xs, ys, most = [], [], 0
+    for y, row in enumerate(rows):
+        if fits(row, phase):
+            continue
+        for x in range(width):
+            px, colour = row[x * channels:x * channels + 3], want[(x + phase) % n]
+            delta = max(abs(a - b) for a, b in zip(px, colour))
+            if delta > tolerance:
+                xs.append(x)
+                ys.append(y)
+                most = max(most, delta)
+    return (f"{counts[phase]} pixel(s) off the forced stripes, x {min(xs)} to {max(xs)}, "
+            f"y {min(ys)} to {max(ys)} of the slice, by up to {most} of 255")
 
 
 def reflow_named(items):
@@ -13718,11 +13847,23 @@ def isolation_message(kind, items, what):
                 "user-agent part set visible such as a progress bar, a details slot or a "
                 "placeholder, a pseudo-element whose box sits beside its element such as a "
                 "scroll marker group) paints there, so the region's pixels are not compared")
+    if kind == "stripes":
+        return (f"(isolation) with every element hidden and the canvas forced to the palette "
+                f"stripes, the slice of {what} is not the stripes ({items[0]}): a part that "
+                "no element's visibility reaches filters or blends what lies below it (a "
+                "backdrop-filter, a mix-blend-mode), so the region's pixels are not compared")
     if kind == "frame":
         return (f"(isolation) outside {what}, frame owner(s) hold a document the hiding "
                 f"cannot reach: {reflow_named(items)}; a nested document is not hidden with "
                 "its owner's page and may be left out of the snapshot, so the region's "
                 "pixels are not compared")
+    if kind == "backdrop":
+        return (f"(isolation) {what}, an ancestor of it or an element in it is a Backdrop "
+                f"Root: {reflow_named(items)}; a part inside a Backdrop Root that filters what "
+                "lies below it (a backdrop-filter) reads only what that root paints, which the "
+                "blank captures hide, so the stripes cannot reach the filter and the region's "
+                "pixels are not compared; the templates give the regions and their ancestors "
+                "none")
     if kind == "ancestor":
         return (f"(isolation) the ancestors of {what} hold box(es) of their own text or "
                 f"pseudo-elements: {reflow_named(items)}; an ancestor's own inline and "
@@ -14481,7 +14622,9 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
   function hovered() {
     return Array.prototype.map.call(document.querySelectorAll(":hover"), label);
   }
-  if (mode === "scroll") window.scrollTo(0, %(y)s);
+  // Whole pixels (Replikanti/interviewscam#58): the captures start on a
+  // whole viewport pixel, so the 1 px stripes are not resampled.
+  if (mode === "scroll") window.scrollTo(0, Math.floor(%(y)s));
   // The pixel occlusion check (fix round 2, Replikanti/interviewscam#39):
   // "freeze" blurs a focused element outside the region before the first
   // capture (hiding a focused element moves the focus, and :has(:focus)
@@ -14499,10 +14642,12 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
   // ::first-line and ::first-letter. The DOM snapshot after it proves that
   // everything outside shows nothing (isolation_problems). "blank", after
   // the second capture, hides every element, the region and its ancestors
-  // too, and forces the canvas to the colour in saved, for a capture that
-  // must show that colour alone (pixel_canvas, once per colour of
-  // REFLOW_BLANK_CANVAS), so paint that no element's visibility reaches is
-  // found whatever it is and whatever its colour. "unisolate", after the
+  // too, and forces the canvas to the background in saved, a colour of
+  // REFLOW_BLANK_CANVAS or REFLOW_BLANK_PATTERN_CSS, for a capture that must
+  // show that canvas alone (pixel_canvas once per colour, then pixel_pattern
+  // on the stripes), so paint that no element's visibility reaches is found
+  // whatever it is and whatever its colour, and so is a filter or blend of
+  // what lies below it (Replikanti/interviewscam#58). "unisolate", after the
   // last capture, reads the box and the animations again, restores the
   // original adoptedStyleSheets and puts the focus back on the element
   // focused at "freeze" (kept or blurred), and returns whether both are
@@ -14544,7 +14689,7 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
       // An ancestor's ::first-line and ::first-letter carry its paint onto
       // the region's first line and letter (a decoration it propagates),
       // and the snapshot reads no style of theirs: [label, the values of
-      // REFLOW_SNAPSHOT_STYLES after visibility], for pseudo_paint_items.
+      // REFLOW_PAINT_STYLES], for pseudo_paint_items.
       var lines = [];
       for (var up = el.parentElement; up; up = up.parentElement) {
         ["::first-line", "::first-letter"].forEach(function (ps) {
@@ -14558,8 +14703,9 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
                lines: lines, hover: hovered()};
     }
   } else if (el && mode === "blank") {
-    // saved holds the forced canvas colour of this blank capture. The
-    // sheet of the previous blank capture is replaced, not stacked.
+    // saved holds the forced canvas of this blank capture, a colour of
+    // REFLOW_BLANK_CANVAS or REFLOW_BLANK_PATTERN_CSS. The sheet of the
+    // previous blank capture is replaced, not stacked.
     var all = new CSSStyleSheet();
     all.replaceSync("*{visibility:hidden!important}:root{background:" + saved +
                     "!important}");
@@ -14609,10 +14755,12 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
 })()
 """
 # The properties the isolate step reads on each ancestor's ::first-line and
-# ::first-letter: the closed list of ancestor paint, REFLOW_SNAPSHOT_STYLES
-# after visibility, so the script and the snapshot read the same list.
+# ::first-letter: the closed list of ancestor paint, REFLOW_PAINT_STYLES,
+# so the script and the snapshot read the same list. The Backdrop Root
+# triggers are not read there: none of them applies to ::first-line or
+# ::first-letter (CSS Pseudo-Elements 4 section 2.3).
 REFLOW_REGION_PAINT_SCRIPT = REFLOW_REGION_PAINT_SCRIPT.replace(
-    "__PAINT_PROPS__", json.dumps(list(REFLOW_SNAPSHOT_STYLES[1:])))
+    "__PAINT_PROPS__", json.dumps(list(REFLOW_PAINT_STYLES)))
 # The Page events of a navigation of the page's own frame (case (8)).
 SEARCH_NAVIGATION_EVENTS = frozenset({"Page.frameRequestedNavigation",
                                       "Page.frameStartedNavigating",
@@ -14796,9 +14944,16 @@ def reflow_hits(tools, session, findings, where, revealed=None):
             # reads their paint by its outcome, not by a list of names.
             # Fix round 2 (review finding 2): twice, with the canvas forced to
             # each of REFLOW_BLANK_CANVAS, so paint in the canvas colour (an
-            # eraser over the region's words) shows in one of them.
-            for colour in REFLOW_BLANK_CANVAS:
-                blank = step("blank", colour)
+            # eraser over the region's words) shows in one of them. Then
+            # (Replikanti/interviewscam#58) once on the palette stripes of
+            # REFLOW_BLANK_PATTERN_CSS, which a part that filters or blends
+            # what lies below it changes; taken only when both flat captures
+            # passed, so a slice gets one blank finding, own paint first.
+            for saved, reader, kind in (
+                    [(c, lambda shot, c=c: pixel_canvas(shot, c), "blank")
+                     for c in REFLOW_BLANK_CANVAS]
+                    + [(REFLOW_BLANK_PATTERN_CSS, pixel_pattern, "stripes")]):
+                blank = step("blank", saved)
                 third = capture()
                 if blank.get("rules") != 2:
                     findings.add(where, f"(isolation) the stylesheet that hides every element "
@@ -14806,8 +14961,8 @@ def reflow_hits(tools, session, findings, where, revealed=None):
                                  "so its pixels are not compared")
                     blocked = True
                     break
-                if (left := pixel_canvas(third, colour)):
-                    findings.add(where, isolation_message("blank", [left], what))
+                if (left := reader(third)):
+                    findings.add(where, isolation_message(kind, [left], what))
                     blocked = True
                     break
             back = step("unisolate")

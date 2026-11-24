@@ -12,9 +12,11 @@ returns; these cases pin every branch and every member of the sets.
 
 import base64
 import importlib.util
+import json
 import re
 import struct
 import sys
+import tomllib
 import unittest
 import zlib
 from pathlib import Path
@@ -43,7 +45,11 @@ PLAIN = {"visibility": "visible"}
 # since a document has no computed style.
 EMPTY = "empty"
 DEFAULTS = {"visibility": "visible", "outline-style": "none", "text-decoration-line": "none",
-            "overflow-x": "visible", "overflow-y": "visible", "resize": "none"}
+            "overflow-x": "visible", "overflow-y": "visible", "resize": "none",
+            "filter": "none", "opacity": "1", "mask-image": "none",
+            "-webkit-mask-box-image-source": "none", "clip-path": "none",
+            "mix-blend-mode": "normal", "backdrop-filter": "none", "will-change": "auto",
+            "view-transition-name": "none"}
 
 
 class Snapshot:
@@ -289,8 +295,9 @@ class Ancestors(unittest.TestCase):
         snap, _, _ = page()
         self.assertEqual(problems(snap), [])
         snap, doc, _ = page()
-        doc["layout"]["styles"][0] = [snap.string(v) for v in (
-            "visible", "none", "none", "auto", "auto", "none")]
+        row = dict(DEFAULTS, **{"overflow-x": "auto", "overflow-y": "auto"})
+        doc["layout"]["styles"][0] = [snap.string(row[p])
+                                      for p in sitecheck.REFLOW_SNAPSHOT_STYLES]
         self.assertEqual(problems(snap), [])
 
     def test_unreadable_property_fails_closed(self):
@@ -328,9 +335,15 @@ class AncestorPaint(unittest.TestCase):
         self.assertEqual(sitecheck.REFLOW_SCROLLBAR_OVERFLOW, frozenset({"scroll", "auto"}))
 
     def test_styles_read(self):
+        self.assertEqual(sitecheck.REFLOW_PAINT_STYLES,
+                         ("outline-style", "text-decoration-line", "overflow-x", "overflow-y",
+                          "resize"))
         self.assertEqual(sitecheck.REFLOW_SNAPSHOT_STYLES,
                          ("visibility", "outline-style", "text-decoration-line",
-                          "overflow-x", "overflow-y", "resize"))
+                          "overflow-x", "overflow-y", "resize", "filter", "opacity",
+                          "mask-image", "-webkit-mask-box-image-source", "clip-path",
+                          "mix-blend-mode", "backdrop-filter", "will-change",
+                          "view-transition-name"))
 
     def test_outline_on_root(self):
         self.assertEqual(self.paint({"outline-style": "dashed"}, on="root_style"),
@@ -358,6 +371,118 @@ class AncestorPaint(unittest.TestCase):
         snap.add(doc, at["header"], ELEMENT, "EMBED", 91, style=HIDDEN)
         self.assertEqual([kind for kind, _ in problems(snap)],
                          ["outside", "frame", "ancestor", "paint"])
+        snap, doc, at = page(main_style=dict(PLAIN, **{"outline-style": "solid",
+                                                       "opacity": "0.5"}), sibling=PLAIN)
+        self.assertEqual([kind for kind, _ in problems(snap)],
+                         ["outside", "backdrop", "paint"])
+
+
+# One trigger value per member of REFLOW_BACKDROP_ROOT_STYLES (Replikanti/
+# interviewscam#58 fix round 1, review finding 1), as Chrome 147 computes
+# it, and the values that make no Backdrop Root.
+TRIGGERS = (("filter", "opacity(1)"), ("filter", "blur(0px)"), ("opacity", "0.999"),
+            ("opacity", "0"), ("mask-image", "linear-gradient(rgb(0, 0, 0), rgb(0, 0, 0))"),
+            ("-webkit-mask-box-image-source", "linear-gradient(rgb(0, 0, 0), rgb(0, 0, 0))"),
+            ("clip-path", "inset(0px)"), ("mix-blend-mode", "darken"),
+            ("backdrop-filter", "opacity(1)"), ("will-change", "filter"),
+            ("will-change", "opacity"), ("will-change", "clip-path"), ("will-change", "mask"),
+            ("will-change", "backdrop-filter"), ("will-change", "mix-blend-mode"),
+            ("will-change", "transform"), ("will-change", "filter, opacity"),
+            ("view-transition-name", "x"))
+
+
+class BackdropRoot(unittest.TestCase):
+    """An ancestor of the region, the region or an element in it that is a
+    Backdrop Root fails closed: a part's backdrop-filter inside it reads
+    only what it paints, which the blank captures hide
+    (Replikanti/interviewscam#58 fix round 1)."""
+
+    def root(self, style, on="main_style"):
+        snap, _, _ = page(**{on: dict(PLAIN, **style)})
+        return problems(snap)
+
+    def test_members(self):
+        self.assertEqual(sitecheck.REFLOW_BACKDROP_ROOT_STYLES,
+                         {"filter": "none", "opacity": "1", "mask-image": "none",
+                          "-webkit-mask-box-image-source": "none", "clip-path": "none",
+                          "mix-blend-mode": "normal", "backdrop-filter": "none",
+                          "will-change": "auto", "view-transition-name": "none"})
+        self.assertEqual({prop for prop, _ in TRIGGERS},
+                         set(sitecheck.REFLOW_BACKDROP_ROOT_STYLES))
+
+    def test_each_member(self):
+        for prop, value in TRIGGERS:
+            with self.subTest(prop=prop, value=value):
+                self.assertEqual(self.root({prop: value}),
+                                 [("backdrop", [f"main#main.container {prop} {value}"])])
+
+    def test_each_ancestor(self):
+        for on, name in (("main_style", "main#main.container"), ("root_style", "html")):
+            with self.subTest(on=on):
+                self.assertEqual(self.root({"clip-path": "inset(0px)"}, on=on),
+                                 [("backdrop", [f"{name} clip-path inset(0px)"])])
+        snap, doc, at = page()
+        doc["layout"]["styles"][doc["layout"]["nodeIndex"].index(at["body"])][
+            sitecheck.REFLOW_SNAPSHOT_STYLES.index("will-change")] = snap.string("opacity")
+        self.assertEqual(problems(snap), [("backdrop", ["body will-change opacity"])])
+
+    def test_clean_chain_passes(self):
+        # The values that make no Backdrop Root, written out, and the
+        # stacking contexts the spec does not list.
+        self.assertEqual(self.root(dict(sitecheck.REFLOW_BACKDROP_ROOT_STYLES)), [])
+        self.assertEqual(self.root({}), [])
+
+    def test_root_view_transition_name(self):
+        # Chrome's user-agent sheet gives <html> view-transition-name root
+        # (rows oc-pass-*: every page); the root element is a Backdrop Root
+        # anyway. Only there, and only that value, passes.
+        self.assertEqual(sitecheck.REFLOW_ROOT_VIEW_TRANSITION_NAME, "root")
+        self.assertEqual(self.root({"view-transition-name": "root"}, on="root_style"), [])
+        self.assertEqual(self.root({"view-transition-name": "x"}, on="root_style"),
+                         [("backdrop", ["html view-transition-name x"])])
+        self.assertEqual(self.root({"filter": "blur(1px)", "view-transition-name": "root"},
+                                   on="root_style"),
+                         [("backdrop", ["html filter blur(1px)"])])
+        self.assertEqual(self.root({"view-transition-name": "root"}),
+                         [("backdrop", ["main#main.container view-transition-name root"])])
+
+    def test_unreadable_value_fails_closed(self):
+        for prop in sitecheck.REFLOW_BACKDROP_ROOT_STYLES:
+            with self.subTest(prop=prop):
+                self.assertEqual(self.root({prop: None}),
+                                 [("backdrop", [f"main#main.container {prop} "])])
+
+    def test_two_properties_two_items(self):
+        self.assertEqual(self.root({"filter": "blur(1px)", "will-change": "filter"}),
+                         [("backdrop", ["main#main.container filter blur(1px)",
+                                        "main#main.container will-change filter"])])
+
+    def test_region_and_its_content_read(self):
+        # A Backdrop Root on the region or inside it holds a part in it as
+        # an ancestor does (probe: the region with clip-path or opacity
+        # .999 and a part inside it passed every capture).
+        snap, doc, at = page()
+        doc["layout"]["styles"][doc["layout"]["nodeIndex"].index(at["region"])][
+            sitecheck.REFLOW_SNAPSHOT_STYLES.index("clip-path")] = snap.string("inset(0px)")
+        self.assertEqual(problems(snap), [("backdrop", ["p.lead clip-path inset(0px)"])])
+        snap, doc, at = page()
+        span = snap.add(doc, at["region"], ELEMENT, "SPAN", 90, style=dict(PLAIN, opacity="0.5"))
+        snap.add(doc, span, ELEMENT, "::before", 91, style=dict(PLAIN, filter="blur(1px)"),
+                 pseudo="before")
+        snap.add(doc, span, TEXT, "#text", 92, style=dict(PLAIN, opacity="0.5"), value="x")
+        self.assertEqual(problems(snap), [("backdrop", ["span opacity 0.5",
+                                                        "span::before filter blur(1px)"])])
+
+    def test_outside_not_read(self):
+        snap, doc, at = page(sibling=dict(HIDDEN, **{"clip-path": "inset(0px)"}))
+        snap.add(doc, at["header"], ELEMENT, "SPAN", 90, style=dict(HIDDEN, opacity="0.5"))
+        self.assertEqual(problems(snap), [])
+
+    def test_backdrop_root_values_unpacked_in_order(self):
+        values = [v for _p, v in sitecheck.REFLOW_BACKDROP_ROOT_STYLES.items()]
+        self.assertEqual(sitecheck.backdrop_root_items("x", values), [])
+        with self.assertRaises(ValueError):
+            sitecheck.backdrop_root_items("x", values[:-1])
 
 
 class Broken(unittest.TestCase):
@@ -462,12 +587,32 @@ class Messages(unittest.TestCase):
 
     def test_prefixes(self):
         for kind, prefix in (("broken", "(isolation) "), ("outside", "(isolation) "),
-                             ("frame", "(isolation) "),
+                             ("frame", "(isolation) "), ("blank", "(isolation) "),
+                             ("stripes", "(isolation) "), ("backdrop", "(isolation) "),
                              ("ancestor", "(isolation) "), ("paint", "(ancestor paint) ")):
             with self.subTest(kind=kind):
                 self.assertTrue(sitecheck.isolation_message(kind, ["x"], "r").startswith(prefix))
         self.assertTrue(sitecheck.reflow_animation_message("after the hiding", "r", ["a"])
                         .startswith("(animation) after the hiding of r"))
+
+    def test_stripes_message(self):
+        text = sitecheck.isolation_message("stripes", ["1 pixel(s) off"], "r")
+        self.assertEqual(text, "(isolation) with every element hidden and the canvas forced "
+                               "to the palette stripes, the slice of r is not the stripes "
+                               "(1 pixel(s) off): a part that no element's visibility "
+                               "reaches filters or blends what lies below it (a "
+                               "backdrop-filter, a mix-blend-mode), so the region's pixels "
+                               "are not compared")
+
+    def test_backdrop_message(self):
+        text = sitecheck.isolation_message("backdrop", ["main clip-path inset(0px)"], "r")
+        self.assertEqual(text, "(isolation) r, an ancestor of it or an element in it is a "
+                               "Backdrop Root: 'main clip-path inset(0px)' (1 in all); a part "
+                               "inside a Backdrop Root that filters what lies below it (a "
+                               "backdrop-filter) reads only what that root paints, which the "
+                               "blank captures hide, so the stripes cannot reach the filter "
+                               "and the region's pixels are not compared; the templates give "
+                               "the regions and their ancestors none")
 
     def test_names_defanged(self):
         text = sitecheck.isolation_message("outside", ["p.lead"], "r")
@@ -482,7 +627,7 @@ VALUES = {"outline-style": "none", "text-decoration-line": "none", "overflow-x":
 def read(label, **values):
     """One read of the isolate step: [label, the closed-list values]."""
     full = dict(VALUES, **{k.replace("_", "-"): v for k, v in values.items()})
-    return [label, [full[p] for p in sitecheck.REFLOW_SNAPSHOT_STYLES[1:]]]
+    return [label, [full[p] for p in sitecheck.REFLOW_PAINT_STYLES]]
 
 
 class PseudoPaint(unittest.TestCase):
@@ -515,24 +660,74 @@ class PseudoPaint(unittest.TestCase):
 GROUND = (0xF3, 0xF6, 0xFC)
 
 
-def png(width=40, height=20, pixel=GROUND, marks=()):
-    """A base64 RGB PNG of one colour with (x, y, colour) marks."""
-    raw = b""
-    for y in range(height):
-        row = bytearray(bytes(pixel) * width)
-        for mx, my, colour in marks:
-            if my == y:
-                row[mx * 3:mx * 3 + 3] = bytes(colour)
-        raw += b"\x00" + bytes(row)
+def encode(rows, width, channels=3):
+    """A base64 8-bit PNG of decoded rows, RGB (3 channels) or RGBA (4)."""
+    raw = b"".join(b"\x00" + bytes(row) for row in rows)
 
     def chunk(kind, body):
         return (struct.pack(">I", len(body)) + kind + body
                 + struct.pack(">I", zlib.crc32(kind + body)))
 
     data = (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, len(rows), 8,
+                                         2 if channels == 3 else 6, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
     return base64.b64encode(data).decode()
+
+
+def png(width=40, height=20, pixel=GROUND, marks=()):
+    """A base64 RGB PNG of one colour with (x, y, colour) marks."""
+    rows = []
+    for y in range(height):
+        row = bytearray(bytes(pixel) * width)
+        for mx, my, colour in marks:
+            if my == y:
+                row[mx * 3:mx * 3 + 3] = bytes(colour)
+        rows.append(row)
+    return encode(rows, width)
+
+
+# The stripes of the third blank capture (Replikanti/interviewscam#58), an
+# own copy of the order ADR-0005 Numbers records, so the captures below do
+# not come from the module under test.
+ORDER = ("#0F172A", "#F3F6FC", "#C2410C", "#EEF2F9", "#2350C8", "#FFFFFF", "#8592A6",
+         "#FFEAD5", "#475569", "#E3EAFB", "#1E3A8A", "#DCE3EF", "#9A3412")
+RGB = [tuple(bytes.fromhex(c[1:])) for c in ORDER]
+
+
+def stripe_rows(width=40, height=20, phase=0, wide=1):
+    """The decoded RGB rows of the forced stripes: pixel x shows colour
+    (x // wide + phase) mod 13 of ORDER, as lists of (r, g, b)."""
+    return [[RGB[(x // wide + phase) % len(RGB)] for x in range(width)] for _ in range(height)]
+
+
+def stripes(width=40, height=20, phase=0, channels=3, marks=(), rows=None, wide=1):
+    """A base64 PNG of the forced stripes (or of rows, lists of (r, g, b)),
+    RGB or RGBA with alpha 0x80, with (x, y, colour) marks."""
+    rows = [list(r) for r in (rows or stripe_rows(width, height, phase, wide))]
+    for mx, my, colour in marks:
+        rows[my][mx] = tuple(colour)
+    alpha = b"\x80" if channels == 4 else b""
+    return encode([b"".join(bytes(px) + alpha for px in row) for row in rows],
+                  len(rows[0]), channels)
+
+
+def blurred(rows, band):
+    """rows with a 3-tap horizontal box blur over the rows of band (edges
+    clamped), as a CSS blur() of what lies below would draw it."""
+    out = [list(r) for r in rows]
+    for y in band:
+        row, width = rows[y], len(rows[y])
+        out[y] = [tuple(round(sum(row[min(max(x + d, 0), width - 1)][c] for d in (-1, 0, 1)) / 3)
+                        for c in range(3)) for x in range(width)]
+    return out
+
+
+def moved(colour, by, channel=0):
+    """colour with one channel moved by by, down when it can go down."""
+    c = list(colour)
+    c[channel] = c[channel] - by if c[channel] >= by else c[channel] + by
+    return tuple(c)
 
 
 BLACK, WHITE = (0, 0, 0), (255, 255, 255)
@@ -578,32 +773,179 @@ class Canvas(unittest.TestCase):
         self.assertTrue(got.startswith("800 pixel(s) off"), got)
 
 
+class Pattern(unittest.TestCase):
+    """pixel_pattern, the reader of the third blank capture: the canvas
+    forced to 1 px stripes of the palette (Replikanti/interviewscam#58)."""
+
+    def off(self, shot):
+        return sitecheck.pixel_pattern(shot)
+
+    def test_pattern_is_the_palette(self):
+        tokens = tomllib.loads((ROOT / "data" / "tokens.toml").read_text(encoding="utf-8"))
+        opaque = {v.upper() for v in tokens["color"].values() if len(v) == 7}
+        pattern = sitecheck.REFLOW_BLANK_PATTERN
+        self.assertEqual(len(pattern), 13)
+        self.assertEqual(len(set(pattern)), len(pattern))
+        self.assertEqual({c.upper() for c in pattern}, opaque)
+        self.assertEqual(tuple(c.upper() for c in pattern), ORDER)
+
+    def test_pattern_neighbours(self):
+        rgb = [bytes.fromhex(c.lstrip("#")) for c in sitecheck.REFLOW_BLANK_PATTERN]
+        n = len(rgb)
+        neighbour = min(max(abs(a - b) for a, b in zip(rgb[i], rgb[(i + 1) % n]))
+                        for i in range(n))
+        second = min(max(abs(left + right - 2 * own) for left, own, right in
+                         zip(rgb[i - 1], rgb[i], rgb[(i + 1) % n])) for i in range(n))
+        self.assertEqual((neighbour, second), (122, 244))
+
+    def test_pattern_css_round_trip(self):
+        css = sitecheck.REFLOW_BLANK_PATTERN_CSS
+        found = re.fullmatch(r"linear-gradient\(90deg,(.*)\) 0 0/(\d+)px 1px", css)
+        self.assertIsNotNone(found, css)
+        stops = [re.fullmatch(r"(#[0-9A-Fa-f]{6}) (\d+)(?:px)? (\d+)px", part)
+                 for part in found.group(1).split(",")]
+        self.assertTrue(all(stops), css)
+        self.assertEqual([(m.group(1), int(m.group(2)), int(m.group(3))) for m in stops],
+                         [(c, i, i + 1) for i, c in enumerate(sitecheck.REFLOW_BLANK_PATTERN)])
+        self.assertEqual(int(found.group(2)), len(sitecheck.REFLOW_BLANK_PATTERN))
+        # No quote or backslash: the blank step reads it as a JSON string.
+        self.assertEqual(json.loads(json.dumps(css)), css)
+        self.assertNotRegex(css, r'["\\]')
+
+    def test_every_phase(self):
+        for width in (1, 12, 13, 14, 40, 412):
+            for phase in range(13):
+                with self.subTest(width=width, phase=phase):
+                    self.assertIsNone(self.off(stripes(width=width, height=4, phase=phase)))
+
+    def test_stripes_tolerance_bounds(self):
+        at = moved(RGB[3], 8)
+        self.assertIsNone(self.off(stripes(marks=[(3, 4, at)])))
+        above = moved(RGB[3], 9)
+        self.assertEqual(self.off(stripes(marks=[(3, 4, above)])),
+                         "1 pixel(s) off the forced stripes, x 3 to 3, y 4 to 4 of the slice, "
+                         "by up to 9 of 255")
+
+    def test_each_colour_moved(self):
+        for i, colour in enumerate(ORDER):
+            for channel in range(3):
+                with self.subTest(colour=colour, channel=channel):
+                    rows = stripe_rows()
+                    for by, fails in ((8, False), (9, True)):
+                        edited = [[moved(px, by, channel) if px == RGB[i] else px for px in row]
+                                  for row in rows]
+                        got = self.off(stripes(rows=edited))
+                        if fails:
+                            self.assertIsNotNone(got)
+                            self.assertTrue(got.endswith("by up to 9 of 255"), got)
+                        else:
+                            self.assertIsNone(got)
+
+    def test_blurred_band_fails(self):
+        got = self.off(stripes(rows=blurred(stripe_rows(), range(5, 9))))
+        self.assertIsNotNone(got)
+        self.assertTrue(got.startswith("160 pixel(s) off the forced stripes, x 0 to 39, "
+                                       "y 5 to 8 of the slice"), got)
+
+    def test_brightness_band_fails(self):
+        rows = stripe_rows()
+        for y in range(5, 9):
+            rows[y] = [tuple(min(255, 20 * v) for v in px) for px in rows[y]]
+        got = self.off(stripes(rows=rows))
+        self.assertIsNotNone(got)
+        self.assertIn(", y 5 to 8 of the slice", got)
+
+    def test_shifted_band_fails(self):
+        rows = stripe_rows()
+        rows[5:9] = stripe_rows(height=4, phase=1)
+        got = self.off(stripes(rows=rows))
+        self.assertIsNotNone(got)
+        self.assertTrue(got.startswith("160 pixel(s) off the forced stripes, x 0 to 39, "
+                                       "y 5 to 8 of the slice"), got)
+
+    def test_whole_slice_shift_is_a_phase(self):
+        # A shift of the whole slice by whole pixels is another phase, which
+        # passes by design (the root box offset by a page margin).
+        for shift in (1, 6, 12):
+            with self.subTest(shift=shift):
+                self.assertIsNone(self.off(stripes(rows=stripe_rows(phase=shift))))
+
+    def test_marks_at_the_edges(self):
+        mark = (0x60, 0x60, 0x60)
+        for x, y in ((0, 7), (39, 7), (17, 0), (17, 19)):
+            with self.subTest(x=x, y=y):
+                got = self.off(stripes(marks=[(x, y, mark)]))
+                self.assertIsNotNone(got)
+                self.assertTrue(got.startswith(f"1 pixel(s) off the forced stripes, x {x} to "
+                                               f"{x}, y {y} to {y} of the slice"), got)
+
+    def test_zero_height_slice_passes(self):
+        # QA survivor q20: a capture with no row has no pixel off the
+        # stripes, as pixel_canvas reads it; the inner clip is at least
+        # 1 px high, so no pinned region reaches it.
+        self.assertIsNone(self.off(encode([], 40)))
+
+    def test_off_count_reads_every_channel(self):
+        # QA survivor q21: a pixel off its stripe in one channel alone
+        # counts in the total, whichever channel it is.
+        for channel in range(3):
+            with self.subTest(channel=channel):
+                got = self.off(stripes(marks=[(3, 4, moved(RGB[3], 9, channel))]))
+                self.assertEqual(got, "1 pixel(s) off the forced stripes, x 3 to 3, y 4 to 4 "
+                                      "of the slice, by up to 9 of 255")
+
+    def test_flat_capture_fails(self):
+        # A page rule that outranks the forced background leaves the canvas
+        # flat, which fails closed.
+        for pixel in (WHITE, GROUND, RGB[0]):
+            with self.subTest(pixel=pixel):
+                self.assertIsNotNone(self.off(png(pixel=pixel)))
+
+    def test_wider_stripes_fail(self):
+        for wide in (2, 3):
+            with self.subTest(wide=wide):
+                self.assertIsNotNone(self.off(stripes(wide=wide)))
+
+    def test_rgba_alpha_ignored(self):
+        self.assertIsNone(self.off(stripes(channels=4)))
+        self.assertIsNone(self.off(stripes(channels=4, phase=7, width=29)))
+        got = self.off(stripes(channels=4, marks=[(3, 4, moved(RGB[3], 9))]))
+        self.assertEqual(got, "1 pixel(s) off the forced stripes, x 3 to 3, y 4 to 4 of the "
+                              "slice, by up to 9 of 255")
+
+
 REGION_ROW = {"kind": "a pinned line", "label": "p.lead", "index": 0, "controls": 0,
               "misses": [], "over": [], "pseudo": [], "top": 0, "height": 10, "left": 0,
               "width": 40, "content": True}
 SHOWN = png(marks=[(x, 3, (0x0F, 0x17, 0x2A)) for x in range(5, 30)])
+STRIPES = stripes()
 
 
 class FakeTools:
     """The DevTools calls reflow_hits makes, answered from a scenario: the
-    extras of each step mode, the snapshot, and the six screenshots of a
-    slice (as rendered, hidden outside, every element hidden, then the
-    paint check's three)."""
+    extras of each step mode, the snapshot, the region, and the eight
+    screenshots of a slice (as rendered, hidden outside, every element
+    hidden on black, on white and on the stripes, then the paint check's
+    three)."""
 
-    def __init__(self, extras=None, snapshot=None, shots=None):
+    def __init__(self, extras=None, snapshot=None, shots=None, region=None):
         # An override replaces keys of the default extra, not the whole dict,
-        # so a scenario names only what it changes (the :hover read is []).
+        # so a scenario names only what it changes (the :hover read is []);
+        # a list answers the calls of that mode one by one, as given.
         defaults = {"freeze": {"running": [], "hover": []},
                     "isolate": {"moved": False, "running": [], "rules": 1, "lines": [],
                                 "hover": []},
                     "blank": {"rules": 2},
                     "unisolate": {"moved": False, "running": [], "sheets": True,
                                   "focus": True, "hover": []}}
-        self.extras = {mode: dict(extra, **(extras or {}).get(mode, {}))
-                       for mode, extra in defaults.items()}
+        self.extras = {}
+        for mode, extra in defaults.items():
+            over = (extras or {}).get(mode, {})
+            self.extras[mode] = over if isinstance(over, list) else dict(extra, **over)
         self.snapshot = snapshot if snapshot is not None else page()[0].reply()
-        self.shots = list(shots or [SHOWN, SHOWN, png(pixel=BLACK), png(pixel=WHITE), SHOWN,
-                                    png(), SHOWN])
+        self.shots = list(shots or [SHOWN, SHOWN, png(pixel=BLACK), png(pixel=WHITE), STRIPES,
+                                    SHOWN, png(), SHOWN])
+        self.region = dict(REGION_ROW, **(region or {}))
         self.calls = []
 
     def send(self, method, params=None, session=None, budget=None):
@@ -621,14 +963,16 @@ class FakeTools:
             return {}
         expression = params["expression"]
         if "window.__iscRegions = regions" in expression:
-            return {"result": {"value": [dict(REGION_ROW)]}}
+            return {"result": {"value": [dict(self.region)]}}
         if "return {vh: innerHeight}" in expression:
             return {"result": {"value": {"vh": 640}}}
         found = re.search(r'var mode = "(\w+)"', expression)
         mode = found.group(1) if found else None
         value = {"x": 0, "y": 0, "vh": 640, "saved": None, "extra": {}}
         if mode in self.extras:
-            value["extra"] = self.extras[mode]
+            # A list answers the calls of that mode one by one.
+            answer = self.extras[mode]
+            value["extra"] = answer.pop(0) if isinstance(answer, list) else answer
         elif mode == "hide":
             value["saved"] = [["", ""], ["", ""], False]
         return {"result": {"value": value}}
@@ -674,7 +1018,8 @@ class Plumbing(unittest.TestCase):
         # The hidden capture differs from the rendered one, so a slice that
         # is compared gives the pixel finding.
         return run(FakeTools(extras, snapshot, [SHOWN, png(), png(pixel=BLACK),
-                                                png(pixel=WHITE), SHOWN, png(), SHOWN]))
+                                                png(pixel=WHITE), STRIPES, SHOWN, png(),
+                                                SHOWN]))
 
     def test_compared_when_clean(self):
         items = self.differing()
@@ -717,6 +1062,17 @@ class Plumbing(unittest.TestCase):
         items = self.differing(snapshot=snap.reply())
         self.assertTrue(any("(ancestor paint)" in item for item in items), items)
         self.assertTrue(any(PIXELS in item for item in items), items)
+        snap, _, _ = page(main_style=dict(PLAIN, **{"clip-path": "inset(0px)"}))
+        items = self.differing(snapshot=snap.reply())
+        self.assertTrue(any("is a Backdrop Root: 'main#main[.]container clip-path inset(0px)'"
+                            in item for item in items), items)
+        self.assertFalse(any(PIXELS in item for item in items), items)
+        snap, doc, at = page()
+        snap.add(doc, at["region"], ELEMENT, "SPAN", 90, style=dict(PLAIN, opacity="0.5"))
+        items = self.differing(snapshot=snap.reply())
+        self.assertTrue(any("is a Backdrop Root: 'span opacity 0[.]5'" in item
+                            for item in items), items)
+        self.assertFalse(any(PIXELS in item for item in items), items)
 
     def test_first_line_paint_reported_not_blocking(self):
         lines = [read("main#main.container::first-line", text_decoration_line="line-through")]
@@ -732,7 +1088,8 @@ class Plumbing(unittest.TestCase):
                 ([png(pixel=BLACK, marks=band), png(pixel=WHITE)], "#000000"),
                 ([png(pixel=BLACK), png(pixel=WHITE, marks=band)], "#ffffff")):
             with self.subTest(colour=colour):
-                items = run(FakeTools(shots=[SHOWN, png()] + shots + [SHOWN, png(), SHOWN]))
+                items = run(FakeTools(shots=[SHOWN, png()] + shots
+                                      + [STRIPES, SHOWN, png(), SHOWN]))
                 self.assertTrue(any("with every element hidden, the slice of" in item
                                     and f"forced canvas colour {colour}" in item
                                     for item in items), items)
@@ -741,11 +1098,13 @@ class Plumbing(unittest.TestCase):
     def test_blank_finding_once_per_slice(self):
         band = [(x, 5, GROUND) for x in range(40)]
         items = run(FakeTools(shots=[SHOWN, png(), png(pixel=BLACK, marks=band),
-                                     png(pixel=WHITE, marks=band), SHOWN, png(), SHOWN]))
+                                     png(pixel=WHITE, marks=band), STRIPES, SHOWN, png(),
+                                     SHOWN]))
         self.assertEqual(sum("with every element hidden" in item for item in items), 1, items)
 
-    def test_blank_capture_asks_for_each_colour(self):
-        tools = FakeTools()
+    def spied(self, tools):
+        """The saved value of every blank step tools is asked for, in order,
+        and the findings."""
         asked = []
         send = tools.send
 
@@ -757,8 +1116,63 @@ class Plumbing(unittest.TestCase):
             return send(method, params, session, budget)
 
         tools.send = spy
-        self.assertEqual(run(tools), [])
-        self.assertEqual(asked, ['"#000000"', '"#ffffff"'])
+        return asked, run(tools)
+
+    def test_blank_capture_asks_for_each_canvas(self):
+        asked, items = self.spied(FakeTools())
+        self.assertEqual(items, [])
+        self.assertEqual(asked, ['"#000000"', '"#ffffff"',
+                                 json.dumps(sitecheck.REFLOW_BLANK_PATTERN_CSS)])
+
+    def test_stripes_capture_must_be_the_stripes(self):
+        band = blurred(stripe_rows(), range(5, 9))
+        items = run(FakeTools(shots=[SHOWN, png(), png(pixel=BLACK), png(pixel=WHITE),
+                                     stripes(rows=band), SHOWN, png(), SHOWN]))
+        self.assertEqual(sum("is not the stripes" in item for item in items), 1, items)
+        self.assertTrue(any(": (isolation) with every element hidden and the canvas forced "
+                            "to the palette stripes, the slice of" in item
+                            and "160 pixel(s) off the forced stripes" in item
+                            for item in items), items)
+        self.assertFalse(any(PIXELS in item for item in items), items)
+
+    def test_stripes_sheet_rules_checked(self):
+        # QA survivor q11: only the third blank answer (the stripes) holds
+        # another number of rules; the flats pass, so the stripes step
+        # alone must report it, and the capture is not read as stripes.
+        items = self.differing({"blank": [{"rules": 2}, {"rules": 2}, {"rules": 1}]})
+        self.assertEqual(sum("the stylesheet that hides every element for" in item
+                             and "holds '1' rules, not 2" in item for item in items), 1, items)
+        self.assertFalse(any("is not the stripes" in item for item in items), items)
+        self.assertFalse(any(PIXELS in item for item in items), items)
+
+    def test_stripes_not_asked_after_a_flat_finding(self):
+        band = [(x, 5, GROUND) for x in range(40)]
+        for shots, want in (
+                ([png(pixel=BLACK, marks=band), png(pixel=WHITE)], ['"#000000"']),
+                ([png(pixel=BLACK), png(pixel=WHITE, marks=band)], ['"#000000"', '"#ffffff"'])):
+            with self.subTest(want=want):
+                asked, items = self.spied(FakeTools(shots=[SHOWN, png()] + shots
+                                                    + [STRIPES, SHOWN, png(), SHOWN]))
+                self.assertEqual(asked, want)
+                self.assertFalse(any("is not the stripes" in item for item in items), items)
+
+    def test_scroll_lands_on_a_whole_pixel(self):
+        tools = FakeTools(region={"top": 10.6})
+        scrolled = []
+        send = tools.send
+
+        def spy(method, params=None, session=None, budget=None):
+            expression = (params or {}).get("expression", "")
+            if 'var mode = "scroll"' in expression:
+                scrolled.append(re.findall(r"window\.scrollTo\(0, [^;]*\);", expression))
+            return send(method, params, session, budget)
+
+        tools.send = spy
+        run(tools)
+        # One slice, from top + height - size (10.6 + 10 - 10 in floats).
+        y = json.dumps(10.6 + REGION_ROW["height"] - REGION_ROW["height"])
+        self.assertTrue(y.startswith("10.6"), y)
+        self.assertEqual(scrolled, [[f"window.scrollTo(0, Math.floor({y}));"]])
 
     HOVER_PHASES = (("freeze", "before the first capture"),
                     ("isolate", "after the hiding"),
@@ -799,7 +1213,7 @@ class Plumbing(unittest.TestCase):
                                ("number", 1), ("dict", {"0": "button"})):
                 with self.subTest(mode=mode, how=how):
                     tools = FakeTools(shots=[SHOWN, png(), png(pixel=BLACK), png(pixel=WHITE),
-                                             SHOWN, png(), SHOWN])
+                                             STRIPES, SHOWN, png(), SHOWN])
                     if how == "missing":
                         del tools.extras[mode]["hover"]
                     else:
