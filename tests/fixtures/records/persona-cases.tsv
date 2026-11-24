@@ -50,3 +50,64 @@ name-kangxi-stroke-for-space-in-body	content/reports/example-front-company.md	Th
 name-hangul-3163-for-space-in-body	content/reports/example-front-company.md	The take-home task in	Ask for Avery\u{3163}Exampleton. The take-home task in	body: contains the params.name of the persona record content/reports/persona-1.md; a persona name renders only from that record, so hide_name can remove it (R5) (a look-alike spelling, matched through the Unicode confusables skeleton, UTS #39)
 alias-digit-run-in-word	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "Kelly Brooks"]	body: contains the params.aliases[2] of the persona record content/reports/persona-1.md; a persona name renders only from that record, so hide_name can remove it (R5) (a look-alike spelling, matched through the Unicode confusables skeleton, UTS #39)	The persona sent	Ke11y Br00ks saw that the persona sent
 pass-aliases-li-il-next-to-numbers	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "Li", "Il"]	PASS	The persona sent	At 11:11 on +1 555 0101 from room 101, the persona sent
+# Fix: records rule R17 (Replikanti/interviewscam#28 PR 3): params.labelled_artifacts
+# of a visible persona equals the declared artifact values that hold a name
+# or alias of the persona under some reading of NAME_READINGS and have a
+# character outside U+0021 to U+007E (box_carries_label, the helper render
+# rules 4, 6 and 17 use too). persona-3 lists its handle; its file name
+# holds no name and is not listed. One row per branch: missing (a plain
+# and a look-alike spelling, a value whose only character outside the
+# range is a space), extra, plain printable ASCII (both bounds of the
+# range in one value), undeclared (a value that holds the name, so R5
+# would read it if free_text did not leave the field out), listed twice,
+# on a company record, empty (the schema), and inert on a hidden persona.
+labelled-artifacts-missing	content/reports/persona-3.md	labelled_artifacts = ["@riley_placeholder_zoë"]\n		COUNT=1 params.labelled_artifacts: lacks '@riley_placeholder_zoë', a declared artifact that holds a name or alias of this persona and has a character outside U+0021 to U+007E, so its box carries the D10 label (R17)
+labelled-artifacts-homoglyph-missing	content/reports/persona-3.md	labelled_artifacts = ["@riley_placeholder_zoë"]\n		COUNT=1 a declared artifact that holds a name or alias of this persona and has a character outside U+0021 to U+007E, so its box carries the D10 label (R17) (a look-alike spelling, matched through the Unicode confusables skeleton, UTS #39)	artifact = "@riley_placeholder_zoë"	artifact = "@r\u{0456}ley_placeholder_zoë"	value = "@riley_placeholder_zoë"	value = "@r\u{0456}ley_placeholder_zoë"
+labelled-artifacts-space-missing	content/reports/persona-3.md	file_names = ["Entrevista técnica[.]zip"]	file_names = ["Entrevista técnica[.]zip", "Riley Placeholder CV[.]zip"]	COUNT=1 params.labelled_artifacts: lacks 'Riley Placeholder CV[.]zip', a declared artifact that holds a name or alias of this persona and has a character outside U+0021 to U+007E, so its box carries the D10 label (R17)
+labelled-artifacts-extra	content/reports/persona-3.md	labelled_artifacts = ["@riley_placeholder_zoë"]	labelled_artifacts = ["@riley_placeholder_zoë", "Entrevista técnica[.]zip"]	COUNT=1 params.labelled_artifacts[1]: 'Entrevista técnica[.]zip' holds no name or alias of this persona under any reading, so its box carries no D10 label (R17)
+labelled-artifacts-ascii	content/reports/persona-3.md	labelled_artifacts = ["@riley_placeholder_zoë"]	labelled_artifacts = ["@riley_placeholder_zoë", "!riley_placeholder~"]	COUNT=1 params.labelled_artifacts[1]: '!riley_placeholder~' is plain printable ASCII (U+0021 to U+007E only), and such a box carries no D10 label (R17)	handles = [\n	handles = [\n  { platform = "other", value = "!riley_placeholder~" },\n
+labelled-artifacts-undeclared	content/reports/persona-3.md	labelled_artifacts = ["@riley_placeholder_zoë"]	labelled_artifacts = ["@riley_placeholder_zoë", "Riley Placeholder Zoë"]	COUNT=1 params.labelled_artifacts[1]: 'Riley Placeholder Zoë' is none of this record's declared artifact values (R17)
+labelled-artifacts-duplicate	content/reports/persona-3.md	labelled_artifacts = ["@riley_placeholder_zoë"]	labelled_artifacts = ["@riley_placeholder_zoë", "@riley_placeholder_zoë"]	COUNT=1 params.labelled_artifacts[1]: '@riley_placeholder_zoë' is listed twice (R17)
+labelled-artifacts-on-company	content/reports/example-front-company.md	independent_reports = 3\n	independent_reports = 3\nlabelled_artifacts = ["frontco-meet[.]pages[.]example"]\n	COUNT=1 params.labelled_artifacts: only a persona record lists the artifacts whose box carries the D10 label (R17)
+labelled-artifacts-empty	content/reports/persona-3.md	labelled_artifacts = ["@riley_placeholder_zoë"]	labelled_artifacts = []	params.labelled_artifacts: fewer than 1 items
+pass-labelled-artifacts-hidden-persona-inert	content/reports/persona-2.md	independent_reports = 1\n	independent_reports = 1\nlabelled_artifacts = ["123456789012345678"]\n	PASS
+# Fix round 1 of PR 3 (review findings 1 and 2, QA survivor E): two declared
+# values that differ only in whitespace show as one box (box_key), so R17
+# refuses the pair (the review's repro); a value with a whitespace run that
+# is listed passes. R18: a persona name or alias without a letter or digit
+# after NFKC and the invisibles (a space, U+00A0, U+2007, U+3000, U+200B, a
+# Hangul filler, U+037A, punctuation only) would render as the label next
+# to no name.
+labelled-artifacts-whitespace-twins	content/reports/persona-3.md	file_names = ["Entrevista técnica[.]zip"]	file_names = ["Entrevista técnica[.]zip", "riley_placeholder", "riley_placeholder "]	COUNT=1 params.artifacts: the declared values 'riley_placeholder ' and 'riley_placeholder' differ only in whitespace and show as the same box 'riley_placeholder', but the first is listed in params.labelled_artifacts and the second is not	labelled_artifacts = ["@riley_placeholder_zoë"]	labelled_artifacts = ["@riley_placeholder_zoë", "riley_placeholder "]
+pass-labelled-artifacts-whitespace-run	content/reports/persona-3.md	file_names = ["Entrevista técnica[.]zip"]	file_names = ["Entrevista técnica[.]zip", "Riley  Placeholder CV[.]zip"]	PASS	labelled_artifacts = ["@riley_placeholder_zoë"]	labelled_artifacts = ["@riley_placeholder_zoë", "Riley  Placeholder CV[.]zip"]
+alias-blank-space	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", " "]	COUNT=1 holds no letter or number (a modifier letter alone does not count), so it would render as the D10 label next to no name (R18)
+alias-blank-nbsp-00a0	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{00A0}"]	COUNT=1 holds no letter or number (a modifier letter alone does not count), so it would render as the D10 label next to no name (R18)
+alias-blank-figure-space-2007	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{2007}"]	COUNT=1 holds no letter or number (a modifier letter alone does not count), so it would render as the D10 label next to no name (R18)
+alias-blank-ideographic-space-3000	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{3000}"]	COUNT=1 holds no letter or number (a modifier letter alone does not count), so it would render as the D10 label next to no name (R18)
+alias-blank-zero-width-space-200b	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{200B}"]	COUNT=1 holds no letter or number (a modifier letter alone does not count), so it would render as the D10 label next to no name (R18)
+alias-blank-hangul-filler-3164	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{3164}"]	COUNT=1 holds no letter or number (a modifier letter alone does not count), so it would render as the D10 label next to no name (R18)
+alias-blank-ypogegrammeni-037a	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{037A}"]	COUNT=1 holds no letter or number (a modifier letter alone does not count), so it would render as the D10 label next to no name (R18)
+alias-blank-punctuation-only	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "-."]	COUNT=1 holds no letter or number (a modifier letter alone does not count), so it would render as the D10 label next to no name (R18)
+name-blank-ideographic-space	content/reports/persona-3.md	name = "Riley Placeholder"	name = "\u{3000}"	params.name: ' ' holds no letter or number (a modifier letter alone does not count), so it would render as the D10 label next to no name (R18)
+pass-alias-with-letters	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "Avery X"]	PASS
+# Fix round 2 (closure review findings 1 and 2): R18 counts only the
+# letters but Lm and the numbers (NAME_TEXT_CATEGORIES), so an alias of
+# modifier letters alone fails, and one alias per counted category
+# passes; R17 refuses whitespace twins only when one is listed and the
+# other is not, so two twins both listed or both unlisted pass.
+alias-blank-tatweel-0640	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{0640}"]	COUNT=1 holds no letter or number (a modifier letter alone does not count), so it would render as the D10 label next to no name (R18)
+alias-blank-prolonged-sound-30fc	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{30FC}"]	COUNT=1 holds no letter or number (a modifier letter alone does not count), so it would render as the D10 label next to no name (R18)
+alias-blank-triangular-colon-02d0	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{02D0}"]	COUNT=1 holds no letter or number (a modifier letter alone does not count), so it would render as the D10 label next to no name (R18)
+alias-blank-nko-lajanyalan-07fa	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{07FA}"]	COUNT=1 holds no letter or number (a modifier letter alone does not count), so it would render as the D10 label next to no name (R18)
+pass-alias-category-lu	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "QZX"]	PASS
+pass-alias-category-ll	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "qzx"]	PASS
+pass-alias-category-lt	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{1FFC}\u{1FFC}"]	PASS
+pass-alias-category-lo	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{674E}"]	PASS
+pass-alias-category-nd	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{0968}\u{0969}\u{096A}"]	PASS
+pass-alias-category-nl	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{3007}"]	PASS
+pass-alias-category-no	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{2CFD}"]	PASS
+pass-alias-category-lo-with-lm	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{30E6}\u{30FC}\u{30AD}"]	PASS
+pass-labelled-artifacts-whitespace-twins-both-listed	content/reports/persona-3.md	file_names = ["Entrevista técnica[.]zip"]	file_names = ["Entrevista técnica[.]zip", "Riley Placeholder[.]zip", "Riley  Placeholder[.]zip"]	PASS	labelled_artifacts = ["@riley_placeholder_zoë"]	labelled_artifacts = ["@riley_placeholder_zoë", "Riley Placeholder[.]zip", "Riley  Placeholder[.]zip"]
+pass-labelled-artifacts-whitespace-twins-neither-listed	content/reports/persona-3.md	file_names = ["Entrevista técnica[.]zip"]	file_names = ["Entrevista técnica[.]zip", "Entrevista  técnica[.]zip"]	PASS
+# Fix round 2, sweep round 3 survivor r18-no-nfkc: U+3392 (So) counts only through NFKC, which reads it as MHz.
+pass-alias-nfkc-square-mhz	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{3392}"]	PASS

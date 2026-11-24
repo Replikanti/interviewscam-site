@@ -82,6 +82,17 @@
           "description": "Persona records only (R6): true hides the name and aliases from the page, the title, the feed and every index without changing the URL (ADR-0004 part 5).",
           "type": "boolean"
         },
+        "labelled_artifacts": {
+          "description": "Persona records only (R17): the declared artifact values, as stored, whose box carries the D10 label right after it. On a visible persona it lists exactly the values that hold its name or an alias, look-alike spellings included, and have a character outside U+0021 to U+007E; a plain printable-ASCII box carries no label (ADR-0004 part 5).",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "description": "One declared artifact value, exactly as stored.",
+            "type": "string",
+            "minLength": 1,
+            "x-defang": "host"
+          }
+        },
         "campaign": {
           "description": "The campaign family that used this name, only when a cited source of this record names the name or lists one of its artifacts. Absent means unattributed (ADR-0004 part 6).",
           "type": "object",
