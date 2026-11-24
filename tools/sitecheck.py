@@ -121,6 +121,7 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.parsers.expat
 import zlib
 from pathlib import Path
 
@@ -14709,7 +14710,10 @@ INTAKE_WORKER_SHA256 = {
 # noreferrer on a form and no referrerpolicy on a form or a submitter
 # (INTAKE_REFERRER_TAGS), because such a policy makes the browser send
 # Origin: null, which the Worker refuses (ADR-0006 part 3 step 2); (d)
-# /sent/ exists, and /not-sent/ holds every result id of the Worker exactly
+# /sent/ exists, public/sitemap.xml has Hugo's shape and lists neither
+# result page (Replikanti/interviewscam#42 item 1: parsed with expat, every
+# loc a canonical page URL, no DOCTYPE, comment, processing instruction or
+# CDATA section), and /not-sent/ holds every result id of the Worker exactly
 # once, as the section tree of layouts/_partials/not-sent.html with its text,
 # in INTAKE_RESULT_IDS order; (e) every built page's URL, as the browser's
 # address bar copies it (percent-encoded), is at most the page_url cap, so
@@ -14724,7 +14728,26 @@ INTAKE_NOT_SENT_REL = "public/not-sent/index.html"
 # /sent/ thanks a visitor for a message they never sent when it is reached
 # from a search result. Their front matter sets [sitemap] disable = true.
 INTAKE_UNLISTED = ("/sent/", "/not-sent/")
-INTAKE_SITEMAP_LOC = re.compile(r"<loc>(.*?)</loc>", re.S)
+# Rule 18 (d) reads the sitemap only in the shape Hugo writes
+# (Replikanti/interviewscam#42 item 1): an allowlist of one form instead of
+# a list of readings, because a list of readings (slash, index.html, case,
+# dots, percent forms) closes only its probes. The (parent, child) pairs:
+# urlset as the root, url in urlset, loc and lastmod in url. lastmod is
+# there because a record page carries a date, and Hugo then writes one (the
+# real build of render/pass-report-pins); changefreq and priority are not,
+# because Hugo writes them only when the [sitemap] config sets them, and
+# the guard pins the config keys. Names compare exactly, with no namespace
+# processing, so LOC, s:loc, xhtml:link and sitemapindex are each a finding.
+INTAKE_SITEMAP_TREE = {None: ("urlset",), "urlset": ("url",), "url": ("loc", "lastmod")}
+# The root's attributes as Hugo writes them; no other element carries one.
+INTAKE_SITEMAP_ROOT_ATTRS = {"xmlns": "http://www.sitemaps.org/schemas/sitemap/0.9",
+                             "xmlns:xhtml": "http://www.w3.org/1999/xhtml"}
+# What Hugo writes for .Permalink on this site, matched against the whole
+# XML-decoded text of a loc: R4 slugs are slugify output, and the static
+# page and section names are lowercase with hyphens. A future page path
+# with _, . or a capital fails the build with a finding naming the entry
+# (fail closed and visible).
+INTAKE_SITEMAP_URL = re.compile(re.escape(SITE_ORIGIN) + r"/(?:[a-z0-9-]+/)*")
 INTAKE_BLOCK_TEMPLATE = "layouts/_partials/how-to-send.html"
 INTAKE_RESULT_TEMPLATE = "layouts/_partials/not-sent.html"
 # The how-to-send block sits in the content card of page.html.
@@ -14945,27 +14968,98 @@ def intake_referrer_problems(page, path):
     return problems
 
 
+class IntakeSitemapRefusal(Exception):
+    """A construct rule 18 (d) refuses in the sitemap; parsing stops."""
+
+
 def intake_sitemap_problems(public):
-    """Rule 18 (d): no <loc> of public/sitemap.xml names a result page, in
-    any form site_path reads as the site's own (case, entities; site_path
-    trims the padding as a browser does)."""
+    """Rule 18 (d) on public/sitemap.xml: (problems, the number of <url>
+    entries, or None without a sitemap). The sitemap is read with expat in
+    the shape Hugo writes (INTAKE_SITEMAP_TREE, INTAKE_SITEMAP_ROOT_ATTRS),
+    each loc's XML-decoded text read once and held to INTAKE_SITEMAP_URL,
+    and only then compared with INTAKE_UNLISTED. A DOCTYPE, a comment, a
+    processing instruction or a CDATA section stops the parse with a
+    finding: Hugo writes none, and each splits or rewrites an entry's text
+    into readings that differ between XML consumers (a comment inside a
+    loc joins to one path for one reader and ends it for another; a DTD
+    can spell a path through an entity). Text outside a loc is not read:
+    no sitemap consumer takes a URL from it."""
     path = public / "sitemap.xml"
     if not path.is_file():
-        return []
-    problems = []
-    for loc in INTAKE_SITEMAP_LOC.findall(path.read_text(encoding="utf-8", errors="replace")):
-        target = site_path(html.unescape(loc), "/")
-        if target in INTAKE_UNLISTED:
-            problems.append(("public/sitemap.xml", f"rule 18 (d): the sitemap lists {target}; "
-                             "the result pages stay out of it ([sitemap] disable = true in "
-                             "their front matter), so no search result leads a visitor there"))
-    return problems
+        return [], None
+    rel = "public/sitemap.xml"
+    problems, stack, entries = [], [], 0
+    parser = xml.parsers.expat.ParserCreate()
+
+    def refuse(what):
+        def handler(*_):
+            raise IntakeSitemapRefusal(what)
+        return handler
+
+    def start(name, attrs):
+        nonlocal entries
+        parent = stack[-1][0] if stack else None
+        if name not in INTAKE_SITEMAP_TREE.get(parent, ()):
+            where = f"in <{parent}>" if parent is not None else "as its root"
+            problems.append(f"rule 18 (d): the sitemap holds <{name}> {where}; Hugo writes "
+                            "only <urlset> as the root, <url> in it and <loc> and <lastmod> "
+                            "in each <url>, and another element can name a page to a "
+                            "sitemap reader this check does not read")
+        if parent is None:
+            if attrs != INTAKE_SITEMAP_ROOT_ATTRS:
+                problems.append("rule 18 (d): the sitemap's <urlset> carries the attributes "
+                                f"{', '.join(f'{k}={show(v)}' for k, v in attrs.items())}; "
+                                "Hugo writes exactly "
+                                f"{', '.join(f'{k}={show(v)}' for k, v in INTAKE_SITEMAP_ROOT_ATTRS.items())}")
+        elif attrs:
+            problems.append(f"rule 18 (d): <{name}> in the sitemap carries attributes "
+                            f"({', '.join(sorted(attrs))}); Hugo writes none there")
+        entries += name == "url"
+        stack.append((name, []))
+
+    def end(_name):
+        name, parts = stack.pop()
+        if name != "loc":
+            return
+        text = "".join(parts)
+        if not INTAKE_SITEMAP_URL.fullmatch(text):
+            problems.append(f"rule 18 (d): the sitemap's <loc> {show(text)} is not a canonical "
+                            f"page URL; Hugo writes every entry as {SITE_ORIGIN} plus a path of "
+                            "lowercase ASCII letters, digits and hyphens between single "
+                            "slashes, so any other spelling could name a result page in a "
+                            "form this check does not read")
+        elif text[len(SITE_ORIGIN):] in INTAKE_UNLISTED:
+            problems.append(f"rule 18 (d): the sitemap lists {text[len(SITE_ORIGIN):]}; the "
+                            "result pages stay out of it ([sitemap] disable = true in their "
+                            "front matter), so no search result leads a visitor there")
+
+    def text(data):
+        if stack:
+            stack[-1][1].append(data)
+
+    parser.StartElementHandler, parser.EndElementHandler = start, end
+    parser.CharacterDataHandler = text
+    parser.StartDoctypeDeclHandler = refuse("carries a DOCTYPE")
+    parser.CommentHandler = refuse("holds a comment")
+    parser.ProcessingInstructionHandler = refuse("holds a processing instruction")
+    parser.StartCdataSectionHandler = refuse("holds a CDATA section")
+    try:
+        parser.Parse(path.read_bytes(), True)
+    except IntakeSitemapRefusal as refusal:
+        problems.append(f"rule 18 (d): the sitemap {refusal}; Hugo writes none, and it splits "
+                        "or rewrites an entry's text into readings that differ between XML "
+                        "readers, so the check stops there")
+    except xml.parsers.expat.ExpatError as error:
+        problems.append(f"rule 18 (d): the sitemap is not well-formed XML ({error}); a "
+                        "sitemap reader may still take entries from it, so it fails closed")
+    return [(rel, p) for p in problems], entries
 
 
 def intake_problems(pages, contact, public):
     """Rule 18 on a site build. Returns (problems, summary)."""
     problems, n_forms, n_sections = [], 0, 0
-    problems += intake_sitemap_problems(public)
+    found, n_entries = intake_sitemap_problems(public)
+    problems += found
     for rel, page in pages.items():
         if rel in INTAKE_PAGES or page.unread:
             continue
@@ -15052,8 +15146,9 @@ def intake_problems(pages, contact, public):
                                   f"characters as the address bar copies it, over "
                                   f"{INTAKE_PAGE_URL_CAP}, the page_url cap of the correction "
                                   "form (ADR-0006 Numbers): the form could not name this page"))
+    sitemap = "no sitemap.xml" if n_entries is None else f"sitemap {n_entries} entries"
     return problems, (f"; intake: {n_forms} forms, {n_sections} result sections, {len(pages)} "
-                      f"page URLs within {INTAKE_PAGE_URL_CAP}")
+                      f"page URLs within {INTAKE_PAGE_URL_CAP}, {sitemap}")
 
 
 # ---------------------------------------------------------------------------

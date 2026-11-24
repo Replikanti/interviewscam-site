@@ -970,7 +970,9 @@ PY
 # row that adds autocomplete=off (fix round 1; every kind since
 # Replikanti/interviewscam#42 item 3) and per field with one a row that
 # drops it (item 4), plus the two literal scam_alias rename rows; per page
-# of INTAKE_UNLISTED a row that lists it in the sitemap; per result id of
+# of INTAKE_UNLISTED a row that lists it in the sitemap, and per element
+# name of INTAKE_SITEMAP_TREE one misplaced and one with an attribute (item
+# 1); per result id of
 # INTAKE_RESULT_IDS the section missing, doubled, its id elsewhere and its
 # heading and text reworded; per member of INTAKE_REFERRER_TAGS and per
 # channel a referrerpolicy row; per channel the page and its form missing;
@@ -1029,6 +1031,10 @@ for channel, fields in sitecheck.INTAKE_FIELDS.items():
 # instead of dropping them from this set.
 want |= {"b-report-scam_alias-old-name", "b-report-scam_alias-old-label"}
 want |= {f"d-{path.strip('/')}-in-sitemap" for path in sitecheck.INTAKE_UNLISTED}
+# Rule 18 (d)'s sitemap shape: every element name of INTAKE_SITEMAP_TREE
+# misplaced and with an attribute, from one loop.
+for name in {child for children in sitecheck.INTAKE_SITEMAP_TREE.values() for child in children}:
+    want |= {f"d-sitemap-{name}-{case}" for case in ("misplaced", "attribute")}
 for rid in sitecheck.INTAKE_RESULT_IDS:
     want |= {f"d-{rid}-{case}" for case in ("missing", "doubled", "id-elsewhere",
                                             "heading-reworded", "text-reworded")}
@@ -5149,7 +5155,8 @@ PINNED
     # tags; URL_ATTRS, FORM_ATTRS, INTAKE_FORM_PAGES and CSP_DIRECTIVES.
     # Replikanti/interviewscam#42: autocomplete=off per kind it now covers
     # (hidden, text, textarea, file, checkbox; url above) and
-    # autocomplete-absent with the two literal rename rows. 38 drops.
+    # autocomplete-absent with the two literal rename rows; the sitemap
+    # shape, each element name in one of its two families. 42 drops.
     for drop in render:b-report-scam_alias-renamed render:b-correction-email-required \
         render:b-report-headers-maxlength-above render:b-correction-request-hint-reworded \
         render:b-correction-files-accept-without-webp render:d-error-doubled \
@@ -5168,6 +5175,8 @@ PINNED
         render:b-report-scam_alias-autocomplete-absent render:b-correction-email-autocomplete-absent \
         render:b-report-website-autocomplete-absent render:b-report-scam_alias-old-name \
         render:b-report-scam_alias-old-label \
+        render:d-sitemap-urlset-misplaced render:d-sitemap-lastmod-misplaced \
+        render:d-sitemap-url-attribute render:d-sitemap-loc-attribute \
         site:fail-intake-host-in-data site:fail-input-formaction-intake \
         site:fail-csp-form-action-missing-intake-correction site:csp-intake/worker-src; do
       kind="${drop%%:*}"
