@@ -934,6 +934,10 @@ compare("SEARCH_VIEWPORT width (ADR-0005 Numbers)", [sc.SEARCH_VIEWPORT[0]],
         adr_number(r"mobile emulation, ([0-9]+) × [0-9]+"))
 compare("SEARCH_VIEWPORT height (ADR-0005 Numbers)", [sc.SEARCH_VIEWPORT[1]],
         adr_number(r"mobile emulation, [0-9]+ × ([0-9]+)"))
+compare("SEARCH_PARK_X (ADR-0005 Numbers)", [sc.SEARCH_PARK_X],
+        adr_number(r"\| `SEARCH_PARK_X`, `SEARCH_PARK_Y` (-?[0-9]+), -?[0-9]+ "))
+compare("SEARCH_PARK_Y (ADR-0005 Numbers)", [sc.SEARCH_PARK_Y],
+        adr_number(r"\| `SEARCH_PARK_X`, `SEARCH_PARK_Y` -?[0-9]+, (-?[0-9]+) "))
 for problem in problems:
     print(f"FAIL search-oracle/tables: {problem}")
 if not problems:

@@ -13416,6 +13416,25 @@ def reflow_animation_message(phase, what, running):
             "pixels are not compared")
 
 
+def reflow_hover_message(phase, what, names):
+    """The finding of the pointer guard of the pixel occlusion check."""
+    return (f"(isolation) {phase} of {what}, the pointer rests on the page, :hover matches "
+            f"{reflow_named(names)}; a rule keyed on :hover can differ between the two "
+            "captures, so the region's pixels are not compared "
+            "(Replikanti/interviewscam#55)")
+
+
+def reflow_hover_finding(extra, phase, what):
+    """The finding for one :hover read of a step's extra, or None when the
+    set is empty. A read that is not a list fails closed."""
+    names = extra.get("hover")
+    if not isinstance(names, list):
+        return (f"(isolation) the :hover set of {what} was not read {phase}, so whether the "
+                "pointer rests on the page is unknown and its pixels are not compared "
+                "(Replikanti/interviewscam#55)")
+    return reflow_hover_message(phase, what, names) if names else None
+
+
 def reflow_region_id(tools, session, index, where):
     """The backendNodeId of pinned region index (window.__iscRegions, set by
     REFLOW_HIT_SCRIPT), or None when it cannot be read."""
@@ -13509,6 +13528,14 @@ def reflow_copy_buttons(tools, session):
 # the viewport Lighthouse measures. Another size proves the answer visible
 # on a screen Lighthouse never measures.
 SEARCH_VIEWPORT = (412, 823)
+# Where case (8) leaves the pointer after each tap (ADR-0005 part 6 and
+# Numbers, Replikanti/interviewscam#55): outside the viewport, because
+# inside it `html` stays hovered even over a spot with no other element, so
+# only a pointer outside the page leaves :hover empty. -1 is the nearest
+# integer pair outside (-10000 and 5000 measured the same). Two ints: the
+# rows of search-cases.tsv patch NAME=int only.
+SEARCH_PARK_X = -1
+SEARCH_PARK_Y = -1
 # ADR-0005 Numbers: the partial match needs this many code points in each
 # form it tests (at 2, a short fragment lists most of the registry; at 4,
 # "mee" finds nothing), and shows at most SEARCH_PARTIAL_CAP entries (the
@@ -14120,6 +14147,12 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
         (fx.target ? label(fx.target) : "no element") + (fx.pseudoElement || "");
     });
   }
+  // The elements the pointer rests on (:hover), as labels. A fresh page has
+  // none; after a tap the chain under the pointer stays, and hiding an
+  // element does not move it (Replikanti/interviewscam#55, ADR-0005 part 6).
+  function hovered() {
+    return Array.prototype.map.call(document.querySelectorAll(":hover"), label);
+  }
   if (mode === "scroll") window.scrollTo(0, %(y)s);
   // The pixel occlusion check (fix round 2, Replikanti/interviewscam#39):
   // "freeze" blurs a focused element outside the region before the first
@@ -14145,7 +14178,10 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
   // last capture, reads the box and the animations again, restores the
   // original adoptedStyleSheets and puts the focus back on the element
   // focused at "freeze" (kept or blurred), and returns whether both are
-  // back, with the focus compared in every case.
+  // back, with the focus compared in every case. These three steps also
+  // read :hover (hovered), which must be empty at each: the pointer is
+  // parked outside the page (SEARCH_PARK_X), so a rule keyed on :hover
+  // cannot differ between the two captures.
   if (el && mode === "freeze") {
     var f = document.activeElement;
     var kept = f && el.contains(f) && !(f.isContentEditable ||
@@ -14156,7 +14192,7 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
     window.__iscFocused = f;
     if (f && f !== document.body && f !== document.documentElement && !kept && f.blur)
       f.blur();
-    extra = {running: running()};
+    extra = {running: running(), hover: hovered()};
   } else if (el && mode === "isolate") {
     var chain = [], p = el;
     for (; p && p !== document.documentElement; p = p.parentElement) chain.unshift(p);
@@ -14191,7 +14227,7 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
         });
       }
       extra = {moved: box(el) !== before, running: running(), rules: sheet.cssRules.length,
-               lines: lines};
+               lines: lines, hover: hovered()};
     }
   } else if (el && mode === "blank") {
     // saved holds the forced canvas colour of this blank capture. The
@@ -14212,6 +14248,7 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
     if (back && back !== document.activeElement && back !== document.body &&
         back !== document.documentElement && back.focus)
       back.focus({preventScroll: true});
+    extra.hover = hovered();
     var now = document.adoptedStyleSheets;
     extra.sheets = !sheets || (now.length === sheets.length &&
       sheets.every(function (s, i) { return now[i] === s; }));
@@ -14388,6 +14425,10 @@ def reflow_hits(tools, session, findings, where, revealed=None):
                 findings.add(where, reflow_animation_message(
                     "before the first capture", what, frozen["running"]))
                 blocked = True
+            if (problem_hover := reflow_hover_finding(
+                    frozen, "before the first capture", what)):
+                findings.add(where, problem_hover)
+                blocked = True
             first = capture()
             hidden = step("isolate")
             if hidden.get("broken"):
@@ -14399,6 +14440,10 @@ def reflow_hits(tools, session, findings, where, revealed=None):
                 findings.add(where, f"(isolation) the hiding stylesheet for {what} holds "
                              f"{show(hidden.get('rules'))} rules, not 1, so everything "
                              "outside it is not hidden and its pixels are not compared")
+                blocked = True
+            if not hidden.get("broken") and (problem_hover := reflow_hover_finding(
+                    hidden, "after the hiding", what)):
+                findings.add(where, problem_hover)
                 blocked = True
             if hidden.get("moved"):
                 moved = blocked = True
@@ -14438,6 +14483,10 @@ def reflow_hits(tools, session, findings, where, revealed=None):
                     blocked = True
                     break
             back = step("unisolate")
+            if (problem_hover := reflow_hover_finding(
+                    back, "after the second capture", what)):
+                findings.add(where, problem_hover)
+                blocked = True
             if back.get("moved"):
                 moved = blocked = True
             if back.get("running"):
@@ -14640,6 +14689,11 @@ def search_case(tools, session, findings, public, origin, load):
                 tools.send("Input.dispatchMouseEvent",
                            {"type": kind, "x": tap.get("x", 0), "y": tap.get("y", 0),
                             "button": "left", "clickCount": 1}, session=session)
+            # Park the pointer outside the page: a tap leaves it on the page,
+            # and the :hover chain under it can change a capture (Replikanti/interviewscam#55).
+            tools.send("Input.dispatchMouseEvent",
+                       {"type": "mouseMoved", "x": SEARCH_PARK_X, "y": SEARCH_PARK_Y},
+                       session=session)
             submits += 1
             deadline = time.monotonic() + REFLOW_TIMEOUT
             seen = None

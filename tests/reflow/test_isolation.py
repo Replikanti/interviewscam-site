@@ -591,11 +591,16 @@ class FakeTools:
     paint check's three)."""
 
     def __init__(self, extras=None, snapshot=None, shots=None):
-        self.extras = dict({"freeze": {"running": []},
-                            "isolate": {"moved": False, "running": [], "rules": 1, "lines": []},
-                            "blank": {"rules": 2},
-                            "unisolate": {"moved": False, "running": [], "sheets": True,
-                                          "focus": True}}, **(extras or {}))
+        # An override replaces keys of the default extra, not the whole dict,
+        # so a scenario names only what it changes (the :hover read is []).
+        defaults = {"freeze": {"running": [], "hover": []},
+                    "isolate": {"moved": False, "running": [], "rules": 1, "lines": [],
+                                "hover": []},
+                    "blank": {"rules": 2},
+                    "unisolate": {"moved": False, "running": [], "sheets": True,
+                                  "focus": True, "hover": []}}
+        self.extras = {mode: dict(extra, **(extras or {}).get(mode, {}))
+                       for mode, extra in defaults.items()}
         self.snapshot = snapshot if snapshot is not None else page()[0].reply()
         self.shots = list(shots or [SHOWN, SHOWN, png(pixel=BLACK), png(pixel=WHITE), SHOWN,
                                     png(), SHOWN])
@@ -651,11 +656,16 @@ class Plumbing(unittest.TestCase):
                             ({"sheets": None}, "its stylesheets did not come back"),
                             ({"focus": None}, "the focus did not come back")):
             with self.subTest(extra=extra):
-                back = {"moved": False, "running": [], "sheets": True, "focus": True}
+                back = {"moved": False, "running": [], "sheets": True, "focus": True,
+                        "hover": []}
                 back.update(extra)
                 for key in [k for k, v in back.items() if v is None]:
                     del back[key]
-                items = run(FakeTools({"unisolate": back}))
+                # Replaced whole, so a key left out stays out (an override
+                # of FakeTools merges per key and would put it back).
+                tools = FakeTools()
+                tools.extras["unisolate"] = back
+                items = run(tools)
                 self.assertEqual(len(items), 1, items)
                 self.assertIn("was not restored after the captures", items[0])
                 self.assertIn(lost, items[0])
@@ -749,6 +759,72 @@ class Plumbing(unittest.TestCase):
         tools.send = spy
         self.assertEqual(run(tools), [])
         self.assertEqual(asked, ['"#000000"', '"#ffffff"'])
+
+    HOVER_PHASES = (("freeze", "before the first capture"),
+                    ("isolate", "after the hiding"),
+                    ("unisolate", "after the second capture"))
+
+    def test_hover_each_read_reports_and_blocks(self):
+        # The pointer rests on the page at one read: one (isolation) finding
+        # with that phase's wording, and the pixels are not compared
+        # (Replikanti/interviewscam#55).
+        for mode, phase in self.HOVER_PHASES:
+            with self.subTest(mode=mode):
+                items = self.differing({mode: {"hover": ["button"]}})
+                self.assertEqual(len(items), 1, items)
+                self.assertIn("w: (isolation) ", items[0])
+                self.assertIn(f"{phase} of ", items[0])
+                self.assertIn("'button' (1 in all)", items[0])
+                self.assertIn(":hover", items[0])
+                self.assertNotIn(PIXELS, items[0])
+
+    def test_hover_one_finding_per_read(self):
+        items = self.differing({mode: {"hover": ["button"]} for mode, _ in self.HOVER_PHASES})
+        self.assertEqual(len(items), 3, items)
+        for (_, phase), item in zip(self.HOVER_PHASES, items):
+            self.assertIn(phase, item)
+
+    def test_hover_html_alone_is_a_finding(self):
+        # Inside the viewport html stays hovered even over a bare spot, so
+        # only an empty set passes.
+        for mode, _ in self.HOVER_PHASES:
+            with self.subTest(mode=mode):
+                items = self.differing({mode: {"hover": ["html"]}})
+                self.assertEqual(len(items), 1, items)
+                self.assertIn("'html' (1 in all)", items[0])
+
+    def test_hover_unreadable_fails_closed(self):
+        for mode, phase in self.HOVER_PHASES:
+            for how, value in (("missing", None), ("null", None), ("string", "button"),
+                               ("number", 1), ("dict", {"0": "button"})):
+                with self.subTest(mode=mode, how=how):
+                    tools = FakeTools(shots=[SHOWN, png(), png(pixel=BLACK), png(pixel=WHITE),
+                                             SHOWN, png(), SHOWN])
+                    if how == "missing":
+                        del tools.extras[mode]["hover"]
+                    else:
+                        tools.extras[mode]["hover"] = value
+                    items = run(tools)
+                    self.assertEqual(len(items), 1, items)
+                    self.assertIn("w: (isolation) ", items[0])
+                    self.assertIn(f"was not read {phase}", items[0])
+                    self.assertNotIn(PIXELS, items[0])
+
+    def test_hover_names_capped(self):
+        names = [f"div{i}" for i in range(12)]
+        text = sitecheck.reflow_hover_message("after the hiding", "a region", names)
+        self.assertTrue(text.startswith("(isolation) after the hiding of a region, "), text)
+        self.assertIn("'div9' and 2 more (12 in all)", text)
+        self.assertNotIn("'div10'", text)
+        self.assertIn("Replikanti/interviewscam#55", text)
+
+    def test_hover_not_read_after_broken_isolate(self):
+        # The broken branch returns no :hover; the one broken finding stands.
+        tools = FakeTools()
+        tools.extras["isolate"] = {"broken": "the region is not in the document's element tree"}
+        items = run(tools)
+        self.assertEqual(len(items), 1, items)
+        self.assertIn("so everything outside it cannot be hidden", items[0])
 
     def test_kept_focus_not_restored(self):
         items = run(FakeTools({"unisolate": {"moved": False, "running": [], "sheets": True,
