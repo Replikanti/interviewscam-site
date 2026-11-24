@@ -12046,6 +12046,13 @@ REFLOW_HIDDEN_VISIBILITY = frozenset({"hidden", "collapse"})
 # container. CI hides scroll bars (--hide-scrollbars in CHROME_FLAGS), so
 # this computed-style rule is their only reader.
 REFLOW_SCROLLBAR_OVERFLOW = frozenset({"scroll", "auto"})
+# The frame owners: the elements that can hold a nested document. The
+# stylesheet that hides the outside does not reach into a nested document,
+# and CI's Chrome leaves such a document out of the snapshot (a frame the
+# CSP blocks: row iso-nested-document), so every frame owner outside the
+# region with a layout object fails closed, whatever its visibility, as
+# does any entry the snapshot gives a contentDocumentIndex.
+REFLOW_FRAME_OWNERS = frozenset({"iframe", "frame", "object", "embed"})
 # Case (6), state S1 (ADR-0003 part 6): the script URLs blocked, so the page
 # loads with scripting on and its script not run, as after a failed load.
 REFLOW_BLOCKED_SCRIPTS = ("*.js", "*.mjs")
@@ -13151,7 +13158,10 @@ def isolation_problems(snapshot, region_id):
     REFLOW_HIDDEN_VISIBILITY; "ancestor", the labels of the layout objects
     of an ancestor's text children and pseudo-elements, whatever their
     characters (they paint above the region and cannot be hidden without
-    it); "paint", label, property and value of each ancestor element's box
+    it); "frame", the labels of the frame owners outside
+    (REFLOW_FRAME_OWNERS or a contentDocumentIndex) with a layout object,
+    whatever their visibility; "paint", label, property and value of each
+    ancestor element's box
     paint of the closed list (an outline, a text decoration, a scroll bar
     on either axis, a resize control). Never raises."""
     try:
@@ -13196,6 +13206,8 @@ def _isolation_problems(snapshot, region_id):
         ids = snapshot_list(nodes.get("backendNodeId"), f"document {d} backendNodeId",
                             size=size)
         pseudo = snapshot_rare(nodes.get("pseudoType"), f"document {d} pseudoType", size)
+        frames = snapshot_rare(nodes.get("contentDocumentIndex"),
+                               f"document {d} contentDocumentIndex", size)
         attributes = nodes.get("attributes")
         if attributes is None:
             attributes = [[] for _ in range(size)]
@@ -13225,7 +13237,7 @@ def _isolation_problems(snapshot, region_id):
             text(k, what=f"document {d} pseudoType")
         for k in (v for a in attributes for v in a):
             text(k, empty=True, what=f"document {d} attributes")
-        docs.append((parents, types, names, ids, pseudo, attributes, boxes, styles))
+        docs.append((parents, types, names, ids, pseudo, attributes, boxes, styles, frames))
     home = next((d for d, doc in enumerate(docs) if region_id in doc[3]), None) \
         if type(region_id) is int else None
     if home is None:
@@ -13247,8 +13259,9 @@ def _isolation_problems(snapshot, region_id):
         name += "".join("." + c for c in re.split(r"[\t\n\f\r ]+", attrs.get("class", "")) if c)
         return name + where
 
-    outside, ancestor, paint = {}, {}, {}
-    for d, (parents, types, names, ids, pseudo, attributes, boxes, styles) in enumerate(docs):
+    outside, ancestor, paint, frame = {}, {}, {}, {}
+    for d, (parents, types, names, ids, pseudo, attributes, boxes, styles,
+            frames) in enumerate(docs):
         inside, chain = [False] * len(parents), set()
         if d == home:
             region = ids.index(region_id)
@@ -13279,10 +13292,14 @@ def _isolation_problems(snapshot, region_id):
                 continue
             if parents[i] in chain and (types[i] == 3 or i in pseudo):
                 ancestor.setdefault((d, i), label(d, i))
+            elif types[i] == 1 and i not in pseudo and (
+                    i in frames or text(names[i]).lower() in REFLOW_FRAME_OWNERS):
+                frame.setdefault((d, i), label(d, i))
             elif style is None or style[0] not in REFLOW_HIDDEN_VISIBILITY:
                 outside.setdefault((d, i), label(d, i))
     return [(kind, list(items.values())) for kind, items in
-            (("outside", outside), ("ancestor", ancestor), ("paint", paint)) if items]
+            (("outside", outside), ("frame", frame), ("ancestor", ancestor),
+             ("paint", paint)) if items]
 
 
 def reflow_named(items):
@@ -13304,6 +13321,11 @@ def isolation_message(kind, items, what):
                 "the hiding (a layered !important rule, an id rule), a transition or "
                 "animation holds the old value, or a nested document or a shadow tree draws "
                 "it, so the region's pixels are not compared")
+    if kind == "frame":
+        return (f"(isolation) outside {what}, frame owner(s) hold a document the hiding "
+                f"cannot reach: {reflow_named(items)}; a nested document is not hidden with "
+                "its owner's page and may be left out of the snapshot, so the region's "
+                "pixels are not compared")
     if kind == "ancestor":
         return (f"(isolation) the ancestors of {what} hold box(es) of their own text or "
                 f"pseudo-elements: {reflow_named(items)}; an ancestor's own inline and "
@@ -14070,7 +14092,22 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
       window.__iscBox = before;
       window.__iscSheets = Array.prototype.slice.call(document.adoptedStyleSheets);
       document.adoptedStyleSheets = window.__iscSheets.concat([sheet]);
-      extra = {moved: box(el) !== before, running: running(), rules: sheet.cssRules.length};
+      // The user-agent shadow content of a form control is not in CI's DOM
+      // snapshot (row iso-placeholder-visible), so the two pseudo-elements
+      // that style it are read here, for every control outside the region:
+      // [label, computed visibility], which reflow_hits holds to
+      // REFLOW_HIDDEN_VISIBILITY.
+      var controls = [];
+      Array.prototype.forEach.call(document.querySelectorAll("input, textarea"), function (c) {
+        if (el.contains(c)) return;
+        controls.push([label(c) + "::placeholder",
+                       getComputedStyle(c, "::placeholder").visibility]);
+        if (c.localName === "input" && c.type === "file")
+          controls.push([label(c) + "::file-selector-button",
+                         getComputedStyle(c, "::file-selector-button").visibility]);
+      });
+      extra = {moved: box(el) !== before, running: running(), rules: sheet.cssRules.length,
+               controls: controls};
     }
   } else if (mode === "unisolate") {
     var sheets = window.__iscSheets, back = window.__iscFocus;
@@ -14269,6 +14306,11 @@ def reflow_hits(tools, session, findings, where, revealed=None):
             for kind, items in isolation_problems(snapshot, region_id):
                 findings.add(where, isolation_message(kind, items, what))
                 blocked = blocked or kind != "paint"
+            shown = [str(name) for name, value in (hidden.get("controls") or [])
+                     if value not in REFLOW_HIDDEN_VISIBILITY]
+            if shown:
+                findings.add(where, isolation_message("outside", shown, what))
+                blocked = True
             second = capture()
             back = step("unisolate")
             if back.get("moved"):

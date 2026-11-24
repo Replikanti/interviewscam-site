@@ -176,7 +176,30 @@ class Outside(unittest.TestCase):
         top = snap.add(inner, -1, DOCUMENT, "#document", 65, style=PLAIN)
         snap.add(inner, top, ELEMENT, "svg", 66, style=PLAIN)
         self.assertEqual(problems(snap), [("outside", ["#document in a nested document",
-                                                       "svg in a nested document"])])
+                                                       "svg in a nested document"]),
+                                          ("frame", ["iframe"])])
+
+    def test_frame_owners(self):
+        self.assertEqual(sitecheck.REFLOW_FRAME_OWNERS,
+                         frozenset({"iframe", "frame", "object", "embed"}))
+        for name in ("IFRAME", "FRAME", "OBJECT", "EMBED"):
+            for style in (HIDDEN, PLAIN):
+                with self.subTest(name=name, style=style):
+                    snap, doc, at = page()
+                    snap.add(doc, at["header"], ELEMENT, name, 64, style=style)
+                    self.assertEqual(problems(snap), [("frame", [name.lower()])])
+
+    def test_frame_owner_by_content_document(self):
+        snap, doc, at = page()
+        owner = snap.add(doc, at["header"], ELEMENT, "DIV", 64, style=HIDDEN)
+        doc["nodes"]["contentDocumentIndex"] = {"index": [owner], "value": [1]}
+        self.assertEqual(problems(snap), [("frame", ["div"])])
+
+    def test_frame_owner_without_box_or_inside(self):
+        snap, doc, at = page()
+        snap.add(doc, at["header"], ELEMENT, "IFRAME", 64)
+        snap.add(doc, at["region"], ELEMENT, "IFRAME", 65, style=PLAIN)
+        self.assertEqual(problems(snap), [])
 
     def test_nested_document_without_style(self):
         snap, _, _ = page()
@@ -327,7 +350,9 @@ class AncestorPaint(unittest.TestCase):
         snap, doc, at = page(main_style=dict(PLAIN, **{"outline-style": "solid"}),
                              sibling=PLAIN)
         snap.add(doc, at["main"], TEXT, "#text", 80, style=PLAIN, value="x")
-        self.assertEqual([kind for kind, _ in problems(snap)], ["outside", "ancestor", "paint"])
+        snap.add(doc, at["header"], ELEMENT, "EMBED", 91, style=HIDDEN)
+        self.assertEqual([kind for kind, _ in problems(snap)],
+                         ["outside", "frame", "ancestor", "paint"])
 
 
 class Broken(unittest.TestCase):
@@ -387,6 +412,10 @@ class Broken(unittest.TestCase):
             "attributes odd": lambda r, d: d["nodes"]["attributes"][1].append(0),
             "attributes short": lambda r, d: d["nodes"]["attributes"].pop(),
             "attributes not a list": lambda r, d: d["nodes"].update(attributes={}),
+            "contentDocumentIndex out of range": lambda r, d: d["nodes"].update(
+                contentDocumentIndex={"index": [999], "value": [1]}),
+            "contentDocumentIndex not an object": lambda r, d: d["nodes"].update(
+                contentDocumentIndex=[]),
         }
         for name, change in cases.items():
             with self.subTest(name=name):
@@ -416,6 +445,7 @@ class Messages(unittest.TestCase):
 
     def test_prefixes(self):
         for kind, prefix in (("broken", "(isolation) "), ("outside", "(isolation) "),
+                             ("frame", "(isolation) "),
                              ("ancestor", "(isolation) "), ("paint", "(ancestor paint) ")):
             with self.subTest(kind=kind):
                 self.assertTrue(sitecheck.isolation_message(kind, ["x"], "r").startswith(prefix))
