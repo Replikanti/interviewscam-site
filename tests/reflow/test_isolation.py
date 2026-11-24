@@ -400,7 +400,8 @@ class Broken(unittest.TestCase):
             "a style row short": lambda r, d: d["layout"]["styles"][1].pop(),
             "a style out of range": lambda r, d: d["layout"]["styles"][1].__setitem__(0, 999),
             "styles not a list": lambda r, d: d["layout"].update(styles={}),
-            "an element without a style": lambda r, d: d["layout"]["styles"].__setitem__(1, []),
+            "an element without a style": lambda r, d: d["layout"]["styles"].__setitem__(3, []),
+            "an ancestor without a style": lambda r, d: d["layout"]["styles"].__setitem__(1, []),
             "a style below -1": lambda r, d: d["layout"]["styles"][1].__setitem__(0, -2),
             "a pseudoType of -1": lambda r, d: d["nodes"].update(
                 pseudoType={"index": [4], "value": [-1]}),
