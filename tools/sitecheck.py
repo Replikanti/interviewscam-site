@@ -13204,8 +13204,14 @@ def _isolation_problems(snapshot, region_id):
         styles = layout.get("styles")
         if not isinstance(styles, list) or len(styles) != len(boxes):
             raise SnapshotError(f"document {d} layout styles is not one list per layout object")
-        styles = [[text(k) for k in snapshot_list(s, f"document {d} layout styles",
-                                                    size=width)] for s in styles]
+        # Chrome gives the document's layout object (the LayoutView) an
+        # empty style row, since a document has no computed style, and a
+        # property it cannot read the string index -1 (read here as "",
+        # which no rule accepts). Any other empty row fails closed below.
+        styles = [None if s == [] else
+                  [text(k) if k != -1 else "" for k in
+                   snapshot_list(s, f"document {d} layout styles", size=width)]
+                  for s in styles]
         # Every string index is read now, so a broken one fails the whole
         # snapshot, not only a label that a finding happens to print.
         for k in [*names, *pseudo.values(), *(v for a in attributes for v in a)]:
@@ -13244,6 +13250,9 @@ def _isolation_problems(snapshot, region_id):
                 chain.add(p)
                 p = parents[p]
         for i, style in zip(boxes, styles):
+            if style is None and types[i] != 9:
+                raise SnapshotError(f"document {d} gives a layout object other than a "
+                                    "document no computed style")
             if inside[i]:
                 continue
             if i in chain:
@@ -13261,7 +13270,7 @@ def _isolation_problems(snapshot, region_id):
                 continue
             if parents[i] in chain and (types[i] == 3 or i in pseudo):
                 ancestor.setdefault((d, i), label(d, i))
-            elif style[0] not in REFLOW_HIDDEN_VISIBILITY:
+            elif style is None or style[0] not in REFLOW_HIDDEN_VISIBILITY:
                 outside.setdefault((d, i), label(d, i))
     return [(kind, list(items.values())) for kind, items in
             (("outside", outside), ("ancestor", ancestor), ("paint", paint)) if items]

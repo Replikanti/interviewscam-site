@@ -34,6 +34,9 @@ ELEMENT, TEXT, DOCUMENT = 1, 3, 9
 # of an ancestor that paints nothing above its descendants.
 HIDDEN = {"visibility": "hidden"}
 PLAIN = {"visibility": "visible"}
+# Chrome's style row of a document's layout object (the LayoutView): empty,
+# since a document has no computed style.
+EMPTY = "empty"
 DEFAULTS = {"visibility": "visible", "outline-style": "none", "text-decoration-line": "none",
             "overflow-x": "visible", "overflow-y": "visible", "resize": "none"}
 
@@ -73,11 +76,15 @@ class Snapshot:
         if pseudo is not None:
             nodes["pseudoType"]["index"].append(index)
             nodes["pseudoType"]["value"].append(self.string(pseudo))
-        if style is not None:
+        if style == EMPTY:
+            doc["layout"]["nodeIndex"].append(index)
+            doc["layout"]["styles"].append([])
+        elif style is not None:
             full = dict(DEFAULTS, **style)
             doc["layout"]["nodeIndex"].append(index)
             doc["layout"]["styles"].append(
-                [self.string(full[p]) for p in sitecheck.REFLOW_SNAPSHOT_STYLES])
+                [-1 if full[p] is None else self.string(full[p])
+                 for p in sitecheck.REFLOW_SNAPSHOT_STYLES])
         return index
 
     def reply(self):
@@ -94,9 +101,7 @@ def page(main_style=None, root_style=None, sibling=HIDDEN):
     snap = Snapshot()
     doc = snap.document()
     at = {}
-    at["document"] = snap.add(doc, -1, DOCUMENT, "#document", 1,
-                              style=dict(DEFAULTS, **{"overflow-x": "auto",
-                                                      "overflow-y": "auto"}))
+    at["document"] = snap.add(doc, -1, DOCUMENT, "#document", 1, style=EMPTY)
     at["html"] = snap.add(doc, at["document"], ELEMENT, "HTML", 2, style=root_style or PLAIN,
                           attrs=[("lang", "en")])
     at["head"] = snap.add(doc, at["html"], ELEMENT, "HEAD", 3)
@@ -172,6 +177,12 @@ class Outside(unittest.TestCase):
         self.assertEqual(problems(snap), [("outside", ["#document in a nested document",
                                                        "svg in a nested document"])])
 
+    def test_nested_document_without_style(self):
+        snap, _, _ = page()
+        inner = snap.document()
+        snap.add(inner, -1, DOCUMENT, "#document", 65, style=EMPTY)
+        self.assertEqual(problems(snap), [("outside", ["#document in a nested document"])])
+
     def test_nested_document_text_label(self):
         snap, doc, at = page()
         inner = snap.document()
@@ -237,10 +248,22 @@ class Ancestors(unittest.TestCase):
 
     def test_document_node_not_a_finding(self):
         # The LayoutView (the document's layout object) is in every chain,
-        # visible and a scroll container: neither an outside box nor
-        # ancestor paint.
+        # with Chrome's empty style row, or with a style that is visible
+        # and a scroll container: neither an outside box nor ancestor paint.
         snap, _, _ = page()
         self.assertEqual(problems(snap), [])
+        snap, doc, _ = page()
+        doc["layout"]["styles"][0] = [snap.string(v) for v in (
+            "visible", "none", "none", "auto", "auto", "none")]
+        self.assertEqual(problems(snap), [])
+
+    def test_unreadable_property_fails_closed(self):
+        # Chrome writes -1 for a property it cannot read; no rule accepts it.
+        snap, _, _ = page(sibling={"visibility": None})
+        self.assertEqual(problems(snap), [("outside", ["h1.home-title",
+                                                       "h1.home-title (its text)"])])
+        snap, _, _ = page(main_style={"resize": None})
+        self.assertEqual(problems(snap), [("paint", ["main#main.container resize "])])
 
 
 class AncestorPaint(unittest.TestCase):
@@ -341,9 +364,11 @@ class Broken(unittest.TestCase):
             "name negative": lambda r, d: d["nodes"]["nodeName"].__setitem__(1, -1),
             "layout entry out of range": lambda r, d: d["layout"]["nodeIndex"].__setitem__(0, 999),
             "styles short": lambda r, d: d["layout"]["styles"].pop(),
-            "a style row short": lambda r, d: d["layout"]["styles"][0].pop(),
-            "a style out of range": lambda r, d: d["layout"]["styles"][0].__setitem__(0, 999),
+            "a style row short": lambda r, d: d["layout"]["styles"][1].pop(),
+            "a style out of range": lambda r, d: d["layout"]["styles"][1].__setitem__(0, 999),
             "styles not a list": lambda r, d: d["layout"].update(styles={}),
+            "an element without a style": lambda r, d: d["layout"]["styles"].__setitem__(1, []),
+            "a style below -1": lambda r, d: d["layout"]["styles"][1].__setitem__(0, -2),
             "pseudoType not an object": lambda r, d: d["nodes"].update(pseudoType=[]),
             "pseudoType lengths": lambda r, d: d["nodes"]["pseudoType"]["index"].append(1),
             "pseudoType out of range": lambda r, d: d["nodes"].update(
