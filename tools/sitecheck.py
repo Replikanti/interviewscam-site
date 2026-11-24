@@ -9782,6 +9782,10 @@ PARSER_ONLY_SPACE = frozenset({
     0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007,
     0x2008, 0x2009, 0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000,
 })
+# Any code point of PARSER_ONLY_SPACE: a text without one has no hit, so
+# tag_space_hits skips its character scan (render parses every page of every
+# self-test row; Replikanti/interviewscam#51 fix round 1).
+PARSER_ONLY_SPACE_ANY = re.compile("[" + "".join(chr(c) for c in sorted(PARSER_ONLY_SPACE)) + "]")
 TAG_NAME_SHOWN = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*|<[!?]", re.A)
 
 
@@ -9864,6 +9868,8 @@ def tag_space_hits(text):
     """(code point, tag name shown) of every code point of PARSER_ONLY_SPACE
     in tag markup outside a quoted attribute value (tag_spans), sorted, each
     pair once: what site rule (i) and render's markup: reading refuse."""
+    if not PARSER_ONLY_SPACE_ANY.search(text):
+        return []
     seen = {}
     for start, end, quoted in tag_spans(text):
         found, pos = set(), start
