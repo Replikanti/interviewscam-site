@@ -6181,13 +6181,20 @@ VISIBILITY_COPY_WHY = ("; a Copy button (class copy) holds exactly the text Copy
                        "exactly the pinned statuses in data-copy-done and data-copy-failed, and "
                        "sits right after its data-copy-target element or right after the "
                        "persona label (<span class=\"persona-label\">) that follows that element, "
-                       "because copy.js reveals its text and writes a status into the live "
-                       "region, and a button between a box and its label would split what the "
+                       "with exactly an empty <span class=\"copy-status\" role=\"status\" "
+                       "aria-live=\"polite\"> as its next element, because copy.js reveals its "
+                       "text and writes a status into the element after it, which wipes any text "
+                       "there, and a button between a box and its label would split what the "
                        "label rules read as one (ADR-0004 part 14, render rule 20, P1')")
 VALUE_INPUT_TYPES = ("hidden", "checkbox")
 LABELLEDBY_TAGS = ("h2", "h3")
 ROLE_VALUES = {"form": "search", "span": "status"}
 PERSONA_LABEL_CLASS = "persona-label"
+# The live region copy-button.html emits right after every Copy button:
+# copy.js writes a status into the button's nextElementSibling, so P1'
+# pins that element to exactly this, empty (Replikanti/interviewscam#51
+# PR 2, fix round 1).
+COPY_STATUS_ATTRS = {"class": "copy-status", "role": "status", "aria-live": "polite"}
 DESCRIBEDBY_HINT_CLASS = "hint"
 
 
@@ -6202,6 +6209,20 @@ def previous_element(el):
             return before
         if isinstance(child, Element):
             before = child
+    return None
+
+
+def next_sibling_element(el):
+    """The element sibling right after el (any text between them skipped),
+    or None, as nextElementSibling reads it; next_element stops at text."""
+    if el.parent is None:
+        return None
+    seen = False
+    for child in el.parent.children:
+        if child is el:
+            seen = True
+        elif seen and isinstance(child, Element):
+            return child
     return None
 
 
@@ -6268,6 +6289,10 @@ def value_pin_heads(el, ids, allowed):
             before = previous_element(before)
         if target is None or before is not target:
             heads.append(("a Copy button out of place", VISIBILITY_COPY_WHY))
+        status = next_sibling_element(el)
+        if status is None or status.tag != "span" or status.attrs != COPY_STATUS_ATTRS \
+                or status.children:
+            heads.append(("the status element after a Copy button", VISIBILITY_COPY_WHY))
     return heads
 
 
