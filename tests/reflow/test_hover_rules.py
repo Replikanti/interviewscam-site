@@ -316,6 +316,114 @@ class Variables(unittest.TestCase):
         self.assertEqual(len(found), 1, found)
 
 
+class Unreadable(unittest.TestCase):
+    """The built stylesheet is refused when it holds a newline or an unquoted
+    url( that a browser tokenizes differently from css_rules (review run 3):
+    a browser ends a string at an unescaped newline, css_rules runs it on to
+    the next quote, so a rule can hide between two such strings; an unquoted
+    url( with a ( inside is a bad url that ends at the first ), while
+    css_rules counts the inner ( and stays inside parentheses. The refusal is
+    on the whole sheet, so the older rules (.visually-hidden, !important,
+    [hidden]) are covered too."""
+
+    HIDDEN = "main:has(a:hover) h2{opacity:0}"
+
+    def refusal(self, css):
+        return [item for item in sitecheck.css_rule_problems(css).problems
+                if "browser" in item and "built stylesheet" in item]
+
+    def test_review_string_forms(self):
+        for quote in ('"', "'"):
+            css = (TODAY + ".x{font-family:" + quote + "a\n}" + self.HIDDEN
+                   + ".y{font-family:" + quote + "b\n}")
+            with self.subTest(quote=quote):
+                # What the checker alone sees: nothing (the rule is inside a string).
+                self.assertEqual(problems(css), [])
+                found = sitecheck.css_rule_problems(css).problems
+                self.assertEqual(len(found), 1, found)
+                self.assertIn("newline", found[0])
+
+    def test_review_custom_property_form(self):
+        css = (TODAY + '.x{font-family:"a\n}main{--underline-hover-thickness:5em}'
+               '.y{font-family:"b\n}')
+        self.assertEqual(len(sitecheck.css_rule_problems(css).problems), 1)
+
+    def test_review_url_form(self):
+        css = (TODAY + ".x{background-image:url(a(b)}" + self.HIDDEN
+               + ".y{width:calc(1px)}.z{grid-area:a)}")
+        self.assertEqual(problems(css), [])
+        found = sitecheck.css_rule_problems(css).problems
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("url(", found[0])
+
+    def test_each_newline_character(self):
+        for name, char in (("LF", "\n"), ("CR", "\r"), ("FF", "\f"), ("CRLF", "\r\n")):
+            for where in ("a{x:y}" + char + "b{x:y}", "a{x:'" + char + "'}", "a{" + char + "x:y}",
+                          "/* c" + char + "d */a{x:y}", TODAY + char + "a{x:y}"):
+                with self.subTest(char=name, css=where):
+                    found = self.refusal(where)
+                    self.assertEqual(len(found), 1, found)
+                    self.assertIn("newline", found[0])
+
+    def test_a_final_newline_is_not_counted(self):
+        for tail in ("\n", "\r\n", "\n\n\f"):
+            with self.subTest(tail=repr(tail)):
+                self.assertEqual(self.refusal(TODAY + tail), [])
+        self.assertEqual(len(self.refusal(TODAY + "\n" + TODAY)), 1)
+        self.assertEqual(len(self.refusal("a{x:'" + "\n" + "'}")), 1)
+
+    def test_other_whitespace_is_not_a_newline(self):
+        for char in (" ", "\t", "\v", "\u2028", "\u0085"):
+            with self.subTest(char=repr(char)):
+                self.assertEqual(self.refusal("a{x:y}" + char + "b{x:y}"), [])
+
+    def test_a_one_line_sheet_passes(self):
+        self.assertEqual(sitecheck.css_rule_problems(TODAY).problems, [])
+        self.assertEqual(self.refusal(""), [])
+
+    def test_bad_unquoted_urls(self):
+        for body in ("a(b", 'a"b', "a'b", "a b", " a b ", "a\tb", "a\x01b", "a(b)c",
+                     "a\\b", "a\\", "a", "(", "a(b(c"):
+            for head in ("url(", "URL(", "Url(", "background:url("):
+                css = "x{" + (head if head.startswith("background") else "background:" + head) + body
+                # the url is closed at the first ) as the browser does, or not at all
+                css += ")}" if body not in ("a", "(", "a(b(c") else "}"
+                with self.subTest(css=css):
+                    found = self.refusal(css)
+                    self.assertEqual(len(found), 1, (css, found))
+                    self.assertIn("url(", found[0])
+
+    def test_unterminated_url_is_refused(self):
+        self.assertEqual(len(self.refusal("x{background:url(a.png")), 1)
+
+    def test_good_urls_pass(self):
+        for body in ("a.png", " a.png ", "a/b.png?x=1#y", '"a(b"', "'a b'", ' "a b" ',
+                     "data:image/png;base64,AAAA"):
+            with self.subTest(body=body):
+                self.assertEqual(self.refusal("x{background:url(" + body + ")}"), [])
+
+    def test_url_inside_another_word_is_not_a_url(self):
+        for word in ("curl(a(b)", "x-url(a(b)", "url2(a(b)", "myurl(a b)"):
+            with self.subTest(word=word):
+                self.assertEqual(self.refusal("x{y:" + word + "}"), [])
+
+    def test_two_forms_two_findings(self):
+        found = sitecheck.css_rule_problems("a{x:'\n'}b{y:url(a(b)}").problems
+        self.assertEqual(len(found), 2, found)
+
+    def test_one_finding_per_form(self):
+        found = self.refusal("a{x:'\n'}b{y:'\n'}\n\n")
+        self.assertEqual(len(found), 1, found)
+        found = self.refusal("a{y:url(a(b)}b{y:url(c d)}")
+        self.assertEqual(len(found), 1, found)
+
+    def test_older_rules_are_covered_by_the_same_refusal(self):
+        # The .visually-hidden definition after a string that runs across a
+        # newline: the refusal fires whatever the other rules say.
+        found = sitecheck.css_rule_problems(".x{content:'\n}.visually-hidden{x:y}.y{content:'\n}")
+        self.assertTrue(any("newline" in item for item in found.problems))
+
+
 class Wired(unittest.TestCase):
     """The check runs with the other CSS rules of the site check."""
 

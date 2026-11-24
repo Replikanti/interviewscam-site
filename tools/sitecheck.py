@@ -2355,6 +2355,56 @@ def css_hover_problems(css):
     return hover_rule_problems(rules) + hover_var_problems(rules)
 
 
+# Review run 3 of Replikanti/interviewscam#55: css_rules, and the string and
+# comment scanner under it, do not tokenize as a browser does. (1) A browser
+# ends a string at an unescaped newline (a bad string, CSS Syntax 4.3.5), the
+# scanner runs it on to the next matching quote, so a rule can sit between
+# two such strings: the checker reads it as string text, the browser applies
+# it. (2) An unquoted url( holding a ( or a quote or whitespace is a bad url
+# that a browser ends at the first ); css_rules counts the inner ( and stays
+# inside parentheses to a later stray ). The built stylesheet is refused, as a
+# whole and before its rules are read, when it holds either form, so every
+# rule check on it (the :hover list, .visually-hidden, !important, [hidden])
+# reads a sheet both readings agree on. Failing closed costs nothing today:
+# the pinned Hugo's minified stylesheet has 0 newlines and no url( at all
+# (a final newline, after which nothing can follow, is not counted).
+CSS_NEWLINES = "\n\r\f"
+CSS_URL_START = re.compile(r"(?<![\w-])url\(", re.I)
+CSS_URL_SPACE = " \t\n\r\f"
+
+
+def css_desync_problems(css):
+    """One finding per form (a newline; a bad unquoted url) that the sheet
+    holds, none when it holds neither."""
+    problems = []
+    # A newline at the very end of the sheet separates nothing from nothing,
+    # so a hand-written fixture file may end with one.
+    newlines = [i for i, ch in enumerate(css.rstrip(CSS_NEWLINES)) if ch in CSS_NEWLINES]
+    if newlines:
+        problems.append(f"the built stylesheet holds {len(newlines)} newline character(s) "
+                        f"(LF, CR or FF; the first at offset {newlines[0]}): a browser ends "
+                        "a string at an unescaped newline and the checker's scanner does "
+                        "not, so a rule can hide between two such strings; the minified "
+                        "stylesheet is one line (ADR-0005 part 6, "
+                        "Replikanti/interviewscam#55)")
+    for match in CSS_URL_START.finditer(css):
+        rest = css[match.end():]
+        if rest.lstrip(CSS_URL_SPACE)[:1] in ("'", '"'):
+            continue  # a quoted url is a string, which ends at its quote
+        end = rest.find(")")
+        body = rest[:end if end >= 0 else len(rest)].strip(CSS_URL_SPACE)
+        if end < 0 or any(ch in "('\"\\" or ch in CSS_URL_SPACE or ord(ch) < 0x20
+                          or ord(ch) == 0x7F for ch in body):
+            problems.append(f"the built stylesheet holds an unquoted url( that a browser reads "
+                            f"as a bad url ({show(rest[:60], 60)}): it holds ( a quote, a "
+                            "backslash, whitespace or a control character, or no ), and it "
+                            "ends at the first ), where the checker's parenthesis count does "
+                            "not, so a rule can hide behind it (ADR-0005 part 6, "
+                            "Replikanti/interviewscam#55)")
+            break
+    return problems
+
+
 class CssRuleResult:
     def __init__(self):
         self.problems = []
@@ -2368,6 +2418,7 @@ def css_rule_problems(css):
     stylesheet. The caller adds up definitions and reveals across files."""
     result = CssRuleResult()
     problems = result.problems
+    problems.extend(css_desync_problems(css))
     problems.extend(css_hover_problems(css))
     attributed = 0
     for rule in css_rules(css):
