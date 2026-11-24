@@ -14717,7 +14717,11 @@ INTAKE_WORKER_SHA256 = {
 # once, as the section tree of layouts/_partials/not-sent.html with its text,
 # in INTAKE_RESULT_IDS order; (e) every built page's URL, as the browser's
 # address bar copies it (percent-encoded), is at most the page_url cap, so
-# the correction form can name every page. An exact tree, not a list of
+# the correction form can name every page; (f) on the two intake pages
+# (Replikanti/interviewscam#42 item 2) the controls of
+# INTAKE_AUTOCOMPLETE_OFF, a literal set of its own, carry exactly
+# autocomplete=off, and neither the form nor any other control carries a
+# value a browser reads as off. An exact tree, not a list of
 # bad constructs: a blocklist closes only its probes (see the note on the
 # regions above). The texts live here a second time on purpose, as the D6,
 # D7 and D10 strings do, so a copy change shows up in a safety-net diff.
@@ -14748,6 +14752,15 @@ INTAKE_SITEMAP_ROOT_ATTRS = {"xmlns": "http://www.sitemaps.org/schemas/sitemap/0
 # with _, . or a capital fails the build with a finding naming the entry
 # (fail closed and visible).
 INTAKE_SITEMAP_URL = re.compile(re.escape(SITE_ORIGIN) + r"/(?:[a-z0-9-]+/)*")
+# Rule 18 (f) (Replikanti/interviewscam#42 item 2): the controls that carry
+# autocomplete=off on each intake page, written out here and not derived
+# from INTAKE_FIELDS, so a coordinated edit of INTAKE_FIELDS, the Worker,
+# the template and the fixtures must edit this line too, where the
+# safety-net review reads it. ADR-0006 part 5: Back from /not-sent/ empties
+# an off control, so off stays on scam_alias and the honeypot only.
+INTAKE_AUTOCOMPLETE_OFF = {"report": ("scam_alias", "website"), "correction": ("website",)}
+# The form controls whose autocomplete a browser reads.
+INTAKE_AUTOCOMPLETE_TAGS = ("input", "textarea", "select")
 INTAKE_BLOCK_TEMPLATE = "layouts/_partials/how-to-send.html"
 INTAKE_RESULT_TEMPLATE = "layouts/_partials/not-sent.html"
 # The how-to-send block sits in the content card of page.html.
@@ -14968,6 +14981,53 @@ def intake_referrer_problems(page, path):
     return problems
 
 
+def intake_autocomplete_off(value):
+    """The loose reading of autocomplete=off: the HTML spec's (one token
+    off, ASCII case-insensitive, split at ASCII whitespace) and Chrome's
+    (the whole value off, ASCII case-insensitive) both say off for it."""
+    return ascii_lower(value).strip(ASCII_WHITESPACE) == "off"
+
+
+def intake_autocomplete_problems(page, channel, path):
+    """Rule 18 (f) on an intake page: (problems, the controls that carry
+    exactly autocomplete=off). (f1) the form carries no off; (f2) no
+    control outside INTAKE_AUTOCOMPLETE_OFF does; (f3) every name of it has
+    a control; (f4) each such control carries autocomplete byte for byte
+    off. A form-level off is a finding of its own, so the rule needs no
+    inheritance semantics."""
+    problems, seen, n_off = [], set(), 0
+    want = INTAKE_AUTOCOMPLETE_OFF[channel]
+    why = ("Back from /not-sent/ empties a control that carries autocomplete=off, so only "
+           f"{', '.join(want)} carry it (ADR-0006 part 5)")
+    for el in page.root.walk():
+        value = el.attrs.get("autocomplete")
+        if el.tag == "form":
+            if value is not None and intake_autocomplete_off(value):
+                problems.append(f"rule 18 (f): the <form> on {path} carries autocomplete="
+                                f"{show(value)}, which turns it off for every control of the "
+                                f"form; {why}")
+            continue
+        if el.tag not in INTAKE_AUTOCOMPLETE_TAGS:
+            continue
+        name = el.attrs.get("name")
+        if name in want:
+            seen.add(name)
+            if value == "off":
+                n_off += 1
+            else:
+                problems.append(f"rule 18 (f): the <{el.tag}> {name} on {path} does not carry "
+                                "exactly autocomplete=off (it carries "
+                                f"{'none' if value is None else show(value)}); {why}")
+        elif value is not None and intake_autocomplete_off(value):
+            problems.append(f"rule 18 (f): the <{el.tag}> "
+                            f"{'(no name)' if name is None else show(name)} on {path} carries "
+                            f"autocomplete={show(value)}, which a browser reads as off; {why}")
+    for name in want:
+        if name not in seen:
+            problems.append(f"rule 18 (f): {path} holds no control named {name}; {why}")
+    return problems, n_off
+
+
 class IntakeSitemapRefusal(Exception):
     """A construct rule 18 (d) refuses in the sitemap; parsing stops."""
 
@@ -15057,7 +15117,7 @@ def intake_sitemap_problems(public):
 
 def intake_problems(pages, contact, public):
     """Rule 18 on a site build. Returns (problems, summary)."""
-    problems, n_forms, n_sections = [], 0, 0
+    problems, n_forms, n_sections, n_off = [], 0, 0, 0
     found, n_entries = intake_sitemap_problems(public)
     problems += found
     for rel, page in pages.items():
@@ -15082,6 +15142,9 @@ def intake_problems(pages, contact, public):
             problems.append((rel, f"rule 18 (a): {path} holds {len(forms)} forms; it holds "
                                   "exactly one, the intake form"))
         problems += [(rel, p) for p in intake_referrer_problems(page, path)]
+        found, off = intake_autocomplete_problems(page, channel, path)
+        problems += [(rel, p) for p in found]
+        n_off += off
         what = f"rule 18 (b): the intake block on {path}"
         if contact is None:
             problems.append((rel, f"{what} cannot be pinned: hugo.toml has no params.contact"))
@@ -15148,7 +15211,8 @@ def intake_problems(pages, contact, public):
                                   "form (ADR-0006 Numbers): the form could not name this page"))
     sitemap = "no sitemap.xml" if n_entries is None else f"sitemap {n_entries} entries"
     return problems, (f"; intake: {n_forms} forms, {n_sections} result sections, {len(pages)} "
-                      f"page URLs within {INTAKE_PAGE_URL_CAP}, {sitemap}")
+                      f"page URLs within {INTAKE_PAGE_URL_CAP}, {sitemap}, autocomplete=off on "
+                      f"{n_off} controls")
 
 
 # ---------------------------------------------------------------------------
