@@ -9450,8 +9450,9 @@ def tag_spans(text):
     tokenizer reads it, from its '<' through its closing '>' (or the end of
     the file): a start or end tag ('<' or '</' and an ASCII letter) with its
     attributes, where a quote opens a value only right after '=' and ASCII
-    whitespace, so a '>' inside a quoted value does not end the tag; '<!'
-    and '<?' run to the next '>'. quoted: the (start, end) of the text
+    whitespace, so a '>' inside a quoted value does not end the tag; '<!',
+    '<?' and '</' with anything but an ASCII letter after it (a bogus
+    comment) run to the next '>'. quoted: the (start, end) of the text
     inside each quoted value, the quotes left out. Comments get no reading
     of their own, because rule (i) fails every '<!--'. Read with a pattern
     of states, not html.parser, whose whitespace is what this rule checks."""
@@ -9467,7 +9468,17 @@ def tag_spans(text):
             yield lt, pos, ()
             continue
         i = lt + 2 if nxt == "/" else lt + 1
-        if not ("a" <= text[i:i + 1].lower() <= "z" and text[i:i + 1].isascii()):
+        letter = "a" <= text[i:i + 1].lower() <= "z" and text[i:i + 1].isascii()
+        if nxt == "/" and not letter and i < n:
+            # '</' and anything but an ASCII letter: a bogus comment to the
+            # next '>' ('</>' included), as HTML's tokenizer and
+            # RAWTEXT_SCAN read it, so a quote in it opens no value
+            # (Replikanti/interviewscam#32 fix round 2).
+            gt = text.find(">", i)
+            pos = n if gt < 0 else gt + 1
+            yield lt, pos, ()
+            continue
+        if not letter:
             pos = lt + 1
             continue
         state, quoted, opened = "name", [], None

@@ -24,7 +24,9 @@
 # rows in the tag name, before and after '=', in an unquoted value that
 # holds a quote, after a quoted '>', after two '>' in one quoted value (a
 # reader that left the quotes at the first would end the tag at the
-# second), in an end tag and in the DOCTYPE. Inside a quoted value both
+# second), in an end tag and in the DOCTYPE; after a bogus comment ('</'
+# and a non-letter, fix round 2) holding a quote, and after a quote or
+# '/="' in an attribute name, which open no value. Inside a quoted value both
 # parsers read the same text, so those rows pass (U+00A0 double- and
 # single-quoted, and U+000B, U+0085, U+2028, U+3000), as do TAB, LF, FF and
 # CR between the attributes and U+00A0 in text.
@@ -125,6 +127,11 @@ tag-space/after-quoted-gt	public/report-a-scam/index.html	<meta name=viewport 	<
 tag-space/quoted-gt-twice	public/report-a-scam/index.html	<meta name=viewport 	<meta name=x-test content="a>b>c"\u{00A0}data-x=1><meta name=viewport 	(i) U+00A0 in tag markup (<meta...>)
 tag-space/end-tag	public/report-a-scam/index.html	</title>	</title\u{00A0}>	(i) U+00A0 in tag markup (</title...>)
 tag-space/doctype	public/report-a-scam/index.html	<!doctype html>	<!doctype\u{00A0}html>	(i) U+00A0 in tag markup (<!...>)
+tag-space/bogus-end-dq	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	</ <a b="><meta http-equiv=Content-Security-Policy\u{00A0}content=	(i) U+00A0 in tag markup (<meta...>)
+tag-space/bogus-end-sq	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	</ <a b='><meta http-equiv=Content-Security-Policy\u{00A0}content=	(i) U+00A0 in tag markup (<meta...>)
+tag-space/bogus-end-digit	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	</1 <a b="><meta http-equiv=Content-Security-Policy\u{2003}content=	(i) U+2003 in tag markup (<meta...>)
+tag-space/name-quote	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta x"\u{00A0}http-equiv=Content-Security-Policy content=	(i) U+00A0 in tag markup (<meta...>)
+tag-space/slash-equals	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta a/="\u{00A0}http-equiv=Content-Security-Policy content=	(i) U+00A0 in tag markup (<meta...>)
 tag-space/pass-quoted/u00a0	public/report-a-scam/index.html	<meta name=description content="How to report	<meta name=description content="How\u{00A0}to report	PASS
 tag-space/pass-quoted/u000b	public/report-a-scam/index.html	<meta name=description content="How to report	<meta name=description content="How\u{000B}to report	PASS
 tag-space/pass-quoted/u0085	public/report-a-scam/index.html	<meta name=description content="How to report	<meta name=description content="How\u{0085}to report	PASS
