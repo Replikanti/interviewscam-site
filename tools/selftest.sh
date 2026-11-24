@@ -680,6 +680,19 @@ if wrong or not probes:
 else:
     print(f"ok   {label}/channel-attributes ({probes} tag and attribute probes, "
           "each exactly its one finding)")
+# Fix round 1 (review finding 1): tag_space_hits, the reading of the
+# parser-only spaces that render's markup: finding and site rule (i) share,
+# reports every tag and code point, not only the first, and none inside a
+# quoted value. Read without html.parser, so on every Python the same.
+probe = ('<p><b class=x\u00a0y>a</b><i class="x"\u3000title=y>b</i>'
+         '<span title="\u00a0">c</span><b\u2028class=z>d</b></p>')
+hits = sitecheck.tag_space_hits(probe)
+want = [(0x00A0, "<b"), (0x2028, "<b"), (0x3000, "<i")]
+if hits == want:
+    print(f"ok   {label}/tag-space-hits ({len(want)} code point and tag pairs, "
+          "none in a quoted value)")
+else:
+    print(f"FAIL {label}/tag-space-hits: got {hits!r}, want {want!r}")
 missing = [f"{m[0]}@{r[0]}" for m in members for r in readers
            if f"{m[0]}@{r[0]}" not in done]
 summary = (f"{len(members)} members x {len(readers)} families + {len(cases)} rows")
