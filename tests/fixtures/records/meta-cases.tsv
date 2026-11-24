@@ -1,0 +1,18 @@
+# records rule R20 (Replikanti/interviewscam#44 fix round 2, review run 2
+# finding 1; ADR-0009 part 3): no front-matter string of a record or an
+# _index.md page holds "<meta" in any case (PREVIEW_RAW_META, the pattern
+# of site rule (o8)), because the pinned minifier writes its "<" raw into
+# the link preview attributes. On a copy of records/pass-fixture-site
+# (search_cases_runner with the records command). Columns: name, file,
+# find, replace, expect. Every find string occurs exactly once in its file.
+# One row per form the minifier keeps raw (<meta>, <META ...>, <meta/>, the
+# prefix of <metadata>) and per place (a report and a campaign summary, a
+# source title, a name, an _index.md description), and the PASS rows for
+# the forms that stay escaped on the page (an entity, a space after <).
+fail-report-summary	content/reports/example-abused-company.md	on a fake meeting site."	on a fake meeting site that adds a <meta> refresh tag."	params.summary: holds '<meta'
+fail-campaign-summary-upper	content/campaigns/example-campaign-family.md	packages and terminal commands."	packages and terminal commands with a <META charset> tag."	params.summary: holds '<META'
+fail-source-title-self-closing	content/reports/example-abused-company.md	title = "Fake meeting apps that target job seekers"	title = "Fake meeting apps with a <meta/> tag"	params.sources[0].title: holds '<meta'
+fail-name-prefix-of-metadata	content/reports/example-abused-company.md	name = "Example Abused Company"	name = "Example <metadata> Company"	params.name: holds '<meta'
+fail-index-description	content/reports/_index.md	with its state and its artifacts."	with its state and its <Meta> artifacts."	description: holds '<Meta'
+pass-entity	content/reports/example-abused-company.md	on a fake meeting site."	on a fake meeting site that adds a &lt;meta refresh tag."	PASS
+pass-space-after-lt	content/reports/example-abused-company.md	on a fake meeting site."	on a fake meeting site that adds a < meta refresh tag."	PASS

@@ -5974,6 +5974,24 @@ PY
       n_failed=$((n_failed + 1))
     fi
   fi
+  if selftest_wants records-meta; then
+    # records-meta/<row> (Replikanti/interviewscam#44 fix round 2): records
+    # rule R20 from tests/fixtures/records/meta-cases.tsv on a copy of
+    # records/pass-fixture-site (search_cases_runner with the records
+    # command), one row per raw form and place, and the PASS rows for the
+    # forms that stay escaped on the page.
+    search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/records/meta-cases.tsv" "$FIXTURES/records/pass-fixture-site" \
+      "$SELFTEST_ROOT/schema" records-meta records >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )records-meta/table' "$out"; then
+      echo "FAIL records-meta: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
   # render-persona/<row> and records-persona/<row> (Replikanti/interviewscam#28
   # PR 2): the persona names under the look-alike readings, render rules 4,
   # 9 and 12 from tests/fixtures/render/persona-cases.tsv on a copy of

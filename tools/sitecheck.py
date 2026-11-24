@@ -17,7 +17,7 @@ internal error, so a crash never reads as a finding or as a pass.
       R19 of ADR-0004 (slugs, persona names, references, dates, evidence,
       hostnames and IP forms in record text, _index.md, verdict phrases,
       source hosts, bidi controls, labelled artifacts, names with text,
-      artifact whitespace),
+      artifact whitespace) and R20 of ADR-0009 (no raw "<meta"),
       with the retired slugs of
       DIR/record-policy.json.
   site --records DIR [--schemas DIR] PUBLIC
@@ -1106,6 +1106,29 @@ def bidi_problems(record):
     return problems
 
 
+def raw_meta_problems(record):
+    """R20 (Replikanti/interviewscam#44 fix round 2, review run 2 finding 1;
+    ADR-0009 part 3): no front-matter string, artifacts and source URLs
+    included, holds "<meta" in any case (PREVIEW_RAW_META, the pattern of
+    site rule (o8)). The pinned minifier writes the "<" of an attribute
+    value raw, and the link preview metas carry the title, the name and the
+    summary in attributes, where a scraper that reads the page with a
+    regular expression takes "<meta" for a tag, so site rule (o8) would
+    fail the built page. Every string, not only those a template puts into
+    an attribute today, so no later template edit reopens the gap; read as
+    written, because an entity such as &lt;meta stays escaped on the page.
+    The body renders as element text, where the minifier keeps &lt;."""
+    problems = []
+    for path, text in iter_strings(record.data, ""):
+        match = PREVIEW_RAW_META.search(text)
+        if match:
+            problems.append(f"{path}: holds {show(match.group())}, which the build writes "
+                            "raw into the link preview attributes, where a scraper takes it "
+                            "for a tag (site rule (o8) would fail the page): write it in "
+                            "words, such as 'a meta refresh tag' (R20)")
+    return problems
+
+
 def record_text(record):
     """(path, string) of every front-matter string that is record text (R11):
     neither an x-defang field nor params.sources[].url."""
@@ -1619,7 +1642,7 @@ def cmd_records(args):
     for record in records:
         for problem in body_problems(record) + front_matter_problems(record):
             findings.add(record.rel, problem)
-        for problem in bidi_problems(record):
+        for problem in bidi_problems(record) + raw_meta_problems(record):
             findings.add(record.rel, problem)
     forms = live_forms(records)
     for live, origin, path, value in forms:
@@ -1652,7 +1675,7 @@ def cmd_records(args):
     for record, problem in persona_problems(records) + source_problems(records):
         findings.add(record.rel, problem)
     for page in index_pages:
-        for problem in index_problems(page) + bidi_problems(page):
+        for problem in index_problems(page) + bidi_problems(page) + raw_meta_problems(page):
             findings.add(page.rel, problem)
     n_reports = sum(r.section == "reports" for r in records)
     n_artifacts = sum(len(declared_artifacts(r)) for r in records)
@@ -6207,10 +6230,13 @@ def jsonld_type_problems(value, where, page_url, root=True, record=None):
 
 def preview_property(el, attr):
     """Rule 8's one RDFa exception (see RDFA_ATTRS): attr is the property
-    of an Open Graph link preview meta in its place."""
+    of an Open Graph link preview meta in its place, a child of the <head>
+    of the root <html> (review run 2 finding 3: not of an <html> nested in
+    the body, which a browser drops while the meta stays in the body)."""
     head = el.parent
     return (attr == "property" and el.tag == "meta" and head is not None
             and head.tag == "head" and head.parent is not None and head.parent.tag == "html"
+            and head.parent.parent is not None and head.parent.parent.tag == "#document"
             and set(el.attrs) == {"property", "content"}
             and el.attrs["property"] in PREVIEW_PROPERTIES)
 
@@ -12395,9 +12421,11 @@ PREVIEW_URL = re.compile(re.escape(SITE_ORIGIN) + r"/[^?#\\\s]*")
 # space, a quote or an opening bracket; the // of a defanged hxxps:// is
 # no match) and any RFC 3986 scheme token (review run 1 finding 3): a run
 # ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) that starts the value or
-# follows a character outside that set, then ":" and a character that is
-# not whitespace, in any case, unless the run is the defanged hxxp or
-# hxxps. A messaging app may linkify its own scheme (tg:, tel:, sms:,
+# follows a character that is no ASCII letter or digit, then ":" and a
+# character that is not whitespace, in any case, unless the run is the
+# defanged hxxp or hxxps. A run may start right after "+", "-" or "."
+# (review run 2 finding 2: "-tel:", ".sms:"), because a card app may start
+# a link after any punctuation. A messaging app may linkify its own scheme (tg:, tel:, sms:,
 # skype:, intent:, magnet:, ipfs:, ...), so no list of schemes is closed.
 # Prose stays text: "Note: x" has a space after the colon, "10:30" starts
 # with a digit, and in "2026-11-02T10:30" the run T10 follows a digit, so
@@ -12405,7 +12433,7 @@ PREVIEW_URL = re.compile(re.escape(SITE_ORIGIN) + r"/[^?#\\\s]*")
 # host with a port, "evil[.]example:8080") is a finding: write it with a
 # space or without the port.
 PREVIEW_PROTOCOL_RELATIVE = re.compile(r"(?:^|(?<=[\s\"'(<\[]))//(?=[^\s/])")
-PREVIEW_SCHEME = re.compile(r"(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*):(?=\S)")
+PREVIEW_SCHEME = re.compile(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9+.-]*):(?=\S)")
 PREVIEW_DEFANGED_SCHEMES = frozenset({"hxxp", "hxxps"})
 # (o8) the scraper's view (review run 1 finding 2). A scraper that reads
 # the raw page with a regular expression takes every "<meta" for a tag, in
