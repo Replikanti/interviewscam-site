@@ -14738,10 +14738,16 @@ INTAKE_UNLISTED = ("/sent/", "/not-sent/")
 # dots, percent forms) closes only its probes. The (parent, child) pairs:
 # urlset as the root, url in urlset, loc and lastmod in url. lastmod is
 # there because a record page carries a date, and Hugo then writes one (the
-# real build of render/pass-report-pins); changefreq and priority are not,
-# because Hugo writes them only when the [sitemap] config sets them, and
-# the guard pins the config keys. Names compare exactly, with no namespace
-# processing, so LOC, s:loc, xhtml:link and sitemapindex are each a finding.
+# real build of render/pass-report-pins); changefreq and priority are not.
+# Hugo writes those two when a page's [sitemap] front matter (as in
+# content/sent.md, which sets only disable) or the [sitemap] config sets
+# them, and no page or config of this site does. A page that sets one
+# fails the build here with a finding that says so (fix round 1 of
+# Replikanti/interviewscam-site#22, review 1 finding 2): the check reads
+# the built sitemap, so it refuses the element whatever source wrote it,
+# and widening this tree is a safety-net edit. Names compare exactly, with
+# no namespace processing, so LOC, s:loc, xhtml:link and sitemapindex are
+# each a finding.
 INTAKE_SITEMAP_TREE = {None: ("urlset",), "urlset": ("url",), "url": ("loc", "lastmod")}
 # The root's attributes as Hugo writes them; no other element carries one.
 INTAKE_SITEMAP_ROOT_ATTRS = {"xmlns": "http://www.sitemaps.org/schemas/sitemap/0.9",
@@ -14757,7 +14763,10 @@ INTAKE_SITEMAP_URL = re.compile(re.escape(SITE_ORIGIN) + r"/(?:[a-z0-9-]+/)*")
 # from INTAKE_FIELDS, so a coordinated edit of INTAKE_FIELDS, the Worker,
 # the template and the fixtures must edit this line too, where the
 # safety-net review reads it. ADR-0006 part 5: Back from /not-sent/ empties
-# an off control, so off stays on scam_alias and the honeypot only.
+# an off control, so off stays on scam_alias and the honeypot only. Only a
+# control the intake form owns counts (intake_form_owner, fix round 1 of
+# Replikanti/interviewscam-site#22, review 1 finding 1): a decoy of a set
+# name elsewhere on the page is a finding, not the set's control.
 INTAKE_AUTOCOMPLETE_OFF = {"report": ("scam_alias", "website"), "correction": ("website",)}
 # The form controls whose autocomplete a browser reads.
 INTAKE_AUTOCOMPLETE_TAGS = ("input", "textarea", "select")
@@ -14988,15 +14997,43 @@ def intake_autocomplete_off(value):
     return ascii_lower(value).strip(ASCII_WHITESPACE) == "off"
 
 
+def intake_form_owner(el, ids):
+    """The form owner of a form control as the HTML standard's "reset the
+    form owner" gives it on a parsed page (ids: each id's first element in
+    tree order): none inside <template> content, which is a document
+    fragment of its own; with a form attribute, whatever its value, the
+    first element in tree order with that id if it is a <form>, else none
+    (an empty value names no element); without one, the nearest ancestor
+    <form>. The parser's form element pointer can also own a control
+    outside the form's subtree; rule 18 (a) holds the page to one <form>,
+    and the parser ignores a <form> start tag while that pointer is set,
+    so on a page that passes (a) the pointer names no other form."""
+    anc = el.parent
+    while anc is not None:
+        if anc.tag == "template":
+            return None
+        anc = anc.parent
+    if "form" in el.attrs:
+        owner = ids.get(el.attrs["form"]) if el.attrs["form"] else None
+        return owner if owner is not None and owner.tag == "form" else None
+    return el.nearest("form")
+
+
 def intake_autocomplete_problems(page, channel, path):
     """Rule 18 (f) on an intake page: (problems, the controls that carry
     exactly autocomplete=off). (f1) the form carries no off; (f2) no
     control outside INTAKE_AUTOCOMPLETE_OFF does; (f3) every name of it has
-    a control; (f4) each such control carries autocomplete byte for byte
-    off. A form-level off is a finding of its own, so the rule needs no
-    inheritance semantics."""
+    a control the intake form owns (a <form> whose action names the intake
+    host, intake_form_owner), and a control of such a name with another or
+    no form owner is a finding of its own; (f4) each control of (f3)
+    carries autocomplete byte for byte off. A form-level off is a finding
+    of its own, so the rule needs no inheritance semantics."""
     problems, seen, n_off = [], set(), 0
     want = INTAKE_AUTOCOMPLETE_OFF[channel]
+    ids = {}
+    for el in page.root.walk():
+        if "id" in el.attrs:
+            ids.setdefault(el.attrs["id"], el)
     why = ("Back from /not-sent/ empties a control that carries autocomplete=off, so only "
            f"{', '.join(want)} carry it (ADR-0006 part 5)")
     for el in page.root.walk():
@@ -15011,6 +15048,14 @@ def intake_autocomplete_problems(page, channel, path):
             continue
         name = el.attrs.get("name")
         if name in want:
+            owner = intake_form_owner(el, ids)
+            if owner is None or not names_intake_host(owner.attrs.get("action", "")):
+                problems.append(f"rule 18 (f): the <{el.tag}> {name} on {path} is not a control "
+                                "of the intake form (its form owner is "
+                                f"{'none' if owner is None else 'another <form>'}); only the "
+                                f"intake form's own {name} counts, so a control of that name "
+                                f"elsewhere on the page cannot stand in for it; {why}")
+                continue
             seen.add(name)
             if value == "off":
                 n_off += 1
@@ -15061,9 +15106,12 @@ def intake_sitemap_problems(public):
         parent = stack[-1][0] if stack else None
         if name not in INTAKE_SITEMAP_TREE.get(parent, ()):
             where = f"in <{parent}>" if parent is not None else "as its root"
-            problems.append(f"rule 18 (d): the sitemap holds <{name}> {where}; Hugo writes "
-                            "only <urlset> as the root, <url> in it and <loc> and <lastmod> "
-                            "in each <url>, and another element can name a page to a "
+            problems.append(f"rule 18 (d): the sitemap holds <{name}> {where}; this check "
+                            "reads only the shape Hugo writes for this site, <urlset> as the "
+                            "root, <url> in it and <loc> and <lastmod> in each <url> "
+                            "(<changefreq> and <priority> appear only when a page's "
+                            "[sitemap] front matter or the [sitemap] config sets them, and "
+                            "none here does), and another element can name a page to a "
                             "sitemap reader this check does not read")
         if parent is None:
             if attrs != INTAKE_SITEMAP_ROOT_ATTRS:

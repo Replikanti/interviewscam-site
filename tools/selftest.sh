@@ -1042,7 +1042,15 @@ for channel, fields in sitecheck.INTAKE_FIELDS.items():
     want |= {f"f-{channel}-{field['name']}-off-added" for field in fields
              if field["name"] not in off}
     for name in off:
-        want |= {f"f-{channel}-{name}-{case}" for case in ("off-removed", "off-on", "off-missing")}
+        want |= {f"f-{channel}-{name}-{case}" for case in ("off-removed", "off-on", "off-missing",
+                                                           "outside-form")}
+# Rule 18 (f)'s form owner (fix round 1 of Replikanti/interviewscam-site#22,
+# review 1): the coordinated rename with a decoy, another form, and each
+# branch of intake_form_owner, as literal rows.
+want |= {"f-report-scam_alias-renamed-with-decoy", "f-report-scam_alias-other-form",
+         "f-report-website-form-attr-elsewhere", "f-report-website-form-attr-empty",
+         "f-report-website-form-attr-not-a-form", "f-report-website-form-attr-id-shadowed",
+         "f-report-website-form-attr-intake", "f-report-website-in-template"}
 want |= {f"f-{channel}-form-off" for channel in sitecheck.INTAKE_FORM_PAGES.values()}
 want |= {f"f-report-{tag}-extra-off" for tag in sitecheck.INTAKE_AUTOCOMPLETE_TAGS}
 want |= {f"f-report-details-off-space-{ord(c):04x}" for c in sitecheck.ASCII_WHITESPACE}
@@ -5175,7 +5183,9 @@ PINNED
     # one off-added drop per kind (hidden, text, textarea, email, file, url,
     # checkbox), off removed, on, missing, the form, the select and one
     # padding; the sitemap shape, each element name in one of its two
-    # families. 55 drops.
+    # families. Fix round 1 of Replikanti/interviewscam-site#22: the input
+    # and textarea extra-off rows (QA: the tag family had only select), a
+    # control outside the form and the form-owner literal rows. 59 drops.
     for drop in render:b-report-scam_alias-renamed render:b-correction-email-required \
         render:b-report-headers-maxlength-above render:b-correction-request-hint-reworded \
         render:b-correction-files-accept-without-webp render:d-error-doubled \
@@ -5200,7 +5210,9 @@ PINNED
         render:f-correction-own_name-off-added \
         render:f-report-scam_alias-off-removed render:f-correction-website-off-on \
         render:f-report-website-off-missing render:f-correction-form-off \
-        render:f-report-select-extra-off render:f-report-details-off-space-000c \
+        render:f-report-select-extra-off render:f-report-input-extra-off \
+        render:f-report-textarea-extra-off render:f-report-details-off-space-000c \
+        render:f-correction-website-outside-form render:f-report-website-form-attr-not-a-form \
         render:d-sitemap-urlset-misplaced render:d-sitemap-lastmod-misplaced \
         render:d-sitemap-url-attribute render:d-sitemap-loc-attribute \
         site:fail-intake-host-in-data site:fail-input-formaction-intake \
