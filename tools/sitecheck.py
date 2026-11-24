@@ -2236,6 +2236,62 @@ def css_value_text(value, lower=True):
     return re.sub(r"\(\s*", "(", re.sub(r"\s*\)", ")", value))
 
 
+# ADR-0005 part 6 (Replikanti/interviewscam#55): the closed list of the
+# site's :hover rules, selector -> its declarations (property, value as
+# css_value_text writes it), as the built stylesheet holds them today (3
+# rules, measured on the pinned Hugo's output). The browser checks never
+# rest the pointer on a page (S0 moves no pointer, case (8) parks it outside
+# the viewport so :hover is empty at its captures), so a rule keyed on
+# :hover, a cover over a revealed answer for one, would pass all of them;
+# this list is what bounds it. A new :hover rule, one nested in a block or a
+# pseudo-class function, or one with other declarations is a finding, so it
+# is added here with its own reason and a review (the stylesheet pins
+# already force one).
+HOVER_RULES = {
+    "a:hover": (("text-decoration-thickness", "var(--underline-hover-thickness)"),),
+    ".pill:hover": (("text-decoration", "underline"),),
+    ".copy:hover": (("text-decoration-thickness", "var(--underline-hover-thickness)"),),
+}
+
+
+def css_hover_problems(css):
+    """The :hover rules of one stylesheet that are not exactly those of
+    HOVER_RULES. A rule is a :hover rule when its selector, or the prelude of
+    any block around it (@media (hover:hover), @supports, @layer), holds
+    :hover (case folded, escapes resolved, so :HOVER and :\\68 over count),
+    wherever the pseudo-class sits (:is(), :where(), :has(), :not()). Fails
+    closed: it is allowed only as the same selector at the top level with the
+    same declarations, none !important."""
+    problems = []
+    for rule in css_rules(css):
+        selector = css_selector_text(rule.prelude)
+        around = [css_selector_text(p) for p in rule.parents]
+        if not any(":hover" in text.lower() for text in [selector] + around):
+            continue
+        pinned = HOVER_RULES.get(selector)
+        if rule.parents or pinned is None:
+            problems.append(f"{show(selector, 120)}: a :hover rule outside the closed list of "
+                            f"the site's {len(HOVER_RULES)} ({', '.join(HOVER_RULES)}) or "
+                            "nested in another block; the browser checks never rest the "
+                            "pointer on a page, so a rule keyed on :hover can cover text "
+                            "and pass all of them (ADR-0005 part 6, "
+                            "Replikanti/interviewscam#55)")
+            continue
+        found, important = [], False
+        for declaration in rule.declarations:
+            prop, value = css_declaration(declaration)
+            important = important or bool(IMPORTANT.search(css_unescape(value)))
+            found.append((prop, css_value_text(value)))
+        if important or sorted(found) != sorted(pinned):
+            problems.append(f"{show(selector, 120)}: the declarations of this :hover rule are "
+                            f"{show('; '.join(declaration for declaration in rule.declarations), 200)}"
+                            f", the closed list pins {show('; '.join(f'{p}: {v}' for p, v in pinned), 200)}"
+                            " (none !important); another declaration can cover text with the "
+                            "pointer on it, which no browser check measures (ADR-0005 part 6, "
+                            "Replikanti/interviewscam#55)")
+    return problems
+
+
 class CssRuleResult:
     def __init__(self):
         self.problems = []
@@ -2249,6 +2305,7 @@ def css_rule_problems(css):
     stylesheet. The caller adds up definitions and reveals across files."""
     result = CssRuleResult()
     problems = result.problems
+    problems.extend(css_hover_problems(css))
     attributed = 0
     for rule in css_rules(css):
         selector = css_selector_text(rule.prelude)

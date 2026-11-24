@@ -1,0 +1,1 @@
+the declarations of this :hover rule
