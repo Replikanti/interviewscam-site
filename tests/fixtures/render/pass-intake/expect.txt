@@ -1,1 +1,1 @@
-; intake: 2 forms, 11 result sections, 5 page URLs within 976, sitemap 9 entries, autocomplete=off on 3 controls
+; intake: 2 forms, 11 result sections, 5 page URLs within 976, sitemap 9 entries, autocomplete=off on 3 controls; visibility: 7 Copy buttons, 4 search-out, 2 honeypots, 5 skip links

@@ -1,0 +1,22 @@
+# Render rule 20 (Replikanti/interviewscam#51): one member per construct that
+# hides or reveals text in a way the render rules would read unlike the
+# browser. visibility_cases_runner (selftest.sh) puts each snippet into every
+# reader family of visibility-readers.tsv (the {M} of its replace) and runs
+# the real cmd_render: exit 1 with the expect text. member<TAB>snippet<TAB>expect
+hidden	<span hidden>Hidden text</span>	rule 20: hidden on <span>
+hidden-until-found	<span hidden="until-found">Hidden text</span>	rule 20: hidden on <span>
+aria-hidden	<span aria-hidden="true">Hidden text</span>	rule 20: the attribute aria-hidden on <span>
+noscript	<noscript>Hidden text</noscript>	rule 20: <noscript>
+select	<select><option>Hidden text</option></select>	rule 20: <select>
+datalist	<datalist><option>Hidden text</option></datalist>	rule 20: <datalist>
+visually-hidden	<span class="visually-hidden">Hidden text</span>	rule 20: the class visually-hidden on <span>
+details	<details><summary>Shown</summary>Hidden text</details>	rule 20: <details>
+dialog	<dialog>Hidden text</dialog>	rule 20: <dialog>
+template	<template>Hidden text</template>	rule 20: <template>
+svg-title	<svg><title>Hidden text</title></svg>	is none of the three trees
+popover	<span popover>Hidden text</span>	rule 20: the attribute popover on <span>
+inert	<span inert>Inert text</span>	rule 20: the attribute inert on <span>
+title-attr	<span title="Tooltip text">x</span>	rule 20: the attribute title on <span>
+img-alt	<img alt="Alt text">	rule 20: <img>
+placeholder	<input placeholder="Placeholder text">	rule 20: the attribute placeholder on <input>
+aria-description	<span aria-description="Announced text">x</span>	rule 20: the attribute aria-description on <span>
