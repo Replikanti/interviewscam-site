@@ -2236,6 +2236,175 @@ def css_value_text(value, lower=True):
     return re.sub(r"\(\s*", "(", re.sub(r"\s*\)", ")", value))
 
 
+# ADR-0005 part 6 (Replikanti/interviewscam#55): the closed list of the
+# site's :hover rules, selector -> its declarations (property, value as
+# css_value_text writes it), as the built stylesheet holds them today (3
+# rules, measured on the pinned Hugo's output). The browser checks never
+# rest the pointer on a page (S0 moves no pointer, case (8) parks it outside
+# the viewport so :hover is empty at its captures), so a rule keyed on
+# :hover, a cover over a revealed answer for one, would pass all of them;
+# this list is what bounds it. A new :hover rule, one nested in a block or a
+# pseudo-class function, or one with other declarations is a finding, so it
+# is added here with its own reason and a review (the stylesheet pins
+# already force one).
+HOVER_RULES = {
+    "a:hover": (("text-decoration-thickness", "var(--underline-hover-thickness)"),),
+    ".pill:hover": (("text-decoration", "underline"),),
+    ".copy:hover": (("text-decoration-thickness", "var(--underline-hover-thickness)"),),
+}
+
+
+# The custom properties the rules of HOVER_RULES read through var(), each with
+# the one value it may have (review run 2, finding 1): a rule without :hover
+# can set one (`main{--underline-hover-thickness:5em}` turns the allowed
+# rule's pinned declaration into a band over the page), so the stylesheet may
+# declare it only in the top-level :root rule, with this value, as
+# tokens.css emits it: data/tokens.toml underline hover_thickness = 2, in px.
+# A variable a rule of the list reads without an entry here fails at import.
+HOVER_VAR = re.compile(r"var\(\s*(--[^\s,)]+)")
+HOVER_VAR_VALUES = {"--underline-hover-thickness": "2px"}
+HOVER_VARS = {name: HOVER_VAR_VALUES[name]
+              for declarations in HOVER_RULES.values()
+              for _, value in declarations
+              for name in HOVER_VAR.findall(value)}
+
+
+def css_strip_comments(css):
+    """css with every comment removed, as a browser reads it (a comment is
+    no token, so `:/**/hover` is `:hover`); css_rules turns a comment into a
+    space instead. Strings are kept (a `/*` inside one starts no comment)."""
+    return CSS_COMMENT_OR_STRING.sub(lambda m: m.group(0) if m.group(1) else "", css)
+
+
+def hover_rule_problems(rules):
+    """The :hover rules among css_rules' rules that are not exactly those of
+    HOVER_RULES. A rule is a :hover rule when its selector, or the prelude of
+    any block around it (@media (hover:hover), @supports, @layer, or an
+    allowed rule itself, whose nested rules have no :hover of their own),
+    holds :hover (case folded, escapes resolved, so :HOVER and :\\68 over
+    count), wherever the pseudo-class sits (:is(), :where(), :has(),
+    :not()). Fails closed: it is allowed only as the same selector at the top
+    level with the same declarations, none !important."""
+    problems = []
+    for rule in rules:
+        selector = css_selector_text(rule.prelude)
+        around = [css_selector_text(p) for p in rule.parents]
+        if not any(":hover" in text.lower() for text in [selector] + around):
+            continue
+        pinned = HOVER_RULES.get(selector)
+        if rule.parents or pinned is None:
+            problems.append(f"{show(selector, 120)}: a :hover rule outside the closed list of "
+                            f"the site's {len(HOVER_RULES)} ({', '.join(HOVER_RULES)}) or "
+                            "nested in another block; the browser checks never rest the "
+                            "pointer on a page, so a rule keyed on :hover can cover text "
+                            "and pass all of them (ADR-0005 part 6, "
+                            "Replikanti/interviewscam#55)")
+            continue
+        found, important = [], False
+        for declaration in rule.declarations:
+            prop, value = css_declaration(declaration)
+            important = important or bool(IMPORTANT.search(css_unescape(value)))
+            found.append((prop, css_value_text(value)))
+        if important or sorted(found) != sorted(pinned):
+            problems.append(f"{show(selector, 120)}: the declarations of this :hover rule are "
+                            f"{show('; '.join(declaration for declaration in rule.declarations), 200)}"
+                            f", the closed list pins {show('; '.join(f'{p}: {v}' for p, v in pinned), 200)}"
+                            " (none !important); another declaration can cover text with the "
+                            "pointer on it, which no browser check measures (ADR-0005 part 6, "
+                            "Replikanti/interviewscam#55)")
+    return problems
+
+
+def hover_var_problems(rules):
+    """The declarations and registrations of the custom properties of
+    HOVER_VARS that are not the one allowed: a declaration in the top-level
+    :root rule, not !important, with the pinned value."""
+    problems = []
+    for rule in rules:
+        selector = css_selector_text(rule.prelude)
+        if selector.lower().startswith("@property"):
+            name = css_unescape(selector[len("@property"):]).strip().lower()
+            if name in HOVER_VARS:
+                problems.append(f"{show(selector, 120)}: {name} is read by the :hover rules of "
+                                "the closed list, and a registered property gives every "
+                                "element but the root its own initial value (ADR-0005 part 6, "
+                                "Replikanti/interviewscam#55)")
+        for declaration in rule.declarations:
+            prop, value = css_declaration(declaration)
+            if prop not in HOVER_VARS:
+                continue
+            if (not rule.parents and selector == ":root"
+                    and not IMPORTANT.search(css_unescape(value))
+                    and css_value_text(value) == HOVER_VARS[prop]):
+                continue
+            problems.append(f"{show(selector, 120)}: {prop} is read by the :hover rules of the "
+                            "closed list, so its only declaration is `"
+                            f"{prop}: {HOVER_VARS[prop]}` in the top-level :root rule, not "
+                            f"{show(declaration, 120)}: any other value or rule can turn a "
+                            "pinned :hover declaration into a cover that no browser check "
+                            "measures (ADR-0005 part 6, Replikanti/interviewscam#55)")
+    return problems
+
+
+def css_hover_problems(css):
+    """The findings of the closed list of :hover rules (HOVER_RULES) and of
+    the custom properties they read (HOVER_VARS) on one stylesheet, read as a
+    browser reads it: with the comments removed, so `:/**/hover` is `:hover`
+    (css_rules alone would turn the comment into a space and miss it)."""
+    rules = css_rules(css_strip_comments(css))
+    return hover_rule_problems(rules) + hover_var_problems(rules)
+
+
+# Review run 3 of Replikanti/interviewscam#55: css_rules, and the string and
+# comment scanner under it, do not tokenize as a browser does. (1) A browser
+# ends a string at an unescaped newline (a bad string, CSS Syntax 4.3.5), the
+# scanner runs it on to the next matching quote, so a rule can sit between
+# two such strings: the checker reads it as string text, the browser applies
+# it. (2) An unquoted url( holding a ( or a quote or whitespace is a bad url
+# that a browser ends at the first ); css_rules counts the inner ( and stays
+# inside parentheses to a later stray ). The built stylesheet is refused, as a
+# whole and before its rules are read, when it holds either form, so every
+# rule check on it (the :hover list, .visually-hidden, !important, [hidden])
+# reads a sheet both readings agree on. Failing closed costs nothing today:
+# the pinned Hugo's minified stylesheet has 0 newlines and no url( at all
+# (a final newline, after which nothing can follow, is not counted).
+CSS_NEWLINES = "\n\r\f"
+CSS_URL_START = re.compile(r"(?<![\w-])url\(", re.I)
+CSS_URL_SPACE = " \t\n\r\f"
+
+
+def css_desync_problems(css):
+    """One finding per form (a newline; a bad unquoted url) that the sheet
+    holds, none when it holds neither."""
+    problems = []
+    # A newline at the very end of the sheet separates nothing from nothing,
+    # so a hand-written fixture file may end with one.
+    newlines = [i for i, ch in enumerate(css.rstrip(CSS_NEWLINES)) if ch in CSS_NEWLINES]
+    if newlines:
+        problems.append(f"the built stylesheet holds {len(newlines)} newline character(s) "
+                        f"(LF, CR or FF; the first at offset {newlines[0]}): a browser ends "
+                        "a string at an unescaped newline and the checker's scanner does "
+                        "not, so a rule can hide between two such strings; the minified "
+                        "stylesheet is one line (ADR-0005 part 6, "
+                        "Replikanti/interviewscam#55)")
+    for match in CSS_URL_START.finditer(css):
+        rest = css[match.end():]
+        if rest.lstrip(CSS_URL_SPACE)[:1] in ("'", '"'):
+            continue  # a quoted url is a string, which ends at its quote
+        end = rest.find(")")
+        body = rest[:end if end >= 0 else len(rest)].strip(CSS_URL_SPACE)
+        if end < 0 or any(ch in "('\"\\" or ch in CSS_URL_SPACE or ord(ch) < 0x20
+                          or ord(ch) == 0x7F for ch in body):
+            problems.append(f"the built stylesheet holds an unquoted url( that a browser reads "
+                            f"as a bad url ({show(rest[:60], 60)}): it holds ( a quote, a "
+                            "backslash, whitespace or a control character, or no ), and it "
+                            "ends at the first ), where the checker's parenthesis count does "
+                            "not, so a rule can hide behind it (ADR-0005 part 6, "
+                            "Replikanti/interviewscam#55)")
+            break
+    return problems
+
+
 class CssRuleResult:
     def __init__(self):
         self.problems = []
@@ -2249,6 +2418,8 @@ def css_rule_problems(css):
     stylesheet. The caller adds up definitions and reveals across files."""
     result = CssRuleResult()
     problems = result.problems
+    problems.extend(css_desync_problems(css))
+    problems.extend(css_hover_problems(css))
     attributed = 0
     for rule in css_rules(css):
         selector = css_selector_text(rule.prelude)
@@ -13416,6 +13587,25 @@ def reflow_animation_message(phase, what, running):
             "pixels are not compared")
 
 
+def reflow_hover_message(phase, what, names):
+    """The finding of the pointer guard of the pixel occlusion check."""
+    return (f"(isolation) {phase} of {what}, the pointer rests on the page, :hover matches "
+            f"{reflow_named(names)}; a rule keyed on :hover can differ between the two "
+            "captures, so the region's pixels are not compared "
+            "(Replikanti/interviewscam#55)")
+
+
+def reflow_hover_finding(extra, phase, what):
+    """The finding for one :hover read of a step's extra, or None when the
+    set is empty. A read that is not a list fails closed."""
+    names = extra.get("hover")
+    if not isinstance(names, list):
+        return (f"(isolation) the :hover set of {what} was not read {phase}, so whether the "
+                "pointer rests on the page is unknown and its pixels are not compared "
+                "(Replikanti/interviewscam#55)")
+    return reflow_hover_message(phase, what, names) if names else None
+
+
 def reflow_region_id(tools, session, index, where):
     """The backendNodeId of pinned region index (window.__iscRegions, set by
     REFLOW_HIT_SCRIPT), or None when it cannot be read."""
@@ -13509,6 +13699,14 @@ def reflow_copy_buttons(tools, session):
 # the viewport Lighthouse measures. Another size proves the answer visible
 # on a screen Lighthouse never measures.
 SEARCH_VIEWPORT = (412, 823)
+# Where case (8) leaves the pointer after each tap (ADR-0005 part 6 and
+# Numbers, Replikanti/interviewscam#55): outside the viewport, because
+# inside it `html` stays hovered even over a spot with no other element, so
+# only a pointer outside the page leaves :hover empty. -1 is the nearest
+# integer pair outside (-10000 and 5000 measured the same). Two ints: the
+# rows of search-cases.tsv patch NAME=int only.
+SEARCH_PARK_X = -1
+SEARCH_PARK_Y = -1
 # ADR-0005 Numbers: the partial match needs this many code points in each
 # form it tests (at 2, a short fragment lists most of the registry; at 4,
 # "mee" finds nothing), and shows at most SEARCH_PARTIAL_CAP entries (the
@@ -14120,6 +14318,12 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
         (fx.target ? label(fx.target) : "no element") + (fx.pseudoElement || "");
     });
   }
+  // The elements the pointer rests on (:hover), as labels. A fresh page has
+  // none; after a tap the chain under the pointer stays, and hiding an
+  // element does not move it (Replikanti/interviewscam#55, ADR-0005 part 6).
+  function hovered() {
+    return Array.prototype.map.call(document.querySelectorAll(":hover"), label);
+  }
   if (mode === "scroll") window.scrollTo(0, %(y)s);
   // The pixel occlusion check (fix round 2, Replikanti/interviewscam#39):
   // "freeze" blurs a focused element outside the region before the first
@@ -14145,7 +14349,10 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
   // last capture, reads the box and the animations again, restores the
   // original adoptedStyleSheets and puts the focus back on the element
   // focused at "freeze" (kept or blurred), and returns whether both are
-  // back, with the focus compared in every case.
+  // back, with the focus compared in every case. These three steps also
+  // read :hover (hovered), which must be empty at each: the pointer is
+  // parked outside the page (SEARCH_PARK_X), so a rule keyed on :hover
+  // cannot differ between the two captures.
   if (el && mode === "freeze") {
     var f = document.activeElement;
     var kept = f && el.contains(f) && !(f.isContentEditable ||
@@ -14156,7 +14363,7 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
     window.__iscFocused = f;
     if (f && f !== document.body && f !== document.documentElement && !kept && f.blur)
       f.blur();
-    extra = {running: running()};
+    extra = {running: running(), hover: hovered()};
   } else if (el && mode === "isolate") {
     var chain = [], p = el;
     for (; p && p !== document.documentElement; p = p.parentElement) chain.unshift(p);
@@ -14191,7 +14398,7 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
         });
       }
       extra = {moved: box(el) !== before, running: running(), rules: sheet.cssRules.length,
-               lines: lines};
+               lines: lines, hover: hovered()};
     }
   } else if (el && mode === "blank") {
     // saved holds the forced canvas colour of this blank capture. The
@@ -14212,6 +14419,7 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
     if (back && back !== document.activeElement && back !== document.body &&
         back !== document.documentElement && back.focus)
       back.focus({preventScroll: true});
+    extra.hover = hovered();
     var now = document.adoptedStyleSheets;
     extra.sheets = !sheets || (now.length === sheets.length &&
       sheets.every(function (s, i) { return now[i] === s; }));
@@ -14388,6 +14596,10 @@ def reflow_hits(tools, session, findings, where, revealed=None):
                 findings.add(where, reflow_animation_message(
                     "before the first capture", what, frozen["running"]))
                 blocked = True
+            if (problem_hover := reflow_hover_finding(
+                    frozen, "before the first capture", what)):
+                findings.add(where, problem_hover)
+                blocked = True
             first = capture()
             hidden = step("isolate")
             if hidden.get("broken"):
@@ -14399,6 +14611,10 @@ def reflow_hits(tools, session, findings, where, revealed=None):
                 findings.add(where, f"(isolation) the hiding stylesheet for {what} holds "
                              f"{show(hidden.get('rules'))} rules, not 1, so everything "
                              "outside it is not hidden and its pixels are not compared")
+                blocked = True
+            if not hidden.get("broken") and (problem_hover := reflow_hover_finding(
+                    hidden, "after the hiding", what)):
+                findings.add(where, problem_hover)
                 blocked = True
             if hidden.get("moved"):
                 moved = blocked = True
@@ -14438,6 +14654,10 @@ def reflow_hits(tools, session, findings, where, revealed=None):
                     blocked = True
                     break
             back = step("unisolate")
+            if (problem_hover := reflow_hover_finding(
+                    back, "after the second capture", what)):
+                findings.add(where, problem_hover)
+                blocked = True
             if back.get("moved"):
                 moved = blocked = True
             if back.get("running"):
@@ -14640,6 +14860,11 @@ def search_case(tools, session, findings, public, origin, load):
                 tools.send("Input.dispatchMouseEvent",
                            {"type": kind, "x": tap.get("x", 0), "y": tap.get("y", 0),
                             "button": "left", "clickCount": 1}, session=session)
+            # Park the pointer outside the page: a tap leaves it on the page,
+            # and the :hover chain under it can change a capture (Replikanti/interviewscam#55).
+            tools.send("Input.dispatchMouseEvent",
+                       {"type": "mouseMoved", "x": SEARCH_PARK_X, "y": SEARCH_PARK_Y},
+                       session=session)
             submits += 1
             deadline = time.monotonic() + REFLOW_TIMEOUT
             seen = None

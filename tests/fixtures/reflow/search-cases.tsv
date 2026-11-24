@@ -135,3 +135,7 @@ guard-transition-after-hide	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e
 oc-pass-animation-paused	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}.site-header{animation:isc 1s infinite paused}@keyframes isc{to{color:#d00}}	PASS
 px-tolerance-at	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}.home-title{box-shadow:0 0 0 1.5rem #EBF6FC}	PASS
 px-tolerance-above	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}.home-title{box-shadow:0 0 0 1.5rem #EAF6FC}	by up to 9 of 255)
+guard-hover-pointer-in-viewport	search.js	-	-	(isolation) before the first capture of	SEARCH_PARK_X=40,SEARCH_PARK_Y=300
+guard-hover-pointer-after-hiding	search.js	-	-	(isolation) after the hiding of	SEARCH_PARK_X=40,SEARCH_PARK_Y=300
+guard-hover-pointer-after-captures	search.js	-	-	(isolation) after the second capture of	SEARCH_PARK_X=40,SEARCH_PARK_Y=300
+oc-pass-hover-rule-inert	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body:hover .home-title{box-shadow:0 0 0 1.5rem var(--color-text)}	PASS	
