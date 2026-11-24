@@ -4506,6 +4506,11 @@ def foreign_markup_problems(page):
         problems.append(f"markup: the page holds U+{ord(char):04X}; the HTML parser reads it "
                         "otherwise than this check (a line feed, a dropped or replaced "
                         "character), so no built page holds it")
+    for code, name in getattr(page, "tag_spaces", []):
+        problems.append(f"markup: U+{code:04X} in tag markup ({name}...>) outside a quoted "
+                        "value: html.parser reads it as whitespace and HTML does not, so the "
+                        "attributes this check reads (hidden, class) are not the browser's; "
+                        "fails closed (ADR-0004 part 14, render rule 20)")
     for tag in dict.fromkeys(page.stray):
         problems.append(f"markup: {page.stray.count(tag)} </{tag}> end tag(s) that close no "
                         "open element; the browser does not always ignore one (</p> inserts "
@@ -4519,6 +4524,13 @@ def parse_render_page(text):
     # HTML parser (U+000D, which the input stream turns into a line feed,
     # and U+0000, which "in body" drops and attributes read as U+FFFD).
     page.raw_controls = [c for c in ("\r", "\x00") if c in text]
+    # Replikanti/interviewscam#51 fix round 1 (review finding 1): a code
+    # point that html.parser takes for whitespace inside a tag and HTML does
+    # not (PARSER_ONLY_SPACE, read as site rule (i) reads it) splits the
+    # attributes otherwise than the browser: <span class=search-out\u00a0hidden>
+    # holds hidden for this tree and an attribute named "\u00a0hidden" for
+    # the browser, which shows the text. Such a page is not read.
+    page.tag_spaces = tag_space_hits(text)
     page.feed(text)
     page.close()
     return page
@@ -9848,17 +9860,10 @@ def tag_spans(text):
         yield lt, pos, tuple(quoted)
 
 
-def tag_space_problems(text):
-    """Site rule (i) on a built page (Replikanti/interviewscam#32 fix round
-    1): no code point of PARSER_ONLY_SPACE in tag markup outside a quoted
-    attribute value: in a tag name, between attributes, around '=' and in
-    an unquoted value. There html.parser takes it for whitespace and splits
-    the attributes where a browser does not: a raw U+00A0 between
-    http-equiv and content gives the browser no CSP while every rule reads
-    one. Inside a single- or double-quoted value (as HTML's tokenizer
-    quotes it, tag_spans) both read the same text to the same closing
-    quote, so a record or label with U+00A0 in an attribute value passes.
-    One finding per code point and tag name."""
+def tag_space_hits(text):
+    """(code point, tag name shown) of every code point of PARSER_ONLY_SPACE
+    in tag markup outside a quoted attribute value (tag_spans), sorted, each
+    pair once: what site rule (i) and render's markup: reading refuse."""
     seen = {}
     for start, end, quoted in tag_spans(text):
         found, pos = set(), start
@@ -9870,10 +9875,24 @@ def tag_space_problems(text):
             name = match.group(0) if match else "<"
             for code in found:
                 seen.setdefault((code, name), None)
+    return sorted(seen)
+
+
+def tag_space_problems(text):
+    """Site rule (i) on a built page (Replikanti/interviewscam#32 fix round
+    1): no code point of PARSER_ONLY_SPACE in tag markup outside a quoted
+    attribute value: in a tag name, between attributes, around '=' and in
+    an unquoted value. There html.parser takes it for whitespace and splits
+    the attributes where a browser does not: a raw U+00A0 between
+    http-equiv and content gives the browser no CSP while every rule reads
+    one. Inside a single- or double-quoted value (as HTML's tokenizer
+    quotes it, tag_spans) both read the same text to the same closing
+    quote, so a record or label with U+00A0 in an attribute value passes.
+    One finding per code point and tag name (tag_space_hits)."""
     return [f"(i) U+{code:04X} in tag markup ({name}...>) outside a quoted value: "
             "html.parser reads it as whitespace and HTML does not, so they split the "
             "attributes differently; fails closed"
-            for code, name in sorted(seen)]
+            for code, name in tag_space_hits(text)]
 
 
 def rawtext_built_problems(text):

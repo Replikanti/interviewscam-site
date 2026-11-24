@@ -9,6 +9,13 @@ hidden-on-copy-span	pass-search	public/reports/meetfix/index.html	<p class="lead
 hidden-on-search-class-variant	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<div class="search-outer" hidden>x</div><p class="lead">A meeting app	rule 20: hidden on <div>
 hidden-copy-nbsp-token	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<button type="button" class="button&nbsp;copy" hidden>x</button><p class="lead">A meeting app	rule 20: hidden on <button>
 copy-button-visually-hidden	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<button type="button" class="copy visually-hidden" hidden>x</button><p class="lead">A meeting app	rule 20: the class visually-hidden on <button>
+p1-nbsp-separator	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<button type="button" class="copy"\u{00A0}hidden>x</button><p class="lead">A meeting app	markup: U+00A0 in tag markup (<button...>)
+p1-vt-separator	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<button type="button" class="copy"\u{000B}hidden>x</button><p class="lead">A meeting app	markup: U+000B in tag markup (<button...>)
+p1-unquoted-nbsp	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<button type=button class=copy\u{00A0}hidden>x</button><p class="lead">A meeting app	markup: U+00A0 in tag markup (<button...>)
+p2-nbsp-separator	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<span class="search-out"\u{00A0}hidden>x</span><p class="lead">A meeting app	markup: U+00A0 in tag markup (<span...>)
+p2-3000-separator	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<span class="search-out"\u{3000}hidden>x</span><p class="lead">A meeting app	markup: U+3000 in tag markup (<span...>)
+p2-2028-separator	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<span class="search-out"\u{2028}hidden>x</span><p class="lead">A meeting app	markup: U+2028 in tag markup (<span...>)
+p2-nbsp-in-quoted-value-passes	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><span class="x\u{00A0}y">A</span> meeting app	PASS
 honeypot-outside-intake-form	pass-intake	public/report-a-scam/index.html	</form><p class=send-fallback>	</form><div hidden>x</div><p class=send-fallback>	rule 20: hidden on <div>
 honeypot-with-class	pass-intake	public/report-a-scam/index.html	<div hidden><label for=intake-website>	<div class=x hidden><label for=intake-website>	rule 20: hidden on <div>
 honeypot-hidden-value	pass-intake	public/report-a-scam/index.html	<div hidden><label for=intake-website>	<div hidden=hidden><label for=intake-website>	rule 20: hidden on <div>
@@ -21,6 +28,7 @@ skip-link-not-in-body	pass-search	public/reports/meetfix/index.html	<a class="vi
 skip-link-extra-attribute	pass-search	public/reports/meetfix/index.html	<a class="visually-hidden" href="#main">	<a class="visually-hidden" href="#main" id="skip">	rule 20: the class visually-hidden on <a>
 skip-link-other-text	pass-search	public/reports/meetfix/index.html	>Skip to content</a>	>Skip to the content</a>	rule 20: the class visually-hidden on <a>
 skip-link-child-element	pass-search	public/reports/meetfix/index.html	>Skip to content</a>	><span>Skip to content</span></a>	rule 20: the class visually-hidden on <a>
+skip-link-text-and-child	pass-search	public/reports/meetfix/index.html	>Skip to content</a>	>Skip to content<span>x</span></a>	rule 20: the class visually-hidden on <a>
 skip-link-second	pass-search	public/reports/meetfix/index.html	<a class="visually-hidden" href="#main">Skip to content</a>	<a class="visually-hidden" href="#main">Skip to content</a><a class="visually-hidden" href="#main">Skip to content</a>	COUNT=1 rule 20: the class visually-hidden on <a> (1 element(s))
 skip-link-not-a	pass-search	public/reports/meetfix/index.html	<a class="visually-hidden" href="#main">Skip to content</a>	<span class="visually-hidden" href="#main">Skip to content</span>	rule 20: the class visually-hidden on <span>
 visually-hidden-case-variant	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><span class="Visually-Hidden">A</span> meeting app	PASS
@@ -47,6 +55,7 @@ attribute-accesskey	pass-search	public/reports/meetfix/index.html	<p class="lead
 attribute-style	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><span style="color: inherit">A</span> meeting app	rule 20: the attribute style on <span>
 attribute-hidden-on-own-set	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead" hidden>A meeting app	rule 20: hidden on <p>
 title-in-body	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><title>A</title> meeting app	rule 20: <title> outside <head>
+title-child-of-body	pass-search	public/reports/meetfix/index.html	<header class="site-header">	<title>x</title><header class="site-header">	rule 20: <title> outside <head>
 markdown-set-passes	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<h4 id="h-a">a</h4><h5 id="h-b">b</h5><h6 id="h-c">c</h6><blockquote><p>q <em>e</em> <strong>s</strong> <code>c</code><br>d</p></blockquote><pre><code>x\ny</code></pre><hr><ol start="3"><li>i</li></ol><p class="lead">A meeting app	PASS
 markdown-del	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><del>A</del> meeting app	rule 20: <del>
 markdown-table	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<table><tbody><tr><td>a</td></tr></tbody></table><p class="lead">A meeting app	rule 20: <table>

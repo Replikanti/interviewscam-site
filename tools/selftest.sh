@@ -614,6 +614,72 @@ for name, base_name, rel, edits, expect in runs:
               + f"; got exit {rc} with {findings} finding(s); output:")
         for line in output.splitlines():
             print(f"     | {line}")
+# Fix round 1 (QA): the exact VISIBLE_ELEMENTS table against the copy in
+# visibility-vocabulary.tsv, so no tag or pair can be admitted, dropped or
+# moved without a table change; then every channel attribute of the matrix
+# and the review (CHANNEL_ATTRS) on every tag of the vocabulary, each alone
+# on a minimal page, must give exactly the one rule 20 attribute finding.
+pinned, bad_v = {}, 0
+for line in (fixtures / "visibility-vocabulary.tsv").read_text(encoding="utf-8").splitlines():
+    if not line or line.startswith("#"):
+        continue
+    tag, sep, attrs = line.partition("\t")
+    if not sep or not tag or tag in pinned or attrs != " ".join(sorted(attrs.split())):
+        print(f"FAIL {label}/vocabulary: malformed row {line!r}")
+        bad_v += 1
+        continue
+    pinned[tag] = frozenset(attrs.split())
+code = {tag: frozenset(names) for tag, names in sitecheck.VISIBLE_ELEMENTS.items()}
+n_pairs = sum(len(v) for v in pinned.values())
+if bad_v or code != pinned:
+    def only_in(one, other):
+        return sorted({t for t in one if t not in other}
+                      | {f"{t}.{a}" for t in one if t in other for a in one[t] - other[t]})
+    extra, lost = only_in(code, pinned), only_in(pinned, code)
+    print(f"FAIL {label}/vocabulary: VISIBLE_ELEMENTS differs from visibility-vocabulary.tsv "
+          f"(in the code only: {extra}; in the table only: {lost})")
+else:
+    print(f"ok   {label}/vocabulary ({len(pinned)} tags, {n_pairs} pairs, as pinned)")
+CHANNEL_ATTRS = ("aria-hidden", "popover", "inert", "title", "alt", "placeholder",
+                 "aria-description", "style", "translate", "accesskey", "nonce",
+                 "aria-label", "role", "value", "tabindex")
+SKELETON = ("html", "head", "body")
+probes, wrong = 0, []
+for tag in sorted(sitecheck.VISIBLE_ELEMENTS):
+    for attr in CHANNEL_ATTRS:
+        if attr in sitecheck.VISIBLE_ELEMENTS[tag]:
+            continue  # a pair the vocabulary admits (PR 2 pins its value)
+        probes += 1
+        mark = f' {attr}="x"'
+        own = {t: mark if t == tag else "" for t in SKELETON}
+        if tag in SKELETON:
+            inner = ""
+        elif tag in ("title", "meta", "link", "script"):
+            inner = None
+        elif tag in sitecheck.VOID_ELEMENTS:
+            inner = f"<{tag}{mark}>"
+        else:
+            inner = f"<{tag}{mark}>x</{tag}>"
+        head = "<title>t</title>"
+        if inner is None:
+            head = (f"<title{mark}>t</title>" if tag == "title" else
+                    f"<script{mark}></script><title>t</title>" if tag == "script" else
+                    f"<{tag}{mark}><title>t</title>")
+            inner = ""
+        page = sitecheck.parse_render_page(
+            f"<!doctype html><html lang=\"en\"{own['html']}><head{own['head']}>{head}</head>"
+            f"<body{own['body']}>{inner}</body></html>")
+        got = sitecheck.visibility_problems(page)
+        want = f"rule 20: the attribute {attr} on <{tag}> (1 element(s))"
+        if len(got) != 1 or not got[0].startswith(want):
+            wrong.append((tag, attr, got))
+if wrong or not probes:
+    for tag, attr, got in wrong[:10]:
+        print(f"FAIL {label}/channel-attributes: {attr} on <{tag}> gave {got!r}")
+    print(f"FAIL {label}/channel-attributes: {len(wrong)} of {probes} probes wrong")
+else:
+    print(f"ok   {label}/channel-attributes ({probes} tag and attribute probes, "
+          "each exactly its one finding)")
 missing = [f"{m[0]}@{r[0]}" for m in members for r in readers
            if f"{m[0]}@{r[0]}" not in done]
 summary = (f"{len(members)} members x {len(readers)} families + {len(cases)} rows")

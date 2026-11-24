@@ -1,0 +1,45 @@
+# Render rule 20 (Replikanti/interviewscam#51 fix round 1, QA): the exact
+# VISIBLE_ELEMENTS table, one tag per line with its attribute names, space-
+# separated and sorted (empty for none). render-visibility/vocabulary fails
+# on any tag or pair added, dropped or moved. tag<TAB>attributes
+a	aria-current class href
+blockquote	
+body	
+br	
+button	class data-copy-done data-copy-failed data-copy-target type
+code	class id
+dd	
+div	class id
+dl	class
+dt	
+em	
+footer	class
+form	action class enctype method role
+h1	class
+h2	id tabindex
+h3	id
+h4	id
+h5	id
+h6	id
+head	
+header	class
+hr	
+html	lang
+input	accept aria-describedby autocomplete id maxlength multiple name required spellcheck tabindex type value
+label	for
+li	aria-current class
+link	href rel type
+main	class id tabindex
+meta	charset content http-equiv name
+nav	aria-label class
+ol	class start
+p	class id
+pre	
+script	defer integrity src type
+section	aria-labelledby class id
+span	aria-live class id role
+strong	
+textarea	aria-describedby id maxlength name required
+time	class datetime
+title	
+ul	class
