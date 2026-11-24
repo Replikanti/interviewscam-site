@@ -62,6 +62,17 @@ class Stub:
         self.versions = []         # uploaded version ids, newest first
         self.deployments = []      # newest first, each {strategy, versions: [{version_id, percentage}]}
         self.version_override = {} # replaces keys of a version's resources
+        self.reject_code_update = False  # POST deployments with code_update_strategy: 400, echoing everything
+        self.drop_code_update = False    # POST deployments answers 200 but stores no code_update_strategy
+        self.versions_empty = False      # the versions list answers no items
+        self.versions_lag = False        # the versions list lags one upload behind (items[0] is the older id)
+        self.stale_after_put = False     # GET deployments after an upload still answers the pre-upload list
+        self.deployments_view = None
+        self.drop_domain_put = False     # PUT workers/domains is applied, then the connection drops unanswered
+        self.drop_deployment_post = False  # POST deployments is applied, then the connection drops unanswered
+        self.fail_domain_put = False     # PUT workers/domains answers 400
+        self.deployment_seq = 0
+        self.upload_versions = None      # replaces the "versions" of the deployment an upload makes
         # workers.dev and Version URLs; on until the tool turns them off (the
         # default for an API upload is not documented, so the stub assumes
         # the worse one).
@@ -124,8 +135,16 @@ class Stub:
             # it at 100 %.
             vid = f"v{len(self.versions) + 1}"
             self.versions.insert(0, vid)
-            self.deployments.insert(0, {"strategy": "percentage",
-                                        "versions": [{"version_id": vid, "percentage": 100}]})
+            # The deferred default with a 300 s delay is the worse of the
+            # documented values (ADR-0006 Status), so a deploy that never
+            # makes its own deployment stays red.
+            if self.stale_after_put:
+                self.deployments_view = copy.deepcopy(self.deployments)
+            self.deployment_seq += 1
+            self.deployments.insert(0, {"id": f"d{self.deployment_seq}", "strategy": "percentage",
+                                        "versions": self.upload_versions if self.upload_versions is not None
+                                        else [{"version_id": vid, "percentage": 100}],
+                                        "code_update_strategy": {"mode": "deferred", "max_delay": 300}})
             return 200, {"success": True, "errors": [], "result": {"id": SCRIPT}}
         if method == "GET" and path == f"{base}/scripts/{SCRIPT}/content/v2":
             mode = self.content_mode
@@ -152,10 +171,25 @@ class Stub:
             if method == "POST":
                 self.subdomain = json.loads(body)
             return 200, {"success": True, "errors": [], "result": dict(self.subdomain)}
+        if method == "POST" and path == f"{base}/scripts/{SCRIPT}/deployments":
+            sent = json.loads(body)
+            if self.reject_code_update and "code_update_strategy" in sent:
+                return 400, {"success": False, "errors": [{"code": 10000, "message": f"Bad field for {path} with {token} "
+                                                           f"{body[:4000].decode(errors='replace')}"}], "result": None}
+            self.deployment_seq += 1
+            made = {"id": f"d{self.deployment_seq}", "strategy": sent["strategy"], "versions": sent["versions"]}
+            if not self.drop_code_update:
+                made["code_update_strategy"] = sent["code_update_strategy"]
+            self.deployments.insert(0, made)
+            if self.drop_deployment_post:
+                return "drop", None
+            return 200, {"success": True, "errors": [], "result": made}
         if method == "GET" and path == f"{base}/scripts/{SCRIPT}/deployments":
-            return 200, {"success": True, "errors": [], "result": {"deployments": self.deployments}}
+            return 200, {"success": True, "errors": [], "result": {"deployments": self.deployments if self.deployments_view is None
+                                                                else self.deployments_view}}
         if method == "GET" and path == f"{base}/scripts/{SCRIPT}/versions":
-            return 200, {"success": True, "errors": [], "result": {"items": [{"id": v} for v in self.versions]}}
+            return 200, {"success": True, "errors": [], "result": {"items": [] if self.versions_empty else
+                                                                   [{"id": v} for v in self.versions[int(self.versions_lag):]]}}
         if method == "GET" and path.startswith(f"{base}/scripts/{SCRIPT}/versions/"):
             vid = path.rsplit("/", 1)[1]
             if vid not in self.versions:
@@ -168,12 +202,16 @@ class Stub:
             return 200, {"success": True, "errors": [], "result": {"id": vid, "resources": resources}}
         if method == "GET" and path == f"/client/v4/zones/{ZONE}/workers/routes":
             return 200, {"success": True, "errors": [], "result": self.routes}
+        if method == "PUT" and path == f"{base}/domains" and self.fail_domain_put:
+            return 400, {"success": False, "errors": [{"code": 10000, "message": "domain refused"}], "result": None}
         if method == "PUT" and path == f"{base}/domains":
             d = json.loads(body)
             self.domains = [x for x in self.domains if x["hostname"] != d["hostname"]] + [
                 {"hostname": d["hostname"], "service": d["service"], "zone_id": d["zone_id"],
                  "environment": d.get("environment"), "enabled": d.get("enabled", True),
                  "previews_enabled": d.get("previews_enabled", True)}]
+            if self.drop_domain_put:
+                return "drop", None
             return 200, {"success": True, "errors": [], "result": self.domains[-1]}
         if method == "GET" and path == f"{base}/domains":
             want = query.get("hostname", [None])[0]
@@ -199,6 +237,9 @@ class StubServer:
                 body = self.rfile.read(length) if length else b""
                 status, payload = stub.handle(self.command, split.path, parse_qs(split.query),
                                               {k.lower(): v for k, v in self.headers.items()}, body)
+                if status == "drop":
+                    self.close_connection = True
+                    return
                 extra = {}
                 if isinstance(payload, tuple):
                     payload, extra = payload
@@ -482,14 +523,17 @@ class Tool(ToolCase):
                                                                          "script": "other"}]),
             # Fix round 2: the active deployment.
             "split deployment": lambda: setattr(self.stub, "deployments", [
-                {"strategy": "percentage", "versions": [{"version_id": self.stub.versions[0], "percentage": 50},
-                                                        {"version_id": "evil", "percentage": 50}]}]),
+                {"strategy": "percentage", "code_update_strategy": {"mode": "immediate"},
+                 "versions": [{"version_id": self.stub.versions[0], "percentage": 50},
+                              {"version_id": "evil", "percentage": 50}]}]),
             "version at 0 %": lambda: setattr(self.stub, "deployments", [
-                {"strategy": "percentage", "versions": [{"version_id": self.stub.versions[0], "percentage": 100},
-                                                        {"version_id": "old", "percentage": 0}]}]),
+                {"strategy": "percentage", "code_update_strategy": {"mode": "immediate"},
+                 "versions": [{"version_id": self.stub.versions[0], "percentage": 100},
+                              {"version_id": "old", "percentage": 0}]}]),
             "no deployment": lambda: setattr(self.stub, "deployments", []),
             "one version below 100 %": lambda: setattr(self.stub, "deployments", [
-                {"strategy": "percentage", "versions": [{"version_id": self.stub.versions[0], "percentage": 50}]}]),
+                {"strategy": "percentage", "code_update_strategy": {"mode": "immediate"},
+                 "versions": [{"version_id": self.stub.versions[0], "percentage": 50}]}]),
             "deployed version not latest": lambda: self.stub.versions.insert(0, "undeployed"),
             "deployed version bindings": lambda: self.stub.version_override.update(
                 bindings=[dict(b, destination_address="other@example.com") if b["name"] == "EMAIL" else b
@@ -533,7 +577,7 @@ class Tool(ToolCase):
                 self.stub.content_mode, self.stub.routes, self.stub.version_override = "raw", [], {}
                 self.stub.versions = list(good_versions)
                 self.stub.subdomain = {"enabled": False, "previews_enabled": False}
-                self.stub.deployments = [{"strategy": "percentage",
+                self.stub.deployments = [{"strategy": "percentage", "code_update_strategy": {"mode": "immediate"},
                                           "versions": [{"version_id": good_versions[0], "percentage": 100}]}]
                 self.stub.metadata, self.stub.content, self.stub.domains = copy.deepcopy(good[0]), good[1], \
                     copy.deepcopy(good[2])
@@ -542,6 +586,8 @@ class Tool(ToolCase):
                 rc, out = self.run_tool("verify")
                 self.assertEqual(rc, 1, out)
                 self.assertIn("MISMATCH", out)
+                if name in ("split deployment", "version at 0 %", "one version below 100 %"):
+                    self.assertIn("not one version at 100", out)
 
     def test_refuses_foreign_script(self):
         self.stub.state = "foreign"
@@ -784,6 +830,153 @@ class ToolFixRound3(ToolCase):
         self.assertEqual(rc, 1, out)
 
 
+class ToolCodeUpdate(ToolCase):
+    """Replikanti/interviewscam#43: deploy makes the explicit deployment with
+    code_update_strategy immediate (ADR-0006 part 10 way (a))."""
+
+    def posts(self, suffix="/deployments"):
+        return [r for r in self.stub.requests if r["method"] == "POST" and r["path"].endswith(suffix)]
+
+    def test_deploy_posts_immediate_deployment(self):
+        for round_ in ("first deploy", "re-deploy"):
+            with self.subTest(round=round_):
+                self.stub.requests.clear()
+                rc, out = self.run_tool("deploy")
+                self.assertEqual(rc, 0, out)
+                (post,) = self.posts()
+                self.assertEqual(post["headers"].get("content-type"), "application/json")
+                vid = self.stub.versions[0]
+                self.assertEqual(json.loads(post["body"]), {
+                    "strategy": "percentage", "versions": [{"version_id": vid, "percentage": 100}],
+                    "code_update_strategy": {"mode": "immediate"}})
+                order = [(r["method"], r["path"].rsplit("/", 1)[1]) for r in self.stub.requests
+                         if r["method"] in ("PUT", "POST")]
+                self.assertEqual([o[1] for o in order], [SCRIPT, "domains", "subdomain", "deployments"])
+                self.assertEqual(self.stub.deployments[0]["code_update_strategy"], {"mode": "immediate"})
+
+    def test_deploy_deploys_the_version_it_uploaded(self):
+        sent = []
+        for _ in range(2):
+            self.stub.requests.clear()
+            self.assertEqual(self.run_tool("deploy")[0], 0)
+            sent.append(json.loads(self.posts()[0]["body"])["versions"][0]["version_id"])
+        self.assertEqual(sent, ["v1", "v2"])
+
+    def test_deploy_stops_when_api_rejects_field(self):
+        """Fix round 1, review finding 1: the domain and workers.dev steps run before the
+        deployment POST, so a refusal leaves the Worker routed and off workers.dev."""
+        self.stub.reject_code_update = True
+        rc, out = self.run_tool("deploy")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("code_update_strategy", out)
+        self.assertIn("operator", out)
+        self.assertIn("default", out)
+        self.assertIn("deferred", out)
+        self.assertIn("the custom domain is mapped", out)
+        self.assertIn("workers.dev and Version URLs are off", out)
+        self.assertNotIn("nothing else changed", out)
+        self.assertEqual(len(self.posts()), 1)
+        self.assertEqual([r for r in self.stub.requests if r["path"].endswith("/domains") and r["method"] == "PUT"
+                          ][0]["method"], "PUT")
+        self.assertEqual(len(self.posts("/subdomain")), 1)
+        self.assertEqual(self.stub.subdomain, {"enabled": False, "previews_enabled": False})
+        self.assertEqual(self.stub.domains[0]["hostname"], "intake.interviewscam.com")
+        self.assertEqual(self.stub.deployments[0]["code_update_strategy"], {"mode": "deferred", "max_delay": 300})
+
+    def test_dropped_domain_put_says_what_is_live(self):
+        """Fix round 3, review finding 1: a transport error after the upload gets the same
+        live-state text; an error before the deployment POST keeps the deferred claim true."""
+        self.stub.drop_domain_put = True
+        rc, out = self.run_tool("deploy")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("RemoteDisconnected", out)
+        self.assertIn("uploaded version already serves at 100 % with the default, deferred", out)
+        self.assertIn("not mapped", out)
+        self.assertIn("may still be on", out)
+        self.assertNotIn("unknown", out)
+        self.assertEqual(self.posts(), [])
+
+    def test_dropped_deployment_post_says_outcome_unknown(self):
+        """The POST was applied but its answer never came: the outcome is unknown, so the text
+        must not claim the deferred update."""
+        self.stub.drop_deployment_post = True
+        rc, out = self.run_tool("deploy")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("RemoteDisconnected", out)
+        self.assertIn("the uploaded version serves at 100 %", out)
+        self.assertIn("whether the immediate deployment was applied is unknown", out)
+        self.assertIn("run verify", out)
+        self.assertIn("operator", out)
+        self.assertIn("the custom domain is mapped", out)
+        self.assertIn("workers.dev and Version URLs are off", out)
+        self.assertNotIn("deferred", out)
+        self.assertEqual(len(self.posts()), 1)
+
+    def test_deploy_stops_when_versions_list_lags(self):
+        """Fix round 1, review finding 3: the version to deploy is the upload's own deployment,
+        cross-checked with the versions list; a lagging list is never deployed."""
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        self.stub.versions_lag = True
+        self.stub.requests.clear()
+        rc, out = self.run_tool("deploy")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("disagree", out)
+        self.assertIn("no deployment POST made", out)
+        self.assertNotIn("nothing deployed", out)
+        self.assertIn("uploaded version already serves at 100 %", out)
+        self.assertIn("deferred", out)
+        self.assertEqual(self.posts(), [])
+
+    def test_deploy_stops_on_a_stale_deployments_read(self):
+        """Fix round 2, review finding 2: the upload's deployment must be a new one, not the one
+        read before the upload; both lists lagging together never reaches a POST."""
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        self.stub.stale_after_put = True
+        self.stub.versions_lag = True
+        self.stub.requests.clear()
+        rc, out = self.run_tool("deploy")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("before the upload", out)
+        self.assertIn("no deployment POST made", out)
+        self.assertEqual(self.posts(), [])
+
+    def test_failed_domain_put_says_what_is_live(self):
+        """Fix round 2, review finding 1: every failure after the upload says what is live."""
+        self.stub.fail_domain_put = True
+        rc, out = self.run_tool("deploy")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("uploaded version already serves at 100 %", out)
+        self.assertIn("deferred", out)
+        self.assertIn("not mapped", out)
+        self.assertIn("workers.dev and Version URLs may still be on", out)
+        self.assertIn("re-run deploy", out)
+        self.assertEqual(self.posts(), [])
+
+    def test_deploy_stops_on_a_malformed_upload_deployment(self):
+        for name, shape in (("split", [{"version_id": "v2", "percentage": 50}, {"version_id": "v1", "percentage": 50}]),
+                            ("below 100", [{"version_id": "v2", "percentage": 50}]),
+                            ("no id", [{"percentage": 100}]), ("empty", [])):
+            with self.subTest(name):
+                self.stub.upload_versions = shape
+                self.stub.requests.clear()
+                rc, out = self.run_tool("deploy")
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(self.posts(), [])
+
+    def test_deploy_fails_when_field_not_stored(self):
+        self.stub.drop_code_update = True
+        rc, out = self.run_tool("deploy")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("MISMATCH", out)
+        self.assertIn("code_update_strategy", out)
+
+    def test_deploy_needs_a_version_to_deploy(self):
+        self.stub.versions_empty = True
+        rc, out = self.run_tool("deploy")
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(self.posts(), [])
+
+
 class ToolQARound4(ToolCase):
     """QA recheck 3 of PR 2: the survivors of the round-3 sweep that a case kills."""
 
@@ -806,9 +999,16 @@ class ToolQARound4(ToolCase):
 
     def test_code_update_strategy_rows(self):
         self.assertEqual(self.run_tool("deploy")[0], 0)
-        for update, ok in (({}, False), ({"mode": "immediate", "max_delay": 5}, False), ({"mode": "immediate"}, True)):
+        absent = object()
+        for update, ok in ((absent, False), (None, False), ({}, False), ({"mode": "deferred"}, False),
+                           ({"mode": "deferred", "max_delay": 86400}, False), ("immediate", False),
+                           ({"mode": "Immediate"}, False), ({"mode": "immediate "}, False),
+                           ({"mode": "immediate", "max_delay": 5}, False), ({"mode": "immediate"}, True)):
             with self.subTest(update=update):
-                self.stub.deployments[0]["code_update_strategy"] = update
+                if update is absent:
+                    self.stub.deployments[0].pop("code_update_strategy", None)
+                else:
+                    self.stub.deployments[0]["code_update_strategy"] = update
                 self.assertEqual(self.verify_rc(), 0 if ok else 1, update)
 
     def test_subdomain_answer_needs_both_keys(self):
