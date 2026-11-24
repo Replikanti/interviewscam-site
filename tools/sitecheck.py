@@ -13170,9 +13170,14 @@ def _isolation_problems(snapshot, region_id):
     if not isinstance(documents, list) or not documents:
         raise SnapshotError("documents is not a non-empty list")
 
-    def text(i):
+    # Chrome writes the string index -1 for an empty string (an attribute
+    # without a value, a style it gives no text), so -1 reads as "" where a
+    # value may be empty; a name may not be.
+    def text(i, empty=False, what="a string index"):
+        if empty and i == -1:
+            return ""
         if type(i) is not int or not 0 <= i < len(strings):
-            raise SnapshotError("a string index is out of range")
+            raise SnapshotError(f"{what} is out of range ({i!r})")
         return strings[i]
 
     width = len(REFLOW_SNAPSHOT_STYLES)
@@ -13206,16 +13211,20 @@ def _isolation_problems(snapshot, region_id):
             raise SnapshotError(f"document {d} layout styles is not one list per layout object")
         # Chrome gives the document's layout object (the LayoutView) an
         # empty style row, since a document has no computed style, and a
-        # property it cannot read the string index -1 (read here as "",
-        # which no rule accepts). Any other empty row fails closed below.
+        # style without text the index -1 (read as "", which no rule
+        # accepts). Any other empty row fails closed below.
         styles = [None if s == [] else
-                  [text(k) if k != -1 else "" for k in
+                  [text(k, empty=True, what=f"document {d} layout styles") for k in
                    snapshot_list(s, f"document {d} layout styles", size=width)]
                   for s in styles]
         # Every string index is read now, so a broken one fails the whole
         # snapshot, not only a label that a finding happens to print.
-        for k in [*names, *pseudo.values(), *(v for a in attributes for v in a)]:
-            text(k)
+        for k in names:
+            text(k, what=f"document {d} nodeName")
+        for k in pseudo.values():
+            text(k, what=f"document {d} pseudoType")
+        for k in (v for a in attributes for v in a):
+            text(k, empty=True, what=f"document {d} attributes")
         docs.append((parents, types, names, ids, pseudo, attributes, boxes, styles))
     home = next((d for d, doc in enumerate(docs) if region_id in doc[3]), None) \
         if type(region_id) is int else None
@@ -13230,8 +13239,8 @@ def _isolation_problems(snapshot, region_id):
             return owner + ("::" + text(pseudo[i]) if i in pseudo else " (its text)") + where
         if types[i] != 1:
             return text(names[i]) + where
-        attrs = dict(zip((text(k) for k in attributes[i][::2]),
-                         (text(k) for k in attributes[i][1::2])))
+        attrs = dict(zip((text(k, empty=True) for k in attributes[i][::2]),
+                         (text(k, empty=True) for k in attributes[i][1::2])))
         name = text(names[i]).lower()
         if attrs.get("id"):
             name += "#" + attrs["id"]

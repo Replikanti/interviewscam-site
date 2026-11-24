@@ -72,7 +72,8 @@ class Snapshot:
         nodes["nodeName"].append(self.string(name))
         nodes["nodeValue"].append(-1 if value is None else self.string(value))
         nodes["backendNodeId"].append(backend)
-        nodes["attributes"].append([self.string(x) for pair in attrs for x in pair])
+        nodes["attributes"].append([-1 if x == "" else self.string(x)
+                                    for pair in attrs for x in pair])
         if pseudo is not None:
             nodes["pseudoType"]["index"].append(index)
             nodes["pseudoType"]["value"].append(self.string(pseudo))
@@ -198,6 +199,13 @@ class Outside(unittest.TestCase):
         root = snap.add(doc, span, 11, "#document-fragment", 72)
         snap.add(doc, root, ELEMENT, "DIV", 73, style=PLAIN)
         self.assertEqual(problems(snap), [])
+
+    def test_empty_attribute_value(self):
+        # Chrome writes -1 for an empty string, an attribute without a value.
+        snap, doc, at = page()
+        snap.add(doc, at["main"], ELEMENT, "DIV", 75, style=PLAIN,
+                 attrs=[("hidden", ""), ("class", "")])
+        self.assertEqual(problems(snap), [("outside", ["div"])])
 
     def test_element_sibling_of_region_is_outside(self):
         snap, doc, at = page()
@@ -369,6 +377,9 @@ class Broken(unittest.TestCase):
             "styles not a list": lambda r, d: d["layout"].update(styles={}),
             "an element without a style": lambda r, d: d["layout"]["styles"].__setitem__(1, []),
             "a style below -1": lambda r, d: d["layout"]["styles"][1].__setitem__(0, -2),
+            "a pseudoType of -1": lambda r, d: d["nodes"].update(
+                pseudoType={"index": [4], "value": [-1]}),
+            "an attribute below -1": lambda r, d: d["nodes"]["attributes"][1].__setitem__(1, -2),
             "pseudoType not an object": lambda r, d: d["nodes"].update(pseudoType=[]),
             "pseudoType lengths": lambda r, d: d["nodes"]["pseudoType"]["index"].append(1),
             "pseudoType out of range": lambda r, d: d["nodes"].update(
