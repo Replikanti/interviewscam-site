@@ -2154,6 +2154,71 @@ HIDDEN_UNTIL_SCRIPT = {
 HIDDEN_RULES = {f".{cls}[hidden]": cls for cls in HIDDEN_UNTIL_SCRIPT}
 HIDDEN_DECLARATION = ("display", "none")
 HIDDEN_RULE_NAMES = " and ".join(f"the {sel} rule" for sel in HIDDEN_RULES)
+# Render rule 20 (Replikanti/interviewscam#51, ADR-0004 part 14): the closed
+# markup vocabulary of a built HTML page, tag to the attribute names it may
+# carry. Outside <svg> and <math> (foreign_markup_problems pins or refuses
+# those), an element or attribute not listed here is a finding, so every
+# construct that hides or reveals text in a way Element.hides does not read
+# (<noscript>, <select>, <details>, <dialog>, <template>, popover, inert,
+# aria-hidden, title, alt, placeholder, a <title> drawn in <body>, ...)
+# fails the page instead of being read one way by the checks and another
+# way by the browser. The set is the 33 elements and the attribute pairs
+# that today's real builds emit (render/pass-report-pins, pass-intake,
+# pass-search and the three real-build persona bases), plus the CommonMark
+# elements Goldmark writes for a record body (em, pre, blockquote, h4 to
+# h6, hr, br and an ordered list's start), because report pages render it
+# (layouts/reports/page.html .Content). Left out on purpose: <del> (draws
+# text as retracted, the D6 concern of rule 17), tables (foster parenting,
+# implied tags, Hugo's alignment style), <img> (image text is out of reach),
+# link titles, footnotes and task lists. The hidden attribute and the class
+# visually-hidden are in no set: visibility_problems allows them only at
+# their pinned placements (P1 to P4), and <title> only in <head> (P10).
+VISIBLE_ELEMENTS = {tag: frozenset(names.split()) for tag, names in {
+    "a": "aria-current class href",
+    "blockquote": "",
+    "body": "",
+    "br": "",
+    "button": "class data-copy-done data-copy-failed data-copy-target type",
+    "code": "class id",
+    "dd": "",
+    "div": "class id",
+    "dl": "class",
+    "dt": "",
+    "em": "",
+    "footer": "class",
+    "form": "action class enctype method role",
+    "h1": "class",
+    "h2": "id tabindex",
+    "h3": "id",
+    "h4": "id",
+    "h5": "id",
+    "h6": "id",
+    "head": "",
+    "header": "class",
+    "hr": "",
+    "html": "lang",
+    "input": ("accept aria-describedby autocomplete id maxlength multiple name required "
+              "spellcheck tabindex type value"),
+    "label": "for",
+    "li": "aria-current class",
+    "link": "href rel type",
+    "main": "class id tabindex",
+    "meta": "charset content http-equiv name",
+    "nav": "aria-label class",
+    "ol": "class start",
+    "p": "class id",
+    "pre": "",
+    "script": "defer integrity src type",
+    "section": "aria-labelledby class id",
+    "span": "aria-live class id role",
+    "strong": "",
+    "textarea": "aria-describedby id maxlength name required",
+    "time": "class datetime",
+    "title": "",
+    "ul": "class",
+}.items()}
+# The label of the footer's <nav> (baseof.html, footer_shape).
+FOOTER_NAV_LABEL = "Site"
 CLASS_ATTRIBUTE_SELECTOR = re.compile(r"(?i)\[\s*(?:[\w*-]*\|)?class\s*(?:[~|^$*]?=|\])")
 
 
@@ -2335,6 +2400,7 @@ def url_scheme(url):
 STYLESHEET_LINK_ATTRS = frozenset({"rel", "href"})
 HEAD_PREFIX_TAGS = frozenset({"html", "head", "meta", "title", "link"})
 ASCII_WHITESPACE = "\t\n\f\r "
+ASCII_WHITESPACE_RUN = re.compile("[" + re.escape(ASCII_WHITESPACE) + "]+")
 # Records rule R19 (Replikanti/interviewscam#49): the whitespace an artifact
 # value may hold only as single U+0020 spaces between other characters.
 # A set, never the string: "" in ASCII_WHITESPACE is True.
@@ -3143,7 +3209,12 @@ class Element:
 
     @property
     def classes(self):
-        return self.attrs.get("class", "").split()
+        """The class tokens as HTML and CSS split them: on ASCII whitespace
+        only (Replikanti/interviewscam#51), never str.split(), which also
+        splits on U+00A0, U+001C to U+001F, U+0085, U+3000 and more, so
+        class="x\u00a0copy" would read as the class copy that no browser
+        applies."""
+        return [t for t in ASCII_WHITESPACE_RUN.split(self.attrs.get("class", "")) if t]
 
     def walk(self):
         yield self
@@ -5844,6 +5915,96 @@ def bidi_markup_problems(page):
     return problems
 
 
+# Render rule 20 (Replikanti/interviewscam#51, ADR-0004 part 14): the four
+# placements where a built page may hide content, each one where the browser
+# without the script hides exactly what Element.hides reads as hidden.
+VISIBILITY_PLACEMENTS = ("Copy buttons", "search-out", "honeypots", "skip links")
+VISIBILITY_WHY = ("; a built page holds only the elements and attributes of the closed "
+                  "markup vocabulary (VISIBLE_ELEMENTS), because the render rules read what "
+                  "the browser shows and announces only for those (ADR-0004 part 14, render "
+                  "rule 20)")
+VISIBILITY_HIDDEN_WHY = ("; hidden is allowed only on a Copy button (class copy), an element "
+                         "of class search-out and the honeypot <div hidden> of an intake form, "
+                         "where a pinned display: none !important rule or reflow case (10) "
+                         "proves that the browser hides it (ADR-0004 part 14, render rule 20)")
+VISIBILITY_VH_WHY = ("; the class is allowed only on the skip link, <a class=\"visually-hidden\" "
+                     "href=\"#main\"> with exactly the text of SKIP_LINK_TEXT, the first element "
+                     "of <body> (ADR-0004 part 14, render rule 20)")
+VISIBILITY_TITLE_WHY = ("; a <title> outside <head> is drawn by no browser, while the render "
+                        "rules read its text as shown (ADR-0004 part 14, render rule 20)")
+
+
+def hidden_placement(el):
+    """The placement (an index into VISIBILITY_PLACEMENTS) where el may carry
+    the hidden attribute, or None: P1 a <button> with the class copy (rule
+    14 and the .copy[hidden] pin), P2 an element with the class search-out
+    (rule 16 and the .search-out[hidden] pin), P3 a <div> with exactly the
+    attribute hidden, empty, right inside a <form> with the class intake
+    (rule 18 and reflow case (10))."""
+    parent, classes = el.parent, el.classes
+    if el.tag == "button" and "copy" in classes:
+        return 0
+    if "search-out" in classes:
+        return 1
+    if el.tag == "div" and el.attrs == {"hidden": ""} and parent is not None \
+            and parent.tag == "form" and "intake" in parent.classes:
+        return 2
+    return None
+
+
+def is_skip_link(el):
+    """P4, the one placement of the class visually-hidden: the skip link of
+    baseof.html, exactly <a class="visually-hidden" href="#main"> holding
+    only the text SKIP_LINK_TEXT, as the first element child of <body>."""
+    parent = el.parent
+    return (el.tag == "a" and el.attrs == {"class": VISUALLY_HIDDEN, "href": "#main"}
+            and el.children == [SKIP_LINK_TEXT] and parent is not None
+            and parent.tag == "body"
+            and next((c for c in parent.children if isinstance(c, Element)), None) is el)
+
+
+def visibility_problems(page, counts=None):
+    """Rule 20 on one HTML page (Replikanti/interviewscam#51, ADR-0004 part
+    14): every element outside <svg> and <math> (foreign_markup_problems
+    pins or refuses those) is in VISIBLE_ELEMENTS and carries only its
+    attributes; hidden only at a placement of hidden_placement (P1 to P3)
+    and the class visually-hidden only on the skip link (P4, is_skip_link);
+    <title> only right inside <head>
+    (P10). One finding per kind and page, with the count. counts, a list
+    as long as VISIBILITY_PLACEMENTS, adds up the placements met."""
+    kinds = {}
+
+    def note(head, why):
+        kinds[head] = (kinds.get(head, (0, why))[0] + 1, why)
+    stack = [c for c in reversed(page.root.children) if isinstance(c, Element)]
+    while stack:
+        el = stack.pop()
+        if el.tag in FOREIGN_ROOTS:
+            continue
+        stack.extend(c for c in reversed(el.children) if isinstance(c, Element))
+        allowed = VISIBLE_ELEMENTS.get(el.tag)
+        if allowed is None:
+            note(f"<{el.tag}>", VISIBILITY_WHY)
+            continue
+        for name in el.attrs:
+            if name != "hidden" and name not in allowed:
+                note(f"the attribute {name} on <{el.tag}>", VISIBILITY_WHY)
+        if "hidden" in el.attrs:
+            place = hidden_placement(el)
+            if place is None:
+                note(f"hidden on <{el.tag}>", VISIBILITY_HIDDEN_WHY)
+            elif counts is not None:
+                counts[place] += 1
+        if VISUALLY_HIDDEN in el.classes:
+            if not is_skip_link(el):
+                note(f"the class {VISUALLY_HIDDEN} on <{el.tag}>", VISIBILITY_VH_WHY)
+            elif counts is not None:
+                counts[3] += 1
+        if el.tag == "title" and (el.parent is None or el.parent.tag != "head"):
+            note("<title> outside <head>", VISIBILITY_TITLE_WHY)
+    return [f"rule 20: {head} ({n} element(s)){why}" for head, (n, why) in kinds.items()]
+
+
 def hidden_name_problems(texts, hidden):
     """Rule 9: no name or alias of a hidden persona in the file, its path
     included, under any reading of NAME_READINGS (texts as file_texts reads
@@ -7294,6 +7455,7 @@ def cmd_render(args):
             findings.add(rel, problem)
 
     pages = {}
+    placements = [0] * len(VISIBILITY_PLACEMENTS)
     files = sorted(p for p in public.rglob("*") if p.is_file())
     for path in files:
         rel = "public/" + path.relative_to(public).as_posix()
@@ -7331,6 +7493,10 @@ def cmd_render(args):
                 problems.append("rule 7: an element carries the download attribute; "
                                 "the site never offers a file download (D8)")
             problems += bidi_markup_problems(page)
+            # Rule 20 on every HTML page, unread ones included (a markup:
+            # finding does not hide a <noscript> or a stray hidden).
+            if suffix in HTML_SUFFIXES:
+                problems += visibility_problems(page, placements)
             problems += url_problems(page)
             problems += internal_link_problems(page, page_path)
             problems += copy_button_problems(page, by_page.get(rel), contact)
@@ -7422,7 +7588,9 @@ def cmd_render(args):
     return findings.report(
         f"render checked: {len(records)} records (reports {n_reports}, campaigns "
         f"{len(records) - n_reports}), {n_record_pages} record pages, {len(pages)} "
-        f"HTML pages, {len(files)} files{feed_summary}{search_summary}{intake_summary}")
+        f"HTML pages, {len(files)} files{feed_summary}{search_summary}{intake_summary}; "
+        "visibility: " + ", ".join(f"{n} {what}"
+                                   for n, what in zip(placements, VISIBILITY_PLACEMENTS)))
 
 
 # ---------------------------------------------------------------------------
@@ -11395,7 +11563,7 @@ def footer_shape():
                              "data-copy-target": "contact", "data-copy-done": "Copied",
                              "data-copy-failed": "Copy failed, select the text instead"}),
              tree("span", {"class": "copy-status", "role": "status", "aria-live": "polite"})),
-        tree("nav", {"aria-label": "Site"}, tree(
+        tree("nav", {"aria-label": FOOTER_NAV_LABEL}, tree(
             "ul", {"class": "footer-links"},
             *(tree("li", None, tree("a", {"href": href}))
               for href in ("/methodology/", "/corrections/", "/privacy/", "/data-feed/")))),

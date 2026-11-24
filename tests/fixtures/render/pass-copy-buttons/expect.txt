@@ -1,1 +1,1 @@
-render checked: 2 records (reports 1, campaigns 1), 2 record pages
+render checked: 2 records (reports 1, campaigns 1), 2 record pages, 6 HTML pages, 6 files; visibility: 2 Copy buttons, 0 search-out, 0 honeypots, 6 skip links

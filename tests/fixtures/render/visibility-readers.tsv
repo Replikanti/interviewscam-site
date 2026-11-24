@@ -1,0 +1,19 @@
+# Render rule 20 (Replikanti/interviewscam#51): one anchor per reader family
+# of hides, concealed and strings(shown=True) (the reader table of the plan),
+# on the cheapest base that holds it. The find string must occur exactly
+# once in the file; replace holds {M} once, the member's snippet.
+# family<TAB>base<TAB>file<TAB>find<TAB>replace
+title-h1	pass-search	public/reports/meetfix/index.html	<h1>MeetFix, a name used	<h1>{M}MeetFix, a name used
+report-item	pass-search	public/index.html	<ul class="record-list"><li><a href="/reports/example-front-company/">Example Front Company</a>	<ul class="record-list"><li><a href="/reports/example-front-company/">Example Front Company</a>{M}
+own-state	pass-search	public/reports/meetfix/index.html	<p class="state-sentence">No real	<p class="state-sentence">{M}No real
+persona-label	pass-search	public/reports/persona-1/index.html	<code class="artifact">@talent_lead_frontco</code>	<code class="artifact">@talent_lead_frontco</code>{M}
+record-label	pass-search	public/reports/meetfix/index.html	<p class="record-label">Reported once	<p class="record-label">{M}Reported once
+campaign-line	pass-search	public/reports/meetfix/index.html	<p class="campaign-line">Campaign family: unattributed</p>	<p class="campaign-line">Campaign family: unattributed{M}</p>
+attribution	pass-search	public/campaigns/example-campaign-family/index.html	<li class="attribution">Linked to	<li class="attribution">{M}Linked to
+artifact	pass-search	public/reports/meetfix/index.html	<li><code class="artifact">meetfix-download[.]example</code>	<li>{M}<code class="artifact">meetfix-download[.]example</code>
+section-links	pass-search	public/reports/index.html	<ul class="record-list"><li>	<ul class="record-list"><li>{M}
+home-search	pass-search	public/index.html	<label for="q">Company	<label for="q">{M}Company
+a-z	pass-search	public/a-z/index.html	<span class="index-type">Company</span>	<span class="index-type">Company</span>{M}
+page-text	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead">{M}A meeting app
+feed-terms	pass-feed	public/data-feed/index.html	<dt><code>version</code></dt><dd>Number.	<dt><code>version</code></dt><dd>{M}Number.
+intake	pass-intake	public/report-a-scam/index.html	<p class=hint id=intake-defang>Write	<p class=hint id=intake-defang>{M}Write

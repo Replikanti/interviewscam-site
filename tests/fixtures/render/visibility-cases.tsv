@@ -1,0 +1,54 @@
+# Render rule 20 (Replikanti/interviewscam#51): one row per branch of
+# visibility_problems and per edge case of the plan.
+# name<TAB>base<TAB>file<TAB>find<TAB>replace<TAB>expect[<TAB>find<TAB>replace...],
+# run by visibility_cases_runner (selftest.sh) with the row semantics of
+# search_cases_runner: PASS, COUNT=<n> <text> or <text>; each find string
+# exactly once.
+hidden-on-plain-button	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<button type="button" hidden>x</button><p class="lead">A meeting app	rule 20: hidden on <button>
+hidden-on-copy-span	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<span class="copy" hidden>x</span><p class="lead">A meeting app	rule 20: hidden on <span>
+hidden-on-search-class-variant	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<div class="search-outer" hidden>x</div><p class="lead">A meeting app	rule 20: hidden on <div>
+hidden-copy-nbsp-token	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<button type="button" class="button&nbsp;copy" hidden>x</button><p class="lead">A meeting app	rule 20: hidden on <button>
+copy-button-visually-hidden	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<button type="button" class="copy visually-hidden" hidden>x</button><p class="lead">A meeting app	rule 20: the class visually-hidden on <button>
+honeypot-outside-intake-form	pass-intake	public/report-a-scam/index.html	</form><p class=send-fallback>	</form><div hidden>x</div><p class=send-fallback>	rule 20: hidden on <div>
+honeypot-with-class	pass-intake	public/report-a-scam/index.html	<div hidden><label for=intake-website>	<div class=x hidden><label for=intake-website>	rule 20: hidden on <div>
+honeypot-hidden-value	pass-intake	public/report-a-scam/index.html	<div hidden><label for=intake-website>	<div hidden=hidden><label for=intake-website>	rule 20: hidden on <div>
+honeypot-not-div	pass-intake	public/report-a-scam/index.html	<div hidden><label for=intake-website>	<p hidden><label for=intake-website>	rule 20: hidden on <p>	autocomplete=off></div>	autocomplete=off></p>
+honeypot-nested-deeper	pass-intake	public/report-a-scam/index.html	<div hidden><label for=intake-website>	<div class=field><div hidden><label for=intake-website>	rule 20: hidden on <div>	autocomplete=off></div>	autocomplete=off></div></div>
+honeypot-form-not-intake	pass-intake	public/report-a-scam/index.html	<form class=intake action=	<form class=intake-x action=	rule 20: hidden on <div>
+honeypot-parent-div-intake	pass-intake	public/report-a-scam/index.html	<div hidden><label for=intake-website>	<div class=intake><div hidden><label for=intake-website>	rule 20: hidden on <div>	autocomplete=off></div>	autocomplete=off></div></div>
+skip-link-other-href	pass-search	public/reports/meetfix/index.html	<a class="visually-hidden" href="#main">	<a class="visually-hidden" href="#top">	rule 20: the class visually-hidden on <a>
+skip-link-not-in-body	pass-search	public/reports/meetfix/index.html	<a class="visually-hidden" href="#main">Skip to content</a>		rule 20: the class visually-hidden on <a>	<main id="main" class="container">	<main id="main" class="container"><a class="visually-hidden" href="#main">Skip to content</a>
+skip-link-extra-attribute	pass-search	public/reports/meetfix/index.html	<a class="visually-hidden" href="#main">	<a class="visually-hidden" href="#main" id="skip">	rule 20: the class visually-hidden on <a>
+skip-link-other-text	pass-search	public/reports/meetfix/index.html	>Skip to content</a>	>Skip to the content</a>	rule 20: the class visually-hidden on <a>
+skip-link-child-element	pass-search	public/reports/meetfix/index.html	>Skip to content</a>	><span>Skip to content</span></a>	rule 20: the class visually-hidden on <a>
+skip-link-second	pass-search	public/reports/meetfix/index.html	<a class="visually-hidden" href="#main">Skip to content</a>	<a class="visually-hidden" href="#main">Skip to content</a><a class="visually-hidden" href="#main">Skip to content</a>	COUNT=1 rule 20: the class visually-hidden on <a> (1 element(s))
+skip-link-not-a	pass-search	public/reports/meetfix/index.html	<a class="visually-hidden" href="#main">Skip to content</a>	<span class="visually-hidden" href="#main">Skip to content</span>	rule 20: the class visually-hidden on <span>
+visually-hidden-case-variant	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><span class="Visually-Hidden">A</span> meeting app	PASS
+visually-hidden-nbsp-token	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><span class="x\u{00A0}visually-hidden">A</span> meeting app	PASS
+visually-hidden-001f-token	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><span class="x\u{001F}visually-hidden">A</span> meeting app	PASS
+visually-hidden-3000-token	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><span class="x\u{3000}visually-hidden">A</span> meeting app	PASS
+visually-hidden-tab-token	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><span class="x\tvisually-hidden">A</span> meeting app	rule 20: the class visually-hidden on <span>
+visually-hidden-ff-token	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><span class="x\u{000C}visually-hidden">A</span> meeting app	rule 20: the class visually-hidden on <span>
+class-duplicate-second-ignored	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><span class="x" class="visually-hidden">A</span> meeting app	PASS
+details-open	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<details open>b</details><p class="lead">A meeting app	COUNT=1 rule 20: <details>
+summary-alone	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<summary>a</summary><p class="lead">A meeting app	rule 20: <summary>
+option-alone	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<option>a</option><p class="lead">A meeting app	rule 20: <option>
+optgroup-alone	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<optgroup>a</optgroup><p class="lead">A meeting app	rule 20: <optgroup>
+dialog-open	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<dialog open>a</dialog><p class="lead">A meeting app	rule 20: <dialog>
+object	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<object>a</object><p class="lead">A meeting app	rule 20: <object>
+iframe	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<iframe></iframe><p class="lead">A meeting app	rule 20: <iframe>
+video	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<video>a</video><p class="lead">A meeting app	rule 20: <video>
+canvas	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<canvas>a</canvas><p class="lead">A meeting app	rule 20: <canvas>
+meter	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<meter>a</meter><p class="lead">A meeting app	rule 20: <meter>
+ruby-rp	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<ruby>a<rp>(</rp></ruby><p class="lead">A meeting app	rule 20: <rp>
+aria-hidden-false	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><span aria-hidden="false">A</span> meeting app	rule 20: the attribute aria-hidden on <span>
+attribute-translate	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><span translate="no">A</span> meeting app	rule 20: the attribute translate on <span>
+attribute-accesskey	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><span accesskey="a">A</span> meeting app	rule 20: the attribute accesskey on <span>
+attribute-style	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><span style="color: inherit">A</span> meeting app	rule 20: the attribute style on <span>
+attribute-hidden-on-own-set	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead" hidden>A meeting app	rule 20: hidden on <p>
+title-in-body	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><title>A</title> meeting app	rule 20: <title> outside <head>
+markdown-set-passes	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<h4 id="h-a">a</h4><h5 id="h-b">b</h5><h6 id="h-c">c</h6><blockquote><p>q <em>e</em> <strong>s</strong> <code>c</code><br>d</p></blockquote><pre><code>x\ny</code></pre><hr><ol start="3"><li>i</li></ol><p class="lead">A meeting app	PASS
+markdown-del	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><del>A</del> meeting app	rule 20: <del>
+markdown-table	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<table><tbody><tr><td>a</td></tr></tbody></table><p class="lead">A meeting app	rule 20: <table>
+markdown-link-title	pass-search	public/reports/meetfix/index.html	<p class="lead">A meeting app	<p class="lead"><a href="/a-z/" title="t">A</a> meeting app	rule 20: the attribute title on <a>
+unread-page-still-read	pass-search	public/reports/meetfix/index.html	<p class="record-label">Reported once	<p class="record-label">Reported once<details>x</details>	COUNT=2 rule 20: <details>

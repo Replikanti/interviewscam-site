@@ -484,6 +484,147 @@ else:
 PY
 }
 
+# visibility_cases_runner <sitecheck.py> <render fixture dir> <schema dir>
+# (Replikanti/interviewscam#51, ADR-0004 part 14): render rule 20, the
+# closed markup vocabulary. It runs the product of
+# <dir>/visibility-members.tsv (member, snippet, expect) and
+# <dir>/visibility-readers.tsv (family, base, file, find, replace, where
+# replace holds {M} once), as render-visibility/<member>@<family>, then the
+# rows of <dir>/visibility-cases.tsv (name, base, file, find, replace,
+# expect, then optional further find and replace pairs), as
+# render-visibility/<name>. Each row copies its base case, applies its
+# edits (each find string exactly once, \n, \t, \r, \0 and \u{XXXX} read as
+# in search_cases_runner) and runs the real cmd_render with the switches the
+# base's marker files ask for; PASS, COUNT=<n> <text> and <text> as there.
+# The last line, render-visibility/table, prints the members times the
+# families plus the rows and fails on a malformed table or a missing pair.
+# -B: no tools/__pycache__.
+visibility_cases_runner() {
+  python3 -I -B - "$1" "$2" "$3" <<'PY'
+import argparse
+import contextlib
+import importlib.util
+import io
+import re
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+fixtures, schema_dir = Path(sys.argv[2]), Path(sys.argv[3])
+label = "render-visibility"
+
+
+def unescape(text):
+    text = re.sub(r"\\u\{([0-9A-F]{4,6})\}", lambda m: chr(int(m.group(1), 16)), text)
+    return (text.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
+            .replace("\\0", "\x00"))
+
+
+def table(name, width, extra=False, blank=()):
+    rows = [line.split("\t") for line in
+            (fixtures / name).read_text(encoding="utf-8").splitlines()
+            if line and not line.startswith("#")]
+    good, bad = [], 0
+    for row in rows:
+        if (len(row) != width and not (extra and len(row) > width and (len(row) - width) % 2 == 0)) \
+                or not all(v for i, v in enumerate(row[:width]) if i not in blank):
+            print(f"FAIL {label}/table: malformed row in {name}: {row!r}")
+            bad += 1
+        else:
+            good.append(row)
+    return good, bad
+
+
+members, bad_m = table("visibility-members.tsv", 3)
+readers, bad_r = table("visibility-readers.tsv", 5)
+# A case row's first replace may be empty (a row that deletes the find).
+cases, bad_c = table("visibility-cases.tsv", 6, extra=True, blank=(4,))
+runs = []
+for member, snippet, expect in members:
+    for family, base, rel, find, replace in readers:
+        if replace.count("{M}") != 1:
+            print(f"FAIL {label}/table: family {family} has {replace.count('{M}')} {{M}}, needs one")
+            bad_r += 1
+            continue
+        runs.append((f"{member}@{family}", base, rel,
+                     [(unescape(find), unescape(replace.replace("{M}", snippet)))], expect))
+for row in cases:
+    name, base, rel, expect = row[0], row[1], row[2], row[5]
+    pairs = [(row[3], row[4])] + list(zip(row[6::2], row[7::2]))
+    runs.append((name, base, rel, [(unescape(f), unescape(r)) for f, r in pairs], expect))
+names = [r[0] for r in runs]
+dupes = sorted({n for n in names if names.count(n) > 1})
+if dupes:
+    print(f"FAIL {label}/table: duplicate row names {dupes}")
+done = set()
+for name, base_name, rel, edits, expect in runs:
+    base = fixtures / base_name
+    no_feed = not (base / "feed.txt").is_file()
+    no_search = not (base / "search.txt").is_file()
+    no_report_pins = not (base / "report-pins.txt").is_file()
+    no_intake = not (base / "intake.txt").is_file()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "case"
+        if not base.is_dir():
+            print(f"FAIL {label}/{name}: no base case {base_name}")
+            continue
+        shutil.copytree(base, root)
+        path = root / rel
+        if not path.is_file():
+            print(f"FAIL {label}/{name}: {rel} is not a file of {base_name}")
+            continue
+        text = path.read_text(encoding="utf-8")
+        counts = []
+        for find, replace in edits:
+            counts.append(text.count(find))
+            text = text.replace(find, replace, 1)
+        if counts != [1] * len(edits):
+            print(f"FAIL {label}/{name}: the find strings occur {counts} times in {rel} "
+                  "(in turn), the row needs exactly one each")
+            continue
+        path.write_text(text, encoding="utf-8")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            rc = sitecheck.cmd_render(argparse.Namespace(
+                records=str(root), schemas=str(schema_dir), fixtures=None,
+                no_feed=no_feed, no_search=no_search, no_report_pins=no_report_pins,
+                no_intake=no_intake, public=str(root / "public")))
+        output = buffer.getvalue()
+    count = None
+    if expect.startswith("COUNT="):
+        head, _, expect = expect.partition(" ")
+        count = int(head[len("COUNT="):])
+    findings = sum(line.startswith("FAIL: ") for line in output.splitlines())
+    if expect == "PASS" and rc == 0:
+        print(f"ok   {label}/{name} (passed as expected)")
+        done.add(name)
+    elif expect != "PASS" and rc == 1 and expect in output \
+            and (count is None or findings == count):
+        print(f"ok   {label}/{name} (failed as expected: {expect}"
+              + ("" if count is None else f", exactly {count} finding(s)") + ")")
+        done.add(name)
+    else:
+        print(f"FAIL {label}/{name}: expected "
+              f"{'exit 0' if expect == 'PASS' else 'exit 1 and ' + repr(expect)}"
+              + ("" if count is None else f" with exactly {count} finding(s)")
+              + f"; got exit {rc} with {findings} finding(s); output:")
+        for line in output.splitlines():
+            print(f"     | {line}")
+missing = [f"{m[0]}@{r[0]}" for m in members for r in readers
+           if f"{m[0]}@{r[0]}" not in done]
+summary = (f"{len(members)} members x {len(readers)} families + {len(cases)} rows")
+if bad_m or bad_r or bad_c or dupes or not members or not readers or missing:
+    print(f"FAIL {label}/table: {summary}; {bad_m + bad_r + bad_c} malformed, "
+          f"{len(missing)} pair(s) without a passing row" + (f": {missing[:5]}" if missing else ""))
+else:
+    print(f"ok   {label}/table ({summary})")
+PY
+}
+
 # reflow_search_runner <sitecheck.py> <cases table> <base case> <search.js>
 # <chrome> (M4 PR 4, CI only): reflow case (8) one branch per row. A row is
 # name, file, find, replace, expect, an optional patch list and optional
@@ -5462,6 +5603,23 @@ PINNED
     n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
     if ! grep -qE '^(ok   |FAIL )render-bidi/table' "$out"; then
       echo "FAIL render-bidi: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+  if selftest_wants render-visibility; then
+    # render-visibility/<member>@<family> and render-visibility/<row>
+    # (Replikanti/interviewscam#51, ADR-0004 part 14): render rule 20, every
+    # member of tests/fixtures/render/visibility-members.tsv in every reader
+    # family of visibility-readers.tsv, then the branch rows of
+    # visibility-cases.tsv (visibility_cases_runner above).
+    visibility_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render" \
+      "$SELFTEST_ROOT/schema" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )render-visibility/table' "$out"; then
+      echo "FAIL render-visibility: the runner did not finish; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi
