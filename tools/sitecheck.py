@@ -2607,6 +2607,8 @@ def cmd_site(args):
                         findings.add(rel, problem)
                 for problem in rawtext_built_problems(text):
                     findings.add(rel, problem)
+                for problem in tag_space_problems(text):
+                    findings.add(rel, problem)
                 scripts += [(rel, attrs["src"]) for tag, attrs in page.elements
                             if tag == "script" and "src" in attrs]
                 page_scripts[rel] = [attrs for tag, attrs in page.elements
@@ -9424,6 +9426,104 @@ def rawtext_spans(text, built=False):
             end = len(text) if close is None else close.start()
             yield name, match.start(), pos, end
             pos = end
+
+# Site rule (i), tag markup (Replikanti/interviewscam#32 fix round 1): the
+# code points that Python's str.isspace() and the str pattern \s match
+# (html.parser splits a tag's attributes at its \s) and that HTML does not
+# take for whitespace, which is only TAB, LF, FF, CR and SPACE. Written out,
+# not computed, so the rule is the same on every interpreter: the
+# derivation (every code point c with chr(c).isspace(), minus those five)
+# gave this set on CPython 3.11, 3.12 and 3.14 (Unicode 14 to 16; White_Space
+# has not changed since Unicode 6.3), and the self-test line
+# site-csp-equiv/space-set fails when the running interpreter's set holds a
+# code point outside it.
+PARSER_ONLY_SPACE = frozenset({
+    0x000B, 0x001C, 0x001D, 0x001E, 0x001F, 0x0085, 0x00A0, 0x1680,
+    0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007,
+    0x2008, 0x2009, 0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000,
+})
+TAG_NAME_SHOWN = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*|<[!?]", re.A)
+
+
+def tag_spans(text):
+    """(start, end) of every tag of a built page as HTML's tokenizer reads
+    it, from its '<' through its closing '>' (or the end of the file): a
+    start or end tag ('<' or '</' and an ASCII letter) with its attributes,
+    where a quote opens a value only right after '=' and ASCII whitespace,
+    so a '>' inside a quoted value does not end the tag; '<!' and '<?' run
+    to the next '>'. Comments get no reading of their own, because rule (i)
+    fails every '<!--'. Read with a pattern of states, not html.parser,
+    whose whitespace is what this rule checks."""
+    pos, n = 0, len(text)
+    while True:
+        lt = text.find("<", pos)
+        if lt < 0:
+            return
+        nxt = text[lt + 1:lt + 2]
+        if nxt in ("!", "?"):
+            gt = text.find(">", lt + 2)
+            pos = n if gt < 0 else gt + 1
+            yield lt, pos
+            continue
+        i = lt + 2 if nxt == "/" else lt + 1
+        if not ("a" <= text[i:i + 1].lower() <= "z" and text[i:i + 1].isascii()):
+            pos = lt + 1
+            continue
+        state = "name"
+        while i < n:
+            c = text[i]
+            if state == "dq":
+                state = "before" if c == '"' else state
+            elif state == "sq":
+                state = "before" if c == "'" else state
+            elif c == ">":
+                break
+            elif state == "value":
+                if c in ASCII_WHITESPACE:
+                    pass
+                elif c == '"':
+                    state = "dq"
+                elif c == "'":
+                    state = "sq"
+                else:
+                    state = "unquoted"
+            elif state == "unquoted":
+                state = "before" if c in ASCII_WHITESPACE else state
+            elif c in ASCII_WHITESPACE:
+                state = "after" if state == "attr" else "before" if state == "name" else state
+            elif c == "/":
+                state = "before"
+            elif c == "=" and state in ("attr", "after"):
+                state = "value"
+            elif state in ("before", "after"):
+                state = "attr"
+            i += 1
+        pos = min(i + 1, n)
+        yield lt, pos
+
+
+def tag_space_problems(text):
+    """Site rule (i) on a built page (Replikanti/interviewscam#32 fix round
+    1): no code point of PARSER_ONLY_SPACE anywhere in tag markup. Where
+    html.parser takes it for whitespace (between attributes, after a name,
+    around '=') it splits the attributes where a browser does not: a raw
+    U+00A0 between http-equiv and content gives the browser no CSP while
+    every rule reads one. Inside a quoted value both read the same text,
+    but this fails closed there too (the minifier writes none). One finding
+    per code point and tag name."""
+    seen = {}
+    for start, end in tag_spans(text):
+        found = {ord(c) for c in text[start:end] if ord(c) in PARSER_ONLY_SPACE}
+        if found:
+            match = TAG_NAME_SHOWN.match(text, start)
+            name = match.group(0) if match else "<"
+            for code in found:
+                seen.setdefault((code, name), None)
+    return [f"(i) U+{code:04X} in tag markup ({name}...>): html.parser reads it as "
+            "whitespace and HTML does not, so they split the attributes differently; "
+            "fails closed"
+            for code, name in sorted(seen)]
+
 
 def rawtext_built_problems(text):
     """Site rule (i) on a built HTML page (review3 5): no '<' in the text of a
