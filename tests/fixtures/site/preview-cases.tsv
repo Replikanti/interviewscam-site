@@ -37,6 +37,8 @@ key-unknown-twitter	public/index.html	<link rel="canonical" href="https://interv
 key-itemprop	public/index.html	<link rel="canonical" href="https://interviewscam.com/">	<link rel="canonical" href="https://interviewscam.com/"><meta itemprop="og:title" content="fixture">	looks like a link preview key
 key-fullwidth	public/index.html	<link rel="canonical" href="https://interviewscam.com/">	<link rel="canonical" href="https://interviewscam.com/"><meta property="\u{FF4F}g:title" content="fixture">	looks like a link preview key
 pass-key-cyrillic-name	public/index.html	<link rel="canonical" href="https://interviewscam.com/">	<link rel="canonical" href="https://interviewscam.com/"><meta name="\u{043E}g:title" content="fixture">	ONLY (m) the head holds
+content-missing-og-title	public/index.html	<meta property="og:title" content="fixture">	<meta property="og:title">	(o1) <meta property=og:title> has no content
+content-missing-twitter-card	public/index.html	<meta name="twitter:card" content="summary">	<meta name="twitter:card">	(o1) <meta name=twitter:card> has no content
 fixed-og-type	public/index.html	<meta property="og:type" content="website">	<meta property="og:type" content="article">	(o2) og:type is
 fixed-twitter-card	public/index.html	<meta name="twitter:card" content="summary">	<meta name="twitter:card" content="summary_large_image">	(o2) twitter:card is
 url-path	public/index.html	<meta property="og:url" content="https://interviewscam.com/">	<meta property="og:url" content="https://interviewscam.com/about/">	(o3) og:url is
@@ -71,6 +73,7 @@ live/og:site_name/fullwidth-dot	public/index.html	<meta property="og:site_name" 
 live/og:site_name/ideographic-dot	public/index.html	<meta property="og:site_name" content="interviewscam.com">	<meta property="og:site_name" content="See evil\u{3002}example now">	(o7) og:site_name holds
 live/og:site_name/entity-dot	public/index.html	<meta property="og:site_name" content="interviewscam.com">	<meta property="og:site_name" content="See evil&#46;example now">	(o7) og:site_name holds
 live/og:site_name/zero-width	public/index.html	<meta property="og:site_name" content="interviewscam.com">	<meta property="og:site_name" content="See ev\u{200B}il.example now">	(o7) og:site_name holds
+live/og:site_name/url-own-host	public/index.html	<meta property="og:site_name" content="interviewscam.com">	<meta property="og:site_name" content="See https://interviewscam.com/x now">	(o7) og:site_name holds
 live/og:site_name/mailto	public/index.html	<meta property="og:site_name" content="interviewscam.com">	<meta property="og:site_name" content="See mailto:x now">	(o7) og:site_name holds
 live/og:site_name/url-upper	public/index.html	<meta property="og:site_name" content="interviewscam.com">	<meta property="og:site_name" content="See HTTPS://evil.example/x now">	(o7) og:site_name holds
 live/og:site_name/protocol-relative-defanged	public/index.html	<meta property="og:site_name" content="interviewscam.com">	<meta property="og:site_name" content="See //evil[.]example now">	(o7) og:site_name holds
@@ -90,6 +93,7 @@ live/og:title/fullwidth-dot	public/index.html	<meta property="og:title" content=
 live/og:title/ideographic-dot	public/index.html	<meta property="og:title" content="fixture">	<meta property="og:title" content="See evil\u{3002}example now">	(o7) og:title holds
 live/og:title/entity-dot	public/index.html	<meta property="og:title" content="fixture">	<meta property="og:title" content="See evil&#46;example now">	(o7) og:title holds
 live/og:title/zero-width	public/index.html	<meta property="og:title" content="fixture">	<meta property="og:title" content="See ev\u{200B}il.example now">	(o7) og:title holds
+live/og:title/url-own-host	public/index.html	<meta property="og:title" content="fixture">	<meta property="og:title" content="See https://interviewscam.com/x now">	(o7) og:title holds
 live/og:title/mailto	public/index.html	<meta property="og:title" content="fixture">	<meta property="og:title" content="See mailto:x now">	(o7) og:title holds
 live/og:title/url-upper	public/index.html	<meta property="og:title" content="fixture">	<meta property="og:title" content="See HTTPS://evil.example/x now">	(o7) og:title holds
 live/og:title/protocol-relative-defanged	public/index.html	<meta property="og:title" content="fixture">	<meta property="og:title" content="See //evil[.]example now">	(o7) og:title holds
@@ -109,6 +113,7 @@ live/og:description/fullwidth-dot	public/index.html	<meta property="og:descripti
 live/og:description/ideographic-dot	public/index.html	<meta property="og:description" content="A fixture page.">	<meta property="og:description" content="See evil\u{3002}example now">	(o7) og:description holds
 live/og:description/entity-dot	public/index.html	<meta property="og:description" content="A fixture page.">	<meta property="og:description" content="See evil&#46;example now">	(o7) og:description holds
 live/og:description/zero-width	public/index.html	<meta property="og:description" content="A fixture page.">	<meta property="og:description" content="See ev\u{200B}il.example now">	(o7) og:description holds
+live/og:description/url-own-host	public/index.html	<meta property="og:description" content="A fixture page.">	<meta property="og:description" content="See https://interviewscam.com/x now">	(o7) og:description holds
 live/og:description/mailto	public/index.html	<meta property="og:description" content="A fixture page.">	<meta property="og:description" content="See mailto:x now">	(o7) og:description holds
 live/og:description/url-upper	public/index.html	<meta property="og:description" content="A fixture page.">	<meta property="og:description" content="See HTTPS://evil.example/x now">	(o7) og:description holds
 live/og:description/protocol-relative-defanged	public/index.html	<meta property="og:description" content="A fixture page.">	<meta property="og:description" content="See //evil[.]example now">	(o7) og:description holds
@@ -128,6 +133,7 @@ live/twitter:title/fullwidth-dot	public/index.html	<meta name="twitter:title" co
 live/twitter:title/ideographic-dot	public/index.html	<meta name="twitter:title" content="fixture">	<meta name="twitter:title" content="See evil\u{3002}example now">	(o7) twitter:title holds
 live/twitter:title/entity-dot	public/index.html	<meta name="twitter:title" content="fixture">	<meta name="twitter:title" content="See evil&#46;example now">	(o7) twitter:title holds
 live/twitter:title/zero-width	public/index.html	<meta name="twitter:title" content="fixture">	<meta name="twitter:title" content="See ev\u{200B}il.example now">	(o7) twitter:title holds
+live/twitter:title/url-own-host	public/index.html	<meta name="twitter:title" content="fixture">	<meta name="twitter:title" content="See https://interviewscam.com/x now">	(o7) twitter:title holds
 live/twitter:title/mailto	public/index.html	<meta name="twitter:title" content="fixture">	<meta name="twitter:title" content="See mailto:x now">	(o7) twitter:title holds
 live/twitter:title/url-upper	public/index.html	<meta name="twitter:title" content="fixture">	<meta name="twitter:title" content="See HTTPS://evil.example/x now">	(o7) twitter:title holds
 live/twitter:title/protocol-relative-defanged	public/index.html	<meta name="twitter:title" content="fixture">	<meta name="twitter:title" content="See //evil[.]example now">	(o7) twitter:title holds
@@ -147,6 +153,7 @@ live/twitter:description/fullwidth-dot	public/index.html	<meta name="twitter:des
 live/twitter:description/ideographic-dot	public/index.html	<meta name="twitter:description" content="A fixture page.">	<meta name="twitter:description" content="See evil\u{3002}example now">	(o7) twitter:description holds
 live/twitter:description/entity-dot	public/index.html	<meta name="twitter:description" content="A fixture page.">	<meta name="twitter:description" content="See evil&#46;example now">	(o7) twitter:description holds
 live/twitter:description/zero-width	public/index.html	<meta name="twitter:description" content="A fixture page.">	<meta name="twitter:description" content="See ev\u{200B}il.example now">	(o7) twitter:description holds
+live/twitter:description/url-own-host	public/index.html	<meta name="twitter:description" content="A fixture page.">	<meta name="twitter:description" content="See https://interviewscam.com/x now">	(o7) twitter:description holds
 live/twitter:description/mailto	public/index.html	<meta name="twitter:description" content="A fixture page.">	<meta name="twitter:description" content="See mailto:x now">	(o7) twitter:description holds
 live/twitter:description/url-upper	public/index.html	<meta name="twitter:description" content="A fixture page.">	<meta name="twitter:description" content="See HTTPS://evil.example/x now">	(o7) twitter:description holds
 live/twitter:description/protocol-relative-defanged	public/index.html	<meta name="twitter:description" content="A fixture page.">	<meta name="twitter:description" content="See //evil[.]example now">	(o7) twitter:description holds
