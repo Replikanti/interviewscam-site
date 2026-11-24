@@ -866,6 +866,10 @@ check_main() {
 # steps did not run here.
 check_summary() {
   local i failed_steps=() skipped_steps=() not_run=0
+  # Every run ends here, also when a records-repo step failed and the reflow
+  # step never ran: the warm-up reader and its directory must not outlive
+  # check.sh. Idempotent: a no-op after step_reflow joined it.
+  warm_chrome_finish
   echo
   echo "==> Summary"
   for i in "${!STEP_NAMES[@]}"; do

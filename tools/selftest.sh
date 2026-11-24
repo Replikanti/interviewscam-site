@@ -4676,7 +4676,7 @@ selftest_blocks() {
         ww_bad+=" $ww_fn does not call warm_chrome_finish first;"
       fi
     done
-    if ! grep -qF 'WARM_CHROME_WAIT:-20' <<<"$(declare -f warm_chrome_finish)" \
+    if ! grep -qE 'WARM_CHROME_WAIT:-20[}]' <<<"$(declare -f warm_chrome_finish)" \
         || ! grep -qxF 'REFLOW_LAUNCH_TIMEOUT = 75' "$SELFTEST_ROOT/tools/sitecheck.py"; then
       ww_bad+=" WARM_CHROME_WAIT is not 20 by default or REFLOW_LAUNCH_TIMEOUT is not 75;"
     fi
@@ -6513,7 +6513,7 @@ LDD
     ww_fresh
     ww_install "$ww_dir/opt"
     mkdir "$ww_dir/stub"
-    printf '#!/bin/sh\nsleep 30\n' >"$ww_dir/stub/cat"
+    printf '#!/bin/sh\necho $$ >"%s/stub.pid"\nexec sleep 30\n' "$ww_dir" >"$ww_dir/stub/cat"
     chmod +x "$ww_dir/stub/cat"
     ww_bad=""
     ww_got="$(GITHUB_ACTIONS=true PATH="$ww_dir/stub:$ww_dir/bin:$PATH" WARM_CHROME_ROOT="$ww_dir/opt" \
@@ -6527,16 +6527,22 @@ LDD
         sleep 0.3
         alive=no
         kill -0 "$pid" 2>/dev/null && alive=yes
-        group="$(pgrep -g "$pid" | wc -l)"
+        # the stub cat wrote its own pid (it execs sleep): no survivor
+        group=nofile
+        if [[ -s "$2/stub.pid" ]]; then
+          read -r spid <"$2/stub.pid"
+          group=no
+          kill -0 "$spid" 2>/dev/null && group=yes
+        fi
         awk -v a="$t0" -v b="$t1" -v l="$line" -v alive="$alive" -v g="$group" \
           "BEGIN { printf \"%.1f|%s|%s|%s\\n\", b - a, alive, g, l }"' _ \
-      "$SELFTEST_ROOT/tools/check.sh" 2>&1)"
-    if [[ ! "$ww_got" =~ ^([0-9.]+)\|no\|0\|"reflow warm-up: still reading after 1 s, stopped ("[0-9]+" files listed)"$ ]]; then
-      ww_bad="the join gave '$ww_got', want a stopped line, the reader and its group gone"
+      "$SELFTEST_ROOT/tools/check.sh" "$ww_dir" 2>&1)"
+    if [[ ! "$ww_got" =~ ^([0-9.]+)\|no\|no\|"reflow warm-up: still reading after 1 s, stopped ("[0-9]+" files listed)"$ ]]; then
+      ww_bad="the join gave '$ww_got', want a stopped line, the reader and the stub it started gone"
     elif ! awk -v t="${BASH_REMATCH[1]}" 'BEGIN { exit !(t < 3) }'; then
       ww_bad="the join took ${BASH_REMATCH[1]} s, want under 3 s"
     fi
-    ww_row slow-reader-capped "join returned in ${BASH_REMATCH[1]:-?} s with the stopped line; reader and its group gone"
+    ww_row slow-reader-capped "join returned in ${BASH_REMATCH[1]:-?} s with the stopped line; the reader and the stub cat it started gone"
 
     # silent-while-running: nothing from start, one line from finish.
     ww_fresh
@@ -6548,6 +6554,42 @@ LDD
     [[ ! -s "$ww_dir/start.out" ]] || ww_bad="start and the reader wrote '$(cat "$ww_dir/start.out")'"
     [[ "$(wc -l <"$ww_dir/finish.out")" == 1 ]] || ww_bad+=" finish did not print exactly one line;"
     ww_row silent-while-running "start and the reader's whole life print nothing; finish prints one line"
+
+    # default-root: WARM_CHROME_ROOT unset means /opt. A Chrome in the
+    # temp tree (outside /opt) reads its own file only, never its directory.
+    ww_fresh
+    ww_install "$ww_dir/opt"
+    ww_bad=""
+    # shellcheck disable=SC2016 # the inner shell expands the variables
+    ww_got="$(env -u WARM_CHROME_ROOT GITHUB_ACTIONS=true PATH="$ww_dir/bin:$PATH" \
+      bash -c 'source "$1"; warm_chrome_start; warm_chrome_finish' _ "$SELFTEST_ROOT/tools/check.sh" 2>&1)"
+    [[ "$ww_got" =~ ^"reflow warm-up: read 1 files, "[0-9.]+" MiB in " ]] \
+      || ww_bad="with the default root the join line is '$ww_got', want 1 file (a Chrome outside /opt reads only itself)"
+    ww_row default-root "WARM_CHROME_ROOT unset: a Chrome outside /opt reads 1 file, not its directory"
+
+    # join-before-summary: a run that never reaches the reflow step (a failed
+    # records-repo step in --records mode) still joins the reader at the
+    # summary: no reader, no directory left.
+    ww_fresh
+    ww_install "$ww_dir/opt"
+    mkdir "$ww_dir/stub"
+    printf '#!/bin/sh\nexec sleep 30\n' >"$ww_dir/stub/cat"
+    chmod +x "$ww_dir/stub/cat"
+    ww_bad=""
+    # shellcheck disable=SC2016 # the inner shell expands the variables
+    ww_got="$(GITHUB_ACTIONS=true PATH="$ww_dir/stub:$ww_dir/bin:$PATH" WARM_CHROME_ROOT="$ww_dir/opt" \
+      WARM_CHROME_WAIT=1 bash -c '
+        source "$1"
+        STEP_NAMES=(); STEP_RESULTS=()
+        warm_chrome_start
+        pid=$WARM_CHROME_PID; dir=$WARM_CHROME_DIR
+        check_summary public >/dev/null 2>&1
+        sleep 0.3
+        alive=no; kill -0 "$pid" 2>/dev/null && alive=yes
+        left=no; [[ -e "$dir" ]] && left=yes
+        echo "$alive|$left|[$WARM_CHROME_PID]"' _ "$SELFTEST_ROOT/tools/check.sh" 2>&1)"
+    [[ "$ww_got" == "no|no|[]" ]] || ww_bad="after check_summary (reader alive|directory left|pid) the state is '$ww_got', want no|no|[]"
+    ww_row join-before-summary "check_summary joins a reader the reflow step never reached: reader gone, directory removed"
 
     # reflow-failure-stays-red: step_reflow with a started warm-up.
     ww_fresh
