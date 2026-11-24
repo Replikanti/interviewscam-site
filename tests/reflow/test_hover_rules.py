@@ -165,6 +165,152 @@ class Refused(unittest.TestCase):
         self.assertEqual(len(found), 2, found)
 
 
+class NestedInAllowed(unittest.TestCase):
+    """A rule inside an allowed :hover rule has no :hover of its own, and the
+    outer rule keeps exactly its pinned declaration, so only the enclosing
+    block tells that the nested rule applies while the pointer is on the
+    page (review run 2, finding 2)."""
+
+    NESTED = (":root:has(&) main h2{opacity:0}", "& b{opacity:0}", "b{opacity:0}",
+              ":root:has(&) main{position:fixed}", "&::after{content:'x'}")
+
+    def test_nested_rule_without_hover(self):
+        for selector, declarations in sitecheck.HOVER_RULES.items():
+            body = ";".join(f"{p}:{v}" for p, v in declarations)
+            for nested in self.NESTED:
+                with self.subTest(selector=selector, nested=nested):
+                    found = problems(selector + "{" + body + ";" + nested + "}")
+                    self.assertTrue(found)
+                    self.assertTrue(any("nested in another block" in item for item in found),
+                                    found)
+
+    def test_nested_rule_after_the_declarations(self):
+        found = problems("a:hover{" + THICK + ";:root:has(&) main h2{opacity:0}}")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn(":root:has(&)", found[0].replace("[:]", ":"))
+
+    def test_allowed_rule_without_nesting_is_one_rule(self):
+        self.assertEqual(problems("a:hover{" + THICK + "}main h2{opacity:0}"), [])
+
+
+class CommentBlind(unittest.TestCase):
+    """A comment is no token to a browser: `:/**/hover` is `:hover`, while
+    css_rules turns a comment into a space (QA recheck, row 1)."""
+
+    def test_comment_inside_the_pseudo_class(self):
+        for selector in ("body:/**/hover", ".x:/* c */hover", "body:/**/HOVER",
+                         "body:/*\n*/hover", ":is(body:/**/hover)", "body/**/:hover",
+                         "body:hov/**/er"):
+            with self.subTest(selector=selector):
+                found = problems(selector + "{position:fixed}")
+                # (body:hov/**/er is refused too: fail closed on any form
+                # that reads as :hover once the comment is gone.)
+                self.assertTrue(found, selector)
+
+    def test_comment_in_a_declaration_of_an_allowed_rule(self):
+        self.assertEqual(problems("a:hover{text-decoration-thickness:/**/var(--underline-hover-thickness)/**/}"), [])
+        self.assertTrue(problems("a:hover{text-decoration-thickness:var(--underline-hover-thickness);position/**/:fixed}"))
+
+    def test_allowed_selector_with_a_comment_is_the_allowed_rule(self):
+        self.assertEqual(problems("a:/**/hover{" + THICK + "}"), [])
+
+    def test_comment_hides_nothing_in_a_string(self):
+        self.assertEqual(problems("a{content:'/* :hover */'}"), [])
+
+    def test_unterminated_comment(self):
+        self.assertEqual(problems(TODAY + "/* body:hover{position:fixed}"), [])
+        self.assertTrue(problems("body:/**/hover{position:fixed}/* x"))
+
+
+class Variables(unittest.TestCase):
+    """The custom properties the allowed rules read are pinned (review run
+    2, finding 1): any rule can redefine one, and `main{--x:5em}` turns the
+    allowed rule's pinned declaration into a band over the page."""
+
+    VAR = "--underline-hover-thickness"
+
+    def test_the_pinned_variables_are_those_the_list_reads(self):
+        self.assertEqual(sitecheck.HOVER_VARS, {self.VAR: "2px"})
+        read = {name for declarations in sitecheck.HOVER_RULES.values()
+                for _, value in declarations for name in sitecheck.HOVER_VAR.findall(value)}
+        self.assertEqual(set(sitecheck.HOVER_VARS), read)
+
+    def test_the_token_declaration_passes(self):
+        self.assertEqual(problems(TODAY + ":root{--color-x:red;" + self.VAR + ":2px}"), [])
+        self.assertEqual(problems(":root{--underline-hover-thickness : 2px }"), [])
+        self.assertEqual(problems(":root{--underline-hover-thickness:2px}"
+                                  ":root{--underline-hover-thickness:2px}"), [])
+        self.assertEqual(problems(TODAY), [])
+
+    def test_other_custom_properties_are_free(self):
+        self.assertEqual(problems("main{--other:5em}:root{--underline-thickness:9em}"), [])
+
+    def refused(self, css, *words):
+        found = problems(css)
+        self.assertEqual(len(found), 1, (css, found))
+        for word in words:
+            self.assertIn(word, found[0])
+
+    def test_review_example(self):
+        self.refused(TODAY + "main{--underline-hover-thickness:5em}"
+                     "main a{text-decoration-color:var(--color-text)}", "read by the :hover")
+
+    def test_other_selector_or_value(self):
+        for css in ("main{--underline-hover-thickness:2px}",
+                    ":root{--underline-hover-thickness:5em}",
+                    ":root{--underline-hover-thickness:3px}",
+                    ":root{--underline-hover-thickness:20px}",
+                    ":root,main{--underline-hover-thickness:2px}",
+                    "html{--underline-hover-thickness:2px}",
+                    ":root main{--underline-hover-thickness:2px}",
+                    ":root:hover{--underline-hover-thickness:2px}",
+                    ":root{--underline-hover-thickness:var(--x)}",
+                    ":root{--underline-hover-thickness:2px!important}",
+                    ":root{--underline-hover-thickness:}"):
+            with self.subTest(css=css):
+                self.assertTrue(problems(css), css)
+
+    def test_nested_or_at_rule(self):
+        for css in ("@media (min-width:1px){:root{--underline-hover-thickness:2px}}",
+                    "@layer x{:root{--underline-hover-thickness:2px}}",
+                    "@supports (display:grid){:root{--underline-hover-thickness:2px}}",
+                    "main{color:red;--underline-hover-thickness:5em}",
+                    "main{& a{--underline-hover-thickness:5em}}",
+                    ":root{& main{--underline-hover-thickness:2px}}",
+                    "@scope (main){:scope{--underline-hover-thickness:5em}}"):
+            with self.subTest(css=css):
+                self.assertTrue(problems(css), css)
+
+    def test_registered_property(self):
+        # A registered property with inherits:false gives every element but
+        # the root its own initial value, whatever :root declares.
+        self.refused("@property --underline-hover-thickness{syntax:'<length>';"
+                     "inherits:false;initial-value:5em}", "registered")
+        self.refused("@property   --Underline-Hover-Thickness {syntax:'*';inherits:true}",
+                     "registered")
+
+    def test_name_forms(self):
+        for name in (r"--underline-hover-thickn\65 ss", r"--underline-hover-thickness /**/",
+                     "--UNDERLINE-HOVER-THICKNESS", "--underline-hover-thickness"):
+            with self.subTest(name=name):
+                self.assertTrue(problems("main{" + name + ":5em}"), name)
+
+    def test_comment_between_name_and_colon(self):
+        self.assertTrue(problems("main{--underline-hover-thickness/**/:5em}"))
+
+    def test_important_in_the_token_rule(self):
+        self.refused(":root{--underline-hover-thickness:2px !important}", "read by the :hover")
+
+    def test_one_finding_per_declaration(self):
+        found = problems("main{--underline-hover-thickness:5em}"
+                         "aside{--underline-hover-thickness:6em}")
+        self.assertEqual(len(found), 2, found)
+
+    def test_wired_into_the_site_rules(self):
+        found = sitecheck.css_rule_problems(TODAY + "main{--underline-hover-thickness:5em}").problems
+        self.assertEqual(len(found), 1, found)
+
+
 class Wired(unittest.TestCase):
     """The check runs with the other CSS rules of the site check."""
 

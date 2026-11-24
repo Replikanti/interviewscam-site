@@ -2254,16 +2254,39 @@ HOVER_RULES = {
 }
 
 
-def css_hover_problems(css):
-    """The :hover rules of one stylesheet that are not exactly those of
+# The custom properties the rules of HOVER_RULES read through var(), each with
+# the one value it may have (review run 2, finding 1): a rule without :hover
+# can set one (`main{--underline-hover-thickness:5em}` turns the allowed
+# rule's pinned declaration into a band over the page), so the stylesheet may
+# declare it only in the top-level :root rule, with this value, as
+# tokens.css emits it: data/tokens.toml underline hover_thickness = 2, in px.
+# A variable a rule of the list reads without an entry here fails at import.
+HOVER_VAR = re.compile(r"var\(\s*(--[^\s,)]+)")
+HOVER_VAR_VALUES = {"--underline-hover-thickness": "2px"}
+HOVER_VARS = {name: HOVER_VAR_VALUES[name]
+              for declarations in HOVER_RULES.values()
+              for _, value in declarations
+              for name in HOVER_VAR.findall(value)}
+
+
+def css_strip_comments(css):
+    """css with every comment removed, as a browser reads it (a comment is
+    no token, so `:/**/hover` is `:hover`); css_rules turns a comment into a
+    space instead, which keeps `a/**/b` two words. Strings are kept."""
+    return CSS_COMMENT_OR_STRING.sub(lambda m: m.group(0) if m.group(1) else "", css)
+
+
+def hover_rule_problems(rules):
+    """The :hover rules among css_rules' rules that are not exactly those of
     HOVER_RULES. A rule is a :hover rule when its selector, or the prelude of
-    any block around it (@media (hover:hover), @supports, @layer), holds
-    :hover (case folded, escapes resolved, so :HOVER and :\\68 over count),
-    wherever the pseudo-class sits (:is(), :where(), :has(), :not()). Fails
-    closed: it is allowed only as the same selector at the top level with the
-    same declarations, none !important."""
+    any block around it (@media (hover:hover), @supports, @layer, or an
+    allowed rule itself, whose nested rules have no :hover of their own),
+    holds :hover (case folded, escapes resolved, so :HOVER and :\\68 over
+    count), wherever the pseudo-class sits (:is(), :where(), :has(),
+    :not()). Fails closed: it is allowed only as the same selector at the top
+    level with the same declarations, none !important."""
     problems = []
-    for rule in css_rules(css):
+    for rule in rules:
         selector = css_selector_text(rule.prelude)
         around = [css_selector_text(p) for p in rule.parents]
         if not any(":hover" in text.lower() for text in [selector] + around):
@@ -2289,6 +2312,52 @@ def css_hover_problems(css):
                             " (none !important); another declaration can cover text with the "
                             "pointer on it, which no browser check measures (ADR-0005 part 6, "
                             "Replikanti/interviewscam#55)")
+    return problems
+
+
+def hover_var_problems(rules):
+    """The declarations and registrations of the custom properties of
+    HOVER_VARS that are not the one allowed: a declaration in the top-level
+    :root rule, not !important, with the pinned value."""
+    problems = []
+    for rule in rules:
+        selector = css_selector_text(rule.prelude)
+        if selector.lower().startswith("@property"):
+            name = css_unescape(selector[len("@property"):]).strip().lower()
+            if name in HOVER_VARS:
+                problems.append(f"{show(selector, 120)}: {name} is read by the :hover rules of "
+                                "the closed list, and a registered property gives every "
+                                "element but the root its own initial value (ADR-0005 part 6, "
+                                "Replikanti/interviewscam#55)")
+        for declaration in rule.declarations:
+            prop, value = css_declaration(declaration)
+            if prop not in HOVER_VARS:
+                continue
+            if (not rule.parents and selector == ":root"
+                    and not IMPORTANT.search(css_unescape(value))
+                    and css_value_text(value) == HOVER_VARS[prop]):
+                continue
+            problems.append(f"{show(selector, 120)}: {prop} is read by the :hover rules of the "
+                            "closed list, so its only declaration is `"
+                            f"{prop}: {HOVER_VARS[prop]}` in the top-level :root rule, not "
+                            f"{show(declaration, 120)}: any other value or rule can turn a "
+                            "pinned :hover declaration into a cover that no browser check "
+                            "measures (ADR-0005 part 6, Replikanti/interviewscam#55)")
+    return problems
+
+
+def css_hover_problems(css):
+    """The findings of the closed list of :hover rules (HOVER_RULES) and of
+    the custom properties they read (HOVER_VARS) on one stylesheet. Read both
+    ways a comment can be read, as a space (css_rules) and as nothing (a
+    browser: `:/**/hover` is `:hover`), the findings of either; a finding
+    that both give counts once."""
+    problems = []
+    for text in (css, css_strip_comments(css)):
+        rules = css_rules(text)
+        for problem in hover_rule_problems(rules) + hover_var_problems(rules):
+            if problem not in problems:
+                problems.append(problem)
     return problems
 
 
