@@ -447,11 +447,14 @@ def deployment_problems(api, sc, pins, account, destination, without_rate_limite
     # A deferred code update lets a busy Durable Object keep an earlier
     # version's class code for up to max_delay seconds (List Worker
     # deployments: code_update_strategy "deferred", "Allow active Durable
-    # Objects to hibernate before updating their code"), so only an
-    # immediate update, or none stated, passes (fix round 3 of PR 2).
+    # Objects to hibernate before updating their code"), and an omitted
+    # field means the default, deferred with 300 s (ADR-0006 Status), so only
+    # exactly {"mode": "immediate"} passes; an absent field fails
+    # (Replikanti/interviewscam#43).
     update = active.get("code_update_strategy")
-    if update is not None and update != {"mode": "immediate"}:
-        return [f"the active deployment updates Durable Object code with {update!r}, not immediately"]
+    if update != {"mode": "immediate"}:
+        shown = "no code_update_strategy" if update is None else repr(update)
+        return [f"the active deployment updates Durable Object code with {shown}, not immediately"]
     versions = active.get("versions")
     if (not isinstance(versions, list) or len(versions) != 1 or not isinstance(versions[0], dict)
             or versions[0].get("percentage") != 100 or active.get("strategy", "percentage") != "percentage"):
@@ -557,6 +560,29 @@ def session(sc):
     return Api(base, token), pins, account, zone, destination
 
 
+def set_immediate_deployment(api, sc, account):
+    """Deploys the version just uploaded at 100 % with an immediate Durable
+    Object code update (ADR-0006 part 10 way (a); API reference: Create
+    Worker Deployment, body `code_update_strategy`, read 2026-11-24). The
+    upload alone leaves the default, deferred with 300 s. A refusal stops the
+    deploy with no fallback and nothing else changed (Replikanti/interviewscam#43)."""
+    listed = api.call("GET", script_path(sc, account, "/versions")) or {}
+    items = listed.get("items") if isinstance(listed, dict) else None
+    latest = items[0].get("id") if items and isinstance(items[0], dict) else None
+    if not isinstance(latest, str) or not latest:
+        raise Failure("the versions list names no uploaded version to deploy; stopping, nothing deployed")
+    deployment = {"strategy": "percentage", "versions": [{"version_id": latest, "percentage": 100}],
+                  "code_update_strategy": {"mode": "immediate"}}
+    try:
+        api.call("POST", script_path(sc, account, "/deployments"), json.dumps(deployment).encode(),
+                 "application/json")
+    except Failure as exc:
+        raise Failure(f"{exc}: the deployments API did not accept code_update_strategy immediate (ADR-0006 "
+                      "part 10 way (a)); stopping, no fallback, take it back to the operator; "
+                      "run deploy again once it is settled") from None
+    OUT.say("deploy: explicit deployment, Durable Object code updates immediate")
+
+
 def cmd_deploy(sc, without_rate_limiter):
     api, pins, account, zone, destination = session(sc)
     source = (ROOT / WORKER_FILE).read_bytes()
@@ -575,6 +601,7 @@ def cmd_deploy(sc, without_rate_limiter):
     OUT.say(f"deploy: uploading {WORKER_FILE} as {sc.INTAKE_SCRIPT_NAME}"
             f"{' (first deploy: Durable Object migration, new LIMITER_KEY)' if first else ''}")
     api.call("PUT", script_path(sc, account), body, ctype)
+    set_immediate_deployment(api, sc, account)
     # Routed, and no previews under it (Workers Domains: enabled,
     # previews_enabled; fix round 4 of PR 2).
     domain = {"environment": "production", "hostname": sc.INTAKE_HOSTNAME,
