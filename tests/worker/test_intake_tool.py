@@ -491,6 +491,11 @@ class Tool(ToolCase):
             # PR 4a: the recipient binding.
             "recipient text": binding("EMAIL_TO", text="other@example.com"),
             "recipient as secret_text": binding("EMAIL_TO", type="secret_text"),
+            # Replikanti/interviewscam#42 item 5: binding_drift cannot remove a key.
+            "recipient text absent": lambda: self.stub.settings_override.update(
+                bindings=[{k: v for k, v in b.items() if not (b["name"] == "EMAIL_TO" and k == "text")}
+                          for b in self.stub.settings()["bindings"]]),
+            "recipient text null": binding("EMAIL_TO", text=None),
             "recipient missing": lambda: self.stub.settings_override.update(
                 bindings=[b for b in self.stub.settings()["bindings"] if b["name"] != "EMAIL_TO"]),
             "recipient twice": lambda: self.stub.settings_override.update(
@@ -1085,6 +1090,42 @@ class ToolRecipient(ToolCase):
                 self.assertEqual(rc, 1, out)
                 self.assertIn("EMAIL_TO: text differs from the prompted address", out)
                 self.assertNotIn(self.OTHER, out)
+
+    def test_binding_key_absent_has_own_message(self):
+        """Replikanti/interviewscam#42 item 5: a read-back key that is
+        missing or null is reported as such, never as a difference, and
+        verify still fails; neither address is printed."""
+        self.assertEqual(self.run_tool("deploy")[0], 0)
+        self.assertEqual(self.run_tool("verify")[0], 0)
+
+        def edited(name, key, absent):
+            out = []
+            for b in self.stub.settings()["bindings"]:
+                b = dict(b)
+                if b["name"] == name:
+                    if absent:
+                        b.pop(key)
+                    else:
+                        b[key] = None
+                out.append(b)
+            return out
+
+        cases = (("EMAIL_TO", "text", True), ("EMAIL_TO", "text", False),
+                 ("EMAIL", "destination_address", True), ("EMAIL", "destination_address", False))
+        for where in ("settings", "active version"):
+            for name, key, absent in cases:
+                with self.subTest(where=where, name=name, key=key, absent=absent):
+                    self.stub.settings_override, self.stub.version_override = {}, {}
+                    override = self.stub.settings_override if where == "settings" \
+                        else self.stub.version_override
+                    override["bindings"] = edited(name, key, absent)
+                    rc, out = self.run_tool("verify")
+                    self.assertEqual(rc, 1, out)
+                    self.assertIn(f"{name}: the API returned no {key}, so verify cannot "
+                                  "compare it", out)
+                    self.assertNotIn(f"{key} differs", out)
+                    self.assertNotIn(DEST, out)
+                    self.assertNotIn(self.OTHER, out)
 
     def test_recipient_twice_not_printed(self):
         """A second EMAIL_TO with another address: the duplicate's finding

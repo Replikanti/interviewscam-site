@@ -345,6 +345,13 @@ def binding_problems(sc, actual, destination, without_rate_limiter=False):
         if b is None:
             continue
         for key, value in w.items():
+            if b.get(key) is None:
+                # Replikanti/interviewscam#42 item 5: a key the API left out
+                # or returned as null is no difference from the prompted
+                # value, so it gets its own message; verify still fails, and
+                # no value is printed.
+                problems.append(f"{name}: the API returned no {key}, so verify cannot compare it")
+                continue
             if key == "simple":
                 simple = b.get("simple") or {}
                 if (simple.get("limit"), simple.get("period")) != (value["limit"], value["period"]):

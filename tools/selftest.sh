@@ -1010,9 +1010,17 @@ PY
 # with another autocomplete, a required field without required and an
 # optional one with it, a capped field at cap - 1, cap + 1 and without
 # maxlength, and the label and hint of each visible field; per MIME type of
-# INTAKE_IMAGE_TYPES an accept without it; per visible text control without
-# autocomplete a row that adds autocomplete=off (fix round 1); per page of
-# INTAKE_UNLISTED a row that lists it in the sitemap; per result id of
+# INTAKE_IMAGE_TYPES an accept without it; per field without autocomplete a
+# row that adds autocomplete=off (fix round 1; every kind since
+# Replikanti/interviewscam#42 item 3) and per field with one a row that
+# drops it (item 4), plus the two literal scam_alias rename rows; for rule
+# (f) (item 2) per field outside INTAKE_AUTOCOMPLETE_OFF a row that adds
+# off, per name in it off removed, on and the field missing, per page of
+# INTAKE_FORM_PAGES an off on the form, per tag of INTAKE_AUTOCOMPLETE_TAGS
+# a new control with off and per character of ASCII_WHITESPACE an off padded
+# with it; per page of INTAKE_UNLISTED a row that lists it in the sitemap,
+# and per element name of INTAKE_SITEMAP_TREE one misplaced and one with an
+# attribute (item 1); per result id of
 # INTAKE_RESULT_IDS the section missing, doubled, its id elsewhere and its
 # heading and text reworded; per member of INTAKE_REFERRER_TAGS and per
 # channel a referrerpolicy row; per channel the page and its form missing;
@@ -1058,11 +1066,43 @@ for channel, fields in sitecheck.INTAKE_FIELDS.items():
         if kind not in ("hidden", "honeypot"):
             want |= {f"{stem}-{case}" for case in ("label-for", "no-label", "hint-reworded",
                                                    "label-reworded")}
-        if field["autocomplete"] is None and kind in ("text", "url", "email", "textarea"):
+        # Replikanti/interviewscam#42 items 3 and 4: no kind filter, so every
+        # field without autocomplete has a row that adds off, and every field
+        # with one a row that drops it.
+        if field["autocomplete"] is None:
             want.add(f"{stem}-autocomplete-off")
+        else:
+            want.add(f"{stem}-autocomplete-absent")
         if kind == "file":
             want |= {f"b-{channel}-files-accept-without-{mime.split('/')[1]}" for mime in mimes}
+# Literal rows: a later rename of scam_alias breaks their find strings
+# instead of dropping them from this set.
+want |= {"b-report-scam_alias-old-name", "b-report-scam_alias-old-label"}
+# Rule 18 (f): every field outside INTAKE_AUTOCOMPLETE_OFF with off added,
+# every name in it with off removed, on and the field missing, the form per
+# page, a new control per tag and each ASCII whitespace padding of off.
+for channel, fields in sitecheck.INTAKE_FIELDS.items():
+    off = sitecheck.INTAKE_AUTOCOMPLETE_OFF[channel]
+    want |= {f"f-{channel}-{field['name']}-off-added" for field in fields
+             if field["name"] not in off}
+    for name in off:
+        want |= {f"f-{channel}-{name}-{case}" for case in ("off-removed", "off-on", "off-missing",
+                                                           "outside-form")}
+# Rule 18 (f)'s form owner (fix round 1 of Replikanti/interviewscam-site#22,
+# review 1): the coordinated rename with a decoy, another form, and each
+# branch of intake_form_owner, as literal rows.
+want |= {"f-report-scam_alias-renamed-with-decoy", "f-report-scam_alias-other-form",
+         "f-report-website-form-attr-elsewhere", "f-report-website-form-attr-empty",
+         "f-report-website-form-attr-not-a-form", "f-report-website-form-attr-id-shadowed",
+         "f-report-website-form-attr-intake", "f-report-website-in-template"}
+want |= {f"f-{channel}-form-off" for channel in sitecheck.INTAKE_FORM_PAGES.values()}
+want |= {f"f-report-{tag}-extra-off" for tag in sitecheck.INTAKE_AUTOCOMPLETE_TAGS}
+want |= {f"f-report-details-off-space-{ord(c):04x}" for c in sitecheck.ASCII_WHITESPACE}
 want |= {f"d-{path.strip('/')}-in-sitemap" for path in sitecheck.INTAKE_UNLISTED}
+# Rule 18 (d)'s sitemap shape: every element name of INTAKE_SITEMAP_TREE
+# misplaced and with an attribute, from one loop.
+for name in {child for children in sitecheck.INTAKE_SITEMAP_TREE.values() for child in children}:
+    want |= {f"d-sitemap-{name}-{case}" for case in ("misplaced", "attribute")}
 for rid in sitecheck.INTAKE_RESULT_IDS:
     want |= {f"d-{rid}-{case}" for case in ("missing", "doubled", "id-elsewhere",
                                             "heading-reworded", "text-reworded")}
@@ -5345,6 +5385,18 @@ PINNED
     # rewordings; the MIME types; per result id missing, doubled, id elsewhere
     # and the two rewordings; the sitemap; the pages and forms; the referrer
     # tags; URL_ATTRS, FORM_ATTRS, INTAKE_FORM_PAGES and CSP_DIRECTIVES.
+    # Replikanti/interviewscam#42: autocomplete=off per kind it now covers
+    # (hidden, text, textarea, file, checkbox; url above) and
+    # autocomplete-absent with the two literal rename rows; rule (f) with
+    # one off-added drop per kind (hidden, text, textarea, email, file, url,
+    # checkbox), off removed, on, missing, the form, the select and one
+    # padding; the sitemap shape, each element name in one of its two
+    # families. Fix round 1 of Replikanti/interviewscam-site#22: the input
+    # and textarea extra-off rows (QA: the tag family had only select), a
+    # control outside the form and the form-owner literal rows. Fix round 2:
+    # the in-template and id-shadowed form-owner literal rows. Review 3:
+    # the other five form-owner literal rows, so every member of that
+    # literal set has its drop. 66 drops.
     for drop in render:b-report-scam_alias-renamed render:b-correction-email-required \
         render:b-report-headers-maxlength-above render:b-correction-request-hint-reworded \
         render:b-correction-files-accept-without-webp render:d-error-doubled \
@@ -5357,6 +5409,27 @@ PINNED
         render:b-report-files-label-reworded render:d-paused-missing \
         render:d-too-long-id-elsewhere render:d-bad-address-heading-reworded \
         render:d-not-accepted-text-reworded render:a-report-form-missing \
+        render:b-report-contact_start-autocomplete-off render:b-report-details-autocomplete-off \
+        render:b-report-channel-autocomplete-off render:b-correction-files-autocomplete-off \
+        render:b-correction-own_name-autocomplete-off \
+        render:b-report-scam_alias-autocomplete-absent render:b-correction-email-autocomplete-absent \
+        render:b-report-website-autocomplete-absent render:b-report-scam_alias-old-name \
+        render:b-report-scam_alias-old-label \
+        render:f-report-channel-off-added render:f-report-contact_start-off-added \
+        render:f-correction-request-off-added render:f-report-email-off-added \
+        render:f-correction-files-off-added render:f-correction-page_url-off-added \
+        render:f-correction-own_name-off-added \
+        render:f-report-scam_alias-off-removed render:f-correction-website-off-on \
+        render:f-report-website-off-missing render:f-correction-form-off \
+        render:f-report-select-extra-off render:f-report-input-extra-off \
+        render:f-report-textarea-extra-off render:f-report-details-off-space-000c \
+        render:f-correction-website-outside-form render:f-report-website-form-attr-not-a-form \
+        render:f-report-website-in-template render:f-report-website-form-attr-id-shadowed \
+        render:f-report-scam_alias-renamed-with-decoy render:f-report-scam_alias-other-form \
+        render:f-report-website-form-attr-elsewhere render:f-report-website-form-attr-empty \
+        render:f-report-website-form-attr-intake \
+        render:d-sitemap-urlset-misplaced render:d-sitemap-lastmod-misplaced \
+        render:d-sitemap-url-attribute render:d-sitemap-loc-attribute \
         site:fail-intake-host-in-data site:fail-input-formaction-intake \
         site:fail-csp-form-action-missing-intake-correction site:csp-intake/worker-src; do
       kind="${drop%%:*}"
