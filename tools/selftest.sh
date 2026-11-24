@@ -855,13 +855,14 @@ PY
 }
 
 # site_intake_runner <sitecheck.py> <cases table> <base case> <schema dir>
-# (M5b PR 3, ADR-0006 part 9): site rule (a) for the intake endpoint and
+# [label] (M5b PR 3, ADR-0006 part 9): site rule (a) for the intake endpoint and
 # the intake origin in the CSP, one branch and one variant per row, on a
 # copy of render/pass-intake (the real built pages; the built pins off,
 # because the case's stylesheet and scripts are copies). A row is name,
 # file, find, replace and expect, then optional further find and replace
-# pairs; \n and \t in find and replace are a newline and a tab, and every
-# find string must occur exactly once. Three files are not paths: @csp sets
+# pairs; \n and \t in find and replace are a newline and a tab, \u{XXXX}
+# that code point (as in search_cases_runner), and every find string must
+# occur exactly once. Three files are not paths: @csp sets
 # params.csp in hugo.toml and the content of every page's CSP meta to
 # replace, @css appends replace to the built stylesheet and @js to the
 # built copy script (find is - for all three). The table holds one row per
@@ -869,10 +870,11 @@ PY
 # origin in that directive), and site-intake/coverage takes that set from
 # the code. Then the real cmd_site runs:
 # expect PASS needs exit 0, any other expect exit 1 with that text in the
-# output. The last line, site-intake/table, counts the rows. -B: no
-# tools/__pycache__.
+# output. The last line, site-intake/table, counts the rows. The label of
+# the lines is site-intake unless [label] names another (site-csp-equiv,
+# Replikanti/interviewscam#32). -B: no tools/__pycache__.
 site_intake_runner() {
-  python3 -I -B - "$1" "$2" "$3" "$4" <<'PY'
+  python3 -I -B - "$1" "$2" "$3" "$4" "${5:-site-intake}" <<'PY'
 import argparse
 import contextlib
 import importlib.util
@@ -887,10 +889,11 @@ spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
 sitecheck = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sitecheck)
 table, base, schema_dir = Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
-label = "site-intake"
+label = sys.argv[5]
 
 
 def unescape(text):
+    text = re.sub(r"\\u\{([0-9A-F]{4,6})\}", lambda m: chr(int(m.group(1), 16)), text)
     return text.replace("\\n", "\n").replace("\\t", "\t")
 
 
@@ -955,6 +958,47 @@ if not rows or bad:
     print(f"FAIL {label}/table: {len(rows)} rows, {bad} malformed")
 else:
     print(f"ok   {label}/table ({len(rows)} rows)")
+PY
+}
+
+# csp_equiv_coverage <sitecheck.py> <cases table> [drop]
+# (Replikanti/interviewscam#32 fix round 1): site-csp-equiv/coverage needs a
+# row tag-space/uXXXX (in an unquoted value) and a row
+# tag-space/after-quoted/uXXXX (between the attributes) for every member of
+# PARSER_ONLY_SPACE, taken from the code (drop: leave that member's row out, the negative proof);
+# site-csp-equiv/space-set needs every code point that this interpreter's
+# str.isspace() or str pattern \s matches, but TAB, LF, FF, CR and SPACE, to
+# be a member, so a Unicode update that adds whitespace fails here instead
+# of opening the rule. -B: no tools/__pycache__.
+csp_equiv_coverage() {
+  python3 -I -B - "$1" "$2" "${3:-}" <<'PY'
+import importlib.util
+import re
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+drop = sys.argv[3]
+names = {line.split("\t")[0] for line in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
+         if line and not line.startswith("#")} - {drop}
+want = {f"tag-space/{family}u{code:04x}" for code in sitecheck.PARSER_ONLY_SPACE
+        for family in ("", "after-quoted/")}
+missing = sorted(want - names)
+if missing or not want:
+    print(f"FAIL site-csp-equiv/coverage: {len(missing)} member(s) of PARSER_ONLY_SPACE "
+          f"without a row: {', '.join(missing)}")
+else:
+    print(f"ok   site-csp-equiv/coverage ({len(want)} member rows)")
+space = {code for code in range(sys.maxunicode + 1)
+         if chr(code).isspace() or re.fullmatch(r"\s", chr(code))} - {9, 10, 12, 13, 32}
+extra = sorted(space - sitecheck.PARSER_ONLY_SPACE)
+if extra:
+    print("FAIL site-csp-equiv/space-set: this interpreter's whitespace holds "
+          f"{', '.join(f'U+{code:04X}' for code in extra)}, which PARSER_ONLY_SPACE lacks")
+else:
+    print(f"ok   site-csp-equiv/space-set ({len(space)} code points, all members)")
 PY
 }
 
@@ -5235,6 +5279,48 @@ PINNED
       n_passed=$((n_passed + 1))
     else
       echo "FAIL site-intake-expect: a row with a wrong expect or a failing PASS row did not fail; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+  if selftest_wants site-csp-equiv; then
+    # site-csp-equiv/<row> (Replikanti/interviewscam#32): what counts as the
+    # CSP meta, from tests/fixtures/site/csp-equiv-cases.tsv on copies of
+    # render/pass-intake (site_intake_runner, built pins off, so rule (m)
+    # does not hide a row): a padded or non-ASCII-folded http-equiv is inert
+    # in the browser, so the count and position rules fail and rule (a) and
+    # the CSP rules stay silent about it.
+    site_intake_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/site/csp-equiv-cases.tsv" "$FIXTURES/render/pass-intake" \
+      "$SELFTEST_ROOT/schema" site-csp-equiv >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )site-csp-equiv/table' "$out"; then
+      echo "FAIL site-csp-equiv: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+    # The coverage of the tag-space rows and the interpreter's whitespace
+    # (csp_equiv_coverage), then its negative proof: with the U+00A0 row
+    # left out, the coverage line must fail.
+    csp_equiv_coverage "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/site/csp-equiv-cases.tsv" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if [[ "$(grep -cE '^ok   site-csp-equiv/(coverage|space-set) ' "$out")" != 2 ]]; then
+      echo "FAIL site-csp-equiv/coverage-lines: the coverage lines did not both pass; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+    csp_equiv_coverage "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/site/csp-equiv-cases.tsv" tag-space/u00a0 >"$out" 2>&1
+    if grep -q '^FAIL site-csp-equiv/coverage: 1 member(s) of PARSER_ONLY_SPACE without a row: tag-space/u00a0$' "$out"; then
+      echo "ok   site-csp-equiv/coverage-fails-on-missing-row"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL site-csp-equiv/coverage-fails-on-missing-row: a member without a row did not fail; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi

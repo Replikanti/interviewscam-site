@@ -1827,6 +1827,11 @@ def html_request_problems(page):
                         problems.append(f"<{tag} {pname}> pings {show(url)}")
         if "srcdoc" in attrs:
             problems.append(f"<{tag} srcdoc> (an embedded document; fails closed)")
+        # Deliberately a superset of what the browser follows: a value it
+        # reads as refresh is an ASCII case-insensitive match, which strip()
+        # leaves as it is and lower() folds as ascii_lower does, so a wider
+        # match here only adds a finding (a padded refresh the browser
+        # ignores) and never misses one (Replikanti/interviewscam#32).
         if tag == "meta" and attrs.get("http-equiv", "").strip().lower() == "refresh":
             target = re.split(r"[;,]", attrs.get("content", ""), maxsplit=1)
             if len(target) == 2:
@@ -1931,6 +1936,19 @@ def csp_problems(policy):
     return problems
 
 
+def is_csp_meta(tag, attrs):
+    """This element is a CSP meta as the browser applies one: a meta whose
+    http-equiv is an ASCII case-insensitive match for
+    Content-Security-Policy (Replikanti/interviewscam#32). HTML matches the
+    enumerated keyword without trimming it, so the value is not stripped:
+    str.strip() also removes U+00A0, U+0085, U+3000 and other Unicode
+    whitespace, and a padded value is inert in the browser. ASCII folding
+    only, because casefold() and NFKC map non-ASCII code points (U+017F,
+    the long s, to s) onto these letters, which the browser does not."""
+    return tag == "meta" and \
+        ascii_lower(attrs.get("http-equiv", "")) == "content-security-policy"
+
+
 def intake_csp_problems(page):
     """Site rule (a) on a page with the intake form: every CSP meta's
     form-action lists INTAKE_ORIGIN (a missing form-action does not; the
@@ -1938,8 +1956,7 @@ def intake_csp_problems(page):
     targets)."""
     problems = []
     for tag, attrs in page.elements:
-        if tag != "meta" or attrs.get("http-equiv", "").strip().lower() \
-                != "content-security-policy":
+        if not is_csp_meta(tag, attrs):
             continue
         sources = []
         for directive in (d.strip(CSP_WHITESPACE) for d in attrs.get("content", "").split(";")):
@@ -1956,17 +1973,14 @@ def intake_csp_problems(page):
 
 def csp_position_problems(page, csp):
     problems = []
-    metas = [attrs for tag, attrs in page.elements
-             if tag == "meta"
-             and attrs.get("http-equiv", "").strip().lower() == "content-security-policy"]
+    metas = [attrs for tag, attrs in page.elements if is_csp_meta(tag, attrs)]
     if len(metas) != 1:
         problems.append(f"expected exactly one Content-Security-Policy meta, found "
                         f"{len(metas)}")
     head = [(tag, attrs) for tag, attrs in page.elements if tag not in ("html", "head")]
     if not head or head[0][0] != "meta" or "charset" not in head[0][1]:
         problems.append("the first element in <head> must be <meta charset>")
-    elif len(head) < 2 or head[1][1].get("http-equiv", "").strip().lower() \
-            != "content-security-policy":
+    elif len(head) < 2 or not is_csp_meta(*head[1]):
         problems.append("the Content-Security-Policy meta is not the first element "
                         "after <meta charset>")
     for attrs in metas:
@@ -2644,8 +2658,7 @@ def cmd_site(args):
                     for problem in csp_position_problems(page, csp):
                         findings.add(rel, f"CSP: {problem}")
                 for tag, attrs in page.elements:
-                    if tag == "meta" and attrs.get("http-equiv", "").strip().lower() \
-                            == "content-security-policy":
+                    if is_csp_meta(tag, attrs):
                         for problem in csp_problems(attrs.get("content", "")):
                             findings.add(rel, problem)
                 for problem in markup_problems(page, path.relative_to(public).as_posix()):
@@ -2658,6 +2671,8 @@ def cmd_site(args):
                     for problem in intake_csp_problems(page):
                         findings.add(rel, problem)
                 for problem in rawtext_built_problems(text):
+                    findings.add(rel, problem)
+                for problem in tag_space_problems(text):
                     findings.add(rel, problem)
                 scripts += [(rel, attrs["src"]) for tag, attrs in page.elements
                             if tag == "script" and "src" in attrs]
@@ -8961,14 +8976,15 @@ def meta_content_plain(tag, first):
     value) is a meta's browser setting, never shown: the meta has no
     property or itemprop, and either a name on LITERALS_META_PLAIN_NAMES and
     no http-equiv, or an http-equiv on LITERALS_META_PLAIN_HTTP_EQUIV and no
-    name (ASCII case-insensitive, as browsers match them)."""
+    name (ASCII case-insensitive and untrimmed, as browsers match them;
+    Replikanti/interviewscam#32)."""
     if tag != "meta" or any(key in first for key in LITERALS_TEXT_CONTENT_KEYS):
         return False
     name, equiv = first.get("name"), first.get("http-equiv")
     if name is not None and equiv is None:
-        return ascii_lower(name.strip()) in LITERALS_META_PLAIN_NAMES
+        return ascii_lower(name) in LITERALS_META_PLAIN_NAMES
     if equiv is not None and name is None:
-        return ascii_lower(equiv.strip()) in LITERALS_META_PLAIN_HTTP_EQUIV
+        return ascii_lower(equiv) in LITERALS_META_PLAIN_HTTP_EQUIV
     return False
 
 
@@ -9569,6 +9585,127 @@ def rawtext_spans(text, built=False):
             end = len(text) if close is None else close.start()
             yield name, match.start(), pos, end
             pos = end
+
+# Site rule (i), tag markup (Replikanti/interviewscam#32 fix round 1): the
+# code points that Python's str.isspace() and the str pattern \s match
+# (html.parser splits a tag's attributes at its \s) and that HTML does not
+# take for whitespace, which is only TAB, LF, FF, CR and SPACE. Written out,
+# not computed, so the rule is the same on every interpreter: the
+# derivation (every code point c with chr(c).isspace(), minus those five)
+# gave this set on CPython 3.11, 3.12 and 3.14 (Unicode 14 to 16; White_Space
+# has not changed since Unicode 6.3), and the self-test line
+# site-csp-equiv/space-set fails when the running interpreter's set holds a
+# code point outside it.
+PARSER_ONLY_SPACE = frozenset({
+    0x000B, 0x001C, 0x001D, 0x001E, 0x001F, 0x0085, 0x00A0, 0x1680,
+    0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007,
+    0x2008, 0x2009, 0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000,
+})
+TAG_NAME_SHOWN = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*|<[!?]", re.A)
+
+
+def tag_spans(text):
+    """(start, end, quoted) of every tag of a built page as HTML's
+    tokenizer reads it, from its '<' through its closing '>' (or the end of
+    the file): a start or end tag ('<' or '</' and an ASCII letter) with its
+    attributes, where a quote opens a value only right after '=' and ASCII
+    whitespace, so a '>' inside a quoted value does not end the tag; '<!',
+    '<?' and '</' with anything but an ASCII letter after it (a bogus
+    comment) run to the next '>'. quoted: the (start, end) of the text
+    inside each quoted value, the quotes left out. Comments get no reading
+    of their own, because rule (i) fails every '<!--'. Read with a pattern
+    of states, not html.parser, whose whitespace is what this rule checks."""
+    pos, n = 0, len(text)
+    while True:
+        lt = text.find("<", pos)
+        if lt < 0:
+            return
+        nxt = text[lt + 1:lt + 2]
+        if nxt in ("!", "?"):
+            gt = text.find(">", lt + 2)
+            pos = n if gt < 0 else gt + 1
+            yield lt, pos, ()
+            continue
+        i = lt + 2 if nxt == "/" else lt + 1
+        letter = "a" <= text[i:i + 1].lower() <= "z" and text[i:i + 1].isascii()
+        if nxt == "/" and not letter and i < n:
+            # '</' and anything but an ASCII letter: a bogus comment to the
+            # next '>' ('</>' included), as HTML's tokenizer and
+            # RAWTEXT_SCAN read it, so a quote in it opens no value
+            # (Replikanti/interviewscam#32 fix round 2).
+            gt = text.find(">", i)
+            pos = n if gt < 0 else gt + 1
+            yield lt, pos, ()
+            continue
+        if not letter:
+            pos = lt + 1
+            continue
+        state, quoted, opened = "name", [], None
+        while i < n:
+            c = text[i]
+            if state == "dq":
+                if c == '"':
+                    state = "before"
+                    quoted.append((opened, i))
+            elif state == "sq":
+                if c == "'":
+                    state = "before"
+                    quoted.append((opened, i))
+            elif c == ">":
+                break
+            elif state == "value":
+                if c in ASCII_WHITESPACE:
+                    pass
+                elif c == '"':
+                    state, opened = "dq", i + 1
+                elif c == "'":
+                    state, opened = "sq", i + 1
+                else:
+                    state = "unquoted"
+            elif state == "unquoted":
+                state = "before" if c in ASCII_WHITESPACE else state
+            elif c in ASCII_WHITESPACE:
+                state = "after" if state == "attr" else "before" if state == "name" else state
+            elif c == "/":
+                state = "before"
+            elif c == "=" and state in ("attr", "after"):
+                state = "value"
+            elif state in ("before", "after"):
+                state = "attr"
+            i += 1
+        if state in ("dq", "sq"):
+            quoted.append((opened, i))
+        pos = min(i + 1, n)
+        yield lt, pos, tuple(quoted)
+
+
+def tag_space_problems(text):
+    """Site rule (i) on a built page (Replikanti/interviewscam#32 fix round
+    1): no code point of PARSER_ONLY_SPACE in tag markup outside a quoted
+    attribute value: in a tag name, between attributes, around '=' and in
+    an unquoted value. There html.parser takes it for whitespace and splits
+    the attributes where a browser does not: a raw U+00A0 between
+    http-equiv and content gives the browser no CSP while every rule reads
+    one. Inside a single- or double-quoted value (as HTML's tokenizer
+    quotes it, tag_spans) both read the same text to the same closing
+    quote, so a record or label with U+00A0 in an attribute value passes.
+    One finding per code point and tag name."""
+    seen = {}
+    for start, end, quoted in tag_spans(text):
+        found, pos = set(), start
+        for q_start, q_end in quoted + ((end, end),):
+            found |= {ord(c) for c in text[pos:q_start] if ord(c) in PARSER_ONLY_SPACE}
+            pos = q_end
+        if found:
+            match = TAG_NAME_SHOWN.match(text, start)
+            name = match.group(0) if match else "<"
+            for code in found:
+                seen.setdefault((code, name), None)
+    return [f"(i) U+{code:04X} in tag markup ({name}...>) outside a quoted value: "
+            "html.parser reads it as whitespace and HTML does not, so they split the "
+            "attributes differently; fails closed"
+            for code, name in sorted(seen)]
+
 
 def rawtext_built_problems(text):
     """Site rule (i) on a built HTML page (review3 5): no '<' in the text of a
