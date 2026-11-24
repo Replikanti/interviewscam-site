@@ -535,26 +535,39 @@ def png(width=40, height=20, pixel=GROUND, marks=()):
     return base64.b64encode(data).decode()
 
 
-class Uniform(unittest.TestCase):
+BLACK, WHITE = (0, 0, 0), (255, 255, 255)
+
+
+class Canvas(unittest.TestCase):
+    def test_forced_colours(self):
+        self.assertEqual(sitecheck.REFLOW_BLANK_CANVAS, ("#000000", "#ffffff"))
+
     def test_canvas_alone(self):
-        self.assertIsNone(sitecheck.pixel_uniform(png()))
+        self.assertIsNone(sitecheck.pixel_canvas(png(pixel=BLACK), "#000000"))
+        self.assertIsNone(sitecheck.pixel_canvas(png(pixel=WHITE), "#ffffff"))
 
     def test_tolerance_bounds(self):
-        at = (GROUND[0] - 8,) + GROUND[1:]
-        above = (GROUND[0] - 9,) + GROUND[1:]
-        self.assertIsNone(sitecheck.pixel_uniform(png(marks=[(3, 4, at)])))
-        self.assertEqual(sitecheck.pixel_uniform(png(marks=[(3, 4, above)])),
-                         "1 pixel(s) off the canvas colour, x 3 to 3, y 4 to 4 of the slice, "
-                         "by up to 9 of 255")
+        self.assertIsNone(sitecheck.pixel_canvas(png(pixel=BLACK, marks=[(3, 4, (8, 0, 0))]),
+                                                 "#000000"))
+        self.assertEqual(sitecheck.pixel_canvas(png(pixel=BLACK, marks=[(3, 4, (9, 0, 0))]),
+                                                "#000000"),
+                         "1 pixel(s) off the forced canvas colour #000000, x 3 to 3, y 4 to 4 "
+                         "of the slice, by up to 9 of 255")
 
-    def test_band_against_the_most_common_colour(self):
-        band = [(x, y, (0xDD, 0, 0)) for y in range(5, 9) for x in range(40)]
-        got = sitecheck.pixel_uniform(png(marks=band))
-        self.assertEqual(got, "160 pixel(s) off the canvas colour, x 0 to 39, y 5 to 8 of "
-                              "the slice, by up to 252 of 255")
-        # The first pixel is no reference: a band on the first row still is.
-        got = sitecheck.pixel_uniform(png(marks=[(x, 0, (0xDD, 0, 0)) for x in range(40)]))
-        self.assertTrue(got.startswith("40 pixel(s) off"), got)
+    def test_ground_eraser_shows_on_a_forced_canvas(self):
+        # Paint in the page's canvas colour is uniform against itself and
+        # off both forced colours (review run 2, finding 1).
+        band = [(x, y, GROUND) for y in range(5, 9) for x in range(40)]
+        self.assertIsNone(sitecheck.pixel_canvas(png(marks=band), "#f3f6fc"))
+        for pixel, colour in ((BLACK, "#000000"), (WHITE, "#ffffff")):
+            with self.subTest(colour=colour):
+                got = sitecheck.pixel_canvas(png(pixel=pixel, marks=band), colour)
+                self.assertTrue(got.startswith(f"160 pixel(s) off the forced canvas colour "
+                                               f"{colour}, x 0 to 39, y 5 to 8"), got)
+
+    def test_whole_slice_another_colour(self):
+        got = sitecheck.pixel_canvas(png(pixel=GROUND), "#000000")
+        self.assertTrue(got.startswith("800 pixel(s) off"), got)
 
 
 REGION_ROW = {"kind": "a pinned line", "label": "p.lead", "index": 0, "controls": 0,
@@ -572,11 +585,12 @@ class FakeTools:
     def __init__(self, extras=None, snapshot=None, shots=None):
         self.extras = dict({"freeze": {"running": []},
                             "isolate": {"moved": False, "running": [], "rules": 1, "lines": []},
-                            "blank": {"rules": 1},
+                            "blank": {"rules": 2},
                             "unisolate": {"moved": False, "running": [], "sheets": True,
                                           "focus": True}}, **(extras or {}))
         self.snapshot = snapshot if snapshot is not None else page()[0].reply()
-        self.shots = list(shots or [SHOWN, SHOWN, png(), SHOWN, png(), SHOWN])
+        self.shots = list(shots or [SHOWN, SHOWN, png(pixel=BLACK), png(pixel=WHITE), SHOWN,
+                                    png(), SHOWN])
         self.calls = []
 
     def send(self, method, params=None, session=None, budget=None):
@@ -641,7 +655,8 @@ class Plumbing(unittest.TestCase):
     def differing(self, extras=None, snapshot=None):
         # The hidden capture differs from the rendered one, so a slice that
         # is compared gives the pixel finding.
-        return run(FakeTools(extras, snapshot, [SHOWN, png(), png(), SHOWN, png(), SHOWN]))
+        return run(FakeTools(extras, snapshot, [SHOWN, png(), png(pixel=BLACK),
+                                                png(pixel=WHITE), SHOWN, png(), SHOWN]))
 
     def test_compared_when_clean(self):
         items = self.differing()
@@ -661,7 +676,7 @@ class Plumbing(unittest.TestCase):
             ({"isolate": {"broken": "the region is not in the document's element tree"}},
              "(isolation)"),
             ({"isolate": {"moved": False, "running": [], "rules": 0}}, "rules, not 1, so everything outside"),
-            ({"blank": {"rules": 0}}, "that hides every element"),
+            ({"blank": {"rules": 1}}, "that hides every element"),
         )
         for extras, text in cases:
             with self.subTest(text=text):
@@ -693,12 +708,42 @@ class Plumbing(unittest.TestCase):
                             "line-through'" in item for item in items), items)
         self.assertTrue(any(PIXELS in item for item in items), items)
 
-    def test_blank_capture_must_be_the_canvas(self):
-        band = png(marks=[(x, 5, (0xDD, 0, 0)) for x in range(40)])
-        items = run(FakeTools(shots=[SHOWN, png(), band, SHOWN, png(), SHOWN]))
-        self.assertTrue(any("with every element hidden, the slice of" in item
-                            for item in items), items)
-        self.assertFalse(any(PIXELS in item for item in items), items)
+    def test_blank_captures_must_be_the_forced_canvas(self):
+        band = [(x, 5, GROUND) for x in range(40)]
+        for shots, colour in (
+                ([png(pixel=BLACK, marks=band), png(pixel=WHITE)], "#000000"),
+                ([png(pixel=BLACK), png(pixel=WHITE, marks=band)], "#ffffff")):
+            with self.subTest(colour=colour):
+                items = run(FakeTools(shots=[SHOWN, png()] + shots + [SHOWN, png(), SHOWN]))
+                self.assertTrue(any("with every element hidden, the slice of" in item
+                                    and f"forced canvas colour {colour}" in item
+                                    for item in items), items)
+                self.assertFalse(any(PIXELS in item for item in items), items)
+
+    def test_blank_capture_asks_for_each_colour(self):
+        tools = FakeTools()
+        asked = []
+        send = tools.send
+
+        def spy(method, params=None, session=None, budget=None):
+            found = re.search(r'var mode = "blank", saved = ("[^"]*")', (params or {}).get(
+                "expression", ""))
+            if found:
+                asked.append(found.group(1))
+            return send(method, params, session, budget)
+
+        tools.send = spy
+        self.assertEqual(run(tools), [])
+        self.assertEqual(asked, ['"#000000"', '"#ffffff"'])
+
+    def test_kept_focus_not_restored(self):
+        items = run(FakeTools({"unisolate": {"moved": False, "running": [], "sheets": True,
+                                             "focus": False,
+                                             "focusWas": "h2#search-answer-heading",
+                                             "focusNow": "body"}}))
+        self.assertEqual(len(items), 1, items)
+        self.assertIn("the focus did not come back (focus on 'h2#search-answer-heading' "
+                      "before, on 'body' after)", items[0])
 
 
 if __name__ == "__main__":

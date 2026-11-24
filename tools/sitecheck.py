@@ -12053,6 +12053,13 @@ REFLOW_SCROLLBAR_OVERFLOW = frozenset({"scroll", "auto"})
 # region with a layout object fails closed, whatever its visibility, as
 # does any entry the snapshot gives a contentDocumentIndex.
 REFLOW_FRAME_OWNERS = frozenset({"iframe", "frame", "object", "embed"})
+# The canvas colours of the two blank captures (fix round 2): black and
+# white are as far apart as two colours get in every channel (255), so no
+# paint of any colour lies within REFLOW_PAINT_TOLERANCE of both, and paint
+# in the page's own canvas colour (an eraser over the region's words) shows
+# in at least one. A page rule that outranks the forced background leaves a
+# capture off its forced colour, which fails closed.
+REFLOW_BLANK_CANVAS = ("#000000", "#ffffff")
 # Case (6), state S1 (ADR-0003 part 6): the script URLs blocked, so the page
 # loads with scripting on and its script not run, as after a failed load.
 REFLOW_BLOCKED_SCRIPTS = ("*.js", "*.mjs")
@@ -13325,33 +13332,23 @@ def pseudo_paint_items(reads):
     return items
 
 
-def pixel_uniform(shot, tolerance=REFLOW_PAINT_TOLERANCE):
+def pixel_canvas(shot, colour, tolerance=REFLOW_PAINT_TOLERANCE):
     """None when every pixel of a screenshot (base64 PNG) is within
-    tolerance of its most common colour, else the count of the pixels off
-    it, their bounding box and the largest difference. The third capture
-    of the pixel occlusion check, taken with every element hidden, must
-    show the canvas alone (Replikanti/interviewscam#39 fix round 1)."""
+    tolerance of colour ("#rrggbb"), else the count of the pixels off it,
+    their bounding box and the largest difference. The blank captures of
+    the pixel occlusion check, taken with every element hidden and the
+    canvas forced to each of REFLOW_BLANK_CANVAS, must show that colour
+    alone (Replikanti/interviewscam#39 fix rounds 1 and 2)."""
     width, _height, channels, rows = png_rows(base64.b64decode(shot))
-    counts = {}
-    for row in rows:
-        first = bytes(row[:channels])
-        if row == first * width:
-            counts[first] = counts.get(first, 0) + width
-            continue
-        for x in range(0, width * channels, channels):
-            px = bytes(row[x:x + channels])
-            counts[px] = counts.get(px, 0) + 1
-    if not counts:
-        return None
-    canvas = max(counts, key=counts.get)
-    plain = canvas * width
+    want = bytes.fromhex(colour.lstrip("#"))
+    plain = (want + b"\xff" * (channels - 3)) * width
     count, xs, ys, most = 0, [], [], 0
     for y, row in enumerate(rows):
         if row == plain:
             continue
         for x in range(width):
-            px = row[x * channels:(x + 1) * channels]
-            delta = max(abs(a - b) for a, b in zip(px, canvas))
+            px = row[x * channels:x * channels + 3]
+            delta = max(abs(a - b) for a, b in zip(px, want))
             if delta > tolerance:
                 count += 1
                 xs.append(x)
@@ -13359,8 +13356,8 @@ def pixel_uniform(shot, tolerance=REFLOW_PAINT_TOLERANCE):
                 most = max(most, delta)
     if not count:
         return None
-    return (f"{count} pixel(s) off the canvas colour, x {min(xs)} to {max(xs)}, y {min(ys)} "
-            f"to {max(ys)} of the slice, by up to {most} of 255")
+    return (f"{count} pixel(s) off the forced canvas colour {colour}, x {min(xs)} to "
+            f"{max(xs)}, y {min(ys)} to {max(ys)} of the slice, by up to {most} of 255")
 
 
 def reflow_named(items):
@@ -14136,19 +14133,24 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
   // ::first-line and ::first-letter. The DOM snapshot after it proves that
   // everything outside shows nothing (isolation_problems). "blank", after
   // the second capture, hides every element, the region and its ancestors
-  // too, for a third capture that must show the canvas alone
-  // (pixel_uniform), so paint that no element's visibility reaches is
-  // found whatever it is. "unisolate", after the third
-  // capture, reads the box and the animations again, restores the
-  // original adoptedStyleSheets and the focus, and returns whether both
-  // are back.
+  // too, and forces the canvas to the colour in saved, for a capture that
+  // must show that colour alone (pixel_canvas, once per colour of
+  // REFLOW_BLANK_CANVAS), so paint that no element's visibility reaches is
+  // found whatever it is and whatever its colour. "unisolate", after the
+  // last capture, reads the box and the animations again, restores the
+  // original adoptedStyleSheets and puts the focus back on the element
+  // focused at "freeze" (kept or blurred), and returns whether both are
+  // back, with the focus compared in every case.
   if (el && mode === "freeze") {
     var f = document.activeElement;
     var kept = f && el.contains(f) && !(f.isContentEditable ||
       /^(input|textarea|select)$/.test(f.localName));
-    window.__iscFocus = f && f !== document.body && f !== document.documentElement && !kept
-      ? f : null;
-    if (window.__iscFocus && window.__iscFocus.blur) window.__iscFocus.blur();
+    // The element focused now, kept or blurred, is the one unisolate puts
+    // the focus back on and checks: the blank step hides the region, so a
+    // kept focus is lost there too (fix round 2, review finding 2).
+    window.__iscFocused = f;
+    if (f && f !== document.body && f !== document.documentElement && !kept && f.blur)
+      f.blur();
     extra = {running: running()};
   } else if (el && mode === "isolate") {
     var chain = [], p = el;
@@ -14187,23 +14189,34 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
                lines: lines};
     }
   } else if (el && mode === "blank") {
+    // saved holds the forced canvas colour of this blank capture. The
+    // sheet of the previous blank capture is replaced, not stacked.
     var all = new CSSStyleSheet();
-    all.replaceSync("*{visibility:hidden!important}");
-    document.adoptedStyleSheets =
-      Array.prototype.slice.call(document.adoptedStyleSheets).concat([all]);
+    all.replaceSync("*{visibility:hidden!important}:root{background:" + saved +
+                    "!important}");
+    var prior = window.__iscBlank;
+    document.adoptedStyleSheets = Array.prototype.filter.call(document.adoptedStyleSheets,
+      function (s) { return s !== prior; }).concat([all]);
+    window.__iscBlank = all;
     extra = {rules: all.cssRules.length};
   } else if (mode === "unisolate") {
-    var sheets = window.__iscSheets, back = window.__iscFocus;
+    var sheets = window.__iscSheets, back = window.__iscFocused;
     if (el && window.__iscBox !== undefined)
       extra = {moved: box(el) !== window.__iscBox, running: running()};
     if (sheets) document.adoptedStyleSheets = sheets;
-    if (back && back.focus) back.focus({preventScroll: true});
+    if (back && back !== document.activeElement && back !== document.body &&
+        back !== document.documentElement && back.focus)
+      back.focus({preventScroll: true});
     var now = document.adoptedStyleSheets;
     extra.sheets = !sheets || (now.length === sheets.length &&
       sheets.every(function (s, i) { return now[i] === s; }));
-    extra.focus = !back || document.activeElement === back;
+    // Compared in every case, a kept focus and no focus (body) included.
+    extra.focus = back === undefined || document.activeElement === back;
+    extra.focusWas = back ? label(back) : String(back);
+    extra.focusNow = document.activeElement ? label(document.activeElement) : "nothing";
     window.__iscSheets = null;
-    window.__iscFocus = null;
+    window.__iscFocused = undefined;
+    window.__iscBlank = null;
     window.__iscBox = undefined;
   }
   if (el && el.style && mode === "hide") {
@@ -14355,10 +14368,10 @@ def reflow_hits(tools, session, findings, where, revealed=None):
             inner = {"x": x0, "y": y0, "width": max(x1 - x0, 1), "height": max(y1 - y0, 1),
                      "scale": 1}
 
-            def step(mode):
+            def step(mode, saved=None):
                 return reflow_value(tools, session, REFLOW_REGION_PAINT_SCRIPT % {
-                    "index": region["index"], "mode": json.dumps(mode), "saved": "null",
-                    "y": "0"}, where).get("extra") or {}
+                    "index": region["index"], "mode": json.dumps(mode),
+                    "saved": json.dumps(saved), "y": "0"}, where).get("extra") or {}
 
             def capture():
                 return tools.send("Page.captureScreenshot", {"format": "png", "clip": inner},
@@ -14403,16 +14416,22 @@ def reflow_hits(tools, session, findings, where, revealed=None):
             # lists no user-agent part and not every pseudo-element (a
             # progress bar, a details slot, a scroll marker group), so this
             # reads their paint by its outcome, not by a list of names.
-            blank = step("blank")
-            third = capture()
-            if blank.get("rules") != 1:
-                findings.add(where, f"(isolation) the stylesheet that hides every element for "
-                             f"{what} holds {show(blank.get('rules'))} rules, not 1, so its "
-                             "pixels are not compared")
-                blocked = True
-            elif (left := pixel_uniform(third)):
-                findings.add(where, isolation_message("blank", [left], what))
-                blocked = True
+            # Fix round 2 (review finding 2): twice, with the canvas forced to
+            # each of REFLOW_BLANK_CANVAS, so paint in the canvas colour (an
+            # eraser over the region's words) shows in one of them.
+            for colour in REFLOW_BLANK_CANVAS:
+                blank = step("blank", colour)
+                third = capture()
+                if blank.get("rules") != 2:
+                    findings.add(where, f"(isolation) the stylesheet that hides every element "
+                                 f"for {what} holds {show(blank.get('rules'))} rules, not 2, "
+                                 "so its pixels are not compared")
+                    blocked = True
+                    break
+                if (left := pixel_canvas(third, colour)):
+                    findings.add(where, isolation_message("blank", [left], what))
+                    blocked = True
+                    break
             back = step("unisolate")
             if back.get("moved"):
                 moved = blocked = True
@@ -14427,8 +14446,10 @@ def reflow_hits(tools, session, findings, where, revealed=None):
                                           ("the focus", back.get("focus"))) if ok is not True]
             if lost:
                 findings.add(where, f"(isolation) the page was not restored after the "
-                             f"captures of {what}: {' and '.join(lost)} did not come back, so "
-                             "every later check would read a changed page")
+                             f"captures of {what}: {' and '.join(lost)} did not come back "
+                             f"(focus on {show(back.get('focusWas'), 80)} before, on "
+                             f"{show(back.get('focusNow'), 80)} after), so every later check "
+                             "would read a changed page")
             if not blocked and (diff := pixel_difference(first, second)):
                 findings.add(where, f"(occlusion) the pixels of {what} change when everything "
                              f"outside it is hidden ({diff}): something outside the region "
