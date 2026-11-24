@@ -74,12 +74,15 @@ pass-labelled-artifacts-hidden-persona-inert	content/reports/persona-2.md	indepe
 # Fix round 1 of PR 3 (review findings 1 and 2, QA survivor E): two declared
 # values that differ only in whitespace show as one box (box_key), so R17
 # refuses the pair (the review's repro); a value with a whitespace run that
-# is listed passes. R18: a persona name or alias without a letter or digit
+# is listed passes. Since Replikanti/interviewscam#49 the twins and the run
+# use U+00A0, because R19 refuses an ASCII whitespace run or edge in any
+# artifact value (records-artifact/fail-labelled-value-run-reported-once
+# holds the ASCII run). R18: a persona name or alias without a letter or digit
 # after NFKC and the invisibles (a space, U+00A0, U+2007, U+3000, U+200B, a
 # Hangul filler, U+037A, punctuation only) would render as the label next
 # to no name.
-labelled-artifacts-whitespace-twins	content/reports/persona-3.md	file_names = ["Entrevista técnica[.]zip"]	file_names = ["Entrevista técnica[.]zip", "riley_placeholder", "riley_placeholder "]	COUNT=1 params.artifacts: the declared values 'riley_placeholder ' and 'riley_placeholder' differ only in whitespace and show as the same box 'riley_placeholder', but the first is listed in params.labelled_artifacts and the second is not	labelled_artifacts = ["@riley_placeholder_zoë"]	labelled_artifacts = ["@riley_placeholder_zoë", "riley_placeholder "]
-pass-labelled-artifacts-whitespace-run	content/reports/persona-3.md	file_names = ["Entrevista técnica[.]zip"]	file_names = ["Entrevista técnica[.]zip", "Riley  Placeholder CV[.]zip"]	PASS	labelled_artifacts = ["@riley_placeholder_zoë"]	labelled_artifacts = ["@riley_placeholder_zoë", "Riley  Placeholder CV[.]zip"]
+labelled-artifacts-whitespace-twins	content/reports/persona-3.md	file_names = ["Entrevista técnica[.]zip"]	file_names = ["Entrevista técnica[.]zip", "riley_placeholder", "riley_placeholder\u{00A0}"]	COUNT=1 params.artifacts: the declared values 'riley_placeholder ' and 'riley_placeholder' differ only in whitespace and show as the same box 'riley_placeholder', but the first is listed in params.labelled_artifacts and the second is not	labelled_artifacts = ["@riley_placeholder_zoë"]	labelled_artifacts = ["@riley_placeholder_zoë", "riley_placeholder\u{00A0}"]
+pass-labelled-artifacts-nbsp-run	content/reports/persona-3.md	file_names = ["Entrevista técnica[.]zip"]	file_names = ["Entrevista técnica[.]zip", "Riley\u{00A0}\u{00A0}Placeholder CV[.]zip"]	PASS	labelled_artifacts = ["@riley_placeholder_zoë"]	labelled_artifacts = ["@riley_placeholder_zoë", "Riley\u{00A0}\u{00A0}Placeholder CV[.]zip"]
 alias-blank-space	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", " "]	COUNT=1 holds no letter or number (a modifier letter alone does not count), so it would render as the D10 label next to no name (R18)
 alias-blank-nbsp-00a0	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{00A0}"]	COUNT=1 holds no letter or number (a modifier letter alone does not count), so it would render as the D10 label next to no name (R18)
 alias-blank-figure-space-2007	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{2007}"]	COUNT=1 holds no letter or number (a modifier letter alone does not count), so it would render as the D10 label next to no name (R18)
@@ -107,7 +110,7 @@ pass-alias-category-nd	content/reports/persona-1.md	aliases = ["A. Exampleton", 
 pass-alias-category-nl	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{3007}"]	PASS
 pass-alias-category-no	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{2CFD}"]	PASS
 pass-alias-category-lo-with-lm	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{30E6}\u{30FC}\u{30AD}"]	PASS
-pass-labelled-artifacts-whitespace-twins-both-listed	content/reports/persona-3.md	file_names = ["Entrevista técnica[.]zip"]	file_names = ["Entrevista técnica[.]zip", "Riley Placeholder[.]zip", "Riley  Placeholder[.]zip"]	PASS	labelled_artifacts = ["@riley_placeholder_zoë"]	labelled_artifacts = ["@riley_placeholder_zoë", "Riley Placeholder[.]zip", "Riley  Placeholder[.]zip"]
-pass-labelled-artifacts-whitespace-twins-neither-listed	content/reports/persona-3.md	file_names = ["Entrevista técnica[.]zip"]	file_names = ["Entrevista técnica[.]zip", "Entrevista  técnica[.]zip"]	PASS
+pass-labelled-artifacts-whitespace-twins-both-listed	content/reports/persona-3.md	file_names = ["Entrevista técnica[.]zip"]	file_names = ["Entrevista técnica[.]zip", "Riley Placeholder[.]zip", "Riley\u{00A0}Placeholder[.]zip"]	PASS	labelled_artifacts = ["@riley_placeholder_zoë"]	labelled_artifacts = ["@riley_placeholder_zoë", "Riley Placeholder[.]zip", "Riley\u{00A0}Placeholder[.]zip"]
+pass-labelled-artifacts-whitespace-twins-neither-listed	content/reports/persona-3.md	file_names = ["Entrevista técnica[.]zip"]	file_names = ["Entrevista técnica[.]zip", "Entrevista\u{00A0}técnica[.]zip"]	PASS
 # Fix round 2, sweep round 3 survivor r18-no-nfkc: U+3392 (So) counts only through NFKC, which reads it as MHz.
 pass-alias-nfkc-square-mhz	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{3392}"]	PASS

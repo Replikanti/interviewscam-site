@@ -14,9 +14,10 @@ internal error, so a crash never reads as a finding or as a pass.
       artifact appears in no other string and no body of any record (R2).
       No record body carries a bare URL, a Markdown link or a <...> autolink
       (SPEC section 5); the rule fails closed. Then the record rules R4 to
-      R18 of ADR-0004 (slugs, persona names, references, dates, evidence,
+      R19 of ADR-0004 (slugs, persona names, references, dates, evidence,
       hostnames and IP forms in record text, _index.md, verdict phrases,
-      source hosts, bidi controls, labelled artifacts, names with text),
+      source hosts, bidi controls, labelled artifacts, names with text,
+      artifact whitespace),
       with the retired slugs of
       DIR/record-policy.json.
   site --records DIR [--schemas DIR] PUBLIC
@@ -1362,6 +1363,63 @@ def blank_name_problems(record):
     return problems
 
 
+# R19's reason for each member of ARTIFACT_WHITESPACE other than U+0020,
+# in the order the finding lists them.
+ARTIFACT_WHITESPACE_REASONS = (
+    ("\t", "the minifier turns it into a space"),
+    ("\f", "the minifier turns it into a space"),
+    ("\r", "the build turns it into U+000A"),
+    ("\n", "a browser draws it as a space"),
+)
+
+
+def artifact_whitespace_problems(record):
+    """R19 (Replikanti/interviewscam#49, ADR-0004 R19 amendment): every
+    declared artifact value holds HTML's ASCII whitespace
+    (ARTIFACT_WHITESPACE) only as single U+0020 spaces between other
+    characters. The pinned Hugo's minifier collapses a run into one
+    character, turns U+0009 and U+000C into U+0020 and drops a leading
+    space where the box opens its line; the build turns U+000D into
+    U+000A; and a browser (.artifact sets no white-space) draws U+000A as
+    a space and no space at either end of the box. Any of them would show
+    a box that differs from what Copy gives and what the record stores.
+    U+00A0, U+3000 and the other Unicode spaces are drawn and copied as
+    stored, so they stay (an attacker's U+00A0 in a file name is evidence).
+    One finding per value, listing every defect with its position, 1-based
+    in code points of the stored value."""
+    problems = []
+    for path, value in declared_artifacts(record):
+        if not isinstance(value, str):
+            continue  # the schema's finding
+        defects = []
+        # A slice, so the empty string (the schema's finding) is no edge.
+        if value[:1] in ARTIFACT_WHITESPACE:
+            defects.append(f"starts with U+{ord(value[0]):04X} (the minifier drops it "
+                           "where the box opens its line, and a browser draws none)")
+        if value[-1:] in ARTIFACT_WHITESPACE:
+            defects.append(f"ends with U+{ord(value[-1]):04X} (a browser draws none at "
+                           "the end of the box)")
+        for run in ARTIFACT_WHITESPACE_RUN.finditer(value):
+            defects.append(f"holds a run of {len(run[0])} whitespace characters at "
+                           f"character {run.start() + 1} (the minifier collapses it into one)")
+        first = {}
+        for i, c in enumerate(value):
+            if c in ARTIFACT_WHITESPACE:
+                first.setdefault(c, i)
+        for member, reason in ARTIFACT_WHITESPACE_REASONS:
+            if member in first:
+                defects.append(f"holds U+{ord(member):04X} at character {first[member] + 1} "
+                               f"({reason})")
+        if defects:
+            problems.append(f"{path}: {show(value)} " + "; ".join(defects)
+                            + ", so the page would not show the value as stored; an "
+                            "artifact value holds whitespace only as single U+0020 spaces "
+                            "between other characters (U+00A0 and the other Unicode spaces "
+                            "stay as stored), and where the whitespace is part of the "
+                            "trick, describe it in params.evidence (R19)")
+    return problems
+
+
 def date_problems(record):
     """R8: first seen <= last seen (<= last reviewed for reports)."""
     params = record.params
@@ -1585,6 +1643,7 @@ def cmd_records(args):
         problems += date_problems(record)
         if record.section == "reports":
             problems += report_problems(record) + labelled_artifact_problems(record)
+            problems += artifact_whitespace_problems(record)
             problems += blank_name_problems(record)
         problems += text_problems(record) + verdict_problems(record)
         for problem in problems:
@@ -2261,6 +2320,12 @@ def url_scheme(url):
 STYLESHEET_LINK_ATTRS = frozenset({"rel", "href"})
 HEAD_PREFIX_TAGS = frozenset({"html", "head", "meta", "title", "link"})
 ASCII_WHITESPACE = "\t\n\f\r "
+# Records rule R19 (Replikanti/interviewscam#49): the whitespace an artifact
+# value may hold only as single U+0020 spaces between other characters.
+# A set, never the string: "" in ASCII_WHITESPACE is True.
+ARTIFACT_WHITESPACE = frozenset(ASCII_WHITESPACE)
+ARTIFACT_WHITESPACE_RUN = re.compile(
+    "[" + re.escape("".join(sorted(ARTIFACT_WHITESPACE))) + "]{2,}")
 # M3 PR 10 fix round 1 (PR #33 review, findings 2 and 3): an href of rule
 # (k) and a src of rule (j) is a root-relative path in a closed alphabet,
 # read as it stands, with no URL resolution. The pinned Hugo writes exactly
@@ -2952,14 +3017,49 @@ OWN_URL = re.compile(r"https://interviewscam\.com(?:[/?#]|$)")
 # Rule 3: a link to a report page, and the list-item contract around it.
 REPORT_LINK = re.compile(r"/reports/([^/]+)(?:/|$)")
 RECORD_DATE = "record-date"
-# Rule 9 and rule 4: the alphanumeric tokens of a name, matched with at
-# least one other character between them (Morgan+Placeholder,
-# morgan-placeholder, morgan_placeholder.png). Joined with no separator
-# (MorganPlaceholder) only when every token has at least JOIN_MIN_LETTERS
-# letters, so short tokens such as "A. Bout", "Li Ke" or "T. Rust" never
-# match ordinary words (about, like, trust).
+# Rule 9 and rule 4: the tokens of a name, matched with at least one other
+# character between them (Morgan+Placeholder, morgan-placeholder,
+# morgan_placeholder.png). A token is a letter or digit, then letters,
+# digits and combining marks (Replikanti/interviewscam#49): a mark that
+# does not compose under NFKC (the Thai vowel sign of "ใจดี", a virama, an
+# Arabic shadda) is no word character for re, so a token of letters alone
+# ended between a letter and its mark, and the label was looked for at the
+# mark. Joined with no separator (MorganPlaceholder) only when every token
+# has at least JOIN_MIN_LETTERS letters, so short tokens such as "A. Bout",
+# "Li Ke" or "T. Rust" never match ordinary words (about, like, trust).
 JOIN_MIN_LETTERS = 4
-NAME_TOKEN = re.compile(r"[^\W_]+")
+# The code points combining_marks scans (Replikanti/interviewscam#49 D2):
+# every General_Category M code point of Unicode 16.0 (Python 3.14: 2,501
+# marks in 321 ranges) lies in planes 0 and 1 or in U+E0000 to U+E0FFF
+# (the variation selectors supplement), so this scan equals a full one
+# (confusables/name-mark-class holds that under the runner's Python). It
+# takes about 0.04 s once per process against 0.37 s for all 1,114,112
+# code points; the BMP alone would miss the SMP marks (U+1D167).
+MARK_SCAN_RANGES = ((0x0000, 0x1FFFF), (0xE0000, 0xE0FFF))
+
+
+@functools.cache
+def combining_marks():
+    """A regex character class of every combining mark (General_Category M)
+    in MARK_SCAN_RANGES: re has no \\p{M}, and ADR-0002 keeps the checks to
+    the standard library."""
+    ranges = []
+    for lo, hi in MARK_SCAN_RANGES:
+        for cp in range(lo, hi + 1):
+            if unicodedata.category(chr(cp))[0] == "M":
+                if ranges and ranges[-1][1] == cp - 1:
+                    ranges[-1][1] = cp
+                else:
+                    ranges.append([cp, cp])
+    return "[" + "".join(f"\\U{a:08X}" if a == b else f"\\U{a:08X}-\\U{b:08X}"
+                         for a, b in ranges) + "]"
+
+
+@functools.cache
+def name_token():
+    """A name token: a letter or digit, then letters, digits and combining
+    marks."""
+    return re.compile(rf"[^\W_](?:[^\W_]|{combining_marks()})*")
 # Rule 4's exempt spans (the label-first <title>, the own-artifact boxes):
 # the joined text keeps their text between these two private-use
 # characters, and a name match is exempt only when it lies wholly between
@@ -4495,7 +4595,11 @@ def name_pattern(name, reading=0):
     a structure taken from it would make "Tim" a joinable 4-letter token
     and the initial "M." an "rn" that matches without its period. Under R3
     and V3 an "i" or "l" of a token also matches a STROKE (stroke_pattern),
-    and a STROKE is no letter, so between two tokens it separates them."""
+    and a STROKE is no letter, so between two tokens it separates them.
+    Tokens carry their combining marks in every reading, so an initial is
+    one letter plus only marks, and a match extends over the marks right
+    after its end before the whole-word bound, so it never ends between a
+    letter and its mark (Replikanti/interviewscam#49)."""
     visual = reading != 0 and NAME_READING_FORMS[reading][2]
     source = visual_order(name) if visual else name
     folded = fold_words(source)
@@ -4506,8 +4610,14 @@ def name_pattern(name, reading=0):
         # initial "i" and "van", so no reading found a bare "İvan Petrov".
         folded = unicodedata.normalize(
             "NFC", unicodedata.normalize("NFD", folded).translate(MARKS_DROPPED))
-    tokens = NAME_TOKEN.findall(folded)
+    tokens = name_token().findall(folded)
     before, after = name_bounds(reading, r"[^\W_]")
+    # A match runs over the marks right after its end, possessive, so it
+    # never ends between a letter and its mark and never backs off a mark
+    # to end inside a longer word ("कमल" in "कमलाजी"); only after the last
+    # token, so a mark between two tokens still separates them
+    # (Replikanti/interviewscam#49 D1).
+    after = f"{combining_marks()}*+{after}"
     if not tokens:
         whole = name_fold(source, reading, drawn=True)
         if not whole and reading:
@@ -4519,13 +4629,13 @@ def name_pattern(name, reading=0):
     # differently (a combining mark of its own between two letters).
     cased = None
     if reading and NAME_READING_FORMS[reading][1]:
-        cased = NAME_TOKEN.findall(unicodedata.normalize("NFKC", source).translate(INVISIBLE))
+        cased = name_token().findall(unicodedata.normalize("NFKC", source).translate(INVISIBLE))
         if len(cased) != len(tokens):
             cased = None
     joinable = all(sum(c.isalpha() for c in tok) >= JOIN_MIN_LETTERS for tok in tokens)
 
     def initial(tok):
-        return len(tok) == 1 and tok.isalpha()
+        return tok[0].isalpha() and len(tok.translate(MARKS_DROPPED)) == 1
     parts = []
     for i, tok in enumerate(tokens):
         text = name_fold(cased[i] if cased else tok, reading, drawn=True)
