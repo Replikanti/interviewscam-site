@@ -11942,14 +11942,14 @@ REFLOW_HEIGHT = 640
 # attempt alone outlasts the longest stall seen, at most 70.3 s (PR 5 job
 # 20, image 20261101), so it is absorbed whether a killed Chrome keeps its
 # progress, the stall lies outside the VM, or only a fresh Chrome helps.
-# Upper bound: the 100-minute workflow cap (derived from the job duration
-# on a bucketed base of 3000 s, the slowest green job, 2718 s, plus 46 s of
+# Upper bound: the 110-minute workflow cap (derived from the job duration
+# on a bucketed base of 3300 s, the slowest green job, 3163 s, plus 46 s of
 # drift, rounded up to the next 5 minutes; M5b PR 2 fix rounds 9 and 10,
-# re-derived in Replikanti/interviewscam#40 PR 2 and #28 PR 2, ADR-0004
+# re-derived in Replikanti/interviewscam#40 PR 2, #28 PR 2 and #39, ADR-0004
 # Numbers) holds the base, a fully used window (2 x L) and one more 70 s
-# stall, so L is at most 1465 s; 75 s leaves 2780 s of the cap.
-# Below 71 s job 20's shape depends on a restart helping again; above 1465 s
-# an absorbed window plus a second stall is cancelled at 100 minutes.
+# stall, so L is at most 1615 s; 75 s leaves 3080 s of the cap.
+# Below 71 s job 20's shape depends on a restart helping again; above 1615 s
+# an absorbed window plus a second stall is cancelled at 110 minutes.
 REFLOW_LAUNCH_TIMEOUT = 75
 # The budget of every later answer (ADR-0003 Numbers). A 23-page call makes
 # about 70 page-level calls in 1.9 to 2.8 s on the runner, and no later call

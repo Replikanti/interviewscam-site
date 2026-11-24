@@ -390,6 +390,7 @@ class Broken(unittest.TestCase):
             "backendNodeId missing": lambda r, d: d["nodes"].pop("backendNodeId"),
             "a bool for an int": lambda r, d: d["nodes"]["nodeType"].__setitem__(0, True),
             "a float for an int": lambda r, d: d["nodes"]["parentIndex"].__setitem__(1, 0.0),
+            "a bool for a layout entry": lambda r, d: d["layout"]["nodeIndex"].__setitem__(1, True),
             "parent after child": lambda r, d: d["nodes"]["parentIndex"].__setitem__(1, 5),
             "parent is self": lambda r, d: d["nodes"]["parentIndex"].__setitem__(1, 1),
             "parent below -1": lambda r, d: d["nodes"]["parentIndex"].__setitem__(1, -2),
