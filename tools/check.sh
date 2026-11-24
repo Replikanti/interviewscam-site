@@ -222,7 +222,7 @@ warm_chrome_finish() {
     if awk -v n="$EPOCHREALTIME" -v d="$deadline" 'BEGIN { exit !(n >= d) }'; then
       kill -TERM -- "-$pid" "$pid" 2>/dev/null
       wait "$pid" 2>/dev/null
-      read -r files <"$dir/count" 2>/dev/null
+      read -r files 2>/dev/null <"$dir/count"
       echo "reflow warm-up: still reading after ${wait_s} s, stopped (${files:-0} files listed)"
       rm -rf "$dir"
       return 0
@@ -230,7 +230,7 @@ warm_chrome_finish() {
     sleep 0.1
   done
   wait "$pid" 2>/dev/null
-  if read -r files bytes secs <"$dir/result" 2>/dev/null; then
+  if read -r files bytes secs 2>/dev/null <"$dir/result"; then
     awk -v f="$files" -v b="$bytes" -v s="$secs" 'BEGIN {
       printf "reflow warm-up: read %d files, %.1f MiB in %.1f s before the first launch\n", f, b / 1048576, s }'
   else

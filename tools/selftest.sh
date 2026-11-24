@@ -6521,6 +6521,12 @@ LDD
         source "$1"
         warm_chrome_start
         pid=$WARM_CHROME_PID
+        # wait (at most 10 s) until the reader has reached the stub cat, so a
+        # slow or loaded runner cannot let the 1 s join end before it starts
+        for _ in {1..100}; do
+          [[ -s "$2/stub.pid" ]] && break
+          sleep 0.1
+        done
         t0=$EPOCHREALTIME
         line="$(warm_chrome_finish)"
         t1=$EPOCHREALTIME
