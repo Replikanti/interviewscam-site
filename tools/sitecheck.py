@@ -5840,10 +5840,12 @@ def preview_meta_content(page, attr, key):
 
 def page_facts(page):
     """{term: value} of the visible facts list (dl.facts) of a record page:
-    each <dt> text and the text of the <dd> after it."""
+    each <dt> text and the text of the <dd> after it. A <dt> in a hidden list
+    is concealed through its ancestor, so the <dt> check alone skips it (fix
+    round 1: a check on the list too could be dropped unseen)."""
     facts = {}
     for dl in by_class(page, "facts"):
-        if dl.tag != "dl" or dl.concealed():
+        if dl.tag != "dl":
             continue
         for el in dl.walk():
             if el.tag != "dt" or el.concealed():
