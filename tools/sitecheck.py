@@ -1768,6 +1768,11 @@ def html_request_problems(page):
                         problems.append(f"<{tag} {pname}> pings {show(url)}")
         if "srcdoc" in attrs:
             problems.append(f"<{tag} srcdoc> (an embedded document; fails closed)")
+        # Deliberately a superset of what the browser follows: a value it
+        # reads as refresh is an ASCII case-insensitive match, which strip()
+        # leaves as it is and lower() folds as ascii_lower does, so a wider
+        # match here only adds a finding (a padded refresh the browser
+        # ignores) and never misses one (Replikanti/interviewscam#32).
         if tag == "meta" and attrs.get("http-equiv", "").strip().lower() == "refresh":
             target = re.split(r"[;,]", attrs.get("content", ""), maxsplit=1)
             if len(target) == 2:
@@ -1872,6 +1877,19 @@ def csp_problems(policy):
     return problems
 
 
+def is_csp_meta(tag, attrs):
+    """This element is a CSP meta as the browser applies one: a meta whose
+    http-equiv is an ASCII case-insensitive match for
+    Content-Security-Policy (Replikanti/interviewscam#32). HTML matches the
+    enumerated keyword without trimming it, so the value is not stripped:
+    str.strip() also removes U+00A0, U+0085, U+3000 and other Unicode
+    whitespace, and a padded value is inert in the browser. ASCII folding
+    only, because casefold() and NFKC map non-ASCII code points (U+017F,
+    the long s, to s) onto these letters, which the browser does not."""
+    return tag == "meta" and \
+        ascii_lower(attrs.get("http-equiv", "")) == "content-security-policy"
+
+
 def intake_csp_problems(page):
     """Site rule (a) on a page with the intake form: every CSP meta's
     form-action lists INTAKE_ORIGIN (a missing form-action does not; the
@@ -1879,8 +1897,7 @@ def intake_csp_problems(page):
     targets)."""
     problems = []
     for tag, attrs in page.elements:
-        if tag != "meta" or attrs.get("http-equiv", "").strip().lower() \
-                != "content-security-policy":
+        if not is_csp_meta(tag, attrs):
             continue
         sources = []
         for directive in (d.strip(CSP_WHITESPACE) for d in attrs.get("content", "").split(";")):
@@ -1897,17 +1914,14 @@ def intake_csp_problems(page):
 
 def csp_position_problems(page, csp):
     problems = []
-    metas = [attrs for tag, attrs in page.elements
-             if tag == "meta"
-             and attrs.get("http-equiv", "").strip().lower() == "content-security-policy"]
+    metas = [attrs for tag, attrs in page.elements if is_csp_meta(tag, attrs)]
     if len(metas) != 1:
         problems.append(f"expected exactly one Content-Security-Policy meta, found "
                         f"{len(metas)}")
     head = [(tag, attrs) for tag, attrs in page.elements if tag not in ("html", "head")]
     if not head or head[0][0] != "meta" or "charset" not in head[0][1]:
         problems.append("the first element in <head> must be <meta charset>")
-    elif len(head) < 2 or head[1][1].get("http-equiv", "").strip().lower() \
-            != "content-security-policy":
+    elif len(head) < 2 or not is_csp_meta(*head[1]):
         problems.append("the Content-Security-Policy meta is not the first element "
                         "after <meta charset>")
     for attrs in metas:
@@ -2579,8 +2593,7 @@ def cmd_site(args):
                     for problem in csp_position_problems(page, csp):
                         findings.add(rel, f"CSP: {problem}")
                 for tag, attrs in page.elements:
-                    if tag == "meta" and attrs.get("http-equiv", "").strip().lower() \
-                            == "content-security-policy":
+                    if is_csp_meta(tag, attrs):
                         for problem in csp_problems(attrs.get("content", "")):
                             findings.add(rel, problem)
                 for problem in markup_problems(page, path.relative_to(public).as_posix()):
@@ -8802,14 +8815,15 @@ def meta_content_plain(tag, first):
     value) is a meta's browser setting, never shown: the meta has no
     property or itemprop, and either a name on LITERALS_META_PLAIN_NAMES and
     no http-equiv, or an http-equiv on LITERALS_META_PLAIN_HTTP_EQUIV and no
-    name (ASCII case-insensitive, as browsers match them)."""
+    name (ASCII case-insensitive and untrimmed, as browsers match them;
+    Replikanti/interviewscam#32)."""
     if tag != "meta" or any(key in first for key in LITERALS_TEXT_CONTENT_KEYS):
         return False
     name, equiv = first.get("name"), first.get("http-equiv")
     if name is not None and equiv is None:
-        return ascii_lower(name.strip()) in LITERALS_META_PLAIN_NAMES
+        return ascii_lower(name) in LITERALS_META_PLAIN_NAMES
     if equiv is not None and name is None:
-        return ascii_lower(equiv.strip()) in LITERALS_META_PLAIN_HTTP_EQUIV
+        return ascii_lower(equiv) in LITERALS_META_PLAIN_HTTP_EQUIV
     return False
 
 

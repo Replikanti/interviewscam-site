@@ -855,7 +855,7 @@ PY
 }
 
 # site_intake_runner <sitecheck.py> <cases table> <base case> <schema dir>
-# (M5b PR 3, ADR-0006 part 9): site rule (a) for the intake endpoint and
+# [label] (M5b PR 3, ADR-0006 part 9): site rule (a) for the intake endpoint and
 # the intake origin in the CSP, one branch and one variant per row, on a
 # copy of render/pass-intake (the real built pages; the built pins off,
 # because the case's stylesheet and scripts are copies). A row is name,
@@ -869,10 +869,11 @@ PY
 # origin in that directive), and site-intake/coverage takes that set from
 # the code. Then the real cmd_site runs:
 # expect PASS needs exit 0, any other expect exit 1 with that text in the
-# output. The last line, site-intake/table, counts the rows. -B: no
-# tools/__pycache__.
+# output. The last line, site-intake/table, counts the rows. The label of
+# the lines is site-intake unless [label] names another (site-csp-equiv,
+# Replikanti/interviewscam#32). -B: no tools/__pycache__.
 site_intake_runner() {
-  python3 -I -B - "$1" "$2" "$3" "$4" <<'PY'
+  python3 -I -B - "$1" "$2" "$3" "$4" "${5:-site-intake}" <<'PY'
 import argparse
 import contextlib
 import importlib.util
@@ -887,7 +888,7 @@ spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
 sitecheck = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sitecheck)
 table, base, schema_dir = Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
-label = "site-intake"
+label = sys.argv[5]
 
 
 def unescape(text):
@@ -5113,6 +5114,25 @@ PINNED
       n_passed=$((n_passed + 1))
     else
       echo "FAIL site-intake-expect: a row with a wrong expect or a failing PASS row did not fail; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+  if selftest_wants site-csp-equiv; then
+    # site-csp-equiv/<row> (Replikanti/interviewscam#32): what counts as the
+    # CSP meta, from tests/fixtures/site/csp-equiv-cases.tsv on copies of
+    # render/pass-intake (site_intake_runner, built pins off, so rule (m)
+    # does not hide a row): a padded or non-ASCII-folded http-equiv is inert
+    # in the browser, so the count and position rules fail and rule (a) and
+    # the CSP rules stay silent about it.
+    site_intake_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/site/csp-equiv-cases.tsv" "$FIXTURES/render/pass-intake" \
+      "$SELFTEST_ROOT/schema" site-csp-equiv >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )site-csp-equiv/table' "$out"; then
+      echo "FAIL site-csp-equiv: the runner did not finish; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi

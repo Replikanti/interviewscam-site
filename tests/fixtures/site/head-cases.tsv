@@ -6,6 +6,7 @@
 # must hold). \n in find and replace is a newline, \t a tab, \v U+000B.
 value-charset	public/index.html	<meta charset="utf-8">	<meta charset="utf-16">	(m) the head holds
 value-csp-http-equiv	public/index.html	http-equiv="Content-Security-Policy"	http-equiv="content-security-policy"	(m) the head holds
+value-csp-http-equiv-leading-space	public/index.html	http-equiv="Content-Security-Policy"	http-equiv=" Content-Security-Policy"	(m) the head holds
 value-viewport-name	public/index.html	name="viewport"	name="Viewport"	(m) the head holds
 value-viewport-content	public/index.html	content="width=device-width,initial-scale=1"	content="width=device-width,initial-scale=2"	(m) the head holds
 value-color-scheme-name	public/index.html	name="color-scheme"	name="color-schemes"	(m) the head holds
