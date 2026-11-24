@@ -6366,6 +6366,10 @@ PY
       base="$(dirname "$1")"
       mkdir -p "$1/google/chrome/locales" "$1/google/chrome/lib/deep" "$base/alt" "$base/bin"
       head -c 100 /dev/zero >"$1/google/chrome/chrome"
+      # Executable, so that `command -v` prefers it to a real google-chrome
+      # later on PATH (a runner has one; bash falls back to a non-executable
+      # file only when nothing executable is found).
+      chmod +x "$1/google/chrome/chrome"
       head -c 2000 /dev/zero >"$1/google/chrome/locales/en.pak"
       head -c 30000 /dev/zero >"$1/google/chrome/lib/deep/x.so"
       ln -sf "$1/google/chrome/chrome" "$base/alt/google-chrome"
