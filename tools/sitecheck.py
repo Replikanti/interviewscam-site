@@ -9446,14 +9446,15 @@ TAG_NAME_SHOWN = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*|<[!?]", re.A)
 
 
 def tag_spans(text):
-    """(start, end) of every tag of a built page as HTML's tokenizer reads
-    it, from its '<' through its closing '>' (or the end of the file): a
-    start or end tag ('<' or '</' and an ASCII letter) with its attributes,
-    where a quote opens a value only right after '=' and ASCII whitespace,
-    so a '>' inside a quoted value does not end the tag; '<!' and '<?' run
-    to the next '>'. Comments get no reading of their own, because rule (i)
-    fails every '<!--'. Read with a pattern of states, not html.parser,
-    whose whitespace is what this rule checks."""
+    """(start, end, quoted) of every tag of a built page as HTML's
+    tokenizer reads it, from its '<' through its closing '>' (or the end of
+    the file): a start or end tag ('<' or '</' and an ASCII letter) with its
+    attributes, where a quote opens a value only right after '=' and ASCII
+    whitespace, so a '>' inside a quoted value does not end the tag; '<!'
+    and '<?' run to the next '>'. quoted: the (start, end) of the text
+    inside each quoted value, the quotes left out. Comments get no reading
+    of their own, because rule (i) fails every '<!--'. Read with a pattern
+    of states, not html.parser, whose whitespace is what this rule checks."""
     pos, n = 0, len(text)
     while True:
         lt = text.find("<", pos)
@@ -9463,28 +9464,32 @@ def tag_spans(text):
         if nxt in ("!", "?"):
             gt = text.find(">", lt + 2)
             pos = n if gt < 0 else gt + 1
-            yield lt, pos
+            yield lt, pos, ()
             continue
         i = lt + 2 if nxt == "/" else lt + 1
         if not ("a" <= text[i:i + 1].lower() <= "z" and text[i:i + 1].isascii()):
             pos = lt + 1
             continue
-        state = "name"
+        state, quoted, opened = "name", [], None
         while i < n:
             c = text[i]
             if state == "dq":
-                state = "before" if c == '"' else state
+                if c == '"':
+                    state = "before"
+                    quoted.append((opened, i))
             elif state == "sq":
-                state = "before" if c == "'" else state
+                if c == "'":
+                    state = "before"
+                    quoted.append((opened, i))
             elif c == ">":
                 break
             elif state == "value":
                 if c in ASCII_WHITESPACE:
                     pass
                 elif c == '"':
-                    state = "dq"
+                    state, opened = "dq", i + 1
                 elif c == "'":
-                    state = "sq"
+                    state, opened = "sq", i + 1
                 else:
                     state = "unquoted"
             elif state == "unquoted":
@@ -9498,30 +9503,37 @@ def tag_spans(text):
             elif state in ("before", "after"):
                 state = "attr"
             i += 1
+        if state in ("dq", "sq"):
+            quoted.append((opened, i))
         pos = min(i + 1, n)
-        yield lt, pos
+        yield lt, pos, tuple(quoted)
 
 
 def tag_space_problems(text):
     """Site rule (i) on a built page (Replikanti/interviewscam#32 fix round
-    1): no code point of PARSER_ONLY_SPACE anywhere in tag markup. Where
-    html.parser takes it for whitespace (between attributes, after a name,
-    around '=') it splits the attributes where a browser does not: a raw
-    U+00A0 between http-equiv and content gives the browser no CSP while
-    every rule reads one. Inside a quoted value both read the same text,
-    but this fails closed there too (the minifier writes none). One finding
-    per code point and tag name."""
+    1): no code point of PARSER_ONLY_SPACE in tag markup outside a quoted
+    attribute value: in a tag name, between attributes, around '=' and in
+    an unquoted value. There html.parser takes it for whitespace and splits
+    the attributes where a browser does not: a raw U+00A0 between
+    http-equiv and content gives the browser no CSP while every rule reads
+    one. Inside a single- or double-quoted value (as HTML's tokenizer
+    quotes it, tag_spans) both read the same text to the same closing
+    quote, so a record or label with U+00A0 in an attribute value passes.
+    One finding per code point and tag name."""
     seen = {}
-    for start, end in tag_spans(text):
-        found = {ord(c) for c in text[start:end] if ord(c) in PARSER_ONLY_SPACE}
+    for start, end, quoted in tag_spans(text):
+        found, pos = set(), start
+        for q_start, q_end in quoted + ((end, end),):
+            found |= {ord(c) for c in text[pos:q_start] if ord(c) in PARSER_ONLY_SPACE}
+            pos = q_end
         if found:
             match = TAG_NAME_SHOWN.match(text, start)
             name = match.group(0) if match else "<"
             for code in found:
                 seen.setdefault((code, name), None)
-    return [f"(i) U+{code:04X} in tag markup ({name}...>): html.parser reads it as "
-            "whitespace and HTML does not, so they split the attributes differently; "
-            "fails closed"
+    return [f"(i) U+{code:04X} in tag markup ({name}...>) outside a quoted value: "
+            "html.parser reads it as whitespace and HTML does not, so they split the "
+            "attributes differently; fails closed"
             for code, name in sorted(seen)]
 
 

@@ -963,8 +963,9 @@ PY
 
 # csp_equiv_coverage <sitecheck.py> <cases table> [drop]
 # (Replikanti/interviewscam#32 fix round 1): site-csp-equiv/coverage needs a
-# row tag-space/uXXXX for every member of PARSER_ONLY_SPACE, taken from the
-# code (drop: leave that member's row out, the negative proof);
+# row tag-space/uXXXX (in an unquoted value) and a row
+# tag-space/after-quoted/uXXXX (between the attributes) for every member of
+# PARSER_ONLY_SPACE, taken from the code (drop: leave that member's row out, the negative proof);
 # site-csp-equiv/space-set needs every code point that this interpreter's
 # str.isspace() or str pattern \s matches, but TAB, LF, FF, CR and SPACE, to
 # be a member, so a Unicode update that adds whitespace fails here instead
@@ -982,7 +983,8 @@ spec.loader.exec_module(sitecheck)
 drop = sys.argv[3]
 names = {line.split("\t")[0] for line in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
          if line and not line.startswith("#")} - {drop}
-want = {f"tag-space/u{code:04x}" for code in sitecheck.PARSER_ONLY_SPACE}
+want = {f"tag-space/{family}u{code:04x}" for code in sitecheck.PARSER_ONLY_SPACE
+        for family in ("", "after-quoted/")}
 missing = sorted(want - names)
 if missing or not want:
     print(f"FAIL site-csp-equiv/coverage: {len(missing)} member(s) of PARSER_ONLY_SPACE "

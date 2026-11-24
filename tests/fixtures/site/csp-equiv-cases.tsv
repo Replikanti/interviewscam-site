@@ -16,13 +16,18 @@
 # that code point; in the attribute rows U+00A0 and U+017F are character
 # references, which html.parser and the browser both decode in an attribute
 # value, so the table holds only ASCII. The tag-space/ rows (fix round 1)
-# write a raw code point into tag markup: one row per member of
-# PARSER_ONLY_SPACE between the CSP meta's attributes (site rule (i) fails
-# it before any parser's reading matters, so the verdict is the same on
-# every html.parser), pass rows with TAB, LF, FF and CR there and U+00A0 in
-# text, and rows after a quoted '>', after two inside one quoted value
-# (a reader that left the quotes at the first would end the tag at the
-# second), inside a quoted value, in an end tag and in the DOCTYPE.
+# write a raw code point into tag markup. Outside a quoted value site rule
+# (i) fails it before any parser's reading matters, so the verdict is the
+# same on every html.parser: per member of PARSER_ONLY_SPACE one row in the
+# CSP meta's unquoted http-equiv value (tag-space/uXXXX) and one after its
+# quoted value, between the attributes (tag-space/after-quoted/uXXXX); and
+# rows in the tag name, before and after '=', in an unquoted value that
+# holds a quote, after a quoted '>', after two '>' in one quoted value (a
+# reader that left the quotes at the first would end the tag at the
+# second), in an end tag and in the DOCTYPE. Inside a quoted value both
+# parsers read the same text, so those rows pass (U+00A0 double- and
+# single-quoted, and U+000B, U+0085, U+2028, U+3000), as do TAB, LF, FF and
+# CR between the attributes and U+00A0 in text.
 only/leading-space	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv=" Content-Security-Policy" 	expected exactly one Content-Security-Policy meta, found 0
 first/leading-space	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8><meta http-equiv=" Content-Security-Policy" content="default-src 'none'">	the Content-Security-Policy meta is not the first element after <meta charset>
 intake/leading-space	public/report-a-scam/index.html	<meta name=viewport 	<meta http-equiv=" Content-Security-Policy" content="default-src 'none'; form-action 'self'"><meta name=viewport 	PASS
@@ -83,13 +88,46 @@ tag-space/u2029	public/report-a-scam/index.html	<meta http-equiv=Content-Securit
 tag-space/u202f	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv=Content-Security-Policy\u{202F}content=	(i) U+202F in tag markup (<meta...>)
 tag-space/u205f	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv=Content-Security-Policy\u{205F}content=	(i) U+205F in tag markup (<meta...>)
 tag-space/u3000	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv=Content-Security-Policy\u{3000}content=	(i) U+3000 in tag markup (<meta...>)
+tag-space/after-quoted/u000b	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{000B} content=	(i) U+000B in tag markup (<meta...>)
+tag-space/after-quoted/u001c	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{001C} content=	(i) U+001C in tag markup (<meta...>)
+tag-space/after-quoted/u001d	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{001D} content=	(i) U+001D in tag markup (<meta...>)
+tag-space/after-quoted/u001e	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{001E} content=	(i) U+001E in tag markup (<meta...>)
+tag-space/after-quoted/u001f	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{001F} content=	(i) U+001F in tag markup (<meta...>)
+tag-space/after-quoted/u0085	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{0085} content=	(i) U+0085 in tag markup (<meta...>)
+tag-space/after-quoted/u00a0	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{00A0} content=	(i) U+00A0 in tag markup (<meta...>)
+tag-space/after-quoted/u1680	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{1680} content=	(i) U+1680 in tag markup (<meta...>)
+tag-space/after-quoted/u2000	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{2000} content=	(i) U+2000 in tag markup (<meta...>)
+tag-space/after-quoted/u2001	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{2001} content=	(i) U+2001 in tag markup (<meta...>)
+tag-space/after-quoted/u2002	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{2002} content=	(i) U+2002 in tag markup (<meta...>)
+tag-space/after-quoted/u2003	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{2003} content=	(i) U+2003 in tag markup (<meta...>)
+tag-space/after-quoted/u2004	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{2004} content=	(i) U+2004 in tag markup (<meta...>)
+tag-space/after-quoted/u2005	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{2005} content=	(i) U+2005 in tag markup (<meta...>)
+tag-space/after-quoted/u2006	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{2006} content=	(i) U+2006 in tag markup (<meta...>)
+tag-space/after-quoted/u2007	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{2007} content=	(i) U+2007 in tag markup (<meta...>)
+tag-space/after-quoted/u2008	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{2008} content=	(i) U+2008 in tag markup (<meta...>)
+tag-space/after-quoted/u2009	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{2009} content=	(i) U+2009 in tag markup (<meta...>)
+tag-space/after-quoted/u200a	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{200A} content=	(i) U+200A in tag markup (<meta...>)
+tag-space/after-quoted/u2028	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{2028} content=	(i) U+2028 in tag markup (<meta...>)
+tag-space/after-quoted/u2029	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{2029} content=	(i) U+2029 in tag markup (<meta...>)
+tag-space/after-quoted/u202f	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{202F} content=	(i) U+202F in tag markup (<meta...>)
+tag-space/after-quoted/u205f	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{205F} content=	(i) U+205F in tag markup (<meta...>)
+tag-space/after-quoted/u3000	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv="Content-Security-Policy"\u{3000} content=	(i) U+3000 in tag markup (<meta...>)
 tag-space/pass-tab	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv=Content-Security-Policy\tcontent=	PASS
 tag-space/pass-lf	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv=Content-Security-Policy\ncontent=	PASS
 tag-space/pass-ff	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv=Content-Security-Policy\u{000C}content=	PASS
 tag-space/pass-cr	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv=Content-Security-Policy\u{000D}content=	PASS
 tag-space/pass-text	public/report-a-scam/index.html	<title>Report a 	<title>Report\u{00A0}a 	PASS
+tag-space/tag-name	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta\u{00A0}http-equiv=Content-Security-Policy content=	(i) U+00A0 in tag markup (<meta...>)
+tag-space/before-equals	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv\u{00A0}=Content-Security-Policy content=	(i) U+00A0 in tag markup (<meta...>)
+tag-space/after-equals	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv=\u{00A0}"Content-Security-Policy" content=	(i) U+00A0 in tag markup (<meta...>)
+tag-space/unquoted-quote	public/report-a-scam/index.html	<meta name=viewport 	<meta name=x-test content=a"b\u{00A0}c"><meta name=viewport 	(i) U+00A0 in tag markup (<meta...>)
 tag-space/after-quoted-gt	public/report-a-scam/index.html	<meta name=viewport 	<meta name=x-test content="a>b"\u{00A0}data-x=1><meta name=viewport 	(i) U+00A0 in tag markup (<meta...>)
-tag-space/quoted-gt-twice	public/report-a-scam/index.html	<meta name=viewport 	<meta name=x-test content="a>b>\u{00A0}c"><meta name=viewport 	(i) U+00A0 in tag markup (<meta...>)
-tag-space/in-quoted-value	public/report-a-scam/index.html	<meta name=description content="How to report	<meta name=description content="How\u{00A0}to report	(i) U+00A0 in tag markup (<meta...>)
+tag-space/quoted-gt-twice	public/report-a-scam/index.html	<meta name=viewport 	<meta name=x-test content="a>b>c"\u{00A0}data-x=1><meta name=viewport 	(i) U+00A0 in tag markup (<meta...>)
 tag-space/end-tag	public/report-a-scam/index.html	</title>	</title\u{00A0}>	(i) U+00A0 in tag markup (</title...>)
 tag-space/doctype	public/report-a-scam/index.html	<!doctype html>	<!doctype\u{00A0}html>	(i) U+00A0 in tag markup (<!...>)
+tag-space/pass-quoted/u00a0	public/report-a-scam/index.html	<meta name=description content="How to report	<meta name=description content="How\u{00A0}to report	PASS
+tag-space/pass-quoted/u000b	public/report-a-scam/index.html	<meta name=description content="How to report	<meta name=description content="How\u{000B}to report	PASS
+tag-space/pass-quoted/u0085	public/report-a-scam/index.html	<meta name=description content="How to report	<meta name=description content="How\u{0085}to report	PASS
+tag-space/pass-quoted/u2028	public/report-a-scam/index.html	<meta name=description content="How to report	<meta name=description content="How\u{2028}to report	PASS
+tag-space/pass-quoted/u3000	public/report-a-scam/index.html	<meta name=description content="How to report	<meta name=description content="How\u{3000}to report	PASS
+tag-space/pass-single-quoted/u00a0	public/report-a-scam/index.html	<meta name=viewport 	<meta name=x-test content='a\u{00A0}b'><meta name=viewport 	PASS
