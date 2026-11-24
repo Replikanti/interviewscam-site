@@ -114,3 +114,7 @@ pass-labelled-artifacts-whitespace-twins-both-listed	content/reports/persona-3.m
 pass-labelled-artifacts-whitespace-twins-neither-listed	content/reports/persona-3.md	file_names = ["Entrevista técnica[.]zip"]	file_names = ["Entrevista técnica[.]zip", "Entrevista\u{00A0}técnica[.]zip"]	PASS
 # Fix round 2, sweep round 3 survivor r18-no-nfkc: U+3392 (So) counts only through NFKC, which reads it as MHz.
 pass-alias-nfkc-square-mhz	content/reports/persona-1.md	aliases = ["A. Exampleton", "Avery E."]	aliases = ["A. Exampleton", "Avery E.", "\u{3392}"]	PASS
+# Replikanti/interviewscam#49 fix round 1 (review finding 1): a spacing mark of
+# another script after the name (U+093E after a Latin letter) draws apart,
+# so the name is found before it and the box carries the label (R17).
+labelled-artifacts-cross-script-mark-missing	content/reports/persona-1.md	emails = ["lead[@]frontco-careers[.]example", "avery[.]exampleton[@]frontco-careers[.]example"]	emails = ["lead[@]frontco-careers[.]example", "avery[.]exampleton[@]frontco-careers[.]example"]\nfile_names = ["Avery Exampleton\u{093E}x CV[.]zip"]	COUNT=1 params.labelled_artifacts: lacks 'Avery Exampletonाx CV[.]zip', a declared artifact that holds a name or alias of this persona

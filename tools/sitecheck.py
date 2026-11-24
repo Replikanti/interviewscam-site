@@ -3038,21 +3038,67 @@ JOIN_MIN_LETTERS = 4
 MARK_SCAN_RANGES = ((0x0000, 0x1FFFF), (0xE0000, 0xE0FFF))
 
 
+# The blocks of the Inherited combining marks a base letter of any script
+# takes (Replikanti/interviewscam#49 fix round 1, review finding 1): the
+# combining diacritical marks, their extended and supplement blocks, the
+# marks for symbols and the half marks. Their nonspacing marks (Mn) join
+# a name's end run whatever the script of its last letter.
+INHERITED_MARK_BLOCKS = ((0x0300, 0x036F), (0x1AB0, 0x1AFF), (0x1DC0, 0x1DFF),
+                         (0x20D0, 0x20FF), (0xFE20, 0xFE2F))
+
+
+@functools.cache
+def mark_code_points():
+    """Every combining mark (General_Category M) in MARK_SCAN_RANGES."""
+    return tuple(cp for lo, hi in MARK_SCAN_RANGES for cp in range(lo, hi + 1)
+                 if unicodedata.category(chr(cp))[0] == "M")
+
+
+def mark_class(cps):
+    """A regex character class of the code points cps, in ascending order,
+    as ranges."""
+    ranges = []
+    for cp in cps:
+        if ranges and ranges[-1][1] == cp - 1:
+            ranges[-1][1] = cp
+        else:
+            ranges.append([cp, cp])
+    return "[" + "".join(f"\\U{a:08X}" if a == b else f"\\U{a:08X}-\\U{b:08X}"
+                         for a, b in ranges) + "]"
+
+
 @functools.cache
 def combining_marks():
     """A regex character class of every combining mark (General_Category M)
     in MARK_SCAN_RANGES: re has no \\p{M}, and ADR-0002 keeps the checks to
     the standard library."""
-    ranges = []
-    for lo, hi in MARK_SCAN_RANGES:
-        for cp in range(lo, hi + 1):
-            if unicodedata.category(chr(cp))[0] == "M":
-                if ranges and ranges[-1][1] == cp - 1:
-                    ranges[-1][1] = cp
-                else:
-                    ranges.append([cp, cp])
-    return "[" + "".join(f"\\U{a:08X}" if a == b else f"\\U{a:08X}-\\U{b:08X}"
-                         for a, b in ranges) + "]"
+    return mark_class(mark_code_points())
+
+
+def script_word(ch):
+    """The standard library's proxy for the script of a character: the
+    first word of its Unicode name after a leading COMBINING ("THAI" for
+    U+0E14 and U+0E35, "CYRILLIC" for U+0483 COMBINING CYRILLIC TITLO), or
+    "" for a character without a name. Python has no Script property."""
+    words = unicodedata.name(ch, "").split()
+    if words[:1] == ["COMBINING"]:
+        words = words[1:]
+    return words[0] if words else ""
+
+
+@functools.cache
+def end_marks(script):
+    """The regex character class of the marks a name's end run takes after
+    a last letter of the given script_word: the marks of that script
+    (spacing ones included, the Devanagari vowel sign of "कमला") and the
+    nonspacing marks of INHERITED_MARK_BLOCKS. A spacing or enclosing mark
+    of another script (U+093E after a Latin letter, U+0F3E, U+20DD) draws
+    apart from the name, so the name ends before it, as on the base of
+    Replikanti/interviewscam#49 (fix round 1, review finding 1)."""
+    return mark_class(cp for cp in mark_code_points()
+                      if (script and script_word(chr(cp)) == script)
+                      or (unicodedata.category(chr(cp)) == "Mn"
+                          and any(lo <= cp <= hi for lo, hi in INHERITED_MARK_BLOCKS)))
 
 
 @functools.cache
@@ -4616,8 +4662,11 @@ def name_pattern(name, reading=0):
     # never ends between a letter and its mark and never backs off a mark
     # to end inside a longer word ("कमल" in "कमलाजी"); only after the last
     # token, so a mark between two tokens still separates them
-    # (Replikanti/interviewscam#49 D1).
-    after = f"{combining_marks()}*+{after}"
+    # (Replikanti/interviewscam#49 D1). Only the marks that attach to the
+    # last letter (end_marks: its script's, and the Inherited nonspacing
+    # ones; fix round 1, review finding 1).
+    last = tokens[-1].translate(MARKS_DROPPED)[-1:] if tokens else ""
+    after = f"{end_marks(script_word(last) if last else '')}*+{after}"
     if not tokens:
         whole = name_fold(source, reading, drawn=True)
         if not whole and reading:

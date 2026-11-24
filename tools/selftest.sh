@@ -1549,17 +1549,42 @@ row("name-token-marks", got == (STORED, STORED, list(R), STORED, STORED, STORED,
 # through a mark is no occurrence (possessive, so "कमल" does not back off
 # the vowel sign of a longer word), the end of the text or a space is
 # one, a mark between two tokens still separates them under R0, an
-# initial with a mark needs its period, and a mark outside the BMP after
-# a name is swallowed (the label is read after it).
+# initial with a mark needs its period, and a mark outside the BMP of
+# another script after a name is not taken into the match (fix round 1:
+# U+1D167 is a musical mark, so R0 reads the label at it and fails
+# closed, as on the base), while the name is still found. Fix round 1
+# (QA survivors): the run takes every mark, not one (two marks, then a
+# letter, is a glued word), a one-digit token is no initial, and the
+# stroke readings take the case-folded tokens of a name with a mark
+# inside, so its capital I keeps its stroke.
 try:
     got = (hits("ใจดี", "ใจดีx"), hits("ใจดี", "ใจดี x"), hits("ใจดี", "ใจดี"),
            hits("कमल", "कमलाजी"), hits("कमल", "कमला"), hits("สมชาย ใจดี", "สมชายีใจดี"),
            hits("ক্ রায়", "ক্ রায়"), hits("ক্ রায়", "ক্. রায়"),
-           hits("Riley", "Riley\U0001D167"), labelled("Riley", "Riley\U0001D167" + L))
+           hits("Riley", "Riley\U0001D167"), labelled("Riley", "Riley\U0001D167" + L),
+           hits("कमल", "कमलांज"), hits("Agent 7", "agent 7"),
+           hits("Iv\u0301an Petrov", "lvan Petrov"))
 except Exception as exc:  # noqa: BLE001 - the row reports any crash
     got = repr(exc)
 row("name-token-mark-bounds", got == ([], STORED, STORED, [], STORED, [0], [], STORED, STORED,
-                                      STORED), f"got {got!r}")
+                                      [1, 2, 3], [], STORED, [3]), f"got {got!r}")
+# Fix round 1 (review finding 1): the end run takes only the marks that
+# attach to the last letter (end_marks): its script's (script_word, a
+# leading COMBINING skipped: U+0483 is Cyrillic; a Brahmi vowel sign
+# outside the BMP) and the nonspacing marks of INHERITED_MARK_BLOCKS
+# (U+0305). A spacing or enclosing mark of another script (U+093E, U+0F3E,
+# U+20DD) draws apart, so R0 finds the name before it, as on the base;
+# the script is the last token's ("Avery ใจด" takes a Thai mark).
+try:
+    A = "Avery Exampleton"
+    got = (hits(A, A + "\u093ex"), hits(A, A + "\u0f3ex"), hits(A, A + "\u20ddx"),
+           hits(A, A + "\u0305x"), labelled(A, A + "\u0305" + L),
+           labelled("Иван", "Иван\u0483" + L), labelled("Avery ใจด", "Avery ใจดี" + L),
+           labelled("\U00011013\U00011013", "\U00011013\U00011013\U00011038" + L))
+except Exception as exc:  # noqa: BLE001 - the row reports any crash
+    got = repr(exc)
+row("name-end-mark-script", got == ([0], [0], [0], [], STORED, STORED, STORED, STORED),
+    f"got {got!r}")
 got = (sc.caps_l("RlLEY lVAN Il Ill all McLl"), sc.stroke_table()[0x4E28] == sc.STROKE_CJK,
        sorted(cp for cp, v in sc.confusable_tables()[0].items() if v == "丨")
        == sorted(cp for cp, v in sc.stroke_table().items() if v == sc.STROKE_CJK and cp != 0x4E28))

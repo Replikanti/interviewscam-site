@@ -33,3 +33,12 @@ pass-single-spaces	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.
 pass-nbsp-run	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["Meet\u{00A0}\u{00A0}Fix[.]msi", "MeetFix-Installer[.]msi", 	PASS
 pass-leading-nbsp	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["\u{00A0}MeetFix[.]msi", "MeetFix-Installer[.]msi", 	PASS
 pass-space-then-nbsp	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["Meet \u{00A0}Fix[.]msi", "MeetFix-Installer[.]msi", 	PASS
+# Fix round 1 (QA survivors of the sweep on 7f1b00e): the finding names a
+# leading U+0009 as such and the first of two equal characters, and the
+# other Unicode spaces stay valid at an edge and in a run (U+000B, U+0085,
+# U+2003; the minifier and the browser keep them as stored).
+fail-leading-tab	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["\tMeetFix[.]msi", "MeetFix-Installer[.]msi", 	COUNT=1 starts with U+0009 (the minifier drops it where the box opens its line, and a browser draws none); holds U+0009 at character 1 (the minifier turns it into a space), so the page
+fail-two-tabs	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["Meet\tFix\tSetup[.]msi", "MeetFix-Installer[.]msi", 	COUNT=1 holds U+0009 at character 5 (the minifier turns it into a space), so the page
+pass-vt-000b-edges-and-run	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["\u000BMeet\u000B\u000BFix[.]msi\u000B", "MeetFix-Installer[.]msi", 	PASS
+pass-nel-0085-edges-and-run	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["\u0085Meet\u0085\u0085Fix[.]msi\u0085", "MeetFix-Installer[.]msi", 	PASS
+pass-em-space-2003-edges-and-run	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["\u2003Meet\u2003\u2003Fix[.]msi\u2003", "MeetFix-Installer[.]msi", 	PASS
