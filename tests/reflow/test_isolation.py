@@ -565,6 +565,14 @@ class Canvas(unittest.TestCase):
                 self.assertTrue(got.startswith(f"160 pixel(s) off the forced canvas colour "
                                                f"{colour}, x 0 to 39, y 5 to 8"), got)
 
+    def test_few_rows_mostly_overprint(self):
+        # Two rows almost wholly overprint beside 18 canvas rows: the
+        # reference is the forced colour, never a majority of any kind.
+        marks = [(x, y, (0xDD, 0, 0)) for y in (6, 7) for x in range(38)]
+        got = sitecheck.pixel_canvas(png(pixel=BLACK, marks=marks), "#000000")
+        self.assertEqual(got, "76 pixel(s) off the forced canvas colour #000000, x 0 to 37, "
+                              "y 6 to 7 of the slice, by up to 221 of 255")
+
     def test_whole_slice_another_colour(self):
         got = sitecheck.pixel_canvas(png(pixel=GROUND), "#000000")
         self.assertTrue(got.startswith("800 pixel(s) off"), got)
@@ -719,6 +727,12 @@ class Plumbing(unittest.TestCase):
                                     and f"forced canvas colour {colour}" in item
                                     for item in items), items)
                 self.assertFalse(any(PIXELS in item for item in items), items)
+
+    def test_blank_finding_once_per_slice(self):
+        band = [(x, 5, GROUND) for x in range(40)]
+        items = run(FakeTools(shots=[SHOWN, png(), png(pixel=BLACK, marks=band),
+                                     png(pixel=WHITE, marks=band), SHOWN, png(), SHOWN]))
+        self.assertEqual(sum("with every element hidden" in item for item in items), 1, items)
 
     def test_blank_capture_asks_for_each_colour(self):
         tools = FakeTools()
