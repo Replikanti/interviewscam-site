@@ -4698,6 +4698,36 @@ selftest_blocks() {
       n_passed=$((n_passed + 1))
     fi
 
+    # Wiring: the Chrome warm-up starts right after fetch-tools in both modes
+    # and before the first reflow, and both reflow steps join it first thing
+    # (ADR-0003 part 6, #26); its wait and the launch budget keep their
+    # values, so the warm-up cannot shorten or lengthen the backstop.
+    local ww_bad="" ww_f ww_s ww_r ww_fn
+    for ww_fn in check_main check_records_main; do
+      ww_f="$(declare -f "$ww_fn" | grep -nE '^ *run_step fetch-tools step_fetch;?$' | cut -d: -f1)"
+      ww_s="$(declare -f "$ww_fn" | grep -nE '^ *warm_chrome_start;?$' | cut -d: -f1)"
+      ww_r="$(declare -f "$ww_fn" | grep -nE 'step_(records_)?reflow' | cut -d: -f1)"
+      if [[ -z "$ww_f" || -z "$ww_s" || -z "$ww_r" || "$ww_s" != "$((ww_f + 1))" || "$ww_s" -ge "$ww_r" ]]; then
+        ww_bad+=" $ww_fn: fetch-tools line '$ww_f', warm_chrome_start line '$ww_s', reflow line '$ww_r' (want the start on the line after fetch-tools and before the reflow step);"
+      fi
+    done
+    for ww_fn in step_reflow step_records_reflow; do
+      if [[ "$(declare -f "$ww_fn" | sed -n 3p | tr -d ' ')" != 'warm_chrome_finish;' ]]; then
+        ww_bad+=" $ww_fn does not call warm_chrome_finish first;"
+      fi
+    done
+    if ! grep -qE 'WARM_CHROME_WAIT:-20[}]' <<<"$(declare -f warm_chrome_finish)" \
+        || ! grep -qxF 'REFLOW_LAUNCH_TIMEOUT = 75' "$SELFTEST_ROOT/tools/sitecheck.py"; then
+      ww_bad+=" WARM_CHROME_WAIT is not 20 by default or REFLOW_LAUNCH_TIMEOUT is not 75;"
+    fi
+    if [[ -z "$ww_bad" ]]; then
+      echo "ok   wiring/reflow-warmup-order (start right after fetch-tools in both modes, join first in both reflow steps; wait 20, launch budget 75)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL wiring/reflow-warmup-order:$ww_bad"
+      n_failed=$((n_failed + 1))
+    fi
+
     # Wiring: sitecheck takes no abbreviated option (allow_abbrev=False on
     # every parser), so the grep for --no-feed above sees every form that
     # switches the feed rules off: argparse would read --no or --no-f as
@@ -6368,6 +6398,290 @@ PY
       echo "ok   reflow-launch/log-dir-fallback (missing, not a tmpfs, no directory made: work directory)"
       n_passed=$((n_passed + 1))
     fi
+  fi
+
+  if selftest_wants reflow-warmup; then
+    # reflow-warmup: the Chrome warm-up of tools/check.sh (ADR-0003 part 6,
+    # amended for #26): a background read of the Chrome install, CI only,
+    # joined right before the first reflow call. No Chrome, no network: a
+    # fake install in a temp tree. ww_read runs the reader (warm_chrome_read)
+    # to the end under a 20 s guard (a FIFO that was opened would hang it),
+    # and leaves its <files> <bytes> <seconds> line in $ww_dir/result.
+    #   reads-install: three files in nested directories behind a two-link
+    #     symlink chain: 3 files, 32100 bytes exactly, and the join line.
+    #   outside-root, symlink-fifo-skipped, odd-names, unreadable-file: the
+    #     read set (one file outside the root; no symlink, FIFO; names with
+    #     a space, a newline, a leading dash, non-ASCII; a mode-000 file).
+    #   libs-parse: one ldd line at a time.
+    #   off-ci-noop, no-chrome, finish-without-start, finish-twice,
+    #   slow-reader-capped, silent-while-running, reflow-failure-stays-red:
+    #     the start and the join (no process off CI; a missing Chrome still
+    #     fails reflow_check; a reader stopped at the cap and reaped; no
+    #     output between start and the one line; a finding is not turned
+    #     green or red).
+    local ww_tmp ww_dir ww_bad ww_got ww_n
+    ww_tmp="$(mktemp -d)"
+    # ww_row <case> <ok text>: the row for the problem in ww_bad.
+    ww_row() {
+      if [[ -z "$ww_bad" ]]; then
+        echo "ok   reflow-warmup/$1 ($2)"
+        n_passed=$((n_passed + 1))
+      else
+        echo "FAIL reflow-warmup/$1: $ww_bad"
+        n_failed=$((n_failed + 1))
+      fi
+    }
+    # ww_install <root>: three files below <root>/google/chrome (100, 2000
+    # and 30000 bytes); the symlink chain bin/google-chrome -> alt/... ->
+    # the install's chrome sits in the parent of <root>.
+    ww_install() {
+      local base
+      base="$(dirname "$1")"
+      mkdir -p "$1/google/chrome/locales" "$1/google/chrome/lib/deep" "$base/alt" "$base/bin"
+      head -c 100 /dev/zero >"$1/google/chrome/chrome"
+      # Executable, so that `command -v` prefers it to a real google-chrome
+      # later on PATH (a runner has one; bash falls back to a non-executable
+      # file only when nothing executable is found).
+      chmod +x "$1/google/chrome/chrome"
+      head -c 2000 /dev/zero >"$1/google/chrome/locales/en.pak"
+      head -c 30000 /dev/zero >"$1/google/chrome/lib/deep/x.so"
+      ln -sf "$1/google/chrome/chrome" "$base/alt/google-chrome"
+      ln -sf "$base/alt/google-chrome" "$base/bin/google-chrome"
+    }
+    # ww_read <chrome> <root> <dir>: the reader under a guard.
+    ww_read() {
+      (
+        export -f warm_chrome_files warm_chrome_libs warm_chrome_read
+        timeout 20 bash -c 'warm_chrome_read "$@"' _ "$1" "$2" "$3"
+      ) >/dev/null 2>&1
+    }
+    # ww_fresh: a new case directory in ww_dir.
+    ww_fresh() { ww_dir="$(mktemp -d -p "$ww_tmp")"; }
+
+    # reads-install
+    ww_fresh
+    ww_install "$ww_dir/opt"
+    ww_bad=""
+    ww_read "$ww_dir/bin/google-chrome" "$ww_dir/opt" "$ww_dir"
+    ww_got="$(cat "$ww_dir/result" 2>/dev/null)"
+    [[ "$ww_got" == "3 32100 "* ]] || ww_bad="the reader's line is '$ww_got', want 3 files and 32100 bytes"
+    if [[ -z "$ww_bad" ]]; then
+      ww_got="$(GITHUB_ACTIONS=true PATH="$ww_dir/bin:$PATH" WARM_CHROME_ROOT="$ww_dir/opt" \
+        bash -c 'source "$1"; warm_chrome_start; warm_chrome_finish' _ "$SELFTEST_ROOT/tools/check.sh" 2>&1)"
+      [[ "$ww_got" =~ ^"reflow warm-up: read 3 files, 0.0 MiB in "[0-9.]+" s before the first launch"$ ]] \
+        || ww_bad="the join line is '$ww_got'"
+    fi
+    ww_row reads-install "3 files, 32100 bytes through a two-link symlink chain; one join line"
+
+    # outside-root: the resolved directory is not below the root.
+    ww_fresh
+    ww_install "$ww_dir/opt"
+    ww_bad=""
+    ww_read "$ww_dir/bin/google-chrome" "$ww_dir/elsewhere" "$ww_dir"
+    ww_got="$(cat "$ww_dir/result" 2>/dev/null)"
+    [[ "$ww_got" == "1 100 "* ]] || ww_bad="the reader's line is '$ww_got', want 1 file and 100 bytes (the siblings must stay unread)"
+    ww_row outside-root "only the resolved file, 1 file, 100 bytes"
+
+    # symlink-fifo-skipped
+    ww_fresh
+    ww_install "$ww_dir/opt"
+    head -c 500 /dev/zero >"$ww_dir/outside.bin"
+    ln -s "$ww_dir/outside.bin" "$ww_dir/opt/google/chrome/link.bin"
+    mkfifo "$ww_dir/opt/google/chrome/pipe"
+    ww_bad=""
+    ww_read "$ww_dir/bin/google-chrome" "$ww_dir/opt" "$ww_dir"
+    ww_got="$(cat "$ww_dir/result" 2>/dev/null)"
+    [[ "$ww_got" == "3 32100 "* ]] || ww_bad="the reader's line is '$ww_got', want 3 files and 32100 bytes (symlink and FIFO skipped, no hang)"
+    ww_row symlink-fifo-skipped "a symlink and a FIFO in the tree are not read, no hang"
+
+    # odd-names
+    ww_fresh
+    ww_install "$ww_dir/opt"
+    for ww_n in "a b" $'nl\nname' "-dash" "é.txt"; do
+      head -c 10 /dev/zero >"$ww_dir/opt/google/chrome/$ww_n"
+    done
+    ww_bad=""
+    ww_read "$ww_dir/bin/google-chrome" "$ww_dir/opt" "$ww_dir"
+    ww_got="$(cat "$ww_dir/result" 2>/dev/null)"
+    [[ "$ww_got" == "7 32140 "* ]] || ww_bad="the reader's line is '$ww_got', want 7 files and 32140 bytes"
+    ww_row odd-names "a space, a newline, a leading dash and a non-ASCII letter all read"
+
+    # unreadable-file
+    ww_fresh
+    ww_install "$ww_dir/opt"
+    head -c 10 /dev/zero >"$ww_dir/opt/google/chrome/locked"
+    chmod 000 "$ww_dir/opt/google/chrome/locked"
+    ww_bad=""
+    if [[ "$(id -u)" == 0 ]]; then
+      echo "ok   reflow-warmup/unreadable-file (skipped: running as root reads a mode 000 file)"
+      n_passed=$((n_passed + 1))
+    else
+      ww_read "$ww_dir/bin/google-chrome" "$ww_dir/opt" "$ww_dir"
+      ww_got="$(cat "$ww_dir/result" 2>/dev/null)"
+      [[ "$ww_got" == "3 32100 "* ]] || ww_bad="the reader's line is '$ww_got', want 3 files and 32100 bytes (a mode 000 file skipped)"
+      ww_row unreadable-file "a mode 000 file is skipped, the others counted"
+    fi
+
+    # libs-parse: one line at a time; only the first is kept.
+    ww_bad=""
+    while IFS= read -r ww_n; do
+      ww_got="$(printf '%s\n' "$ww_n" | warm_chrome_libs 2>&1)"
+      if [[ "$ww_n" == *"libx.so.6 =>"* ]]; then
+        [[ "$ww_got" == /lib/x/libx.so.6 ]] || ww_bad+=" [$ww_n]: printed '$ww_got';"
+      else
+        [[ -z "$ww_got" ]] || ww_bad+=" [$ww_n]: printed '$ww_got';"
+      fi
+    done <<'LDD'
+	libx.so.6 => /lib/x/libx.so.6 (0x00007f0000000000)
+	linux-vdso.so.1 (0x00007ffd00000000)
+	libgone.so => not found
+	/lib64/ld-linux-x86-64.so.2 (0x00007f0000000000)
+
+	librel.so => lib/rel.so (0x00007f0000000000)
+	garbage => /lib/x/libg.so.6 trailing
+LDD
+    ww_row libs-parse "an absolute => path is kept; vdso, not found, the interpreter, an empty, a relative and a malformed line print nothing"
+
+    # off-ci-noop: no process, no directory, no output.
+    ww_fresh
+    ww_install "$ww_dir/opt"
+    mkdir "$ww_dir/tmpdir"
+    ww_bad=""
+    # shellcheck disable=SC2016 # the inner shell expands the variables
+    ww_got="$(env -u GITHUB_ACTIONS PATH="$ww_dir/bin:$PATH" TMPDIR="$ww_dir/tmpdir" \
+      bash -c 'source "$1"; warm_chrome_start; echo "[$WARM_CHROME_PID][$WARM_CHROME_DIR]"' _ \
+      "$SELFTEST_ROOT/tools/check.sh" 2>&1)"
+    [[ "$ww_got" == "[][]" ]] || ww_bad="start printed or set '$ww_got'"
+    [[ -z "$(ls -A "$ww_dir/tmpdir")" ]] || ww_bad+=" a directory was created;"
+    ww_row off-ci-noop "outside CI start starts nothing, makes no directory, prints nothing"
+
+    # no-chrome: PATH holds only an empty directory (builtins only).
+    ww_fresh
+    mkdir "$ww_dir/empty"
+    ww_bad=""
+    # shellcheck disable=SC2016 # the inner shell expands the variables
+    ww_got="$(GITHUB_ACTIONS=true WARM_CHROME_ROOT="$ww_dir/opt" \
+      "$BASH" -c 'source "$1"; PATH="$2"; warm_chrome_start; echo "[$WARM_CHROME_PID]"; warm_chrome_finish; echo "finish rc $?"; reflow_check /nonexistent; echo "reflow_check rc $?"' _ \
+      "$SELFTEST_ROOT/tools/check.sh" "$ww_dir/empty" 2>&1)"
+    [[ "$ww_got" == "[]"$'\n'"finish rc 0"$'\n'"FAIL: Google Chrome not found; in CI the reflow check must run"$'\n'"reflow_check rc 1" ]] \
+      || ww_bad="output was '$ww_got'"
+    ww_row no-chrome "start prints nothing, finish is a no-op, reflow_check still fails with its FAIL line"
+
+    # finish-without-start and finish-twice: silent, rc 0.
+    ww_fresh
+    ww_install "$ww_dir/opt"
+    ww_bad=""
+    ww_got="$(GITHUB_ACTIONS=true PATH="$ww_dir/bin:$PATH" WARM_CHROME_ROOT="$ww_dir/opt" \
+      bash -c 'source "$1"; warm_chrome_finish; echo "rc $?"' _ "$SELFTEST_ROOT/tools/check.sh" 2>&1)"
+    [[ "$ww_got" == "rc 0" ]] || ww_bad="finish without start printed '$ww_got'"
+    ww_row finish-without-start "silent, rc 0"
+    ww_bad=""
+    ww_got="$(GITHUB_ACTIONS=true PATH="$ww_dir/bin:$PATH" WARM_CHROME_ROOT="$ww_dir/opt" \
+      bash -c 'source "$1"; warm_chrome_start; warm_chrome_finish >/dev/null; warm_chrome_finish; echo "rc $?"' _ \
+      "$SELFTEST_ROOT/tools/check.sh" 2>&1)"
+    [[ "$ww_got" == "rc 0" ]] || ww_bad="the second finish printed '$ww_got'"
+    ww_row finish-twice "the second join is silent, rc 0"
+
+    # slow-reader-capped: a stub cat that sleeps 30 s, WARM_CHROME_WAIT=1.
+    ww_fresh
+    ww_install "$ww_dir/opt"
+    mkdir "$ww_dir/stub"
+    printf '#!/bin/sh\necho $$ >"%s/stub.pid"\nexec sleep 30\n' "$ww_dir" >"$ww_dir/stub/cat"
+    chmod +x "$ww_dir/stub/cat"
+    ww_bad=""
+    ww_got="$(GITHUB_ACTIONS=true PATH="$ww_dir/stub:$ww_dir/bin:$PATH" WARM_CHROME_ROOT="$ww_dir/opt" \
+      WARM_CHROME_WAIT=1 bash -c '
+        source "$1"
+        warm_chrome_start
+        pid=$WARM_CHROME_PID
+        # wait (at most 10 s) until the reader has reached the stub cat, so a
+        # slow or loaded runner cannot let the 1 s join end before it starts
+        for _ in {1..100}; do
+          [[ -s "$2/stub.pid" ]] && break
+          sleep 0.1
+        done
+        t0=$EPOCHREALTIME
+        line="$(warm_chrome_finish)"
+        t1=$EPOCHREALTIME
+        sleep 0.3
+        alive=no
+        kill -0 "$pid" 2>/dev/null && alive=yes
+        # the stub cat wrote its own pid (it execs sleep): no survivor
+        group=nofile
+        if [[ -s "$2/stub.pid" ]]; then
+          read -r spid <"$2/stub.pid"
+          group=no
+          kill -0 "$spid" 2>/dev/null && group=yes
+        fi
+        awk -v a="$t0" -v b="$t1" -v l="$line" -v alive="$alive" -v g="$group" \
+          "BEGIN { printf \"%.1f|%s|%s|%s\\n\", b - a, alive, g, l }"' _ \
+      "$SELFTEST_ROOT/tools/check.sh" "$ww_dir" 2>&1)"
+    if [[ ! "$ww_got" =~ ^([0-9.]+)\|no\|no\|"reflow warm-up: still reading after 1 s, stopped ("[0-9]+" files listed)"$ ]]; then
+      ww_bad="the join gave '$ww_got', want a stopped line, the reader and the stub it started gone"
+    elif ! awk -v t="${BASH_REMATCH[1]}" 'BEGIN { exit !(t < 3) }'; then
+      ww_bad="the join took ${BASH_REMATCH[1]} s, want under 3 s"
+    fi
+    ww_row slow-reader-capped "join returned in ${BASH_REMATCH[1]:-?} s with the stopped line; the reader and the stub cat it started gone"
+
+    # silent-while-running: nothing from start, one line from finish.
+    ww_fresh
+    ww_install "$ww_dir/opt"
+    ww_bad=""
+    GITHUB_ACTIONS=true PATH="$ww_dir/bin:$PATH" WARM_CHROME_ROOT="$ww_dir/opt" \
+      bash -c 'source "$1"; warm_chrome_start >"$2/start.out" 2>&1; sleep 0.5; warm_chrome_finish >"$2/finish.out" 2>&1' _ \
+      "$SELFTEST_ROOT/tools/check.sh" "$ww_dir"
+    [[ ! -s "$ww_dir/start.out" ]] || ww_bad="start and the reader wrote '$(cat "$ww_dir/start.out")'"
+    [[ "$(wc -l <"$ww_dir/finish.out")" == 1 ]] || ww_bad+=" finish did not print exactly one line;"
+    ww_row silent-while-running "start and the reader's whole life print nothing; finish prints one line"
+
+    # default-root: WARM_CHROME_ROOT unset means /opt. A Chrome in the
+    # temp tree (outside /opt) reads its own file only, never its directory.
+    ww_fresh
+    ww_install "$ww_dir/opt"
+    ww_bad=""
+    # shellcheck disable=SC2016 # the inner shell expands the variables
+    ww_got="$(env -u WARM_CHROME_ROOT GITHUB_ACTIONS=true PATH="$ww_dir/bin:$PATH" \
+      bash -c 'source "$1"; warm_chrome_start; warm_chrome_finish' _ "$SELFTEST_ROOT/tools/check.sh" 2>&1)"
+    [[ "$ww_got" =~ ^"reflow warm-up: read 1 files, "[0-9.]+" MiB in " ]] \
+      || ww_bad="with the default root the join line is '$ww_got', want 1 file (a Chrome outside /opt reads only itself)"
+    ww_row default-root "WARM_CHROME_ROOT unset: a Chrome outside /opt reads 1 file, not its directory"
+
+    # join-before-summary: a run that never reaches the reflow step (a failed
+    # records-repo step in --records mode) still joins the reader at the
+    # summary: no reader, no directory left.
+    ww_fresh
+    ww_install "$ww_dir/opt"
+    mkdir "$ww_dir/stub"
+    printf '#!/bin/sh\nexec sleep 30\n' >"$ww_dir/stub/cat"
+    chmod +x "$ww_dir/stub/cat"
+    ww_bad=""
+    # shellcheck disable=SC2016 # the inner shell expands the variables
+    ww_got="$(GITHUB_ACTIONS=true PATH="$ww_dir/stub:$ww_dir/bin:$PATH" WARM_CHROME_ROOT="$ww_dir/opt" \
+      WARM_CHROME_WAIT=1 bash -c '
+        source "$1"
+        STEP_NAMES=(); STEP_RESULTS=()
+        warm_chrome_start
+        pid=$WARM_CHROME_PID; dir=$WARM_CHROME_DIR
+        check_summary public >/dev/null 2>&1
+        sleep 0.3
+        alive=no; kill -0 "$pid" 2>/dev/null && alive=yes
+        left=no; [[ -e "$dir" ]] && left=yes
+        echo "$alive|$left|[$WARM_CHROME_PID]"' _ "$SELFTEST_ROOT/tools/check.sh" 2>&1)"
+    [[ "$ww_got" == "no|no|[]" ]] || ww_bad="after check_summary (reader alive|directory left|pid) the state is '$ww_got', want no|no|[]"
+    ww_row join-before-summary "check_summary joins a reader the reflow step never reached: reader gone, directory removed"
+
+    # reflow-failure-stays-red: step_reflow with a started warm-up.
+    ww_fresh
+    ww_install "$ww_dir/opt"
+    ww_bad=""
+    for ww_n in 1 0; do
+      ww_got="$(GITHUB_ACTIONS=true PATH="$ww_dir/bin:$PATH" WARM_CHROME_ROOT="$ww_dir/opt" \
+        bash -c 'source "$1"; want_rc="$2"; sitecheck() { return "$want_rc"; }; warm_chrome_start; step_reflow >/dev/null 2>&1; echo $?' _ \
+        "$SELFTEST_ROOT/tools/check.sh" "$ww_n" 2>&1)"
+      [[ "$ww_got" == "$ww_n" ]] || ww_bad+=" sitecheck exit $ww_n gave step_reflow rc '$ww_got';"
+    done
+    ww_row reflow-failure-stays-red "step_reflow returns what sitecheck returned (1 and 0) with a warm-up started"
+    rm -rf "$ww_tmp"
   fi
 
   if selftest_wants search-oracle; then
