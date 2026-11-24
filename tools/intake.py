@@ -560,7 +560,7 @@ def session(sc):
     return Api(base, token), pins, account, zone, destination
 
 
-def set_immediate_deployment(api, sc, account, before_id):
+def set_immediate_deployment(api, sc, account, before_id, done):
     """Deploys the version just uploaded at 100 % with an immediate Durable
     Object code update (ADR-0006 part 10 way (a); API reference: Create
     Worker Deployment, body `code_update_strategy`, read 2026-11-24). The
@@ -601,6 +601,7 @@ def set_immediate_deployment(api, sc, account, before_id):
                       "the uploaded version; no deployment POST made")
     deployment = {"strategy": "percentage", "versions": [{"version_id": uploaded, "percentage": 100}],
                   "code_update_strategy": {"mode": "immediate"}}
+    done.append("post")  # a transport error from here on leaves the outcome unknown
     try:
         api.call("POST", script_path(sc, account, "/deployments"), json.dumps(deployment).encode(),
                  "application/json")
@@ -640,11 +641,20 @@ def cmd_deploy(sc, without_rate_limiter):
     done = []
     try:
         deploy_after_upload(api, sc, account, zone, before_id, done)
-    except Failure as exc:
+    except (Failure, OSError, http.client.HTTPException) as exc:
+        # Api.call raises Failure for an HTTP answer and lets a transport
+        # error through (URLError, a reset, a timeout: OSError; a malformed
+        # answer: http.client.HTTPException); not BaseException, so Ctrl-C
+        # stays as it is (fix round 3 of #43).
+        text = str(exc) if isinstance(exc, Failure) else f"{type(exc).__name__}: {exc}"
         mapped = "the custom domain is mapped" if "domain" in done else "the custom domain is not mapped"
         wdev = ("workers.dev and Version URLs are off" if "subdomain" in done
                 else "workers.dev and Version URLs may still be on")
-        raise Failure(f"{exc}; the uploaded version already serves at 100 % with the default, deferred Durable "
+        if "post" in done and not isinstance(exc, Failure):
+            raise Failure(f"{text}; the uploaded version serves at 100 %; whether the immediate deployment was "
+                          f"applied is unknown; {mapped}; {wdev}; run verify, re-run deploy once it is settled, "
+                          "and take it to the operator") from None
+        raise Failure(f"{text}; the uploaded version already serves at 100 % with the default, deferred Durable "
                       f"Object code update (up to 300 s); {mapped}; {wdev}; stopping, no fallback, take it to "
                       "the operator and re-run deploy once it is settled") from None
     ok = verify_deployed(api, sc, pins, account, zone, destination, without_rate_limiter)
@@ -668,7 +678,7 @@ def deploy_after_upload(api, sc, account, zone, before_id, done):
     done.append("subdomain")
     # After the domain and workers.dev steps, so a refused deployment leaves
     # the Worker routed and off workers.dev (fix round 1 of #43).
-    set_immediate_deployment(api, sc, account, before_id)
+    set_immediate_deployment(api, sc, account, before_id, done)
 
 
 def cmd_verify(sc, without_rate_limiter):

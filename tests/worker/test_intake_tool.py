@@ -68,6 +68,8 @@ class Stub:
         self.versions_lag = False        # the versions list lags one upload behind (items[0] is the older id)
         self.stale_after_put = False     # GET deployments after an upload still answers the pre-upload list
         self.deployments_view = None
+        self.drop_domain_put = False     # PUT workers/domains is applied, then the connection drops unanswered
+        self.drop_deployment_post = False  # POST deployments is applied, then the connection drops unanswered
         self.fail_domain_put = False     # PUT workers/domains answers 400
         self.deployment_seq = 0
         self.upload_versions = None      # replaces the "versions" of the deployment an upload makes
@@ -179,6 +181,8 @@ class Stub:
             if not self.drop_code_update:
                 made["code_update_strategy"] = sent["code_update_strategy"]
             self.deployments.insert(0, made)
+            if self.drop_deployment_post:
+                return "drop", None
             return 200, {"success": True, "errors": [], "result": made}
         if method == "GET" and path == f"{base}/scripts/{SCRIPT}/deployments":
             return 200, {"success": True, "errors": [], "result": {"deployments": self.deployments if self.deployments_view is None
@@ -206,6 +210,8 @@ class Stub:
                 {"hostname": d["hostname"], "service": d["service"], "zone_id": d["zone_id"],
                  "environment": d.get("environment"), "enabled": d.get("enabled", True),
                  "previews_enabled": d.get("previews_enabled", True)}]
+            if self.drop_domain_put:
+                return "drop", None
             return 200, {"success": True, "errors": [], "result": self.domains[-1]}
         if method == "GET" and path == f"{base}/domains":
             want = query.get("hostname", [None])[0]
@@ -231,6 +237,9 @@ class StubServer:
                 body = self.rfile.read(length) if length else b""
                 status, payload = stub.handle(self.command, split.path, parse_qs(split.query),
                                               {k.lower(): v for k, v in self.headers.items()}, body)
+                if status == "drop":
+                    self.close_connection = True
+                    return
                 extra = {}
                 if isinstance(payload, tuple):
                     payload, extra = payload
@@ -863,6 +872,8 @@ class ToolCodeUpdate(ToolCase):
         self.assertIn("operator", out)
         self.assertIn("default", out)
         self.assertIn("deferred", out)
+        self.assertIn("the custom domain is mapped", out)
+        self.assertIn("workers.dev and Version URLs are off", out)
         self.assertNotIn("nothing else changed", out)
         self.assertEqual(len(self.posts()), 1)
         self.assertEqual([r for r in self.stub.requests if r["path"].endswith("/domains") and r["method"] == "PUT"
@@ -871,6 +882,35 @@ class ToolCodeUpdate(ToolCase):
         self.assertEqual(self.stub.subdomain, {"enabled": False, "previews_enabled": False})
         self.assertEqual(self.stub.domains[0]["hostname"], "intake.interviewscam.com")
         self.assertEqual(self.stub.deployments[0]["code_update_strategy"], {"mode": "deferred", "max_delay": 300})
+
+    def test_dropped_domain_put_says_what_is_live(self):
+        """Fix round 3, review finding 1: a transport error after the upload gets the same
+        live-state text; an error before the deployment POST keeps the deferred claim true."""
+        self.stub.drop_domain_put = True
+        rc, out = self.run_tool("deploy")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("RemoteDisconnected", out)
+        self.assertIn("uploaded version already serves at 100 % with the default, deferred", out)
+        self.assertIn("not mapped", out)
+        self.assertIn("may still be on", out)
+        self.assertNotIn("unknown", out)
+        self.assertEqual(self.posts(), [])
+
+    def test_dropped_deployment_post_says_outcome_unknown(self):
+        """The POST was applied but its answer never came: the outcome is unknown, so the text
+        must not claim the deferred update."""
+        self.stub.drop_deployment_post = True
+        rc, out = self.run_tool("deploy")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("RemoteDisconnected", out)
+        self.assertIn("the uploaded version serves at 100 %", out)
+        self.assertIn("whether the immediate deployment was applied is unknown", out)
+        self.assertIn("run verify", out)
+        self.assertIn("operator", out)
+        self.assertIn("the custom domain is mapped", out)
+        self.assertIn("workers.dev and Version URLs are off", out)
+        self.assertNotIn("deferred", out)
+        self.assertEqual(len(self.posts()), 1)
 
     def test_deploy_stops_when_versions_list_lags(self):
         """Fix round 1, review finding 3: the version to deploy is the upload's own deployment,
