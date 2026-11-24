@@ -560,7 +560,7 @@ def session(sc):
     return Api(base, token), pins, account, zone, destination
 
 
-def set_immediate_deployment(api, sc, account):
+def set_immediate_deployment(api, sc, account, before_id):
     """Deploys the version just uploaded at 100 % with an immediate Durable
     Object code update (ADR-0006 part 10 way (a); API reference: Create
     Worker Deployment, body `code_update_strategy`, read 2026-11-24). The
@@ -575,10 +575,12 @@ def set_immediate_deployment(api, sc, account):
     The version is the one the upload's own deployment serves (List Worker
     deployments: its first entry, one version at 100 %), cross-checked with
     the first entry of the versions list, so a list that lags the upload
-    never rolls the Worker back. A refusal of the POST stops the deploy with
-    no fallback, after the domain and workers.dev steps: the uploaded version
-    then serves at 100 % with the default deferred update
-    (Replikanti/interviewscam#43)."""
+    never rolls the Worker back. That deployment must also be a new one: its
+    id differs from `before_id`, the id of the first deployment read before
+    the upload (None on a first deploy), so a deployments list that still
+    answers the pre-upload state is refused. A refusal of the POST stops the
+    deploy with no fallback (Replikanti/interviewscam#43); `cmd_deploy` adds
+    what is live to every failure after the upload."""
     listed = api.call("GET", script_path(sc, account, "/deployments")) or {}
     deployments = listed.get("deployments") if isinstance(listed, dict) else None
     active = deployments[0] if isinstance(deployments, list) and deployments else None
@@ -587,12 +589,16 @@ def set_immediate_deployment(api, sc, account):
     if (isinstance(shares, list) and len(shares) == 1 and isinstance(shares[0], dict)
             and shares[0].get("percentage") == 100 and active.get("strategy", "percentage") == "percentage"):
         uploaded = shares[0].get("version_id")
+    new_id = active.get("id") if isinstance(active, dict) else None
+    if not isinstance(new_id, str) or not new_id or new_id == before_id:
+        raise Failure(f"the deployments list still answers the deployment from before the upload ({new_id!r}); "
+                      "no deployment POST made")
     versions = api.call("GET", script_path(sc, account, "/versions")) or {}
     items = versions.get("items") if isinstance(versions, dict) else None
     latest = items[0].get("id") if items and isinstance(items[0], dict) else None
     if not isinstance(uploaded, str) or not uploaded or uploaded != latest:
         raise Failure(f"the upload's deployment ({uploaded!r}) and the versions list ({latest!r}) disagree on "
-                      "the uploaded version; stopping, nothing deployed")
+                      "the uploaded version; no deployment POST made")
     deployment = {"strategy": "percentage", "versions": [{"version_id": uploaded, "percentage": 100}],
                   "code_update_strategy": {"mode": "immediate"}}
     try:
@@ -600,10 +606,7 @@ def set_immediate_deployment(api, sc, account):
                  "application/json")
     except Failure as exc:
         raise Failure(f"{exc}: the deployments API did not accept code_update_strategy immediate (ADR-0006 "
-                      "part 10 way (a)). The uploaded version serves at 100 % with the default, deferred "
-                      "Durable Object code update (up to 300 s); the domain is mapped and workers.dev and "
-                      "Version URLs are off. Stopping, no fallback, take it back to the operator; run deploy "
-                      "again once it is settled") from None
+                      "part 10 way (a))") from None
     OUT.say("deploy: explicit deployment, Durable Object code updates immediate")
 
 
@@ -624,24 +627,48 @@ def cmd_deploy(sc, without_rate_limiter):
                              (MODULE_NAME, MODULE_NAME, "application/javascript+module", source)])
     OUT.say(f"deploy: uploading {WORKER_FILE} as {sc.INTAKE_SCRIPT_NAME}"
             f"{' (first deploy: Durable Object migration, new LIMITER_KEY)' if first else ''}")
+    before_id = None
+    if not first:
+        listed = api.call("GET", script_path(sc, account, "/deployments")) or {}
+        before = listed.get("deployments") if isinstance(listed, dict) else None
+        before_id = before[0].get("id") if isinstance(before, list) and before and isinstance(before[0], dict) \
+            else None
     api.call("PUT", script_path(sc, account), body, ctype)
+    # From here on the uploaded version serves at 100 % under the default,
+    # deferred Durable Object code update, so every failure says what is live
+    # (fix round 2 of #43).
+    done = []
+    try:
+        deploy_after_upload(api, sc, account, zone, before_id, done)
+    except Failure as exc:
+        mapped = "the custom domain is mapped" if "domain" in done else "the custom domain is not mapped"
+        wdev = ("workers.dev and Version URLs are off" if "subdomain" in done
+                else "workers.dev and Version URLs may still be on")
+        raise Failure(f"{exc}; the uploaded version already serves at 100 % with the default, deferred Durable "
+                      f"Object code update (up to 300 s); {mapped}; {wdev}; stopping, no fallback, take it to "
+                      "the operator and re-run deploy once it is settled") from None
+    ok = verify_deployed(api, sc, pins, account, zone, destination, without_rate_limiter)
+    OUT.say("deploy: revoke the deploy token in the dashboard now (ADR-0006 part 10)")
+    return 0 if ok else 1
+
+
+def deploy_after_upload(api, sc, account, zone, before_id, done):
     # Routed, and no previews under it (Workers Domains: enabled,
     # previews_enabled; fix round 4 of PR 2).
     domain = {"environment": "production", "hostname": sc.INTAKE_HOSTNAME,
               "service": sc.INTAKE_SCRIPT_NAME, "zone_id": zone, "enabled": True, "previews_enabled": False}
     api.call("PUT", f"/accounts/{account}/workers/domains", json.dumps(domain).encode(), "application/json")
+    done.append("domain")
     OUT.say(f"deploy: {sc.INTAKE_HOSTNAME} mapped to {sc.INTAKE_SCRIPT_NAME}")
     # Off the workers.dev route and the Version URLs (fix round 3 of PR 2;
     # API reference: Post Worker Script Subdomain).
     api.call("POST", script_path(sc, account, "/subdomain"),
              json.dumps({"enabled": False, "previews_enabled": False}).encode(), "application/json")
     OUT.say("deploy: workers.dev route and Version URLs off")
+    done.append("subdomain")
     # After the domain and workers.dev steps, so a refused deployment leaves
     # the Worker routed and off workers.dev (fix round 1 of #43).
-    set_immediate_deployment(api, sc, account)
-    ok = verify_deployed(api, sc, pins, account, zone, destination, without_rate_limiter)
-    OUT.say("deploy: revoke the deploy token in the dashboard now (ADR-0006 part 10)")
-    return 0 if ok else 1
+    set_immediate_deployment(api, sc, account, before_id)
 
 
 def cmd_verify(sc, without_rate_limiter):
