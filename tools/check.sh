@@ -129,6 +129,117 @@ reflow_check() {
   sitecheck reflow --chrome "$chrome" "${search[@]}" "$1"
 }
 
+# The Chrome warm-up (ADR-0003 part 6, amended for #26): a fresh runner VM
+# reads the Chrome install cold from disk, and the job's first launch waited
+# on that read (state D in folio_wait_bit_common in 15 of 15 probes). In CI,
+# a background read of the install starts after fetch-tools and is joined
+# right before the first reflow call. Best effort: no function here returns
+# non-zero, none writes to the step's output while the reader runs, and no
+# outcome reaches an exit code (the 75 s budget and the retry stay the
+# backstop).
+
+# warm_chrome_libs: `ldd` output on stdin; prints the absolute path of every
+# `name => /path (0x...)` line. vdso, `not found`, the interpreter line and
+# anything else print nothing.
+warm_chrome_libs() {
+  sed -n 's/^[[:space:]]*[^[:space:]][^[:space:]]* => \(\/[^[:space:]]*\) (0x[0-9a-f]*)$/\1/p'
+  return 0
+}
+
+# warm_chrome_files <chrome path> <root>: the paths to read, NUL-separated.
+# The resolved Chrome's directory when it lies below <root> (regular files
+# only, one filesystem: symlinks are not followed and FIFOs or devices are
+# never opened), else the resolved file alone; plus the shared libraries of
+# the resolved file and of a `chrome` ELF beside it (Google's package starts
+# Chrome through a wrapper script) that exist and are readable regular files.
+warm_chrome_files() {
+  local real dir root="${2:-/opt}" lib
+  real="$(readlink -f -- "$1" 2>/dev/null)"
+  [[ -n "$real" ]] || return 0
+  dir="${real%/*}"
+  if [[ "$dir/" == "${root%/}/"?* ]]; then
+    find "$dir" -xdev -type f -readable -print0 2>/dev/null
+  elif [[ -f "$real" && -r "$real" ]]; then
+    printf '%s\0' "$real"
+  fi
+  command -v ldd >/dev/null 2>&1 || return 0
+  while IFS= read -r lib; do
+    [[ -f "$lib" && -r "$lib" ]] && printf '%s\0' "$lib"
+  done < <({ ldd "$real"; [[ "$dir/chrome" != "$real" && -f "$dir/chrome" ]] && ldd "$dir/chrome"; } 2>/dev/null | warm_chrome_libs)
+  return 0
+}
+
+# warm_chrome_read <chrome path> <root> <dir>: the reader. Lists the files
+# into <dir>/list, writes their count to <dir>/count, reads them all and
+# writes ONE line `<files> <bytes> <seconds>` to <dir>/result.
+warm_chrome_read() {
+  local t0 files bytes
+  export LC_ALL=C
+  t0="$EPOCHREALTIME"
+  warm_chrome_files "$1" "$2" >"$3/list" 2>/dev/null
+  files="$(tr -cd '\0' <"$3/list" | wc -c)"
+  echo "$files" >"$3/count"
+  bytes="$(xargs -0 -r cat -- <"$3/list" 2>/dev/null | wc -c)"
+  awk -v f="$files" -v b="$bytes" -v t0="$t0" -v t1="$EPOCHREALTIME" \
+    'BEGIN { printf "%d %d %.1f\n", f, b, t1 - t0 }' >"$3/result"
+  return 0
+}
+
+WARM_CHROME_PID=""
+WARM_CHROME_DIR=""
+
+# warm_chrome_start: CI only. Starts the reader in its own session (so the
+# join can stop it and everything it started) at nice 19, with no output.
+warm_chrome_start() {
+  local chrome
+  in_github_actions || return 0
+  chrome="$(command -v google-chrome || command -v google-chrome-stable)" || return 0
+  WARM_CHROME_DIR="$(mktemp -d)" || { WARM_CHROME_DIR=""; return 0; }
+  export -f warm_chrome_files warm_chrome_libs warm_chrome_read
+  if command -v setsid >/dev/null 2>&1; then
+    setsid nice -n 19 bash -c 'warm_chrome_read "$@"' _ \
+      "$chrome" "${WARM_CHROME_ROOT:-/opt}" "$WARM_CHROME_DIR" </dev/null >/dev/null 2>&1 &
+  else
+    nice -n 19 bash -c 'warm_chrome_read "$@"' _ \
+      "$chrome" "${WARM_CHROME_ROOT:-/opt}" "$WARM_CHROME_DIR" </dev/null >/dev/null 2>&1 &
+  fi
+  WARM_CHROME_PID=$!
+  export -nf warm_chrome_files warm_chrome_libs warm_chrome_read
+  return 0
+}
+
+# warm_chrome_finish: joins the reader for at most WARM_CHROME_WAIT seconds
+# (default 20), stops it if it is still running, prints one line. A no-op
+# without a start, and after the first call.
+warm_chrome_finish() {
+  local pid="$WARM_CHROME_PID" dir="$WARM_CHROME_DIR" wait_s="${WARM_CHROME_WAIT:-20}"
+  local deadline files bytes secs
+  [[ -n "$pid" ]] || return 0
+  WARM_CHROME_PID=""
+  WARM_CHROME_DIR=""
+  deadline="$(awk -v n="$EPOCHREALTIME" -v w="$wait_s" 'BEGIN { printf "%.3f", n + w }')"
+  while kill -0 "$pid" 2>/dev/null; do
+    if awk -v n="$EPOCHREALTIME" -v d="$deadline" 'BEGIN { exit !(n >= d) }'; then
+      kill -TERM -- "-$pid" "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      read -r files <"$dir/count" 2>/dev/null
+      echo "reflow warm-up: still reading after ${wait_s} s, stopped (${files:-0} files listed)"
+      rm -rf "$dir"
+      return 0
+    fi
+    sleep 0.1
+  done
+  wait "$pid" 2>/dev/null
+  if read -r files bytes secs <"$dir/result" 2>/dev/null; then
+    awk -v f="$files" -v b="$bytes" -v s="$secs" 'BEGIN {
+      printf "reflow warm-up: read %d files, %.1f MiB in %.1f s before the first launch\n", f, b / 1048576, s }'
+  else
+    echo "reflow warm-up: the reader left no result"
+  fi
+  rm -rf "$dir"
+  return 0
+}
+
 # The safety nets (tools/sitecheck.py, ADR-0002 parts 3, 4 and 6), run in
 # Python's isolated mode. Each prints its counts and exits 1 on findings,
 # 2 on a usage or internal error.
@@ -393,6 +504,7 @@ step_html() {
 }
 
 step_reflow() {
+  warm_chrome_finish
   local rc=0
   reflow_check "$CHECK_ROOT/public" || rc=1
   reflow_check "$FIXTURE_PUBLIC" || rc=1
@@ -497,7 +609,10 @@ step_records_render() {
     "$CHECK_ROOT/tests/fixtures"
 }
 
-step_records_reflow() { reflow_check "$CHECK_ROOT/public"; }
+step_records_reflow() {
+  warm_chrome_finish
+  reflow_check "$CHECK_ROOT/public"
+}
 
 step_records_html() { html_check "$CHECK_ROOT/public"; }
 
@@ -570,6 +685,7 @@ check_records_main() {
   run_step "pin (green check on public main)" step_pin "$sha"
   unset GH_TOKEN GITHUB_TOKEN
   run_step fetch-tools step_fetch
+  warm_chrome_start
   not_run_machinery shellcheck
   run_step "guard (repo rules)" step_guard
   not_run_machinery "worker (intake Worker and deploy tool)"
@@ -681,6 +797,7 @@ check_main() {
   fi
 
   run_step fetch-tools step_fetch
+  warm_chrome_start
 
   echo
   echo "==> shellcheck"
