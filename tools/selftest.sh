@@ -7086,6 +7086,39 @@ LDD
     fi
   fi
 
+  if selftest_wants reflow-isolation; then
+    # reflow-isolation/<test> (Replikanti/interviewscam#39, ADR-0005 part 6
+    # amendment): the unit tests of isolation_problems, the proof of the
+    # pixel occlusion check's hidden capture, on synthetic DOM snapshots
+    # (tests/reflow/), one row per case, locally and in CI without a
+    # browser. reflow-isolation/unittest fails as mutate/unittest does: on
+    # a failing exit, no case run, a skipped case, an expected failure or
+    # an unexpected success, and when the case lines do not add up to the
+    # count unittest ran.
+    local ri_out ri_rc ri_n ri_rows ri_line
+    ri_out="$(cd "$SELFTEST_ROOT" && python3 -I -B -m unittest discover -v \
+      -s tests/reflow -t tests/reflow -p 'test_*.py' 2>&1)"
+    ri_rc=$?
+    ri_rows="$(LC_ALL=C sed -n \
+      -e 's/^\(test_[A-Za-z0-9_]*\) (.*) \.\.\. ok$/ok   reflow-isolation\/\1/p' \
+      -e 's/^\(test_[A-Za-z0-9_]*\) (.*) \.\.\. \(FAIL\|ERROR\)$/FAIL reflow-isolation\/\1: \2/p' \
+      <<<"$ri_out")"
+    [[ -n "$ri_rows" ]] && printf '%s\n' "$ri_rows"
+    n_passed=$((n_passed + $(grep -c '^ok   ' <<<"$ri_rows")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' <<<"$ri_rows")))
+    ri_n="$(sed -n 's/^Ran \([0-9][0-9]*\) tests\{0,1\} in .*/\1/p' <<<"$ri_out")"
+    if [[ $ri_rc -ne 0 || -z "$ri_n" || "$ri_n" -eq 0 \
+        || "$(grep -c '^ok   ' <<<"$ri_rows")" -ne "$ri_n" ]] \
+        || grep -qE 'skipped=|expected failures=|unexpected successes=' <<<"$ri_out"; then
+      echo "FAIL reflow-isolation/unittest: exit $ri_rc, ${ri_n:-no} cases run, $(grep -c '^ok   ' <<<"$ri_rows") ok (a skipped case, an expected failure and an unexpected success fail too); output:"
+      while IFS= read -r ri_line; do echo "     | $ri_line"; done <<<"$ri_out"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   reflow-isolation/unittest ($ri_n cases)"
+      n_passed=$((n_passed + 1))
+    fi
+  fi
+
   if selftest_wants selftest-only; then
     selftest_only_rows
   fi
