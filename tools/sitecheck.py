@@ -12058,7 +12058,10 @@ REFLOW_FRAME_OWNERS = frozenset({"iframe", "frame", "object", "embed"})
 # paint of any colour lies within REFLOW_PAINT_TOLERANCE of both, and paint
 # in the page's own canvas colour (an eraser over the region's words) shows
 # in at least one. A page rule that outranks the forced background leaves a
-# capture off its forced colour, which fails closed.
+# capture off its forced colour, which fails closed. They find any visible
+# part's own paint, of any colour, not a filter of what lies below it: a
+# part with only a backdrop-filter keeps the flat canvas flat
+# (Replikanti/interviewscam#58).
 REFLOW_BLANK_CANVAS = ("#000000", "#ffffff")
 # Case (6), state S1 (ADR-0003 part 6): the script URLs blocked, so the page
 # loads with scripting on and its script not run, as after a failed load.
@@ -13338,7 +13341,9 @@ def pixel_canvas(shot, colour, tolerance=REFLOW_PAINT_TOLERANCE):
     their bounding box and the largest difference. The blank captures of
     the pixel occlusion check, taken with every element hidden and the
     canvas forced to each of REFLOW_BLANK_CANVAS, must show that colour
-    alone (Replikanti/interviewscam#39 fix rounds 1 and 2)."""
+    alone (Replikanti/interviewscam#39 fix rounds 1 and 2). That finds a
+    visible part's own paint, not a backdrop-filter, which leaves a flat
+    canvas flat (Replikanti/interviewscam#58)."""
     width, _height, channels, rows = png_rows(base64.b64decode(shot))
     want = bytes.fromhex(colour.lstrip("#"))
     plain = (want + b"\xff" * (channels - 3)) * width
