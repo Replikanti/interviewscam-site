@@ -1,1 +1,1 @@
-rule 9: the params.name of content/reports/persona-2.md is hidden (hide_name) and appears in this file or its path (ADR-0004 part 5) (a look-alike spelling, matched through the Unicode confusables skeleton, UTS #39)
+rule 9: the params.name of content/reports/persona-2.md is hidden (hide_name) and appears in this file or its path (ADR-0004 part 5)

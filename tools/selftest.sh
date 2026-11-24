@@ -1142,6 +1142,7 @@ import hashlib
 import importlib.util
 import io
 import os
+import re
 import sys
 import tempfile
 import traceback
@@ -1525,18 +1526,109 @@ got = (hits("Rene", "Irene \u05d0\u05d1"), hits("Rene", "\u4e28rene"), hits("Lin
        hits("Lin Wu", "LlN WU"), hits("Rene", "Rene12"), hits("Rene", "12Rene"),
        hits("Avery Exampleton", "Avery 12 Exampleton"),
        hits("\u0130van Petrov", "\u0130van Petrov \u05d0\u05d1"))
-row("name-pattern-edges", got == ([], [], [3], [3], [], [], [], [2, 3, 5, 6]), f"got {got!r}")
-# A name whose written form has more tokens than its case fold with the
-# marks dropped (a combining mark of its own between two letters): the
-# stroke readings fall back to the case-folded tokens instead of indexing
-# into the written ones, which would drop "Placeholder"; and a name with
-# U+0130 meets its own bare spelling under R2 and R3 (fix round 3).
+# Replikanti/interviewscam#49: U+0130 under R0 too, whose case fold "i" +
+# U+0307 is one token now that a token carries its marks.
+row("name-pattern-edges", got == ([], [], [3], [3], [], [], [], [0, 2, 3, 5, 6]), f"got {got!r}")
+# A name whose written form tokenises apart from its case fold with the
+# marks dropped: the stroke readings fall back to the case-folded tokens
+# when the counts differ, instead of indexing into the written ones. Since
+# a token carries its marks (Replikanti/interviewscam#49), a mark between
+# two letters no longer splits a token ("Ri\u0307ley" is one token in
+# both forms); the one form left whose case fold adds a token is U+0345
+# standing alone (an exhaustive probe of U+0000 to U+2FFFF in three
+# positions found only U+0345 and U+037A), which folds to the letter
+# iota while as written it is a mark and no token, so that probe keeps
+# the fallback reached. A name with U+0130 meets its own bare spelling
+# under R0, R2 and R3 (fix round 3; R0 since #49).
 try:
     got = (hits("Ri\u0307ley Placeholder", "R|ley Placeholder"),
-           hits("Ri\u0307ley Placeholder", "R|ley"), hits("\u0130van Petrov", "\u0130van Petrov"))
+           hits("Ri\u0307ley Placeholder", "R|ley"), hits("\u0130van Petrov", "\u0130van Petrov"),
+           hits("\u0345 Riley Placeholder", "\u03b9. R|ley Placeholder"))
 except Exception as exc:  # noqa: BLE001 - the row reports any crash
     got = repr(exc)
-row("name-pattern-case-fold-split", got == ([3], [], [2, 3]), f"got {got!r}")
+row("name-pattern-case-fold-split", got == ([3], [], [0, 2, 3], [3]), f"got {got!r}")
+# Replikanti/interviewscam#49: a name token is a letter or digit, then
+# letters, digits and combining marks (General_Category M), so a name
+# that ends in a mark which does not compose under NFKC (Thai, Indic,
+# Arabic harakat) is one token whose end R0 no longer puts between a
+# letter and its mark. The mark class equals a full scan of every code
+# point under this Python (D2: the scan of planes 0, 1 and 14 misses
+# none).
+try:
+    mark_class = re.compile(sc.combining_marks())
+    bad = [f"U+{cp:04X}" for cp in range(0x110000)
+           if bool(mark_class.fullmatch(chr(cp))) != (unicodedata.category(chr(cp))[0] == "M")]
+except Exception as exc:  # noqa: BLE001 - the row reports any crash
+    bad = [repr(exc)]
+row("name-mark-class", not bad, f"code points the class gets wrong: {bad[:5]}")
+# Every match of the name in the text followed by the D10 label, per
+# reading: the readings with at least one match where each is.
+L = " " + sc.PERSONA_LABEL
+
+
+def labelled(name, text):
+    out = []
+    for r in R:
+        folded = sc.name_fold(text, r)
+        found = list(sc.name_pattern(name, r).finditer(folded))
+        if found and all(sc.label_pattern(r).match(folded, m.end()) for m in found):
+            out.append(r)
+    return out
+
+
+# A final Thai vowel sign, the same as the last of two tokens, a final
+# shadda (right to left, so V1 to V3 read it too), a final virama, a
+# virama between letters (Tamil), the text's mark after a name without
+# it, and an extra mark in the text after the name's own.
+try:
+    got = (labelled("ใจดี", "ใจดี" + L), labelled("สมชาย ใจดี", "สมชาย ใจดี" + L),
+           labelled("عليّ", "عليّ" + L), labelled("कमल्", "कमल्" + L),
+           labelled("தமிழ்", "தமிழ்" + L), labelled("ใจด", "ใจดี" + L),
+           labelled("ใจดี", "ใจดี้" + L))
+except Exception as exc:  # noqa: BLE001 - the row reports any crash
+    got = repr(exc)
+row("name-token-marks", got == (STORED, STORED, list(R), STORED, STORED, STORED, STORED),
+    f"got {got!r}")
+# The bounds around a name that ends in a mark (D1): glued to a letter
+# through a mark is no occurrence (possessive, so "कमल" does not back off
+# the vowel sign of a longer word), the end of the text or a space is
+# one, a mark between two tokens still separates them under R0, an
+# initial with a mark needs its period, and a mark outside the BMP of
+# another script after a name is not taken into the match (fix round 1:
+# U+1D167 is a musical mark, so R0 reads the label at it and fails
+# closed, as on the base), while the name is still found. Fix round 1
+# (QA survivors): the run takes every mark, not one (two marks, then a
+# letter, is a glued word), a one-digit token is no initial, and the
+# stroke readings take the case-folded tokens of a name with a mark
+# inside, so its capital I keeps its stroke.
+try:
+    got = (hits("ใจดี", "ใจดีx"), hits("ใจดี", "ใจดี x"), hits("ใจดี", "ใจดี"),
+           hits("कमल", "कमलाजी"), hits("कमल", "कमला"), hits("สมชาย ใจดี", "สมชายีใจดี"),
+           hits("ক্ রায়", "ক্ রায়"), hits("ক্ রায়", "ক্. রায়"),
+           hits("Riley", "Riley\U0001D167"), labelled("Riley", "Riley\U0001D167" + L),
+           hits("कमल", "कमलांज"), hits("Agent 7", "agent 7"),
+           hits("Iv\u0301an Petrov", "lvan Petrov"))
+except Exception as exc:  # noqa: BLE001 - the row reports any crash
+    got = repr(exc)
+row("name-token-mark-bounds", got == ([], STORED, STORED, [], STORED, [0], [], STORED, STORED,
+                                      [1, 2, 3], [], STORED, [3]), f"got {got!r}")
+# Fix round 1 (review finding 1): the end run takes only the marks that
+# attach to the last letter (end_marks): its script's (script_word, a
+# leading COMBINING skipped: U+0483 is Cyrillic; a Brahmi vowel sign
+# outside the BMP) and the nonspacing marks of INHERITED_MARK_BLOCKS
+# (U+0305). A spacing or enclosing mark of another script (U+093E, U+0F3E,
+# U+20DD) draws apart, so R0 finds the name before it, as on the base;
+# the script is the last token's ("Avery ใจด" takes a Thai mark).
+try:
+    A = "Avery Exampleton"
+    got = (hits(A, A + "\u093ex"), hits(A, A + "\u0f3ex"), hits(A, A + "\u20ddx"),
+           hits(A, A + "\u0305x"), labelled(A, A + "\u0305" + L),
+           labelled("Иван", "Иван\u0483" + L), labelled("Avery ใจด", "Avery ใจดี" + L),
+           labelled("\U00011013\U00011013", "\U00011013\U00011013\U00011038" + L))
+except Exception as exc:  # noqa: BLE001 - the row reports any crash
+    got = repr(exc)
+row("name-end-mark-script", got == ([0], [0], [0], [], STORED, STORED, STORED, STORED),
+    f"got {got!r}")
 got = (sc.caps_l("RlLEY lVAN Il Ill all McLl"), sc.stroke_table()[0x4E28] == sc.STROKE_CJK,
        sorted(cp for cp, v in sc.confusable_tables()[0].items() if v == "丨")
        == sorted(cp for cp, v in sc.stroke_table().items() if v == sc.STROKE_CJK and cp != 0x4E28))
@@ -5286,6 +5378,24 @@ PINNED
     n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
     if ! grep -qE '^(ok   |FAIL )records-bidi/table' "$out"; then
       echo "FAIL records-bidi: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+  if selftest_wants records-artifact; then
+    # records-artifact/<row> (Replikanti/interviewscam#49): records rule R19
+    # from tests/fixtures/records/artifact-cases.tsv on a copy of
+    # records/pass-fixture-site (search_cases_runner with the records
+    # command), one row per branch and per member of ARTIFACT_WHITESPACE,
+    # and the PASS rows for the whitespace R19 leaves alone.
+    search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/records/artifact-cases.tsv" "$FIXTURES/records/pass-fixture-site" \
+      "$SELFTEST_ROOT/schema" records-artifact records >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )records-artifact/table' "$out"; then
+      echo "FAIL records-artifact: the runner did not finish; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi

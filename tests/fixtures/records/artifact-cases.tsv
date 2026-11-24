@@ -1,0 +1,44 @@
+# records rule R19 (Replikanti/interviewscam#49): an artifact value holds
+# HTML's ASCII whitespace (U+0009, U+000A, U+000C, U+000D, U+0020) only as
+# single U+0020 spaces between other characters, because the minifier and
+# the browser change any other use of it, so the box would not show what
+# Copy gives. One row per branch (a run, a leading and a trailing
+# character, each member of the set alone and in a run, two values, a
+# nested path, a value that labelled_artifacts repeats) and the PASS rows
+# for the whitespace R19 leaves alone (one U+0020 between letters, U+00A0
+# runs and edges, the U+3000 file name of the base). On a copy of
+# records/pass-fixture-site (search_cases_runner with the records
+# command). Columns: name, file, find, replace, expect, optional further
+# find and replace pairs. A control character is written as a TOML escape
+# (backslash u and four digits, no braces, which the runner leaves alone)
+# or as \t for a literal tab. Every find string occurs exactly once in its
+# file.
+fail-run-two-spaces	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["Meet  Fix[.]msi", "MeetFix-Installer[.]msi", 	COUNT=1 params.artifacts.file_names[0]: 'Meet  Fix[.]msi' holds a run of 2 whitespace characters at character 5 (the minifier collapses it into one), so the page would not show the value as stored; an artifact value holds whitespace only as single U+0020 spaces between other characters (U+00A0 and the other Unicode spaces stay as stored), and where the whitespace is part of the trick, describe it in params.evidence (R19)
+fail-run-space-tab	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["Meet \tFix[.]msi", "MeetFix-Installer[.]msi", 	COUNT=1 holds a run of 2 whitespace characters at character 5 (the minifier collapses it into one); holds U+0009 at character 6 (the minifier turns it into a space), so the page
+fail-run-lf-space	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["Meet\u000A Fix[.]msi", "MeetFix-Installer[.]msi", 	COUNT=1 holds a run of 2 whitespace characters at character 5 (the minifier collapses it into one); holds U+000A at character 5 (a browser draws it as a space), so the page
+fail-crlf	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["Meet\u000D\u000AFix[.]msi", "MeetFix-Installer[.]msi", 	COUNT=1 holds a run of 2 whitespace characters at character 5 (the minifier collapses it into one); holds U+000D at character 5 (the build turns it into U+000A); holds U+000A at character 6 (a browser draws it as a space), so the page
+fail-leading-space	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = [" MeetFix[.]msi", "MeetFix-Installer[.]msi", 	COUNT=1 params.artifacts.file_names[0]: ' MeetFix[.]msi' starts with U+0020 (the minifier drops it where the box opens its line, and a browser draws none), so the page
+fail-trailing-space	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["MeetFix[.]msi ", "MeetFix-Installer[.]msi", 	COUNT=1 params.artifacts.file_names[0]: 'MeetFix[.]msi ' ends with U+0020 (a browser draws none at the end of the box), so the page
+fail-only-space	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = [" ", "MeetFix-Installer[.]msi", 	COUNT=1 params.artifacts.file_names[0]: ' ' starts with U+0020 (the minifier drops it where the box opens its line, and a browser draws none); ends with U+0020 (a browser draws none at the end of the box), so the page
+fail-tab	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["Meet\tFix[.]msi", "MeetFix-Installer[.]msi", 	COUNT=1 holds U+0009 at character 5 (the minifier turns it into a space), so the page
+fail-lf	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["Meet\u000AFix[.]msi", "MeetFix-Installer[.]msi", 	COUNT=1 holds U+000A at character 5 (a browser draws it as a space), so the page
+fail-ff	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["Meet\u000CFix[.]msi", "MeetFix-Installer[.]msi", 	COUNT=1 holds U+000C at character 5 (the minifier turns it into a space), so the page
+fail-cr	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["Meet\u000DFix[.]msi", "MeetFix-Installer[.]msi", 	COUNT=1 holds U+000D at character 5 (the build turns it into U+000A), so the page
+fail-package-name-trailing-space	content/reports/fixture-utils.md	{ registry = "npm", name = "fixture[.]utils" }	{ registry = "npm", name = "fixture[.]utils " }	COUNT=1 params.artifacts.packages[0].name: 'fixture[.]utils ' ends with U+0020 (a browser draws none at the end of the box), so the page
+fail-two-values	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = [" MeetFix[.]msi", "MeetFix[.]msi ", "MeetFix-Installer[.]msi", 	COUNT=2 params.artifacts.file_names[1]: 'MeetFix[.]msi ' ends with U+0020
+fail-empty-value-schema-only	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["", "MeetFix-Installer[.]msi", 	COUNT=1 params.artifacts.file_names[0]: shorter than 1 characters
+fail-labelled-value-run-reported-once	content/reports/persona-3.md	file_names = ["Entrevista técnica[.]zip"]	file_names = ["Entrevista técnica[.]zip", "Riley  Placeholder CV[.]zip"]	COUNT=1 params.artifacts.file_names[1]: 'Riley  Placeholder CV[.]zip' holds a run of 2 whitespace characters at character 6 (the minifier collapses it into one)	labelled_artifacts = ["@riley_placeholder_zoë"]	labelled_artifacts = ["@riley_placeholder_zoë", "Riley  Placeholder CV[.]zip"]
+pass-base	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["MeetFix-Installer[.]msi", 	PASS
+pass-single-spaces	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["Meet Fix Setup[.]msi", "MeetFix-Installer[.]msi", 	PASS
+pass-nbsp-run	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["Meet\u{00A0}\u{00A0}Fix[.]msi", "MeetFix-Installer[.]msi", 	PASS
+pass-leading-nbsp	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["\u{00A0}MeetFix[.]msi", "MeetFix-Installer[.]msi", 	PASS
+pass-space-then-nbsp	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["Meet \u{00A0}Fix[.]msi", "MeetFix-Installer[.]msi", 	PASS
+# Fix round 1 (QA survivors of the sweep on 7f1b00e): the finding names a
+# leading U+0009 as such and the first of two equal characters, and the
+# other Unicode spaces stay valid at an edge and in a run (U+000B, U+0085,
+# U+2003; the minifier and the browser keep them as stored).
+fail-leading-tab	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["\tMeetFix[.]msi", "MeetFix-Installer[.]msi", 	COUNT=1 starts with U+0009 (the minifier drops it where the box opens its line, and a browser draws none); holds U+0009 at character 1 (the minifier turns it into a space), so the page
+fail-two-tabs	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["Meet\tFix\tSetup[.]msi", "MeetFix-Installer[.]msi", 	COUNT=1 holds U+0009 at character 5 (the minifier turns it into a space), so the page
+pass-vt-000b-edges-and-run	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["\u000BMeet\u000B\u000BFix[.]msi\u000B", "MeetFix-Installer[.]msi", 	PASS
+pass-nel-0085-edges-and-run	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["\u0085Meet\u0085\u0085Fix[.]msi\u0085", "MeetFix-Installer[.]msi", 	PASS
+pass-em-space-2003-edges-and-run	content/reports/meetfix.md	file_names = ["MeetFix-Installer[.]msi", 	file_names = ["\u2003Meet\u2003\u2003Fix[.]msi\u2003", "MeetFix-Installer[.]msi", 	PASS
