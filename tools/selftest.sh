@@ -966,9 +966,10 @@ PY
 # with another autocomplete, a required field without required and an
 # optional one with it, a capped field at cap - 1, cap + 1 and without
 # maxlength, and the label and hint of each visible field; per MIME type of
-# INTAKE_IMAGE_TYPES an accept without it; per visible text control without
-# autocomplete a row that adds autocomplete=off (fix round 1); per page of
-# INTAKE_UNLISTED a row that lists it in the sitemap; per result id of
+# INTAKE_IMAGE_TYPES an accept without it; per field without autocomplete a
+# row that adds autocomplete=off (fix round 1; every kind since
+# Replikanti/interviewscam#42 item 3); per page of INTAKE_UNLISTED a row
+# that lists it in the sitemap; per result id of
 # INTAKE_RESULT_IDS the section missing, doubled, its id elsewhere and its
 # heading and text reworded; per member of INTAKE_REFERRER_TAGS and per
 # channel a referrerpolicy row; per channel the page and its form missing;
@@ -1014,7 +1015,9 @@ for channel, fields in sitecheck.INTAKE_FIELDS.items():
         if kind not in ("hidden", "honeypot"):
             want |= {f"{stem}-{case}" for case in ("label-for", "no-label", "hint-reworded",
                                                    "label-reworded")}
-        if field["autocomplete"] is None and kind in ("text", "url", "email", "textarea"):
+        # Replikanti/interviewscam#42 item 3: no kind filter, so every field
+        # without autocomplete has a row that adds off.
+        if field["autocomplete"] is None:
             want.add(f"{stem}-autocomplete-off")
         if kind == "file":
             want |= {f"b-{channel}-files-accept-without-{mime.split('/')[1]}" for mime in mimes}
@@ -5137,6 +5140,8 @@ PINNED
     # rewordings; the MIME types; per result id missing, doubled, id elsewhere
     # and the two rewordings; the sitemap; the pages and forms; the referrer
     # tags; URL_ATTRS, FORM_ATTRS, INTAKE_FORM_PAGES and CSP_DIRECTIVES.
+    # Replikanti/interviewscam#42: autocomplete=off per kind it now covers
+    # (hidden, text, textarea, file, checkbox; url above). 33 drops.
     for drop in render:b-report-scam_alias-renamed render:b-correction-email-required \
         render:b-report-headers-maxlength-above render:b-correction-request-hint-reworded \
         render:b-correction-files-accept-without-webp render:d-error-doubled \
@@ -5149,6 +5154,9 @@ PINNED
         render:b-report-files-label-reworded render:d-paused-missing \
         render:d-too-long-id-elsewhere render:d-bad-address-heading-reworded \
         render:d-not-accepted-text-reworded render:a-report-form-missing \
+        render:b-report-contact_start-autocomplete-off render:b-report-details-autocomplete-off \
+        render:b-report-channel-autocomplete-off render:b-correction-files-autocomplete-off \
+        render:b-correction-own_name-autocomplete-off \
         site:fail-intake-host-in-data site:fail-input-formaction-intake \
         site:fail-csp-form-action-missing-intake-correction site:csp-intake/worker-src; do
       kind="${drop%%:*}"
