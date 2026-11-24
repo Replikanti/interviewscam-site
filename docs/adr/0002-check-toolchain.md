@@ -107,7 +107,7 @@ Data: external sources are third-party sites. 9 of the 10 source URLs in SPEC §
 
 **Why:** an accepted 403 also accepts a page that a block page or a login wall has replaced, so a rotted or removed source would stay green. An exclude never checks the link again, so its rot goes unseen for good. Both turn the external-link run into a check that no longer reads the source. Replacing a source costs one records PR.
 
-**Data:** the source pages of the first campaign records were fetched with `curl -A lychee/0.24.2` from the operator host on 2026-11-24: 7 of 7 candidates answered 200 between 02:40 and 02:55 CET, and the 6 of them that the records cite answered 2xx again at 03:27 CET (one through a single 302 redirect, which lychee follows). No candidate needed a bot-wall decision. Runner datacenter IPs are measured by the `links-external.yml` dispatch on the records PR before it merges.
+**Data:** candidate source pages for the first campaign records, fetched with `curl -A lychee/0.24.2` from the operator host on 2026-11-24: 7 of 7 answered 200 between 02:40 and 02:55 CET, 6 of them answered 2xx again at 03:27 CET (one through a single 302 redirect, which lychee follows), and the 6 pages the first records PR cites (5 of the candidates and one later find) answered 200 at 03:39 CET. No page needed a bot-wall decision. Runner datacenter IPs are measured by the `links-external.yml` dispatch on the records PR before it merges.
 
 **Weak point:** a source that turns bot-walled after its records PR merged reddens the weekly run until a records PR replaces it. That is the intended signal, at the cost of one records PR per such source.
 
