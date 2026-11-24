@@ -12017,8 +12017,35 @@ REFLOW_REVEAL_MIN = 1.5
 # box without it differs by far more (its text, primary on card at 6.87:1).
 # At 0 that raster noise fails every page; far above (64) a faint but
 # readable link could count as painting nothing, the safe direction but
-# red on a working page. 8 is eight times the measured noise.
+# red on a working page. 8 is eight times the measured noise. The pinned
+# regions' pixel occlusion check uses the same 8 with its own reason
+# (ADR-0005 part 6, amendment of Replikanti/interviewscam#39): a mark that
+# stays within 8 of what it covers has at most 1.09:1 contrast against it
+# (1.087:1 at 8 off the text colour #0F172A, 1.074:1 at 8 below the ground
+# #F3F6FC), far below the 3:1 of WCAG 2.2 SC 1.4.11, so no readable
+# overprint stays under it; rows px-tolerance-at (8, passes) and
+# px-tolerance-above (9, fails) pin it from both sides.
 REFLOW_PAINT_TOLERANCE = 8
+# The pixel occlusion check's proof of the hiding (Replikanti/interviewscam#39,
+# ADR-0005 part 6 amendment): the computed styles DOMSnapshot.captureSnapshot
+# returns for every layout object, in this order. visibility proves that
+# everything outside a region and its ancestors shows nothing; the other
+# five are the closed list of an ancestor's own box paint that the CSS
+# painting order (CSS 2.1 Appendix E) draws above its descendants or that
+# no spec places in it (scroll bars, the resize control): an outline, a
+# text decoration it propagates, a scroll bar on either axis, a resize
+# control. Its background, border and box shadow paint below them.
+REFLOW_SNAPSHOT_STYLES = ("visibility", "outline-style", "text-decoration-line",
+                          "overflow-x", "overflow-y", "resize")
+# The computed visibility values that paint nothing (CSS 2.1 section 11.2:
+# collapse is hidden outside tables and flex items, and inside them it
+# removes the row or item without painting it).
+REFLOW_HIDDEN_VISIBILITY = frozenset({"hidden", "collapse"})
+# The overflow values that make a scroll container that can show a scroll
+# bar (CSS Overflow 3); hidden and clip show none, visible is no scroll
+# container. CI hides scroll bars (--hide-scrollbars in CHROME_FLAGS), so
+# this computed-style rule is their only reader.
+REFLOW_SCROLLBAR_OVERFLOW = frozenset({"scroll", "auto"})
 # Case (6), state S1 (ADR-0003 part 6): the script URLs blocked, so the page
 # loads with scripting on and its script not run, as after a failed load.
 REFLOW_BLOCKED_SCRIPTS = ("*.js", "*.mjs")
@@ -13042,7 +13069,10 @@ def pixel_difference(first, second, tolerance=REFLOW_PAINT_TOLERANCE):
     rounded chip corner 1 of 255 apart between two captures of the same
     paint (runs on 1de2f6f and a15a6e9), the raster noise case (7)'s
     REFLOW_PAINT_TOLERANCE was measured on; an overprint differs by far
-    more (the px-* rows: dozens of pixels by 100 and more)."""
+    more (the px-* rows: dozens of pixels by 100 and more), and the rows
+    px-tolerance-at and px-tolerance-above pin the bound itself with solid
+    colours 8 and 9 off the ground (Replikanti/interviewscam#39). reflow_hits
+    calls it only on a slice whose hidden capture isolation_problems proved."""
     a = png_rows(base64.b64decode(first))
     b = png_rows(base64.b64decode(second))
     if a[:3] != b[:3]:
@@ -13075,6 +13105,228 @@ def png_difference(first, second):
         return 255
     return max((max(abs(x - y) for x, y in zip(ra, rb)) for ra, rb in zip(a[3], b[3])
                 if ra), default=0)
+
+
+class SnapshotError(Exception):
+    """A DOM snapshot that does not have the shape isolation_problems reads."""
+
+
+def snapshot_list(value, what, kind=int, size=None):
+    """value when it is a list of kind (bool is no int), of size entries
+    when size is given, else SnapshotError."""
+    if not isinstance(value, list) or any(type(v) is not kind for v in value):
+        raise SnapshotError(f"{what} is not a list of {kind.__name__}")
+    if size is not None and len(value) != size:
+        raise SnapshotError(f"{what} has {len(value)} entries, not {size}")
+    return value
+
+
+def snapshot_rare(value, what, size):
+    """A rare data table ({index: [...], value: [...]}) as {entry: value};
+    an absent table is empty."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise SnapshotError(f"{what} is not an object")
+    index = snapshot_list(value.get("index"), f"{what}.index")
+    values = snapshot_list(value.get("value"), f"{what}.value", size=len(index))
+    if any(not 0 <= i < size for i in index):
+        raise SnapshotError(f"{what} names an entry out of range")
+    return dict(zip(index, values))
+
+
+def isolation_problems(snapshot, region_id):
+    """The proof of the hidden capture of one slice (the pixel occlusion
+    check, Replikanti/interviewscam#39, ADR-0005 part 6 amendment).
+    snapshot: the reply of DOMSnapshot.captureSnapshot with computedStyles
+    REFLOW_SNAPSHOT_STYLES, taken with everything outside the region hidden;
+    region_id: the region's backendNodeId (None when it could not be read).
+    The region's subtree (its pseudo-elements and shadow content included)
+    and its ancestor chain (the document included) are marked; every other
+    layout object of every document, nested documents included, is outside.
+    Returns a list of (kind, items), each kind only when it has items:
+    "broken" ([reason], alone) when the snapshot cannot be read or the
+    region is not in it, which fails closed; "outside", the labels of the
+    layout objects outside whose visibility is not in
+    REFLOW_HIDDEN_VISIBILITY; "ancestor", the labels of the layout objects
+    of an ancestor's text children and pseudo-elements, whatever their
+    characters (they paint above the region and cannot be hidden without
+    it); "paint", label, property and value of each ancestor element's box
+    paint of the closed list (an outline, a text decoration, a scroll bar
+    on either axis, a resize control). Never raises."""
+    try:
+        return _isolation_problems(snapshot, region_id)
+    except SnapshotError as exc:
+        return [("broken", [f"the DOM snapshot cannot be read: {exc}"])]
+    except (TypeError, ValueError, KeyError, IndexError, AttributeError) as exc:
+        return [("broken", [f"the DOM snapshot cannot be read: {type(exc).__name__}"])]
+
+
+def _isolation_problems(snapshot, region_id):
+    if not isinstance(snapshot, dict):
+        raise SnapshotError("the reply is not an object")
+    strings = snapshot_list(snapshot.get("strings"), "strings", str)
+    documents = snapshot.get("documents")
+    if not isinstance(documents, list) or not documents:
+        raise SnapshotError("documents is not a non-empty list")
+
+    def text(i):
+        if type(i) is not int or not 0 <= i < len(strings):
+            raise SnapshotError("a string index is out of range")
+        return strings[i]
+
+    width = len(REFLOW_SNAPSHOT_STYLES)
+    docs = []
+    for d, doc in enumerate(documents):
+        if not isinstance(doc, dict) or not isinstance(doc.get("nodes"), dict) \
+                or not isinstance(doc.get("layout"), dict):
+            raise SnapshotError(f"document {d} lacks its nodes or its layout")
+        nodes, layout = doc["nodes"], doc["layout"]
+        parents = snapshot_list(nodes.get("parentIndex"), f"document {d} parentIndex")
+        size = len(parents)
+        if any(not (p == -1 or 0 <= p < i) for i, p in enumerate(parents)):
+            raise SnapshotError(f"document {d} parentIndex is not in tree order")
+        types = snapshot_list(nodes.get("nodeType"), f"document {d} nodeType", size=size)
+        names = snapshot_list(nodes.get("nodeName"), f"document {d} nodeName", size=size)
+        ids = snapshot_list(nodes.get("backendNodeId"), f"document {d} backendNodeId",
+                            size=size)
+        pseudo = snapshot_rare(nodes.get("pseudoType"), f"document {d} pseudoType", size)
+        attributes = nodes.get("attributes")
+        if attributes is None:
+            attributes = [[] for _ in range(size)]
+        elif not isinstance(attributes, list) or len(attributes) != size or any(
+                not isinstance(a, list) or len(a) % 2
+                or any(type(v) is not int for v in a) for a in attributes):
+            raise SnapshotError(f"document {d} attributes is malformed")
+        boxes = snapshot_list(layout.get("nodeIndex"), f"document {d} layout nodeIndex")
+        if any(not 0 <= i < size for i in boxes):
+            raise SnapshotError(f"document {d} layout names an entry out of range")
+        styles = layout.get("styles")
+        if not isinstance(styles, list) or len(styles) != len(boxes):
+            raise SnapshotError(f"document {d} layout styles is not one list per layout object")
+        styles = [[text(k) for k in snapshot_list(s, f"document {d} layout styles",
+                                                    size=width)] for s in styles]
+        # Every string index is read now, so a broken one fails the whole
+        # snapshot, not only a label that a finding happens to print.
+        for k in [*names, *pseudo.values(), *(v for a in attributes for v in a)]:
+            text(k)
+        docs.append((parents, types, names, ids, pseudo, attributes, boxes, styles))
+    home = next((d for d, doc in enumerate(docs) if region_id in doc[3]), None) \
+        if type(region_id) is int else None
+    if home is None:
+        raise SnapshotError("the region is not in it")
+
+    def label(d, i):
+        parents, types, names, ids, pseudo, attributes = docs[d][:6]
+        where = "" if d == home else " in a nested document"
+        if i in pseudo or types[i] == 3:
+            owner = label(d, parents[i]).removesuffix(where) if parents[i] >= 0 else "?"
+            return owner + ("::" + text(pseudo[i]) if i in pseudo else " (its text)") + where
+        if types[i] != 1:
+            return text(names[i]) + where
+        attrs = dict(zip((text(k) for k in attributes[i][::2]),
+                         (text(k) for k in attributes[i][1::2])))
+        name = text(names[i]).lower()
+        if attrs.get("id"):
+            name += "#" + attrs["id"]
+        name += "".join("." + c for c in re.split(r"[\t\n\f\r ]+", attrs.get("class", "")) if c)
+        return name + where
+
+    outside, ancestor, paint = {}, {}, {}
+    for d, (parents, types, names, ids, pseudo, attributes, boxes, styles) in enumerate(docs):
+        inside, chain = [False] * len(parents), set()
+        if d == home:
+            region = ids.index(region_id)
+            for i, p in enumerate(parents):
+                inside[i] = i == region or (p >= 0 and inside[p])
+            p = parents[region]
+            while p >= 0:
+                chain.add(p)
+                p = parents[p]
+        for i, style in zip(boxes, styles):
+            if inside[i]:
+                continue
+            if i in chain:
+                if types[i] != 1:
+                    continue
+                visibility, outline, decoration, overflow_x, overflow_y, resize = style
+                for prop, value, shows in (
+                        ("outline-style", outline, outline != "none"),
+                        ("text-decoration-line", decoration, decoration != "none"),
+                        ("overflow-x", overflow_x, overflow_x in REFLOW_SCROLLBAR_OVERFLOW),
+                        ("overflow-y", overflow_y, overflow_y in REFLOW_SCROLLBAR_OVERFLOW),
+                        ("resize", resize, resize != "none")):
+                    if shows:
+                        paint.setdefault((d, i, prop), f"{label(d, i)} {prop} {value}")
+                continue
+            if parents[i] in chain and (types[i] == 3 or i in pseudo):
+                ancestor.setdefault((d, i), label(d, i))
+            elif style[0] not in REFLOW_HIDDEN_VISIBILITY:
+                outside.setdefault((d, i), label(d, i))
+    return [(kind, list(items.values())) for kind, items in
+            (("outside", outside), ("ancestor", ancestor), ("paint", paint)) if items]
+
+
+def reflow_named(items):
+    """At most REFLOW_NAMED items as findings show them, the rest counted."""
+    names = ", ".join(show(item, 120) for item in items[:REFLOW_NAMED])
+    if len(items) > REFLOW_NAMED:
+        names += f" and {len(items) - REFLOW_NAMED} more"
+    return f"{names} ({len(items)} in all)"
+
+
+def isolation_message(kind, items, what):
+    """The finding of one kind of isolation_problems for the region what."""
+    if kind == "broken":
+        return (f"(isolation) for {what}, {show(items[0], 200)}, so the hiding of everything "
+                "outside it is not proven and its pixels are not compared")
+    if kind == "outside":
+        return (f"(isolation) with everything outside {what} and its ancestors hidden, these "
+                f"box(es) there still show: {reflow_named(items)}; an author rule outranks "
+                "the hiding (a layered !important rule, an id rule), a transition or "
+                "animation holds the old value, or a nested document or a shadow tree draws "
+                "it, so the region's pixels are not compared")
+    if kind == "ancestor":
+        return (f"(isolation) the ancestors of {what} hold box(es) of their own text or "
+                f"pseudo-elements: {reflow_named(items)}; an ancestor's own inline and "
+                "generated content paints above the region (CSS 2.1 Appendix E) and cannot "
+                "be hidden without hiding it, so the region's pixels are not compared; the "
+                "templates give the regions' ancestors none")
+    return (f"(ancestor paint) an ancestor of {what} paints above it: {reflow_named(items)}; "
+            "an ancestor's outline, text decoration, scroll bar or resize control draws over "
+            "the region's own content (CSS 2.1 Appendix E, CSS UI 4), which the pixel check "
+            "cannot see because the ancestors stay shown; the templates give the regions' "
+            "ancestors none")
+
+
+def reflow_animation_message(phase, what, running):
+    """The finding of the animation guard of the pixel occlusion check."""
+    return (f"(animation) {phase} of {what}, animation(s) or transition(s) run: "
+            f"{reflow_named(running)}; a running animation changes the paint between the "
+            "two captures (or keeps an element outside the region shown), so the region's "
+            "pixels are not compared")
+
+
+def reflow_region_id(tools, session, index, where):
+    """The backendNodeId of pinned region index (window.__iscRegions, set by
+    REFLOW_HIT_SCRIPT), or None when it cannot be read."""
+    reply = tools.send("Runtime.evaluate",
+                       {"expression": f"(window.__iscRegions || [])[{int(index)}]"},
+                       session=session)
+    if "exceptionDetails" in reply:
+        raise UsageError(f"reflow: the region lookup failed on {where}: "
+                         f"{reply['exceptionDetails'].get('text')}")
+    handle = reply.get("result", {}).get("objectId")
+    if not handle:
+        return None
+    try:
+        described = tools.send("DOM.describeNode", {"objectId": handle}, session=session)
+    finally:
+        tools.send("Runtime.releaseObject", {"objectId": handle}, session=session)
+    # describeNode answers with one object, the described DOM entry.
+    entry = next((v for v in described.values() if isinstance(v, dict)), {})
+    found = entry.get("backendNodeId")
+    return found if type(found) is int else None
 
 
 # Case (6) per class of HIDDEN_UNTIL_SCRIPT (M4 PR 3, ADR-0005 part 6): the
@@ -13732,7 +13984,8 @@ REFLOW_HIT_SCRIPT = r"""
 """
 # Paint check helper: scroll so that y (document coordinates) is the top
 # of the viewport, or set region i's inline opacity to 0 (mode "hide") and
-# back (mode "restore"), returning the scroll position.
+# back (mode "restore"), returning the scroll position; and the guards of
+# the pixel occlusion check (modes "freeze", "isolate", "unisolate").
 REFLOW_REGION_PAINT_SCRIPT = r"""
 (function () {
   var el = (window.__iscRegions || [])[%(index)d];
@@ -13747,57 +14000,73 @@ REFLOW_REGION_PAINT_SCRIPT = r"""
     var r = e.getBoundingClientRect();
     return [r.left, r.top, r.width, r.height].join(",");
   }
+  // Every animation and transition of the document that runs, those of
+  // pseudo-elements included, as its kind, its target and its pseudo-element.
+  function running() {
+    return document.getAnimations().filter(function (a) {
+      return a.playState === "running";
+    }).map(function (a) {
+      var fx = a.effect || {};
+      return ((a.constructor && a.constructor.name) || "Animation") + " of " +
+        (fx.target ? label(fx.target) : "no element") + (fx.pseudoElement || "");
+    });
+  }
   if (mode === "scroll") window.scrollTo(0, %(y)s);
-  // The pixel occlusion check (fix round 2): "isolate" hides every element
-  // outside the region and its ancestors (visibility, so the layout holds),
-  // with animations paused and the caret blurred; "unisolate" restores
-  // all of it. The ancestors must hold no text and no pseudo-element of
-  // their own, the only things of theirs that could paint over the region.
-  if (el && mode === "isolate") {
-    var anims = document.getAnimations().filter(function (a) { return a.playState === "running"; });
-    anims.forEach(function (a) { a.pause(); });
-    window.__iscAnims = anims;
-    window.__iscFocus = document.activeElement;
+  // The pixel occlusion check (fix round 2, Replikanti/interviewscam#39):
+  // "freeze" blurs the focused element before the first capture (hiding a
+  // focused element moves the focus, and :has(:focus) can read that, so
+  // both captures are taken without it) and returns the running
+  // animations, which must be none. "isolate" adopts one constructed
+  // stylesheet that hides every element outside the region and its
+  // ancestors (visibility, so the layout holds): a structural selector per
+  // ancestor, so no attribute selector of the page can tell the hidden
+  // capture from the rendered one. It returns whether the region moved and
+  // the animations that run after the hiding (a transition the hiding
+  // starts). The DOM snapshot after it proves that everything outside
+  // shows nothing (isolation_problems). "unisolate", after the second
+  // capture, reads the box and the animations again, restores the
+  // original adoptedStyleSheets and the focus, and returns whether both
+  // are back.
+  if (el && mode === "freeze") {
+    var f = document.activeElement;
+    window.__iscFocus = f && f !== document.body && f !== document.documentElement ? f : null;
     if (window.__iscFocus && window.__iscFocus.blur) window.__iscFocus.blur();
-    var anc = [];
-    for (var p = el.parentElement; p; p = p.parentElement) anc.push(p);
-    var before = box(el), hidden = [];
-    Array.prototype.forEach.call(document.querySelectorAll("body *"), function (e) {
-      if (el.contains(e) || anc.indexOf(e) >= 0 || !e.style) return;
-      hidden.push([e, e.style.getPropertyValue("visibility"),
-                   e.style.getPropertyPriority("visibility"), e.hasAttribute("style")]);
-      e.style.setProperty("visibility", "hidden", "important");
-    });
-    window.__iscHidden = hidden;
-    var own = [], leak = [];
-    anc.forEach(function (a) {
-      Array.prototype.forEach.call(a.childNodes, function (n) {
-        if (n.nodeType === 3 && n.data.trim()) own.push(label(a) + " (its text)");
+    extra = {running: running()};
+  } else if (el && mode === "isolate") {
+    var chain = [], p = el;
+    for (; p && p !== document.documentElement; p = p.parentElement) chain.unshift(p);
+    if (!p) {
+      extra = {broken: "the region is not in the document's element tree"};
+    } else {
+      var path = ":root", keep = [":root"];
+      chain.forEach(function (e) {
+        var k = 1;
+        for (var s = e.previousElementSibling; s; s = s.previousElementSibling) k++;
+        path += " > :nth-child(" + k + ")";
+        keep.push(path);
       });
-      ["::before", "::after"].forEach(function (ps) {
-        var c = getComputedStyle(a, ps).content;
-        if (c !== "none" && c !== "normal") own.push(label(a) + ps);
-      });
-    });
-    hidden.forEach(function (h) {
-      ["::before", "::after"].forEach(function (ps) {
-        var cs = getComputedStyle(h[0], ps);
-        if (cs.content !== "none" && cs.content !== "normal" && cs.visibility === "visible")
-          leak.push(label(h[0]) + ps);
-      });
-    });
-    extra = {moved: box(el) !== before, own: own, leak: leak, hidden: hidden.length};
+      var sheet = new CSSStyleSheet();
+      sheet.replaceSync("*" + keep.map(function (x) { return ":not(" + x + ")"; }).join("") +
+                        ":not(" + path + " *){visibility:hidden!important}");
+      var before = box(el);
+      window.__iscBox = before;
+      window.__iscSheets = Array.prototype.slice.call(document.adoptedStyleSheets);
+      document.adoptedStyleSheets = window.__iscSheets.concat([sheet]);
+      extra = {moved: box(el) !== before, running: running(), rules: sheet.cssRules.length};
+    }
   } else if (mode === "unisolate") {
-    (window.__iscHidden || []).forEach(function (h) {
-      if (h[1]) h[0].style.setProperty("visibility", h[1], h[2]);
-      else h[0].style.removeProperty("visibility");
-      if (h[0].getAttribute("style") === "" && !h[3]) h[0].removeAttribute("style");
-    });
-    window.__iscHidden = [];
-    (window.__iscAnims || []).forEach(function (a) { a.play(); });
-    window.__iscAnims = [];
-    var f = window.__iscFocus;
-    if (f && f.focus && f !== document.body) f.focus({preventScroll: true});
+    var sheets = window.__iscSheets, back = window.__iscFocus;
+    if (el && window.__iscBox !== undefined)
+      extra = {moved: box(el) !== window.__iscBox, running: running()};
+    if (sheets) document.adoptedStyleSheets = sheets;
+    if (back && back.focus) back.focus({preventScroll: true});
+    var now = document.adoptedStyleSheets;
+    extra.sheets = !sheets || (now.length === sheets.length &&
+      sheets.every(function (s, i) { return now[i] === s; }));
+    extra.focus = !back || document.activeElement === back;
+    window.__iscSheets = null;
+    window.__iscFocus = null;
+    window.__iscBox = undefined;
   }
   if (el && el.style && mode === "hide") {
     old = ["opacity", "transition"].map(function (p) {
@@ -13916,6 +14185,7 @@ def reflow_hits(tools, session, findings, where, revealed=None):
         starts = [top + k * vh for k in range(max(math.ceil(height / vh), 1))]
         starts[-1] = top + height - size
         problem = None
+        region_id = reflow_region_id(tools, session, region["index"], where)
         for y in starts:
             if problem is not None:
                 break
@@ -13926,40 +14196,79 @@ def reflow_hits(tools, session, findings, where, revealed=None):
             clip = {"x": max(region["left"], 0) + state["x"], "y": y,
                     "width": max(min(region["width"], 10000), 1), "height": size,
                     "scale": 1}
-            # The pixel occlusion check (fix round 2): the slice as rendered
-            # and with everything outside the region hidden, both with the
-            # animations paused and no caret, must be the same image within
-            # the raster noise (pixel_difference), read on the pixels wholly
-            # inside the region's box (a pixel the box only partly covers
-            # also shows its neighbours' antialiased edges).
+            # The pixel occlusion check (fix round 2, Replikanti/interviewscam#39):
+            # the slice as rendered and with everything outside the region
+            # hidden must be the same image within the raster noise
+            # (pixel_difference), read on the pixels wholly inside the
+            # region's box (a pixel the box only partly covers also shows
+            # its neighbours' antialiased edges). Both captures are taken
+            # with no focus and no running animation (freeze and the reads
+            # after the hiding and after the second capture), the hiding is
+            # proven on the DOM snapshot (isolation_problems), and the
+            # images are compared only when every guard and the proof hold;
+            # each finding says why a slice is not compared.
             x0, x1 = math.ceil(clip["x"]), math.floor(clip["x"] + clip["width"])
             y0, y1 = math.ceil(clip["y"]), math.floor(clip["y"] + clip["height"])
             inner = {"x": x0, "y": y0, "width": max(x1 - x0, 1), "height": max(y1 - y0, 1),
                      "scale": 1}
-            iso = []
-            for mode in ("isolate", "unisolate"):
-                iso.append(tools.send("Page.captureScreenshot",
-                                      {"format": "png", "clip": inner},
-                                      session=session).get("data"))
-                state = reflow_value(tools, session, REFLOW_REGION_PAINT_SCRIPT % {
+
+            def step(mode):
+                return reflow_value(tools, session, REFLOW_REGION_PAINT_SCRIPT % {
                     "index": region["index"], "mode": json.dumps(mode), "saved": "null",
-                    "y": "0"}, where)
-                extra = state.get("extra") or {}
-                if mode == "isolate":
-                    if extra.get("moved"):
-                        findings.add(where, f"(occlusion) {what} moved when everything outside "
-                                     "it was hidden, so its paint cannot be compared")
-                    for item in (extra.get("own") or [])[:REFLOW_NAMED]:
-                        findings.add(where, f"(occlusion) {show(item, 120)}, an ancestor of "
-                                     f"{what}, holds text or a pseudo-element of its own, which "
-                                     "could paint over the region; the templates give the "
-                                     "regions' ancestors none")
-                    for item in (extra.get("leak") or [])[:REFLOW_NAMED]:
-                        findings.add(where, f"(occlusion) the pseudo-element {show(item, 120)} "
-                                     "stays visible when its element is hidden, so the pixel "
-                                     f"check of {what} cannot read it")
-            diff = pixel_difference(iso[0], iso[1])
-            if diff:
+                    "y": "0"}, where).get("extra") or {}
+
+            def capture():
+                return tools.send("Page.captureScreenshot", {"format": "png", "clip": inner},
+                                  session=session).get("data")
+
+            blocked, moved = False, False
+            frozen = step("freeze")
+            if frozen.get("running"):
+                findings.add(where, reflow_animation_message(
+                    "before the first capture", what, frozen["running"]))
+                blocked = True
+            first = capture()
+            hidden = step("isolate")
+            if hidden.get("broken"):
+                findings.add(where, f"(isolation) {what}: {show(hidden['broken'], 120)}, so "
+                             "everything outside it cannot be hidden and its pixels are not "
+                             "compared")
+                blocked = True
+            elif hidden.get("rules") != 1:
+                findings.add(where, f"(isolation) the hiding stylesheet for {what} holds "
+                             f"{show(hidden.get('rules'))} rules, not 1, so everything "
+                             "outside it is not hidden and its pixels are not compared")
+                blocked = True
+            if hidden.get("moved"):
+                moved = blocked = True
+            if hidden.get("running"):
+                findings.add(where, reflow_animation_message(
+                    "after the hiding", what, hidden["running"]))
+                blocked = True
+            snapshot = tools.send("DOMSnapshot.captureSnapshot",
+                                  {"computedStyles": list(REFLOW_SNAPSHOT_STYLES)},
+                                  session=session)
+            for kind, items in isolation_problems(snapshot, region_id):
+                findings.add(where, isolation_message(kind, items, what))
+                blocked = blocked or kind != "paint"
+            second = capture()
+            back = step("unisolate")
+            if back.get("moved"):
+                moved = blocked = True
+            if back.get("running"):
+                findings.add(where, reflow_animation_message(
+                    "at the second capture", what, back["running"]))
+                blocked = True
+            if moved:
+                findings.add(where, f"(occlusion) {what} moved when everything outside "
+                             "it was hidden, so its paint cannot be compared")
+            lost = [name for name, ok in (("its stylesheets", back.get("sheets")),
+                                          ("the focus", back.get("focus"))) if ok is not True]
+            if lost:
+                findings.add(where, f"(isolation) the page was not restored after the "
+                             f"captures of {what}: {' and '.join(lost)} did not come back, so "
+                             "every later check would read a changed page")
+            if not blocked and (diff := pixel_difference(first, second)):
                 findings.add(where, f"(occlusion) the pixels of {what} change when everything "
                              f"outside it is hidden ({diff}): something outside the region "
                              "paints over it (an element, overflowing text, a shadow, an "
@@ -14419,6 +14728,8 @@ def cmd_reflow(args):
         # take keyboard focus.
         tools.send("DOM.enable", session=session)
         tools.send("CSS.enable", session=session)
+        # The pixel occlusion check's snapshot (Replikanti/interviewscam#39).
+        tools.send("DOMSnapshot.enable", session=session)
         tools.send("Emulation.setFocusEmulationEnabled", {"enabled": True},
                    session=session)
         tools.send("Emulation.setDeviceMetricsOverride",
