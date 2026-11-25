@@ -215,7 +215,13 @@ PY
 # or extra field first): against a copy of the schema directory in which
 # reports[].evidence is optional and reports[].x_test is allowed, a feed
 # entry without evidence and with x_test must give exactly the two
-# field-set findings. The test schema lives only in a temporary directory
+# field-set findings. feed-fields/license-* (Replikanti/interviewscam#19)
+# run render rule 13's schema branches of the licence tie the same way: a
+# test schema with a license const missing or not a string, a terms_url
+# const that is not /data-feed/ with a fragment, or an id, name or url
+# outside FEED_LICENCES (the feed set to it, so rule 11 passes), must give
+# exactly the findings its row names. The
+# test schemas live only in a temporary directory
 # of this runner; check.sh always passes "$CHECK_ROOT/schema".
 # FEED_FIELDS_COVERAGE_ONLY=1 checks coverage alone. -B: no
 # tools/__pycache__.
@@ -345,6 +351,79 @@ with tempfile.TemporaryDirectory() as tmp:
 judge("feed-fields/field-set-test-schema", rc, output, found,
       ["rule 12: reports['example-front-company'] has no field evidence",
        "rule 12: reports['example-front-company'] has the field 'x_test'"], 2)
+
+# Rule 13's licence tie reads the four license consts from the schema
+# (Replikanti/interviewscam#19), so each schema branch runs against a
+# test-only copy of the schema directory, as above: a const missing or not
+# a string (one finding, no exception), a terms_url const that is not
+# /data-feed/ with a fragment, and an id, name or url that is not the one
+# FEED_LICENCES holds. The feed gets the same value, so rule 11 passes and
+# only rule 13 speaks.
+SC = "rule 13: schema/feed.schema.json pins no license."
+NOT_DOC = "is not /data-feed/ with a fragment"
+SA_NAME = "Creative Commons Attribution-ShareAlike 4.0 International"
+SA_URL = "https://creativecommons.org/licenses/by-sa/4.0/legalcode.en"
+BY_URL_SHOWN = "'hxxps://creativecommons[.]org/licenses/by/4[.]0/legalcode[.]en'"
+SA_URL_SHOWN = "'hxxps://creativecommons[.]org/licenses/by-sa/4[.]0/legalcode[.]en'"
+SA_NAME_SHOWN = "'Creative Commons Attribution-ShareAlike 4[.]0 International'"
+# name, sub-field, its new const (None: no const; the feed gets the same
+# value otherwise), whether the test schema drops the sub-field's type (a
+# non-string const), the findings and their number.
+SCHEMA_CASES = [
+    ("license-url-no-const", "url", None, False, [SC + "url const"], 1),
+    ("license-url-nonstring-const", "url", 1, True, [SC + "url const"], 1),
+    ("license-terms-no-const", "terms_url", None, False, [SC + "terms_url const"], 1),
+    ("license-terms-nonstring-const", "terms_url", ["x"], True, [SC + "terms_url const"], 1),
+    ("license-id-no-const", "id", None, False, [SC + "id const"], 1),
+    ("license-name-no-const", "name", None, False, [SC + "name const"], 1),
+    ("license-terms-other-page", "terms_url", "https://interviewscam.com/about/#licence", False,
+     ["rule 13: license.terms_url 'hxxps://interviewscam[.]com/about/#licence' " + NOT_DOC], 1),
+    ("license-terms-no-fragment", "terms_url", "https://interviewscam.com/data-feed/", False,
+     ["rule 13: license.terms_url 'hxxps://interviewscam[.]com/data-feed/' " + NOT_DOC], 1),
+    ("license-terms-slashless", "terms_url", "https://interviewscam.com/data-feed#licence", False,
+     ["rule 13: license.terms_url 'hxxps://interviewscam[.]com/data-feed#licence' " + NOT_DOC], 1),
+    ("license-terms-empty-fragment", "terms_url", "https://interviewscam.com/data-feed/#", False,
+     ["rule 13: license.terms_url 'hxxps://interviewscam[.]com/data-feed/#' " + NOT_DOC], 1),
+    ("license-id-unknown", "id", "CC0-1.0", False,
+     ["rule 13: license.id 'CC0-1[.]0' of schema/feed.schema.json is not a licence "
+      "sitecheck knows (FEED_LICENCES)",
+      "rule 13: /data-feed/ shows the licence id 'CC0-1[.]0' (license.id) in no visible <code>"], 2),
+    ("license-name-other-licence", "name", SA_NAME, False,
+     ["rule 13: license.name " + SA_NAME_SHOWN + " of schema/feed.schema.json is not the "
+      "name of 'CC-BY-4[.]0'",
+      "rule 13: /data-feed/ has no visible link to the licence " + BY_URL_SHOWN
+      + " whose text is " + SA_NAME_SHOWN], 2),
+    ("license-url-other-licence", "url", SA_URL, False,
+     ["rule 13: license.url " + SA_URL_SHOWN + " of schema/feed.schema.json is not the "
+      "legal code of 'CC-BY-4[.]0'",
+      "rule 13: /data-feed/ has no visible link to the licence " + SA_URL_SHOWN,
+      "rule 13: links " + BY_URL_SHOWN + ", an address on the licence's host"], 3),
+    ("license-terms-other-host", "terms_url", "https://interviewscam.com.example/data-feed/#licence",
+     False, ["rule 13: license.terms_url 'hxxps://interviewscam[.]com[.]example/data-feed/#licence' "
+             + NOT_DOC], 1),
+]
+for name, key, value, untyped, expects, count in SCHEMA_CASES:
+    with tempfile.TemporaryDirectory() as tmp:
+        test_schemas = Path(tmp) / "schema"
+        shutil.copytree(schema_dir, test_schemas)
+        path = test_schemas / sitecheck.FEED_SCHEMA
+        test_schema = json.loads(path.read_text(encoding="utf-8"))
+        prop = test_schema["properties"]["license"]["properties"][key]
+        if value is None:
+            del prop["const"]
+        else:
+            prop["const"] = value
+        if untyped:
+            del prop["type"]
+        path.write_text(json.dumps(test_schema), encoding="utf-8")
+        root = Path(tmp) / "case"
+        shutil.copytree(base, root)
+        if value is not None:
+            def change(feed, key=key, value=value):
+                feed["license"][key] = value
+            with_feed(root, change)
+        rc, output, found = render(root, test_schemas)
+    judge(f"feed-fields/{name}", rc, output, found, expects, count)
 PY
 }
 
@@ -6104,7 +6183,9 @@ PINNED
     # feed-fields (M3 PR 8 review 4, #30 Known limit 3): render rule 12 field
     # by field from tests/fixtures/render/feed-fields.tsv on the feed of
     # render/pass-feed, its coverage of every compared field, and the
-    # field-set branch against a test-only schema (feed_fields_runner above).
+    # field-set branch against a test-only schema, and the schema branches
+    # of rule 13's licence tie, the last row license-terms-other-host
+    # (feed_fields_runner above).
     # coverage-fails-on-field-without-row proves the coverage on the table
     # without the reports label row.
     feed_fields_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render/feed-fields.tsv" \
@@ -6112,7 +6193,8 @@ PINNED
     sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
     n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
     n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-    if ! grep -qE '^(ok   |FAIL )feed-fields/field-set-test-schema' "$out"; then
+    if ! grep -qE '^(ok   |FAIL )feed-fields/field-set-test-schema' "$out" \
+        || ! grep -qE '^(ok   |FAIL )feed-fields/license-terms-other-host' "$out"; then
       echo "FAIL feed-fields: the runner did not finish; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
@@ -6277,6 +6359,25 @@ PINNED
     n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
     if ! grep -qE '^(ok   |FAIL )render-report/table' "$out"; then
       echo "FAIL render-report: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+
+  if selftest_wants render-feed; then
+    # render-feed/<row> (Replikanti/interviewscam#19): the licence of the
+    # data feed, render rule 11 on the license object and the rule 13 tie
+    # of its legal-code link and terms anchor to /data-feed/, branch by
+    # branch from tests/fixtures/render/feed-cases.tsv on a copy of
+    # render/pass-feed, with the feed rules on (search_cases_runner above).
+    search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/render/feed-cases.tsv" "$FIXTURES/render/pass-feed" \
+      "$SELFTEST_ROOT/schema" render-feed >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )render-feed/table' "$out"; then
+      echo "FAIL render-feed: the runner did not finish; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi

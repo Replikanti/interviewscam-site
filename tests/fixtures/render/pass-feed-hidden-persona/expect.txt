@@ -1,1 +1,1 @@
-feed: 2 reports, 1 campaigns, 74 fields
+feed: 2 reports, 1 campaigns, 79 fields

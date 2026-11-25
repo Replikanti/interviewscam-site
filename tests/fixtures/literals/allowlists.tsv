@@ -372,7 +372,7 @@ LITERALS_MEMBERS	Reverse
 LITERALS_MEMBERS	Section
 LITERALS_MEMBERS	Sections
 LITERALS_MEMBERS	Title
-LITERALS_FILE_DICT_KEYS	layouts/home.feed.json	aliases artifact artifacts attribution basis campaign campaigns delivery documentation_url evidence first_seen home_page_url independent_reports last_reviewed last_seen lookup_urls name_hidden name_label name_type published related report_slugs reports slug source_id sources state state_basis statement steals summary targeted_os updated version
+LITERALS_FILE_DICT_KEYS	layouts/home.feed.json	aliases artifact artifacts attribution basis campaign campaigns delivery documentation_url evidence first_seen home_page_url independent_reports last_reviewed last_seen license lookup_urls name_hidden name_label name_type published related report_slugs reports slug source_id sources state state_basis statement steals summary targeted_os terms_url updated version
 LITERALS_DICT_KEYS	check
 LITERALS_DICT_KEYS	details
 LITERALS_DICT_KEYS	fields

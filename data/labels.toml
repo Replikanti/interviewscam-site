@@ -421,6 +421,18 @@ npm = "npm"
 pypi = "PyPI"
 other = "Other registry"
 
+# The licence of the records and of /feed.json (ADR-0010), the top-level
+# license object of the feed (layouts/home.feed.json): its SPDX id, name and
+# legal code, and the id of the Licence heading of /data-feed/, the fragment
+# of license.terms_url. schema/feed.schema.json pins every value a second
+# time as a const (render rule 11), and render rule 13 requires /data-feed/
+# to link url and to hold the element with the id anchor.
+[feed_license]
+id = "CC-BY-4.0"
+name = "Creative Commons Attribution 4.0 International"
+url = "https://creativecommons.org/licenses/by/4.0/legalcode.en"
+anchor = "licence"
+
 # The lookup links of a hash (params.artifacts.sha256[].listed_on); the URL
 # forms are named constants in layouts/_partials/artifacts.html.
 [lookup]

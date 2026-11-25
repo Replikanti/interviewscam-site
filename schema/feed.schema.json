@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "The data feed /feed.json (SPEC section 5, ADR-0004 part 7), built by layouts/home.feed.json. sitecheck render rule 11 validates the built file with the subset validator of tools/sitecheck.py (ADR-0002 part 4), rule 12 compares it with the records, and rule 13 requires the field list on /data-feed/ (content/data-feed.md) to equal the field paths of this schema. No x-defang here: rule 12 requires every artifact to equal its record's value, which the records check validated.",
+  "$comment": "The data feed /feed.json (SPEC section 5, ADR-0004 part 7), built by layouts/home.feed.json. sitecheck render rule 11 validates the built file with the subset validator of tools/sitecheck.py (ADR-0002 part 4), rule 12 compares it with the records, and rule 13 requires the field list on /data-feed/ (content/data-feed.md) to equal the field paths of this schema, and /data-feed/ to link the legal code of license.url and to hold the element that license.terms_url names (ADR-0010 part 7; both read from the const values here). No x-defang here: rule 12 requires every artifact to equal its record's value, which the records check validated.",
   "title": "interviewscam.com data feed",
   "description": "Every published report and campaign family as one document, for researchers and tools.",
   "type": "object",
@@ -9,6 +9,7 @@
     "home_page_url",
     "documentation_url",
     "updated",
+    "license",
     "reports",
     "campaigns"
   ],
@@ -36,6 +37,39 @@
         "null"
       ],
       "format": "date"
+    },
+    "license": {
+      "description": "The licence of the published records and of this feed (ADR-0010): Creative Commons Attribution 4.0 International. The scope, the requests to re-users and what is not covered are on /data-feed/ at terms_url.",
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "url",
+        "terms_url"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The SPDX identifier of the licence.",
+          "type": "string",
+          "const": "CC-BY-4.0"
+        },
+        "name": {
+          "description": "The name of the licence.",
+          "type": "string",
+          "const": "Creative Commons Attribution 4.0 International"
+        },
+        "url": {
+          "description": "The legal code of the licence. /data-feed/ links exactly this URL (render rule 13).",
+          "type": "string",
+          "const": "https://creativecommons.org/licenses/by/4.0/legalcode.en"
+        },
+        "terms_url": {
+          "description": "The licence section of /data-feed/: what the licence covers, what it does not, and what re-users are asked to do. /data-feed/ holds a visible element with the id of its fragment (render rule 13).",
+          "type": "string",
+          "const": "https://interviewscam.com/data-feed/#licence"
+        }
+      }
     },
     "reports": {
       "description": "Every published report, sorted by slug.",

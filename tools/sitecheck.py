@@ -6981,6 +6981,141 @@ def next_element(el):
     return None
 
 
+def feed_license_const(schema, key):
+    """Rule 13 (ADR-0010 part 7): the const the feed schema pins for
+    license.<key>, or None when it pins no string there."""
+    part = schema
+    for step in ("properties", "license", "properties", key):
+        part = part.get(step) if isinstance(part, dict) else None
+    value = part.get("const") if isinstance(part, dict) else None
+    return value if isinstance(value, str) else None
+
+
+# Rule 13 (ADR-0010 part 7): the licences the feed may name, by SPDX id:
+# (name, legal code). The schema's license.id, license.name and license.url
+# consts must be one row of this table, so the three cannot drift apart, and
+# a change of licence is a change of this table too (a safety-net review).
+FEED_LICENCES = {
+    "CC-BY-4.0": ("Creative Commons Attribution 4.0 International",
+                  "https://creativecommons.org/licenses/by/4.0/legalcode.en"),
+}
+FEED_LICENCE_KEYS = ("id", "name", "url", "terms_url")
+
+
+def feed_license_problems(schema, pages):
+    """Rule 13, the licence tie (ADR-0010 part 7), as (rel, problem) pairs.
+    The schema pins license.id, name, url and terms_url by string const
+    (rule 11 holds the feed to them); id, name and url are one row of
+    FEED_LICENCES; terms_url is /data-feed/ with a non-empty fragment. On
+    /data-feed/, when it was read: a visible <code> holds exactly the id;
+    a visible <a> whose href is exactly url reads exactly name, and no
+    other visible <a> to url reads anything else; the first element with
+    the fragment as its id (the one a browser scrolls to) is a visible <h2>
+    with visible text, and the section it heads (its following siblings up
+    to the next <h1> or <h2>) holds that link. On every page, no link
+    (hidden ones included) names the host of url or a subdomain of it,
+    except url itself on /data-feed/. So the page and the feed name one
+    licence, the page links only its legal code, and the terms the feed
+    points to are that section."""
+    out = []
+    const = {key: feed_license_const(schema, key) for key in FEED_LICENCE_KEYS}
+    for key in FEED_LICENCE_KEYS:
+        if const[key] is None:
+            out.append((f"schema/{FEED_SCHEMA}", f"rule 13: schema/{FEED_SCHEMA} pins no "
+                        f"license.{key} const"))
+    lid, name, url, terms = (const[key] for key in FEED_LICENCE_KEYS)
+    known = FEED_LICENCES.get(lid) if lid is not None else None
+    if lid is not None and known is None:
+        out.append((f"schema/{FEED_SCHEMA}", f"rule 13: license.id {show(lid)} of "
+                    f"schema/{FEED_SCHEMA} is not a licence sitecheck knows (FEED_LICENCES)"))
+    if known is not None and name is not None and name != known[0]:
+        out.append((f"schema/{FEED_SCHEMA}", f"rule 13: license.name {show(name)} of "
+                    f"schema/{FEED_SCHEMA} is not the name of {show(lid)}, {show(known[0])}"))
+    if known is not None and url is not None and url != known[1]:
+        out.append((f"schema/{FEED_SCHEMA}", f"rule 13: license.url {show(url)} of "
+                    f"schema/{FEED_SCHEMA} is not the legal code of {show(lid)}, "
+                    f"{show(known[1])}"))
+    anchor = None
+    if terms is not None:
+        base, mark, fragment = terms.partition("#")
+        if base != FEED_DOC_URL or not mark or not fragment:
+            out.append((f"schema/{FEED_SCHEMA}", f"rule 13: license.terms_url {show(terms)} "
+                        "is not /data-feed/ with a fragment"))
+        else:
+            anchor = fragment
+    page = pages.get(FEED_PAGE_REL)
+    links = []
+    if page is not None:
+        if lid is not None and not any(
+                el.tag == "code" and el.text() == lid and not el.concealed()
+                for el in page.root.walk()):
+            out.append((FEED_PAGE_REL, f"rule 13: /data-feed/ shows the licence id {show(lid)} "
+                        f"(license.id) in no visible <code>"))
+        if url is not None:
+            links = [el for el in page.root.walk()
+                     if el.tag == "a" and el.attrs.get("href") == url and el.text()
+                     and not el.concealed()]
+            named = [el for el in links if name is None or el.text() == name]
+            if not named:
+                out.append((FEED_PAGE_REL, "rule 13: /data-feed/ has no visible link to the "
+                            f"licence {show(url)}"
+                            + ("" if name is None else f" whose text is {show(name)}")
+                            + f" (license.url and license.name of schema/{FEED_SCHEMA})"))
+            else:
+                for text in dict.fromkeys(el.text() for el in links if el not in named):
+                    out.append((FEED_PAGE_REL, f"rule 13: a visible link to the licence "
+                                f"{show(url)} on /data-feed/ reads {show(text)}, not "
+                                f"{show(name)}"))
+            links = named
+        if anchor is not None:
+            targets = [el for el in page.root.walk() if el.attrs.get("id") == anchor]
+            where = f"rule 13: the element with the id {show(anchor)} on /data-feed/ "
+            if not targets or targets[0].concealed():
+                out.append((FEED_PAGE_REL, f"rule 13: /data-feed/ has no visible element with "
+                            f"the id {show(anchor)}, which license.terms_url names"))
+            elif targets[0].tag != "h2":
+                out.append((FEED_PAGE_REL, where + f"is a <{targets[0].tag}>, not a visible "
+                            "<h2> heading (license.terms_url names the Licence section)"))
+            elif not targets[0].text():
+                out.append((FEED_PAGE_REL, where + "is an <h2> without visible text"))
+            elif links and not any(el in links for el in heading_section(targets[0])):
+                out.append((FEED_PAGE_REL, f"rule 13: the section under the heading "
+                            f"#{anchor} on /data-feed/ holds no visible link to the licence "
+                            f"{show(url)}"))
+    # No other address on the licence's host, on any page.
+    host = url_host(url) if url is not None else ""
+    if host:
+        for rel, other in sorted(pages.items()):
+            for href, _ in links_in(other.root):
+                if not leaves_origin(href):
+                    continue
+                there = url_host(browser_url(href))
+                if (there == host or there.endswith("." + host)) and \
+                        (href != url or rel != FEED_PAGE_REL):
+                    out.append((rel, f"rule 13: links {show(href)}, an address on the "
+                                f"licence's host {show(host)} other than license.url; only "
+                                "/data-feed/ links the licence, and only its legal code "
+                                "(ADR-0010 part 7)"))
+    return out
+
+
+def heading_section(heading):
+    """Every element of the section a heading starts: its following siblings
+    and their descendants, up to the next <h1> or <h2> sibling."""
+    if heading.parent is None:
+        return []
+    siblings = heading.parent.children
+    start = next(i for i, c in enumerate(siblings) if c is heading) + 1
+    found = []
+    for child in siblings[start:]:
+        if isinstance(child, str):
+            continue
+        if child.tag in ("h1", "h2"):
+            break
+        found += list(child.walk())
+    return found
+
+
 def feed_problems(public, schema_dir, records, personas, pages):
     """Rules 11 to 13 on public/feed.json and public/data-feed/index.html:
     (rel, problem) pairs, and the feed part of the summary line."""
@@ -7030,6 +7165,8 @@ def feed_problems(public, schema_dir, records, personas, pages):
             if documented.count(field) > 1:
                 out.append((FEED_PAGE_REL, f"rule 13: /data-feed/ documents the field "
                             f"{show(field)} twice"))
+    # Rule 13, the licence tie (ADR-0010 part 7).
+    out += feed_license_problems(schema, pages)
     # Rule 11: the feed exists, parses and validates against the schema.
     try:
         raw = path.read_text(encoding="utf-8")
@@ -8967,9 +9104,9 @@ alt bold color face font image regular size text width x y
     "layouts/home.feed.json": frozenset("""
 aliases artifact artifacts attribution basis campaign campaigns delivery
 documentation_url evidence first_seen home_page_url independent_reports
-last_reviewed last_seen lookup_urls name_hidden name_label name_type published
-related report_slugs reports slug source_id sources state state_basis statement
-steals summary targeted_os updated version
+last_reviewed last_seen license lookup_urls name_hidden name_label name_type
+published related report_slugs reports slug source_id sources state state_basis
+statement steals summary targeted_os terms_url updated version
 """.split())}
 LITERALS_COLLECTION_VALUES = frozenset({
     ("layouts/_partials/lookups.html", "https://bazaar.abuse.ch/sample/%s/"),
