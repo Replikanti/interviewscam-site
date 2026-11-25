@@ -313,7 +313,11 @@ class Variables(unittest.TestCase):
 
     def test_wired_into_the_site_rules(self):
         found = sitecheck.css_rule_problems(TODAY + "main{--underline-hover-thickness:5em}").problems
-        self.assertEqual(len(found), 1, found)
+        # The custom property rule (Replikanti/interviewscam#34) refuses the
+        # rule outside :root too; this case counts the :hover list's finding.
+        hover = [item for item in found if "read by the :hover rules" in item]
+        self.assertEqual(len(hover), 1, found)
+        self.assertEqual(len(found), 2, found)
 
 
 class Unreadable(unittest.TestCase):

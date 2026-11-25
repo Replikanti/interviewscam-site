@@ -14163,9 +14163,14 @@ REFLOW_PAINT_TOLERANCE = 8
 # with no colour estimate: an anti-aliased edge pixel below 4.5:1 simply
 # does not count, so a blur, a faint opacity, a token redefined to the
 # background, a zero size, a pushed-out indent and a tiny scale all fall to
-# about none, whatever the cause.
+# about none, whatever the cause. K = 343 is half of the smallest count
+# measured on every page of both trees (687, Chrome 157, DejaVu Sans Bold at
+# 16 px; ADR-0003 Numbers): the six one-rule additions of the issue count 0,
+# so any K between them and 687 catches them, and one half leaves a factor
+# of 2 for raster and font drift on the unpinned runner. Re-derive it, as
+# the Numbers row says, when a runner image moves the count below K.
 REFLOW_TEXT_CONTRAST = 4.5
-REFLOW_TEXT_MIN_PIXELS = 10**9
+REFLOW_TEXT_MIN_PIXELS = 343
 # The inline properties each probe of case (7) sets, in order, each
 # !important; restored in reverse order with a style flush after each, so
 # `transition: none` is set first and put back last and no transition
@@ -14177,10 +14182,13 @@ REFLOW_TEXT_MIN_PIXELS = 10**9
 REFLOW_PAINT_PROBE = (("transition", "none"), ("opacity", "0"))
 REFLOW_INK_PROBE = (("transition", "none"), ("-webkit-text-fill-color", "transparent"))
 # The computed `content` Chrome returns for ::before and ::after without
-# generated content. Anything else draws something the ink probe changes
-# with the label (`content: "Skip"` over an empty or hidden label), so it
-# fails before the probe; a closed set, so `content: ""` fails too.
-REFLOW_NO_GENERATED = frozenset({"none", "normal"})
+# generated content: measured on Chrome 157, `none` for no rule, for
+# `content: none` and for `content: normal` alike (reflow fixture
+# pass-visually-hidden-legible-content-none). Anything else draws something
+# the ink probe changes with the label (`content: "Skip"` over an empty or
+# hidden label), so it fails before the probe; a closed set, so
+# `content: ""` fails too.
+REFLOW_NO_GENERATED = frozenset({"none"})
 # The pixel occlusion check's proof of the hiding (Replikanti/interviewscam#39,
 # ADR-0005 part 6 amendment): the computed styles DOMSnapshot.captureSnapshot
 # returns for every layout object, in this order. visibility proves that
@@ -17491,28 +17499,8 @@ def cmd_reflow(args):
                 counts = text_pixels(shown, shots[0])
                 problem = legibility_problem(label, box, counts)
                 if problem:
-                    findings.add(where, problem + measure_34(focus, counts))
+                    findings.add(where, problem)
             return counts
-
-        def measure_34(focus, counts):
-            # MEASURE-34: temporary diagnostics of the measurement push
-            # (Replikanti/interviewscam#34); removed before review.
-            try:
-                pseudo = reflow_value(tools, session, "(() => { const a = document.activeElement; "
-                                      "return {before: getComputedStyle(a, '::before').content, "
-                                      "after: getComputedStyle(a, '::after').content, "
-                                      "size: getComputedStyle(a).fontSize, family: "
-                                      "getComputedStyle(a).fontFamily}; })()", "measure")
-                tools.send("DOM.getDocument", {"depth": 0}, session=session)
-                obj = tools.send("Runtime.evaluate", {"expression": "document.activeElement"},
-                                 session=session)["result"]["objectId"]
-                handle = tools.send("DOM.requestNode", {"objectId": obj}, session=session)
-                fonts = tools.send("CSS.getPlatformFontsForNode", {"nodeId": handle["nodeId"]},
-                                   session=session).get("fonts")
-            except Exception as exc:  # noqa: BLE001 (diagnostics only)
-                pseudo, fonts = {}, f"error {exc!r}"
-            return (f" [MEASURE-34 counts={counts} box={focus.get('width')}x{focus.get('height')} "
-                    f"pseudo={pseudo} fonts={fonts}]")
 
         focus_script = REFLOW_FOCUS_SCRIPT % {"exempt": json.dumps(VISUALLY_HIDDEN),
                                               "generated": json.dumps(sorted(REFLOW_NO_GENERATED))}
