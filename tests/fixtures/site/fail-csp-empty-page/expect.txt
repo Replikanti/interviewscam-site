@@ -1,0 +1,1 @@
+CSP: the page does not start with <!doctype html>

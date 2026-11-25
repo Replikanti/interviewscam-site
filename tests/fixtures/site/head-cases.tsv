@@ -203,3 +203,16 @@ body-skip-link-attribute-changed	public/index.html	<a class=visually-hidden href
 body-header-attribute-changed	public/index.html	<header class=site-header>	<header class="site-header x">	(m) <body> holds
 body-main-attribute-changed	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=0>	(m) <body> holds
 body-footer-attribute-changed	public/index.html	<footer class=site-footer>	<footer class="site-footer x">	(m) <body> holds
+# Replikanti/interviewscam#54 with the built pins on: one row per member
+# that html.parser and HTML read differently (a doubled '=', an end tag
+# that wraps the CSP meta in a quoted value, a numeric reference in the
+# http-equiv, in the policy and as text in the head) and per end tag that
+# ends the head before the CSP meta.
+csp-double-equals	public/index.html	<meta http-equiv="Content-Security-Policy"	<meta http-equiv=="Content-Security-Policy"	expected exactly one Content-Security-Policy meta, found 0
+csp-end-tag-wrap-dq	public/index.html	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'">	</x a="><meta http-equiv=Content-Security-Policy content='default-src &#39;none&#39;; img-src &#39;self&#39;; style-src &#39;self&#39;; script-src &#39;self&#39;; font-src &#39;self&#39;; connect-src &#39;self&#39;; manifest-src &#39;self&#39;; base-uri &#39;none&#39;; form-action &#39;self&#39;'></x b=">	expected exactly one Content-Security-Policy meta, found 0
+csp-end-tag-wrap-sq	public/index.html	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'">	</x a='><meta http-equiv=Content-Security-Policy content="default-src &#39;none&#39;; img-src &#39;self&#39;; style-src &#39;self&#39;; script-src &#39;self&#39;; font-src &#39;self&#39;; connect-src &#39;self&#39;; manifest-src &#39;self&#39;; base-uri &#39;none&#39;; form-action &#39;self&#39;"></x b='>	expected exactly one Content-Security-Policy meta, found 0
+csp-charref-http-equiv	public/index.html	<meta http-equiv="Content-Security-Policy"	<meta http-equiv="Content-Security-Policy&#1;"	CSP: '&' in the http-equiv of a <meta>
+csp-charref-content	public/index.html	content="default-src 'none'; img-src	content="default-src&#1; 'none'; img-src	CSP: '&' in the content of the Content-Security-Policy meta
+csp-charref-text-in-head	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">&#1;	CSP: the text 
+csp-end-br-in-head	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"></br>	CSP: the token 
+csp-end-body-in-head	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"></body>	CSP: the token 
