@@ -1,0 +1,36 @@
+{{- /* The link preview metadata of every page but the 404 (SPEC section 6,
+  ADR-0009 part 1; sitecheck site rule (o), render rules 4, 8 and 21): Open
+  Graph as <meta property>, Twitter cards as <meta name>, in this order.
+  og:type is website: it describes the page as a link, never a record's
+  subject. The title is the page title without " · interviewscam.com" (on
+  a visible persona's own page the label-first <title> form); the
+  description is the meta description, and on a record page the record's
+  facts followed by its summary: a report's state chip and D7 label
+  (preview.report_description), a campaign's first and last seen dates
+  (preview.description over preview.campaign_fact). Every value is a
+  returned partial value or a page field, never printed partial output. */ -}}
+{{- $title := .Title -}}
+{{- $description := .Description | default (partial "label.html" "site.description") -}}
+{{- $record := in (slice "reports" "campaigns") .Section -}}
+{{- if eq .Kind "home" -}}
+  {{- $title = partial "label.html" "home.title" -}}
+{{- else if and $record (eq .Kind "section") -}}
+  {{- $title = partial "record-title.html" (dict "page" . "html" false) -}}
+{{- else if and $record (eq .Kind "page") -}}
+  {{- $title = partial "record-title.html" (dict "page" . "html" false "head" true) -}}
+  {{- if eq .Section "reports" -}}
+    {{- $chip := partial "label.html" (printf "state.%s.chip" .Params.state) -}}
+    {{- $description = printf (partial "label.html" "preview.report_description") $chip (partial "report-label.html" .) .Params.summary -}}
+  {{- else -}}
+    {{- $fact := printf (partial "label.html" "preview.campaign_fact") (time.Format "2006-01-02" .Params.first_seen) (time.Format "2006-01-02" .Params.last_seen) -}}
+    {{- $description = printf (partial "label.html" "preview.description") $fact .Params.summary -}}
+  {{- end -}}
+{{- end }}
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="{{ site.Title }}">
+<meta property="og:title" content="{{ $title }}">
+<meta property="og:description" content="{{ $description }}">
+<meta property="og:url" content="{{ .Permalink }}">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="{{ $title }}">
+<meta name="twitter:description" content="{{ $description }}">

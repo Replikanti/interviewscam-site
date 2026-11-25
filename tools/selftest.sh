@@ -128,8 +128,9 @@ for row in rows:
             print(f"     | {out_line}")
 # The flagging sets, taken from the code, and their pinned numbers.
 EXPECTED_FLAGGING_SETS = 19
-EXPECTED_PASSING_SETS = 35
-EXPECTED_DERIVED_MEMBERS = {"RAWTEXT_END_TAG": 10, "LITERALS_META_PLAIN_NAMES": 3,
+EXPECTED_PASSING_SETS = 36
+EXPECTED_DERIVED_MEMBERS = {"RAWTEXT_END_TAG": 10, "LITERALS_META_PLAIN_NAMES": 4,
+                            "LITERALS_META_PLAIN_PROPERTIES": 2,
                             "LITERALS_META_PLAIN_HTTP_EQUIV": 1, "PAGE_MEMBERS": 16,
                             "SINK_KINDS": 27, "JS_SUFFIXES": 2}
 names = {n for n, v in vars(sitecheck).items()
@@ -161,6 +162,9 @@ derived["RAWTEXT_END_TAG"] = set(end_names.group(1).split("|")) if end_names els
 # added to LITERALS_PRINT_SOURCES["text"] turns its row red).
 derived["LITERALS_META_PLAIN_NAMES"] = set(sitecheck.LITERALS_META_PLAIN_NAMES)
 derived["LITERALS_META_PLAIN_HTTP_EQUIV"] = set(sitecheck.LITERALS_META_PLAIN_HTTP_EQUIV)
+# Replikanti/interviewscam#44: the link preview properties whose content is
+# no text, a row per key as for the names.
+derived["LITERALS_META_PLAIN_PROPERTIES"] = set(sitecheck.LITERALS_META_PLAIN_PROPERTIES)
 derived["PAGE_MEMBERS"] = set(sitecheck.PAGE_MEMBERS)
 derived["SINK_KINDS"] = set(sitecheck.SINK_KINDS) - set(
     sitecheck.LITERALS_PRINT_SOURCES["text"]) - set(sitecheck.SINK_REPORTED)
@@ -357,7 +361,8 @@ PY
 # round 12: a table line cannot hold the last two), and \u{XXXX} as that code
 # point (Replikanti/interviewscam#28 fix round 3: U+001C to U+001E, U+0085 and
 # U+2029 end a line for str.splitlines), then optional further find
-# and replace pairs, applied in order (fix round 9: a wrapper row closes its
+# and replace pairs, applied in order (a find "@file <path>" with replace
+# "-" moves the later pairs to that file of the case) (fix round 9: a wrapper row closes its
 # wrapper, because an element an ancestor's end tag closes is a markup:
 # finding). It copies the base case to
 # a temporary directory, replaces the one occurrence of find in <file>
@@ -438,16 +443,31 @@ for row in rows:
         elif edits[0][0] == "*":
             path.unlink()
         else:
-            text = path.read_text(encoding="utf-8")
-            counts = []
+            # A further pair whose find is "@file <path>" (replace "-")
+            # moves the later pairs to that file of the case
+            # (Replikanti/interviewscam#44: a record, its page and its feed
+            # entry changed together).
+            texts, target, counts, missing_file = {}, path, [], None
             for find, replace in edits:
+                if find.startswith("@file "):
+                    target = root / find[len("@file "):]
+                    if not target.is_file():
+                        missing_file = find[len("@file "):]
+                    continue
+                if missing_file:
+                    break
+                text = texts.get(target)
+                if text is None:
+                    text = target.read_text(encoding="utf-8")
                 counts.append(text.count(find))
-                text = text.replace(find, replace, 1)
-            if counts != [1] * len(edits):
+                texts[target] = text.replace(find, replace, 1)
+            if missing_file or counts != [1] * len(counts) or not counts:
                 print(f"FAIL {label}/{name}: the find strings occur "
-                      f"{counts} times in {rel} (in turn), the row needs exactly one each")
+                      f"{counts} times in {rel} (in turn), the row needs exactly one each"
+                      + (f"; {missing_file} is not a file of {base.name}" if missing_file else ""))
                 continue
-            path.write_text(text, encoding="utf-8")
+            for target, text in texts.items():
+                target.write_text(text, encoding="utf-8")
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             if command == "records":
@@ -1006,19 +1026,24 @@ print(f"ok   page-suffixes/table ({len(forms)} forms)")
 PY
 }
 
-# site_cases_runner <sitecheck.py> <cases table> <base case> <schema dir>:
-# site rule (m) (the head by position, M4 PR 3 fix rounds 7 and 8) one fixed
-# head value and one branch per row, on a copy of site/pass-built-pins with
-# the built pins on. A row is name, file, find, replace and expect,
-# tab-separated, with \n, \t and \v (U+000B, which a table line cannot hold:
-# splitlines ends a line there) in find and replace; the find string must
-# occur exactly once, so a row never turns into a no-op.
+# site_cases_runner <sitecheck.py> <cases table> <base case> <schema dir>
+# [label]: site rule (m) (the head by position, M4 PR 3 fix rounds 7 and 8)
+# one fixed head value and one branch per row, on a copy of
+# site/pass-built-pins with the built pins on; with the label site-preview,
+# site rule (o) (the link preview metadata, Replikanti/interviewscam#44). A
+# row is name, file, find, replace and expect, tab-separated, with \n, \t and \v (U+000B, which a table line cannot hold:
+# splitlines ends a line there) and \u{XXXX} (that code point) in find and
+# replace, then optional further find and replace pairs applied in order
+# (Replikanti/interviewscam#44); every find string must occur exactly once,
+# so a row never turns into a no-op. An expect ONLY <text> needs every
+# finding to hold <text> (a row that must trip rule (m) and nothing else).
 site_cases_runner() {
-  python3 -I -B - "$1" "$2" "$3" "$4" <<'PY'
+  python3 -I -B - "$1" "$2" "$3" "$4" "${5:-site-head}" <<'PY'
 import argparse
 import contextlib
 import importlib.util
 import io
+import re
 import shutil
 import sys
 import tempfile
@@ -1028,9 +1053,11 @@ spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
 sitecheck = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sitecheck)
 table, base, schema_dir = Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
+label = sys.argv[5]
 
 
 def unescape(text):
+    text = re.sub(r"\\u\{([0-9A-F]{4,6})\}", lambda m: chr(int(m.group(1), 16)), text)
     return text.replace("\\n", "\n").replace("\\t", "\t").replace("\\v", "\v")
 
 
@@ -1038,43 +1065,189 @@ rows = [line.split("\t") for line in table.read_text(encoding="utf-8").splitline
         if line and not line.startswith("#")]
 names, bad = set(), 0
 for row in rows:
-    if len(row) != 5 or not row[0] or row[0] in names:
-        print(f"FAIL site-head/table: malformed or duplicate row {row!r}")
+    if len(row) < 5 or (len(row) - 5) % 2 or not row[0] or row[0] in names:
+        print(f"FAIL {label}/table: malformed or duplicate row {row!r}")
         bad += 1
         continue
-    name, rel, find, replace, expect = row
+    name, rel, find, replace, expect = row[:5]
     names.add(name)
-    find, replace = unescape(find), unescape(replace)
+    edits = [(unescape(f), unescape(r)) for f, r in [row[2:4]] + list(zip(row[5::2], row[6::2]))]
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "case"
         shutil.copytree(base, root)
         path = root / rel
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
-        if text.count(find) != 1:
-            print(f"FAIL site-head/{name}: the find string occurs {text.count(find)} times "
-                  f"in {rel}, the row needs exactly one")
+        counts = []
+        for find, replace in edits:
+            counts.append(text.count(find))
+            text = text.replace(find, replace, 1)
+        if counts != [1] * len(edits):
+            print(f"FAIL {label}/{name}: the find strings occur {counts} times in {rel} "
+                  "(in turn), the row needs exactly one each")
             continue
-        path.write_text(text.replace(find, replace, 1), encoding="utf-8")
+        path.write_text(text, encoding="utf-8")
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             rc = sitecheck.cmd_site(argparse.Namespace(
                 records=str(root), schemas=str(schema_dir), no_built_pins=False,
                 public=str(root / "public")))
         output = buffer.getvalue()
+    only = expect.startswith("ONLY ")
+    text_expect = expect.removeprefix("ONLY ")
+    findings = [line for line in output.splitlines() if line.startswith("FAIL: ")]
     if expect == "PASS" and rc == 0:
-        print(f"ok   site-head/{name} (passed as expected)")
-    elif expect != "PASS" and rc == 1 and expect in output:
-        print(f"ok   site-head/{name} (failed as expected: {expect})")
+        print(f"ok   {label}/{name} (passed as expected)")
+    elif expect != "PASS" and rc == 1 and text_expect in output \
+            and (not only or all(text_expect in line for line in findings)):
+        print(f"ok   {label}/{name} (failed as expected: {expect})")
     else:
-        print(f"FAIL site-head/{name}: expected "
+        print(f"FAIL {label}/{name}: expected "
               f"{'exit 0' if expect == 'PASS' else 'exit 1 and ' + repr(expect)}; got exit "
               f"{rc}; output:")
         for line in output.splitlines():
             print(f"     | {line}")
 if not rows or bad:
-    print(f"FAIL site-head/table: {len(rows)} rows, {bad} malformed")
+    print(f"FAIL {label}/table: {len(rows)} rows, {bad} malformed")
 else:
-    print(f"ok   site-head/table ({len(rows)} rows)")
+    print(f"ok   {label}/table ({len(rows)} rows)")
+PY
+}
+
+# preview_coverage <sitecheck.py> <cases table> (Replikanti/interviewscam#44):
+# site-preview/coverage needs, from the code, a row missing-<key> and a row
+# doubled-<key> for every key of PREVIEW_KEYS, a row live/<key>/<form> for
+# every key of PREVIEW_TEXT_KEYS and a row live/<key>/scheme-<s> for every
+# member s of FILE_SCHEMES (on any text key), and the sets PREVIEW_FIXED,
+# PREVIEW_URL_KEYS and PREVIEW_TEXT_KEYS to partition PREVIEW_KEYS while
+# PREVIEW_PROPERTIES holds exactly its property keys;
+# site-preview/coverage-fails-on-missing-row leaves every family out in
+# turn (one missing- or doubled- row, every live row of one text key, every
+# scheme row of one scheme) and needs each run to fail.
+# -B: no tools/__pycache__.
+preview_coverage() {
+  python3 -I -B - "$1" "$2" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sc)
+names = [line.split("\t")[0] for line in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
+         if line and not line.startswith("#")]
+
+
+def missing(present):
+    gaps = []
+    for key in sc.PREVIEW_KEYS:
+        gaps += [f"{kind}-{key}" for kind in ("missing", "doubled") if f"{kind}-{key}" not in present]
+    for key in sorted(sc.PREVIEW_TEXT_KEYS):
+        if not any(n.startswith(f"live/{key}/") for n in present):
+            gaps.append(f"live/{key}/<form>")
+    for scheme in sc.FILE_SCHEMES:
+        if not any(n.startswith("live/") and n.endswith(f"/scheme-{scheme}") for n in present):
+            gaps.append(f"live/<key>/scheme-{scheme}")
+    return gaps
+
+
+sets = [set(sc.PREVIEW_FIXED), set(sc.PREVIEW_URL_KEYS), set(sc.PREVIEW_TEXT_KEYS)]
+partition = (set().union(*sets) == set(sc.PREVIEW_KEYS)
+             and sum(map(len, sets)) == len(sc.PREVIEW_KEYS)
+             and set(sc.PREVIEW_PROPERTIES)
+             == {k for k, a in sc.PREVIEW_KEYS.items() if a == "property"})
+gaps = missing(set(names))
+if gaps or not partition:
+    print("FAIL site-preview/coverage: " + "; ".join(
+        gaps + ([] if partition else ["the key sets do not partition PREVIEW_KEYS"])))
+else:
+    print(f"ok   site-preview/coverage ({len(sc.PREVIEW_KEYS)} keys, "
+          f"{len(sc.PREVIEW_TEXT_KEYS)} text keys, {len(sc.FILE_SCHEMES)} schemes, all rows)")
+# The families: each missing-<key> and doubled-<key> row, every live row of
+# one text key, every scheme-<s> row of one scheme; each left out whole.
+families = {}
+for name in names:
+    if name.startswith(("missing-", "doubled-")):
+        families.setdefault(name, set()).add(name)
+    elif name.startswith("live/"):
+        key = name.split("/")[1]
+        families.setdefault(f"live/{key}", set()).add(name)
+        if "/scheme-" in name:
+            families.setdefault(name.rsplit("/", 1)[1], set()).add(name)
+held = [family for family, rows in sorted(families.items()) if not missing(set(names) - rows)]
+if held or not families:
+    print(f"FAIL site-preview/coverage-fails-on-missing-row: coverage still passes without "
+          f"the rows of {', '.join(held) or 'any family'}")
+else:
+    print(f"ok   site-preview/coverage-fails-on-missing-row ({len(families)} families, each "
+          "left out fails the coverage)")
+PY
+}
+
+# meta_fields_coverage <sitecheck.py> <partials dir> (Replikanti/interviewscam#44
+# fix round 3, review run 3 finding A): records-meta/coverage reads
+# preview-meta.html and every partial it calls (by `partial "<name>.html"`,
+# transitively) and collects each front-matter field they read: .Title,
+# .Description (not site.Title), Params.<key> and <$alias>.<key> for an
+# alias assigned from Params. Each must be a member of PREVIEW_META_FIELDS
+# (R20 reads it) or of NOT_PREVIEW_TEXT below with the reason its value
+# never reaches a preview attribute as written, and each member of
+# PREVIEW_META_FIELDS must be read; records-meta/coverage-fails-on-missing-
+# member drops each member in turn and needs the coverage to fail.
+# -B: no tools/__pycache__.
+meta_fields_coverage() {
+  python3 -I -B - "$1" "$2" <<'PY'
+import importlib.util
+import re
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sc)
+partials = Path(sys.argv[2])
+NOT_PREVIEW_TEXT = {
+    "title": "overridden on every page R20 reads: home.title, title.<section>, a record title",
+    "params.state": "a labels.toml key (state.<state>.chip)",
+    "params.name_type": "a condition", "params.hide_name": "a condition",
+    "params.first_seen": "a date through time.Format", "params.last_seen": "a date through time.Format",
+    "params.last_reviewed": "a date through time.Format",
+    "params.independent_reports": "a count through int", "params.sources": "a count through len",
+}
+seen, queue, read = set(), ["preview-meta.html"], set()
+while queue:
+    name = queue.pop()
+    if name in seen:
+        continue
+    seen.add(name)
+    text = (partials / name).read_text(encoding="utf-8")
+    queue += re.findall(r'partial "([\w-]+\.html)"', text)
+    read |= {f"params.{k}" for k in re.findall(r"\bParams\.(\w+)", text)}
+    for alias in re.findall(r"\$(\w+)\s*:?=\s*[\w.$]*\bParams\b(?!\.)", text):
+        read |= {f"params.{k}" for k in re.findall(rf"\${alias}\.(\w+)", text)}
+    read |= {k.lower() for k in re.findall(r"(?<![\w$])\.(Title|Description)\b", text)}
+
+
+def gaps(pinned):
+    out = [f"{f} is read by a preview partial but neither pinned nor listed as no preview text"
+           for f in sorted(read - pinned - set(NOT_PREVIEW_TEXT))]
+    out += [f"{f} is pinned but no preview partial reads it" for f in sorted(pinned - read)]
+    return out
+
+
+pinned = {f for fields in sc.PREVIEW_META_FIELDS.values() for f in fields}
+found = gaps(pinned)
+if found or len(seen) < 2:
+    print("FAIL records-meta/coverage: " + "; ".join(found or ["no partial called"]))
+else:
+    print(f"ok   records-meta/coverage ({len(seen)} partials, {len(read)} fields read, "
+          f"{len(pinned)} pinned)")
+held = [f for f in sorted(pinned) if not gaps(pinned - {f})]
+if held or not pinned:
+    print("FAIL records-meta/coverage-fails-on-missing-member: coverage still passes without "
+          + (", ".join(held) or "any member"))
+else:
+    print(f"ok   records-meta/coverage-fails-on-missing-member ({len(pinned)} members, each "
+          "dropped fails the coverage)")
 PY
 }
 
@@ -1093,9 +1266,15 @@ PY
 # member of CSP_DIRECTIVES but form-action (csp-intake/<directive>, the intake
 # origin in that directive), and site-intake/coverage takes that set from
 # the code. Then the real cmd_site runs:
-# expect PASS needs exit 0, any other expect exit 1 with that text in the
-# output. The last line, site-intake/table, counts the rows. The label of
-# the lines is site-intake unless [label] names another (site-csp-equiv,
+# expect PASS needs exit 0, PASS-OR-ONLY <text> exit 0 or exit 1 with
+# <text> in every finding (a row whose decoy site rule (o8) refuses on its
+# own: whether html.parser reads a meta inside an end tag's quoted value as
+# an element depends on its build, so (o8) fires on 3.14 and on CI's
+# Ubuntu 3.12.3 and not on an upstream 3.12.3, while no CSP rule may read
+# it on any; (o8) itself is pinned by the site-preview rows), any other
+# expect exit 1 with that text in the output. The last line,
+# site-intake/table, counts the rows. The label of the lines is
+# site-intake unless [label] names another (site-csp-equiv,
 # Replikanti/interviewscam#32). -B: no tools/__pycache__.
 site_intake_runner() {
   python3 -I -B - "$1" "$2" "$3" "$4" "${5:-site-intake}" <<'PY'
@@ -1168,14 +1347,19 @@ for row in rows:
                 records=str(root), schemas=str(schema_dir), no_built_pins=True,
                 public=str(public)))
         output = buffer.getvalue()
-    if expect == "PASS" and rc == 0:
+    only = expect.removeprefix("PASS-OR-ONLY ") if expect.startswith("PASS-OR-ONLY ") else None
+    findings = [line for line in output.splitlines() if line.startswith("FAIL: ")]
+    if (expect == "PASS" or only) and rc == 0:
         print(f"ok   {label}/{name} (passed as expected)")
-    elif expect != "PASS" and rc == 1 and expect in output:
+    elif only and rc == 1 and findings and all(only in line for line in findings):
+        print(f"ok   {label}/{name} (failed only as allowed: {only})")
+    elif expect != "PASS" and not only and rc == 1 and expect in output:
         print(f"ok   {label}/{name} (failed as expected: {expect})")
     else:
-        print(f"FAIL {label}/{name}: expected "
-              f"{'exit 0' if expect == 'PASS' else 'exit 1 and ' + repr(expect)}; got exit "
-              f"{rc}; output:")
+        want = ("exit 0" if expect == "PASS" else
+                f"exit 0, or exit 1 with {only!r} in every finding" if only else
+                "exit 1 and " + repr(expect))
+        print(f"FAIL {label}/{name}: expected {want}; got exit {rc}; output:")
         for line in output.splitlines():
             print(f"     | {line}")
 if not rows or bad:
@@ -5508,6 +5692,28 @@ PINNED
     fi
   fi
 
+  if selftest_wants site-preview; then
+    # site-preview (Replikanti/interviewscam#44, ADR-0009 part 3): site rule
+    # (o) row by row from tests/fixtures/site/preview-cases.tsv on
+    # site/pass-built-pins (site_cases_runner above), then the coverage of
+    # the table against the key sets in the code (preview_coverage) and its
+    # negative proof, one row of every family left out in turn.
+    site_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/site/preview-cases.tsv" "$FIXTURES/site/pass-built-pins" \
+      "$SELFTEST_ROOT/schema" site-preview >"$out" 2>&1
+    preview_coverage "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/site/preview-cases.tsv" >>"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )site-preview/table' "$out" \
+        || ! grep -qE '^(ok   |FAIL )site-preview/coverage-fails-on-missing-row' "$out"; then
+      echo "FAIL site-preview: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+
   if selftest_wants render-search; then
     # render-search (M4 PR 2 and PR 3, ADR-0005 part 6): render rules 15 and 16 branch by
     # branch and member by member from tests/fixtures/render/search-cases.tsv
@@ -5578,22 +5784,24 @@ PINNED
   fi
   if selftest_wants site-intake-expect; then
     # site-intake-expect (the negative proof of site_intake_runner's expect):
-    # a real row with an expect text the findings do not hold must fail, and
-    # a PASS row that fails must fail too.
+    # a real row with an expect text the findings do not hold must fail, a
+    # PASS row that fails must fail too, and so must a PASS-OR-ONLY row with
+    # a finding outside its text (Replikanti/interviewscam#44).
     local expect_table
     expect_table=$(mktemp)
     awk -F'\t' -v OFS='\t' '
       $1 == "fail-input-formaction-intake" { $1 = $1 "-wrong-expect"; $5 = "(a) <form action> submits to"; print }
       $1 == "fail-button-formaction-intake" { $1 = $1 "-as-pass"; $5 = "PASS"; print }
+      $1 == "csp-intake/form-action-wildcard" { $1 = $1 "-only-other"; $5 = "PASS-OR-ONLY (o8)"; print }
     ' "$FIXTURES/site/intake-cases.tsv" >"$expect_table"
     site_intake_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$expect_table" \
       "$FIXTURES/render/pass-intake" "$SELFTEST_ROOT/schema" >"$out" 2>&1
     rm -f "$expect_table"
-    if [[ "$(grep -cE '^FAIL site-intake/fail-(input|button)-formaction-intake-(wrong-expect|as-pass):' "$out")" == 2 ]]; then
-      echo "ok   site-intake-expect (a wrong expect and a failing PASS row each fail)"
+    if [[ "$(grep -cE '^FAIL site-intake/(fail-(input|button)-formaction-intake-(wrong-expect|as-pass)|csp-intake/form-action-wildcard-only-other):' "$out")" == 3 ]]; then
+      echo "ok   site-intake-expect (a wrong expect, a failing PASS row and a PASS-OR-ONLY row with another finding each fail)"
       n_passed=$((n_passed + 1))
     else
-      echo "FAIL site-intake-expect: a row with a wrong expect or a failing PASS row did not fail; output:"
+      echo "FAIL site-intake-expect: a row with a wrong expect, a failing PASS row or a PASS-OR-ONLY row with another finding did not fail; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi
@@ -5733,6 +5941,47 @@ PINNED
     done
   fi
 
+  if selftest_wants render-preview; then
+    # render-preview/<row> (Replikanti/interviewscam#44, ADR-0009 parts 2
+    # and 3): render rules 4, 8, 9 and 21 on the link preview metadata from
+    # tests/fixtures/render/preview-cases.tsv on a copy of
+    # render/pass-report-pins (search_cases_runner, rule 21 on through its
+    # report-pins.txt); then render-preview/coverage: a row
+    # rdfa-extra-<attribute> for every member of RDFA_ATTRS (each on a
+    # preview meta, outside rule 8's exception) and a pass-d7-<branch> row
+    # for each branch of the D7 label, from the code.
+    search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/render/preview-cases.tsv" "$FIXTURES/render/pass-report-pins" \
+      "$SELFTEST_ROOT/schema" render-preview >"$out" 2>&1
+    python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render/preview-cases.tsv" \
+      >>"$out" 2>&1 <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sc)
+names = {line.split("\t")[0] for line in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
+         if line and not line.startswith("#")}
+want = {f"rdfa-extra-{a}" for a in sc.RDFA_ATTRS} | {
+    f"pass-d7-{b}" for b in ("many", "once", "one-source", "sources")}
+gaps = sorted(want - names)
+if gaps or not sc.RDFA_ATTRS:
+    print(f"FAIL render-preview/coverage: no row {', '.join(gaps)}")
+else:
+    print(f"ok   render-preview/coverage ({len(sc.RDFA_ATTRS)} RDFa attributes, 4 D7 branches)")
+PY
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )render-preview/table' "$out" \
+        || ! grep -qE '^(ok   |FAIL )render-preview/coverage' "$out"; then
+      echo "FAIL render-preview: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
   if selftest_wants render-bidi; then
     # render-bidi/<row> (Replikanti/interviewscam#28): render rule 19 from
     # tests/fixtures/render/bidi-cases.tsv on a copy of
@@ -5802,6 +6051,32 @@ PINNED
     n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
     if ! grep -qE '^(ok   |FAIL )records-artifact/table' "$out"; then
       echo "FAIL records-artifact: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+  if selftest_wants records-meta; then
+    # records-meta/<row> (Replikanti/interviewscam#44 fix round 2): records
+    # rule R20 from tests/fixtures/records/meta-cases.tsv on a copy of
+    # records/pass-fixture-site (search_cases_runner with the records
+    # command), one row per pinned field and raw form, the PASS rows for the
+    # forms that stay escaped on the page and the fields no preview reads,
+    # then records-meta/coverage (meta_fields_coverage above).
+    search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/records/meta-cases.tsv" "$FIXTURES/records/pass-fixture-site" \
+      "$SELFTEST_ROOT/schema" records-meta records >"$out" 2>&1
+    meta_fields_coverage "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$SELFTEST_ROOT/layouts/_partials" >>"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )records-meta/coverage-fails-on-missing-member' "$out"; then
+      echo "FAIL records-meta: the coverage did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+    if ! grep -qE '^(ok   |FAIL )records-meta/table' "$out"; then
+      echo "FAIL records-meta: the runner did not finish; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi

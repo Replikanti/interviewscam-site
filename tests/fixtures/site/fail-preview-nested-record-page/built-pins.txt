@@ -1,0 +1,7 @@
+This case runs site rule (o) with the built pins (selftest.sh leaves out
+--no-built-pins when a site case has this file). It is
+site/pass-preview-record-pages plus a copy of the persona's report page one
+directory deeper, at /reports/persona-1/extra/ (its canonical and og:url
+moved there): a page under a record directory that is not the record's own
+page, so rule (o6) holds its og:description to its meta description
+(Replikanti/interviewscam#44 fix round 1, QA's o6-record-regex-nested).

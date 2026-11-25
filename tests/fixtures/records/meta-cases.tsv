@@ -1,0 +1,27 @@
+# records rule R20 (Replikanti/interviewscam#44 fix round 2, review run 2
+# finding 1; fix round 3, review run 3 finding A; ADR-0009 part 3): no
+# front-matter string that reaches a link preview attribute
+# (PREVIEW_META_FIELDS: a record's params.name and params.summary, an
+# _index.md's description) holds "<meta" in any case (PREVIEW_RAW_META, the
+# pattern of site rule (o8)), because the pinned minifier writes its "<" raw
+# into the link preview attributes. On a copy of records/pass-fixture-site
+# (search_cases_runner with the records command). Columns: name, file,
+# find, replace, expect. Every find string occurs exactly once in its file.
+# One FAIL row per pinned field (a report and a campaign summary, a name,
+# an _index.md description) and per form the minifier keeps raw (<meta>,
+# <META ...>, <metadata>, <Meta>), the PASS rows for the forms that stay
+# escaped on the page (an entity, a space after <), and the PASS rows of
+# the fields no preview reads, which render as element text with the "<"
+# escaped: review run 3's evidence sender line, state_basis item and quoted
+# source title, a hidden persona's name and an _index.md title.
+fail-report-summary	content/reports/example-abused-company.md	on a fake meeting site."	on a fake meeting site that adds a <meta> refresh tag."	params.summary: holds '<meta'
+fail-campaign-summary-upper	content/campaigns/example-campaign-family.md	packages and terminal commands."	packages and terminal commands with a <META charset> tag."	params.summary: holds '<META'
+fail-name-prefix-of-metadata	content/reports/example-abused-company.md	name = "Example Abused Company"	name = "Example <metadata> Company"	params.name: holds '<meta'
+fail-index-description	content/reports/_index.md	with its state and its artifacts."	with its state and its <Meta> artifacts."	description: holds '<Meta'
+pass-entity	content/reports/example-abused-company.md	on a fake meeting site."	on a fake meeting site that adds a &lt;meta refresh tag."	PASS
+pass-space-after-lt	content/reports/example-abused-company.md	on a fake meeting site."	on a fake meeting site that adds a < meta refresh tag."	PASS
+pass-evidence-sender-line	content/reports/example-abused-company.md	which matches the cited vendor analysis."	which matches the cited vendor analysis. The mail came from Hiring Team <metacareers[@]abused-hiring[.]example>."	PASS
+pass-state-basis-item	content/reports/example-abused-company.md	did not send these messages."	did not send these messages from <meta-hr[@]abused-hiring[.]example>."	PASS
+pass-source-title-quotes-tag	content/reports/example-abused-company.md	title = "Fake meeting apps that target job seekers"	title = "Fake meeting apps that use <meta> refresh redirects"	PASS
+pass-hidden-persona-name	content/reports/persona-2.md	name = "Morgan Placeholder"	name = "Morgan <meta> Placeholder"	PASS
+pass-index-title	content/reports/_index.md	title = "Names used in fake job interviews"	title = "Names used in fake <meta> job interviews"	PASS

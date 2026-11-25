@@ -1,0 +1,7 @@
+This case runs the built pins of site rules (j), (l) and (m) and site rule
+(o) in full: selftest.sh leaves out --no-built-pins when a site case has
+this file. Its two pages are a report page and a campaign page of the
+fixture build (public-fixtures/), copied as built with the built
+stylesheet and copy script (Replikanti/interviewscam#44): a record's own
+page, whose og:description rule (o6) leaves to render rule 21. Copy them
+again after a change of a record template or of the head.

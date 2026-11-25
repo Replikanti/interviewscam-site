@@ -17,8 +17,8 @@ internal error, so a crash never reads as a finding or as a pass.
       R19 of ADR-0004 (slugs, persona names, references, dates, evidence,
       hostnames and IP forms in record text, _index.md, verdict phrases,
       source hosts, bidi controls, labelled artifacts, names with text,
-      artifact whitespace),
-      with the retired slugs of
+      artifact whitespace) and R20 of ADR-0009 (no raw "<meta" in a
+      field a link preview reads), with the retired slugs of
       DIR/record-policy.json.
   site --records DIR [--schemas DIR] PUBLIC
       The built site in PUBLIC makes no third-party request (D9). Every page
@@ -1106,6 +1106,60 @@ def bidi_problems(record):
     return problems
 
 
+# R20's fields (Replikanti/interviewscam#44 fix round 3, review run 3
+# finding A): the front-matter strings whose value reaches a link preview
+# attribute, read from layouts/_partials/preview-meta.html and the partials
+# it calls (record-title.html, record-name.html, report-label.html,
+# label.html), with the preview keys each one feeds. On a record page the
+# title is record-title.html over params.name (record-name.html), except for
+# a persona with hide_name, whose title is title.hidden and whose name no
+# template reads; the description is the record's facts and params.summary.
+# On an _index.md page the description is its description; its title never
+# reaches a preview, because the only section pages are the home page
+# (home.title) and the record sections (title.<section>), both from
+# labels.toml. Every other value those partials read is a labels.toml key
+# (state), a condition (name_type, hide_name), a date through time.Format
+# (first_seen, last_seen, last_reviewed), a count (independent_reports,
+# sources) or a page field that is no front-matter string (Kind, Section,
+# Permalink); records-meta/coverage in tools/selftest.sh maps every field
+# reference in those partials to this table or to that list.
+PREVIEW_DESCRIPTION_KEYS = "og:description and twitter:description"
+PREVIEW_META_FIELDS = {
+    "record": {"params.name": "og:title and twitter:title",
+               "params.summary": PREVIEW_DESCRIPTION_KEYS},
+    "index": {"description": PREVIEW_DESCRIPTION_KEYS},
+}
+
+
+def raw_meta_problems(record, kind="record"):
+    """R20 (Replikanti/interviewscam#44 fix round 2, review run 2 finding 1;
+    fix round 3, review run 3 finding A; ADR-0009 part 3): no front-matter
+    string that reaches a link preview attribute (PREVIEW_META_FIELDS of
+    kind, record or index) holds "<meta" in any case (PREVIEW_RAW_META, the
+    pattern of site rule (o8)). The pinned minifier writes the "<" of an
+    attribute value raw, where a scraper that reads the page with a regular
+    expression takes "<meta" for a tag, so site rule (o8) would fail the
+    built page. The other strings render as element text, where the build
+    escapes the "<" (a "Name <address>" sender line, a source title that
+    quotes a tag), so they pass; (o8) stays the backstop if a template moves
+    one of them into the head. A hidden persona's name reaches no page.
+    Read as written, because an entity such as &lt;meta stays escaped."""
+    problems = []
+    for path, keys in PREVIEW_META_FIELDS[kind].items():
+        if path == "params.name" and is_hidden(record):
+            continue
+        value = record.data
+        for part in path.split("."):
+            value = value.get(part) if isinstance(value, dict) else None
+        match = PREVIEW_RAW_META.search(value) if isinstance(value, str) else None
+        if match:
+            problems.append(f"{path}: holds {show(match.group())}, and this field reaches "
+                            f"{keys}, whose attribute the build writes with the '<' raw, where "
+                            "a scraper takes it for a tag (site rule (o8) would fail the "
+                            "page): write it in words, such as 'a meta refresh tag' (R20)")
+    return problems
+
+
 def record_text(record):
     """(path, string) of every front-matter string that is record text (R11):
     neither an x-defang field nor params.sources[].url."""
@@ -1619,7 +1673,7 @@ def cmd_records(args):
     for record in records:
         for problem in body_problems(record) + front_matter_problems(record):
             findings.add(record.rel, problem)
-        for problem in bidi_problems(record):
+        for problem in bidi_problems(record) + raw_meta_problems(record):
             findings.add(record.rel, problem)
     forms = live_forms(records)
     for live, origin, path, value in forms:
@@ -1652,7 +1706,8 @@ def cmd_records(args):
     for record, problem in persona_problems(records) + source_problems(records):
         findings.add(record.rel, problem)
     for page in index_pages:
-        for problem in index_problems(page) + bidi_problems(page):
+        for problem in (index_problems(page) + bidi_problems(page)
+                        + raw_meta_problems(page, "index")):
             findings.add(page.rel, problem)
     n_reports = sum(r.section == "reports" for r in records)
     n_artifacts = sum(len(declared_artifacts(r)) for r in records)
@@ -2269,6 +2324,11 @@ HIDDEN_RULE_NAMES = " and ".join(f"the {sel} rule" for sel in HIDDEN_RULES)
 # link titles, footnotes and task lists. The hidden attribute and the class
 # visually-hidden are in no set: visibility_problems allows them only at
 # their pinned placements (P1 to P4), and <title> only in <head> (P10).
+# One closed exception (Replikanti/interviewscam#44, ADR-0009 part 2): the
+# attribute property passes on a <meta> exactly where render rule 8's one
+# RDFa exception lets it stand (preview_property: a direct child of <head>,
+# exactly property and content, a key of PREVIEW_PROPERTIES), and nowhere
+# else; it is in no set below.
 VISIBLE_ELEMENTS = {tag: frozenset(names.split()) for tag, names in {
     "a": "aria-current class href",
     "blockquote": "",
@@ -3019,6 +3079,9 @@ def cmd_site(args):
                 # (m) the head by position (M4 PR 3 fix round 7).
                 for problem in head_problems(text, rel, not args.no_built_pins):
                     findings.add(rel, problem)
+                # (o) the link preview metadata (Replikanti/interviewscam#44).
+                for problem in preview_problems(text, rel, not args.no_built_pins):
+                    findings.add(rel, problem)
                 # (k) per page (M3 PR 10): the stylesheets every page applies.
                 stylesheets[rel], problems = stylesheet_links(page, css_files)
                 for problem in problems:
@@ -3297,6 +3360,17 @@ LABEL_REPORTED = "Reported {n} times, evidence reviewed on {date}"
 LABEL_REPORTED_ONCE = "Reported once, evidence reviewed on {date}"
 LABEL_ONE_SOURCE = "Named in 1 cited source, reviewed on {date}"
 LABEL_SOURCES = "Named in {k} cited sources, reviewed on {date}"
+# Render rule 21 (Replikanti/interviewscam#44, ADR-0009 part 1): the link
+# preview description of a record's own page states its facts, then its
+# summary: a report's D6 state chip and D7 label (preview.report_description,
+# operator decision 5 at STOP 1), a campaign's dates (preview.description
+# over preview.campaign_fact). The facts list's two date terms, which the
+# campaign fact repeats.
+PREVIEW_REPORT_DESCRIPTION = "{chip}. {label}. {summary}"
+PREVIEW_DESCRIPTION = "{fact}. {summary}"
+PREVIEW_CAMPAIGN_FACT = "First seen {first}, last seen {last}"
+FACT_FIRST_SEEN = "First seen"
+FACT_LAST_SEEN = "Last seen"
 CAMPAIGN_LINE = "Campaign family that used this name: {campaign}. Source: {source}"
 CAMPAIGN_LINE_ARTIFACT = ", which lists {artifact}"
 UNATTRIBUTED = "Campaign family: unattributed"
@@ -3337,9 +3411,15 @@ JSONLD_OBJECT_KEYS = {"@context", "@id", *JSONLD_TYPE_KEYS}
 REPORT_PAGE_URL = re.compile(re.escape(SITE_ORIGIN) + r"/reports/[^/]+/")
 JSONLD_GRAPH_KEYS = {"@context", "@graph"}
 MICRODATA_ATTRS = ("itemscope", "itemtype", "itemprop", "vocab", "typeof")
-# RDFa: a second structured-data syntax, banned outright (ADR-0004 part 8).
-# The base layout uses none of them (no Open Graph <meta property>), so no
-# exception exists. A rel token with a colon is an RDFa CURIE.
+# RDFa: a second structured-data syntax, banned (ADR-0004 part 8). One
+# closed exception (ADR-0009 part 2, Replikanti/interviewscam#44): the Open
+# Graph <meta property> of the link preview, which describes the page as a
+# link (og:type website), never a record's subject, so it is no structured
+# data in the sense of SPEC section 5. property passes only on a <meta>
+# that is a direct child of <head>, carries exactly property and content,
+# and names a key of PREVIEW_PROPERTIES (preview_property); every other use
+# of these attributes stays a finding. A rel token with a colon is an RDFa
+# CURIE.
 RDFA_ATTRS = ("property", "resource", "prefix", "about", "datatype", "inlist")
 VOID_ELEMENTS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link",
                  "meta", "param", "source", "track", "wbr"}
@@ -3475,7 +3555,14 @@ SPAN_FORGERY = str.maketrans({SPAN_OPEN: "\ufffd", SPAN_CLOSE: "\ufffd"})
 
 
 class Element:
-    """One element of a built page: tag, attributes, children (Element or str)."""
+    """One element of a built page: tag, attributes, children (Element or str).
+    An element the parser read from the page also has its source position
+    (pos: line, column), its raw start tag (start_tag) and the attribute
+    names its start tag repeats (repeated; attrs keeps the first value, as
+    the HTML parser does), which site rule (o8) reads."""
+    pos = None
+    start_tag = None
+    repeated = ()
 
     def __init__(self, tag, attrs, parent):
         self.tag = tag
@@ -3730,10 +3817,14 @@ class RenderPage(Page):
         return bool(self.unclosed or self.markup)
 
     def _tree_element(self, tag, attrs):
-        first = {}
+        first, repeated = {}, []
         for name, value in attrs:
+            if name in first and name not in repeated:
+                repeated.append(name)
             first.setdefault(name, value if value is not None else "")
         el = Element(tag, first, self._open[-1])
+        el.pos, el.start_tag, el.repeated = self.getpos(), self.get_starttag_text(), \
+            tuple(repeated)
         self._open[-1].children.append(el)
         return el
 
@@ -5403,17 +5494,20 @@ def page_texts(page, spans=frozenset()):
         page_value_texts(page)
 
 
-def page_value_texts(page):
+def page_value_texts(page, skip=frozenset()):
     """The texts of page_texts that are not the joined page text: each
     JSON-LD string and every attribute value, as written and
     percent-decoded. Rule 17 reads the joined text itself, through
-    Element.bidi_text."""
+    Element.bidi_text. skip: elements whose content attribute is left out
+    (rule 4's link preview titles, preview_title_exemption)."""
     texts = []
     for _, value, _ in jsonld_values(page):
         if value is not None:
             texts += list(json_strings(value))
     for el in page.root.walk():
-        for value in el.attrs.values():
+        for name, value in el.attrs.items():
+            if name == "content" and el in skip:
+                continue
             texts += [value, urllib.parse.unquote(value)]
     return texts
 
@@ -5436,6 +5530,22 @@ def hidden_texts(page, bidi=False):
               if el.tag == "details" and "open" not in el.attrs and not el.concealed()
               for sep in ("", " ")]
     return texts
+
+
+def preview_title_exemption(page, record):
+    """Rule 4 on a visible persona's own page (ADR-0009 part 3,
+    Replikanti/interviewscam#44): the content of the single og:title
+    <meta property> and of the single twitter:title <meta name>, each when
+    it reads exactly the label-first head form, as the document <title>
+    does (head_exemption): a link card cuts a long title as a search result
+    does. Any other copy of the form, and every other value, stays in the
+    scan."""
+    exempt = set()
+    for attr, key in (("property", "og:title"), ("name", "twitter:title")):
+        metas = [el for el in by_tag(page, "meta") if el.attrs.get(attr) == key]
+        if len(metas) == 1 and metas[0].attrs.get("content") == head_title(record):
+            exempt.add(metas[0])
+    return exempt
 
 
 def head_exemption(page, record):
@@ -5670,13 +5780,13 @@ class NameTexts:
     texts keep the elements in spans between SPAN_OPEN and SPAN_CLOSE;
     get() flags them, because only they take the span exemption."""
 
-    def __init__(self, page, spans=frozenset()):
+    def __init__(self, page, spans=frozenset(), skip=frozenset()):
         root = page.root
         stored = [root.text(spans=spans), root.text(" ", spans=spans),
                   root.bidi_text(spans=spans), root.text(shown=False, spans=spans),
                   root.text(" ", shown=False, spans=spans),
                   root.bidi_text(shown=False, spans=spans)]
-        values = list(dict.fromkeys(page_value_texts(page)))
+        values = list(dict.fromkeys(page_value_texts(page, skip)))
         self.joined = len(stored)
         self.texts = stored + values
         self.drawn = [visual_spans(t) if i in (2, 5) else t for i, t in enumerate(stored)] + \
@@ -5697,7 +5807,9 @@ def persona_label_problems(page, personas, own=None):
     content, where a label does not count. own is the record whose own page
     this is (own_record): for that persona's names alone a match that lies
     wholly inside the label-first <title> or one own-artifact box is
-    exempt; a match that runs across a box's edge is not. Each check runs
+    exempt, and so is the label-first content of its single og:title and
+    twitter:title meta (preview_title_exemption); a match that runs across
+    a box's edge is not. Each check runs
     under every reading of NAME_READINGS in turn (NameTexts), and the first
     reading that flags a field reports it, with its reading_note."""
     problems = []
@@ -5711,8 +5823,9 @@ def persona_label_problems(page, personas, own=None):
     own_texts = texts
     if own is not None and any(own is p for p in personas):
         spans = frozenset(head_exemption(page, own) | own_artifact_boxes(page, own))
-        if spans:
-            own_texts = NameTexts(page, spans)
+        skip = frozenset(preview_title_exemption(page, own))
+        if spans or skip:
+            own_texts = NameTexts(page, spans, skip)
     hidden = {}
 
     def hidden_at(reading):
@@ -5771,6 +5884,82 @@ def verdict_page_problems(page):
              for m in VERDICT_PHRASE.finditer(fold_words(text))}
     return [f"rule 5: the page contains the verdict phrase {phrase!r}; labels state "
             "facts, never a verdict (D7, R14)" for phrase in sorted(found)]
+
+
+def preview_meta_content(page, attr, key):
+    """The content of the single <meta attr=key>, or None when the page
+    holds none or more than one (site rule (o1) names that)."""
+    metas = [el for el in by_tag(page, "meta") if el.attrs.get(attr) == key]
+    return metas[0].attrs.get("content") if len(metas) == 1 else None
+
+
+def page_facts(page):
+    """{term: value} of the visible facts list (dl.facts) of a record page:
+    each <dt> text and the text of the <dd> after it. A <dt> in a hidden list
+    is concealed through its ancestor, so the <dt> check alone skips it (fix
+    round 1: a check on the list too could be dropped unseen)."""
+    facts = {}
+    for dl in by_class(page, "facts"):
+        if dl.tag != "dl":
+            continue
+        for el in dl.walk():
+            if el.tag != "dt" or el.concealed():
+                continue
+            kids = [c for c in el.parent.children if isinstance(c, Element)]
+            i = kids.index(el)
+            if i + 1 < len(kids) and kids[i + 1].tag == "dd":
+                facts.setdefault(el.text(), kids[i + 1].text())
+    return facts
+
+
+def preview_record_problems(page, record, chips):
+    """Rule 21 (Replikanti/interviewscam#44, ADR-0009 part 3) on a record's
+    own page: og:title is the <title> form of the record (head_title, so the
+    label first for a visible persona), and og:description states the
+    record's facts and then its summary. A report's is
+    PREVIEW_REPORT_DESCRIPTION over its state chip, which equals the page's
+    own state chip (chips: the page's chips outside report list items), its
+    D7 label, which equals the page's record-label element, and its
+    summary; a campaign's is PREVIEW_DESCRIPTION over PREVIEW_CAMPAIGN_FACT
+    (first_seen and last_seen, which equal the page's First seen and Last
+    seen facts) and its summary."""
+    problems = []
+    title = preview_meta_content(page, "property", "og:title")
+    want = head_title(record)
+    if title is not None and title != want:
+        problems.append(f"rule 21: og:title reads {show(title)}; on the record's own page it "
+                        f"is the <title> form {show(want)} (ADR-0009 part 1)")
+    summary = text_param(record, "summary")
+    want = None
+    if record.section == "reports":
+        label = record_label(record)
+        el, _ = one_of_class(page, "record-label", "rule 21")
+        if label is not None and el is not None and el.text() != label:
+            problems.append(f"rule 21: the D7 label of og:description, {show(label)}, is not "
+                            f"the page's record-label {show(el.text())}")
+        chip = STATE_CHIP.get(record.params.get("state"))
+        shown, _ = shown_one(chips, "state-chip", "rule 21")
+        if chip is not None and shown is not None and shown.text() != chip:
+            problems.append(f"rule 21: the state chip of og:description, {show(chip)}, is not "
+                            f"the page's state chip {show(shown.text())} (D6)")
+        if chip is not None and label is not None and summary is not None:
+            want = PREVIEW_REPORT_DESCRIPTION.format(chip=chip, label=label, summary=summary)
+    else:
+        first, last = text_param(record, "first_seen"), text_param(record, "last_seen")
+        facts = page_facts(page)
+        for term, value in ((FACT_FIRST_SEEN, first), (FACT_LAST_SEEN, last)):
+            if value is not None and facts.get(term) != value:
+                problems.append(f"rule 21: the page's {term} fact reads "
+                                f"{show(facts.get(term))}, not the {show(value)} that "
+                                "og:description states")
+        if first is not None and last is not None and summary is not None:
+            want = PREVIEW_DESCRIPTION.format(
+                fact=PREVIEW_CAMPAIGN_FACT.format(first=first, last=last), summary=summary)
+    description = preview_meta_content(page, "property", "og:description")
+    if want is not None and description is not None and squash(description) != squash(want):
+        problems.append(f"rule 21: og:description reads {show(description)}; on the "
+                        f"record's own page it is {show(want)} (ADR-0009 part 1)")
+    return problems
 
 
 def label_problems(page, record):
@@ -6071,6 +6260,19 @@ def jsonld_type_problems(value, where, page_url, root=True, record=None):
     return problems
 
 
+def preview_property(el, attr):
+    """Rule 8's one RDFa exception (see RDFA_ATTRS): attr is the property
+    of an Open Graph link preview meta in its place, a child of the <head>
+    of the root <html> (review run 2 finding 3: not of an <html> nested in
+    the body, which a browser drops while the meta stays in the body)."""
+    head = el.parent
+    return (attr == "property" and el.tag == "meta" and head is not None
+            and head.tag == "head" and head.parent is not None and head.parent.tag == "html"
+            and head.parent.parent is not None and head.parent.parent.tag == "#document"
+            and set(el.attrs) == {"property", "content"}
+            and el.attrs["property"] in PREVIEW_PROPERTIES)
+
+
 def structured_data_problems(page, page_url, record=None):
     """Rule 8 on one page: JSON-LD parses without duplicate keys and uses
     only the allowed types and keys, and a WebPage's dates are those of
@@ -6087,7 +6289,8 @@ def structured_data_problems(page, page_url, record=None):
         problems += jsonld_type_problems(value, f"JSON-LD block {i + 1}", page_url,
                                          record=record)
     names = sorted({a for n in page.root.walk() for a in n.attrs
-                    if a in MICRODATA_ATTRS or a in RDFA_ATTRS})
+                    if (a in MICRODATA_ATTRS or a in RDFA_ATTRS)
+                    and not preview_property(n, a)})
     for name in names:
         problems.append(f"rule 8: the attribute {name} is microdata or RDFa; structured "
                         "data is JSON-LD only (ADR-0004 part 8)")
@@ -6400,7 +6603,8 @@ def visibility_problems(page, counts=None):
     """Rule 20 on one HTML page (Replikanti/interviewscam#51, ADR-0004 part
     14): every element outside <svg> and <math> (foreign_markup_problems
     pins or refuses those) is in VISIBLE_ELEMENTS and carries only its
-    attributes; hidden only at a placement of hidden_placement (P1 to P3)
+    attributes (and property only on a link preview <meta>, preview_property);
+    hidden only at a placement of hidden_placement (P1 to P3)
     and the class visually-hidden only on the skip link (P4, is_skip_link);
     <title> only right inside <head> (P10); and (PR 2) the values of the
     text-bearing attributes it admits and the Copy buttons as pinned
@@ -6425,7 +6629,7 @@ def visibility_problems(page, counts=None):
             note(f"<{el.tag}>", VISIBILITY_WHY)
             continue
         for name in el.attrs:
-            if name != "hidden" and name not in allowed:
+            if name != "hidden" and name not in allowed and not preview_property(el, name):
                 note(f"the attribute {name} on <{el.tag}>", VISIBILITY_WHY)
         if "hidden" in el.attrs:
             place = hidden_placement(el)
@@ -7990,6 +8194,10 @@ def cmd_render(args):
                     problems += attribution_problems(page, record)
                 problems += sources_list_problems(page, record)
                 problems += external_link_problems(page, record)
+                # Rule 21 with the real-build pins: the hand-made render
+                # fixtures' record pages predate the link preview metadata.
+                if own is record and not args.no_report_pins:
+                    problems += preview_record_problems(page, record, chips)
             elif section is not None:
                 problems += title_problems(page, SECTION_TITLES[section])
                 problems += verdict_page_problems(page)
@@ -8406,9 +8614,16 @@ LITERALS_TEXT_CONTENT_KEYS = {"property", "itemprop"}
 # round 1, review 1): exactly the names today's baseof.html uses for browser
 # settings, and the CSP http-equiv. Any other meta content (twitter:title,
 # og:title given as name=, application-name, refresh) is a visible
-# attribute for L2 and the print sinks, and so is a meta with property or
-# itemprop, or with both a name and an http-equiv.
-LITERALS_META_PLAIN_NAMES = frozenset({"viewport", "color-scheme", "theme-color"})
+# attribute for L2 and the print sinks, and so is a meta with itemprop, or
+# with two of name, property and http-equiv. Replikanti/interviewscam#44
+# (ADR-0009 part 3) adds the two link preview keys whose content no card
+# shows: twitter:card (a card type token) as a name, og:type (a type
+# token) and og:url (the page's own URL) as a property, exactly as written;
+# every other property meta (og:title, og:description) keeps visible
+# content.
+LITERALS_META_PLAIN_NAMES = frozenset({"viewport", "color-scheme", "theme-color",
+                                       "twitter:card"})
+LITERALS_META_PLAIN_PROPERTIES = frozenset({"og:type", "og:url"})
 LITERALS_META_PLAIN_HTTP_EQUIV = frozenset({"content-security-policy"})
 # Attributes whose value assets/js/copy.js writes into the page as text
 # (the two statuses of a Copy button): a visible attribute for L2 and for
@@ -8426,10 +8641,12 @@ LITERALS_SCRIPT_TEXT_ATTRS = frozenset({"data-copy-done", "data-copy-failed"})
 # references), enctype (a MIME type) and maxlength (a number): none of them
 # is shown or read out as text (a screen reader reads the element an
 # aria-describedby names, whose own text the other rules check).
+# Replikanti/interviewscam#44 adds property (a link preview key, never
+# shown; the content it names keeps its own rule, meta_content_plain).
 LITERALS_PLAIN_ATTRS = frozenset("""
 accept action aria-current aria-describedby aria-hidden aria-labelledby aria-live
 autocomplete charset class cx cy d datetime enctype fill for height href http-equiv id
-integrity lang maxlength method name r rel role rx spellcheck src stroke stroke-linecap
+integrity lang maxlength method name property r rel role rx spellcheck src stroke stroke-linecap
 stroke-linejoin stroke-width tabindex type viewbox width xmlns
 """.split())
 # The attribute values a path piped into relURL or absURL may fill (A1).
@@ -8751,7 +8968,7 @@ LITERALS_PASSING_SETS = (
     "LITERALS_DATE_LAYOUTS", "LITERALS_CONTEXT_PARTIALS", "LITERALS_PRINTF_VERBS", "LITERALS_KEY_OPERANDS",
     "LITERALS_RESOURCE_KEYS", "LITERALS_LABEL_ASSIGNS", "LITERALS_PASSING_SETS",
     "LITERALS_PRINT_SOURCES", "LITERALS_META_PLAIN_NAMES", "LITERALS_META_PLAIN_HTTP_EQUIV",
-    "LITERALS_SCRIPT_PATTERNS",
+    "LITERALS_SCRIPT_PATTERNS", "LITERALS_META_PLAIN_PROPERTIES",
 )
 # The allowlists whose contents the self-test pins entry by entry in
 # tests/fixtures/literals/allowlists.tsv (review3 A3): every passing set of
@@ -9582,19 +9799,23 @@ def copy_source_problems(rel, tokens, literals, css=False):
 
 def meta_content_plain(tag, first):
     """The content attribute of this start tag (first: name -> its first
-    value) is a meta's browser setting, never shown: the meta has no
-    property or itemprop, and either a name on LITERALS_META_PLAIN_NAMES and
-    no http-equiv, or an http-equiv on LITERALS_META_PLAIN_HTTP_EQUIV and no
-    name (ASCII case-insensitive and untrimmed, as browsers match them;
-    Replikanti/interviewscam#32)."""
-    if tag != "meta" or any(key in first for key in LITERALS_TEXT_CONTENT_KEYS):
+    value) is never shown: a meta with no itemprop and exactly one of name,
+    property and http-equiv, where a name is on LITERALS_META_PLAIN_NAMES or
+    an http-equiv on LITERALS_META_PLAIN_HTTP_EQUIV (ASCII case-insensitive
+    and untrimmed, as browsers match them; Replikanti/interviewscam#32), or
+    a property is on LITERALS_META_PLAIN_PROPERTIES exactly as written
+    (Replikanti/interviewscam#44: card scrapers read the Open Graph keys
+    case-sensitively, so another spelling fails closed)."""
+    if tag != "meta" or "itemprop" in first:
         return False
-    name, equiv = first.get("name"), first.get("http-equiv")
-    if name is not None and equiv is None:
+    name, prop, equiv = first.get("name"), first.get("property"), first.get("http-equiv")
+    if sum(v is not None for v in (name, prop, equiv)) != 1:
+        return False
+    if name is not None:
         return ascii_lower(name) in LITERALS_META_PLAIN_NAMES
-    if equiv is not None and name is None:
-        return ascii_lower(equiv) in LITERALS_META_PLAIN_HTTP_EQUIV
-    return False
+    if prop is not None:
+        return prop in LITERALS_META_PLAIN_PROPERTIES
+    return ascii_lower(equiv) in LITERALS_META_PLAIN_HTTP_EQUIV
 
 
 def ascii_lower(text):
@@ -11959,6 +12180,26 @@ HEAD_PREFIX = [
     ("title", {}),
 ]
 HEAD_CANONICAL = ("link", {"rel": "canonical", "href": None})
+# Site rule (o), the link preview metadata (Replikanti/interviewscam#44,
+# ADR-0009 part 1): preview-meta.html prints these keys right after the
+# canonical link on every page but the 404, in this order, Open Graph as
+# <meta property>, Twitter cards as <meta name>, each with its content.
+# The four sets below partition PREVIEW_KEYS by how rule (o) checks the
+# value (site-preview/coverage proves it): the fixed values, the one URL,
+# and the text a link card shows.
+PREVIEW_KEYS = {
+    "og:type": "property", "og:site_name": "property", "og:title": "property",
+    "og:description": "property", "og:url": "property", "twitter:card": "name",
+    "twitter:title": "name", "twitter:description": "name",
+}
+PREVIEW_FIXED = {"og:type": "website", "twitter:card": "summary"}
+PREVIEW_URL_KEYS = frozenset({"og:url"})
+PREVIEW_TEXT_KEYS = frozenset({"og:site_name", "og:title", "og:description", "twitter:title",
+                               "twitter:description"})
+# Render rule 8's one RDFa exception (ADR-0009 part 2): the Open Graph keys.
+PREVIEW_PROPERTIES = frozenset(k for k, attr in PREVIEW_KEYS.items() if attr == "property")
+PREVIEW_HEAD = [("meta", {attr: key, "content": PREVIEW_FIXED.get(key)})
+                for key, attr in PREVIEW_KEYS.items()]
 HEAD_SUFFIX = [
     ("meta", {"name": "theme-color", "content": None}),
     ("link", {"rel": "icon", "href": None, "type": "image/svg+xml"}),
@@ -11987,6 +12228,7 @@ def head_spec(rel):
     spec = list(HEAD_PREFIX)
     if rel != NOT_FOUND_REL:
         spec.append(HEAD_CANONICAL)
+        spec += PREVIEW_HEAD
     spec += HEAD_SUFFIX
     kind = SCRIPTS_BY_PAGE_KIND["home" if rel == "public/index.html" else "other"]
     spec += [HEAD_SCRIPT] * len(kind)
@@ -12193,6 +12435,217 @@ def head_problems(text, rel, built):
                         f"; baseof.html emits exactly {shown(want)} for this page, in this "
                         "order (values shown are pinned here, the others by their own rule)")
     return problems
+
+
+# Site rule (o), the link preview metadata (Replikanti/interviewscam#44,
+# ADR-0009 part 3). A link card is drawn by a chat app or a social network
+# from these tags alone, without the page, so their values are held to the
+# page they describe (o2 to o6), keep no live link (o7, D8), and every key
+# a scraper would read is one the parsed tree reads too (o1, o8).
+# (o1) the attributes a key look-alike can sit on, and the prefixes that
+# make one: a scraper reads property and name, microdata readers itemprop.
+PREVIEW_KEY_ATTRS = ("property", "name", "itemprop")
+PREVIEW_KEY_PREFIXES = ("og:", "twitter:")
+# (o3, o7) the one URL form: the site's own origin, then a path and
+# nothing else (no query, fragment, backslash or whitespace).
+PREVIEW_URL = re.compile(re.escape(SITE_ORIGIN) + r"/[^?#\\\s]*")
+# (o7) a protocol-relative URL (//host at the start of a value or after a
+# space, a quote or an opening bracket; the // of a defanged hxxps:// is
+# no match) and any RFC 3986 scheme token (review run 1 finding 3): a run
+# ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) that starts the value or
+# follows a character that is no ASCII letter or digit, then ":" and a
+# character that is not whitespace, in any case, unless the run is the
+# defanged hxxp or hxxps. A run may start right after "+", "-" or "."
+# (review run 2 finding 2: "-tel:", ".sms:"), because a card app may start
+# a link after any punctuation. A messaging app may linkify its own scheme (tg:, tel:, sms:,
+# skype:, intent:, magnet:, ipfs:, ...), so no list of schemes is closed.
+# Prose stays text: "Note: x" has a space after the colon, "10:30" starts
+# with a digit, and in "2026-11-02T10:30" the run T10 follows a digit, so
+# it is no token start. A colon right after a word ("Re:x", a defanged
+# host with a port, "evil[.]example:8080") is a finding: write it with a
+# space or without the port. One exception (fix round 3, review run 3
+# finding B): a run that is exactly UTC or GMT, then "+" or "-", one or two
+# digits, the colon and exactly two digits, followed by the end of the
+# value, whitespace or one of ")", ",", "." and ";" (PREVIEW_TZ_OFFSET), is
+# a time-zone offset of prose ("15:00 (UTC+01:00)", "GMT+1:00",
+# "UTC-05:30"), not a scheme; "utc+01:x", "UTC01:00", "UTC+100:00",
+# "UTC+01:0", "UTC+01:00x" and "est+05:00" stay findings.
+PREVIEW_PROTOCOL_RELATIVE = re.compile(r"(?:^|(?<=[\s\"'(<\[]))//(?=[^\s/])")
+PREVIEW_SCHEME = re.compile(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9+.-]*):(?=\S)")
+PREVIEW_DEFANGED_SCHEMES = frozenset({"hxxp", "hxxps"})
+PREVIEW_TZ_OFFSET = re.compile(r"(?:utc|gmt)[+-][0-9]{1,2}:[0-9]{2}(?![^\s),.;])")
+# (o8) the scraper's view (review run 1 finding 2). A scraper that reads
+# the raw page with a regular expression takes every "<meta" for a tag, in
+# a comment, an attribute value or a script too, may read the attributes of
+# a tag in any order, and may keep the last of two equal attribute names
+# where the HTML parser keeps the first. So every "<meta", in any case,
+# starts a <meta> element the parser read at that same source position
+# (positions, not counts: a tag only the parser reads cannot offset one
+# only the scraper reads); each preview meta is exactly the start tag the
+# template and the pinned minifier write (preview_tag: the key attribute
+# first, then content, nothing else); and no element anywhere repeats an
+# attribute name.
+PREVIEW_RAW_META = re.compile(r"(?i)<meta")
+
+
+def preview_tag(attr, key):
+    """(o8) the start tag of the preview meta key on attr, as the template
+    writes it and the pinned minifier (hugo --minify) keeps it: lower case,
+    one space before each attribute, property="key" in double quotes, name=
+    bare or in double quotes (the minifier drops the quotes of name= and
+    keeps those of property=; the self-test's hand-made heads keep both),
+    content in double quotes, or in single quotes when the value holds a
+    double quote (the minifier then picks the quote that needs no escape),
+    and no slash."""
+    k = re.escape(key)
+    key_form = f'"{k}"' if attr == "property" else f'(?:"{k}"|{k})'
+    return re.compile(f'<meta {attr}={key_form} content=(?:"[^"]*"|\'[^\']*"[^\']*\')>')
+# (o6) a record's own page, whose og:description render rule 21 pins.
+PREVIEW_RECORD_PAGE = re.compile(r"public/(?:reports|campaigns)/[^/]+/index\.html")
+
+
+def preview_values(tree):
+    """(o1) on one parsed page: (key -> the content of each <meta> that
+    carries it on its own attribute, problems for every key look-alike)."""
+    found, problems = {key: [] for key in PREVIEW_KEYS}, []
+    for el in tree.root.walk():
+        if el.tag != "meta":
+            continue
+        for attr in PREVIEW_KEY_ATTRS:
+            value = el.attrs.get(attr)
+            if value is None:
+                continue
+            if value in PREVIEW_KEYS and PREVIEW_KEYS[value] == attr:
+                found[value].append(el.attrs.get("content"))
+            elif guard_fold(value).strip(ASCII_WHITESPACE).startswith(PREVIEW_KEY_PREFIXES):
+                problems.append(f"(o1) <meta {attr}={show(value, 60)}> looks like a link preview "
+                                "key but is none of PREVIEW_KEYS on its own attribute (Open "
+                                "Graph as property, Twitter cards as name, exact case, no "
+                                "padding or invisible character); a scraper may read it as one")
+    return found, problems
+
+
+def preview_text_problems(key, value):
+    """(o7) on the value of one key: no live link in any reading."""
+    problems = []
+    if key in PREVIEW_URL_KEYS:
+        if not PREVIEW_URL.fullmatch(value):
+            problems.append(f"(o7) {key} is {show(value)}, not {SITE_ORIGIN}/ followed by a "
+                            "path and nothing else")
+        return problems
+    for problem in record_text_problems(value):
+        problems.append(f"(o7) {key} holds {problem} (D8)")
+    for variant in rendered_variants(value):
+        if LIVE_SCHEME.search(variant):
+            problems.append(f"(o7) {key} holds a live URL (D8: write hxxps://)")
+        if PREVIEW_PROTOCOL_RELATIVE.search(variant):
+            problems.append(f"(o7) {key} holds a protocol-relative URL (//host; D8)")
+        # Every variant is case-folded (norm), so HXXPS reads as hxxps.
+        match = next((m for m in PREVIEW_SCHEME.finditer(variant)
+                      if m.group(1) not in PREVIEW_DEFANGED_SCHEMES
+                      and not PREVIEW_TZ_OFFSET.match(variant, m.start())), None)
+        if match:
+            problems.append(f"(o7) {key} holds the scheme {show(match.group())}, which a "
+                            "card app may turn into a link (D8: defang it as hxxps://, or "
+                            "write a space after the colon)")
+    return list(dict.fromkeys(problems))
+
+
+def preview_scraper_problems(text, tree):
+    """(o8) on one page (see PREVIEW_RAW_META): raw "<meta" that starts no
+    parsed <meta>, a preview meta not in its exact start-tag form, and any
+    element that repeats an attribute name."""
+    problems, starts, line_starts = [], set(), [0]
+    line_starts += [m.end() for m in re.finditer("\n", text)]
+    for el in tree.root.walk():
+        if el.pos is None:
+            continue
+        if el.tag == "meta":
+            starts.add(line_starts[el.pos[0] - 1] + el.pos[1])
+            for attr in ("property", "name"):
+                key = el.attrs.get(attr)
+                if key in PREVIEW_KEYS and PREVIEW_KEYS[key] == attr \
+                        and not preview_tag(attr, key).fullmatch(el.start_tag):
+                    problems.append(f"(o8) the start tag {show(el.start_tag, 120)} is not "
+                                    f"the exact form <meta {attr}={key} content=...> (the "
+                                    "key first, then content, nothing else); a scraper "
+                                    "may read another key or value than the parser")
+        for name in el.repeated:
+            problems.append(f"(o8) <{el.tag}> repeats the attribute {name}; the parser keeps "
+                            "the first value, a scraper may keep the last")
+    stray = [m.start() for m in PREVIEW_RAW_META.finditer(text) if m.start() not in starts]
+    if stray:
+        problems.append(f"(o8) the raw page holds {len(stray)} \"<meta\" that start(s) no "
+                        f"<meta> element the parser reads (first at offset {stray[0]}: "
+                        f"{show(text[stray[0]:stray[0] + 60], 80)}); in a comment, an "
+                        "attribute value or a script a scraper still takes it for a tag")
+    return list(dict.fromkeys(problems))
+
+
+def preview_problems(text, rel, built):
+    """Site rule (o) on one HTML page (see PREVIEW_KEYS). built: also the
+    presence and the values (o1 to o6), which the hand-made site fixtures
+    without the built pins do not carry; (o7), (o8) and the look-alikes of
+    (o1) read every page."""
+    tree = parse_render_page(text)
+    found, problems = preview_values(tree)
+    for key, values in found.items():
+        for value in values:
+            if value is not None:
+                problems += preview_text_problems(key, value)
+    problems += preview_scraper_problems(text, tree)
+    if not built:
+        return problems
+    if rel == NOT_FOUND_REL:
+        for key, values in found.items():
+            if values:
+                problems.append(f"(o1) 404.html holds {key}; it answers for every missing "
+                                "URL, so it has no link preview")
+        return problems
+    one = {}
+    for key, values in found.items():
+        if len(values) != 1:
+            problems.append(f"(o1) {len(values)} <meta {PREVIEW_KEYS[key]}={key}>, exactly one "
+                            "is needed (scrapers take the first or the last)")
+        elif values[0] is None:
+            problems.append(f"(o1) <meta {PREVIEW_KEYS[key]}={key}> has no content")
+        else:
+            one[key] = values[0]
+    for key, want in PREVIEW_FIXED.items():
+        if key in one and one[key] != want:
+            problems.append(f"(o2) {key} is {show(one[key])}, not {show(want)}")
+    page_url = SITE_ORIGIN + own_path(rel[len("public/"):])
+    if "og:url" in one and one["og:url"] != page_url:
+        problems.append(f"(o3) og:url is {show(one['og:url'])}, not this page's canonical URL "
+                        f"{show(page_url)}")
+    for twin, key in (("twitter:title", "og:title"),
+                      ("twitter:description", "og:description")):
+        if twin in one and key in one and one[twin] != one[key]:
+            problems.append(f"(o4) {twin} is {show(one[twin])}, not {key}'s "
+                            f"{show(one[key])}; both are the same whole string")
+    titles = document_titles(tree)
+    if "og:title" in one and len(titles) == 1:
+        title = titles[0].text()
+        if not title.endswith(TITLE_SUFFIX):
+            problems.append(f"(o5) the <title> {show(title)} does not end with "
+                            f"{show(TITLE_SUFFIX)}, so og:title has no page title to equal")
+        elif squash(one["og:title"]) != title[:-len(TITLE_SUFFIX)]:
+            problems.append(f"(o5) og:title is {show(one['og:title'])}, not the <title> without "
+                            f"{show(TITLE_SUFFIX)}, {show(title[:-len(TITLE_SUFFIX)])}")
+    site_name = TITLE_SUFFIX.removeprefix(" · ")
+    if "og:site_name" in one and one["og:site_name"] != site_name:
+        problems.append(f"(o5) og:site_name is {show(one['og:site_name'])}, not "
+                        f"{show(site_name)}")
+    descriptions = [el.attrs.get("content", "") for el in by_tag(tree, "meta")
+                    if el.attrs.get("name") == "description"]
+    if "og:description" in one and len(descriptions) == 1 \
+            and not PREVIEW_RECORD_PAGE.fullmatch(rel) \
+            and squash(one["og:description"]) != squash(descriptions[0]):
+        problems.append(f"(o6) og:description is {show(one['og:description'])}, not the meta "
+                        f"description {show(descriptions[0])}")
+    return problems
+
+
 BUILT_STYLESHEET_SHA256 = {
     "site": "f0029531c083fb96a2c5602c1b04f5996446d4e056f24a72b994edac6185a23c",
 }

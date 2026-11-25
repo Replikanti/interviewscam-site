@@ -344,7 +344,7 @@ Record pages carry a `WebPage` and a `BreadcrumbList`. Section pages carry a `Br
 
 **Weak point:** no rich result beyond breadcrumbs. Google wants markup to match visible content, so the breadcrumb is also visible.
 
-**Rejected:** `Article` (authored-news framing); `Dataset` for the feed (it wants a licence, and none is decided, see part 7); microdata or RDFa (a second syntax to check).
+**Rejected:** `Article` (authored-news framing); `Dataset` for the feed (it wants a licence, and none is decided, see part 7); microdata or RDFa (a second syntax to check). [ADR-0009](0009-link-preview-cards.md) part 2 adds one closed exception for the Open Graph `<meta property>` of the link preview, which describes the page as a link, not a record's subject.
 
 *Amended in M3 PR 6 (operator, #23 STOP 2 item 3): the dates are the record's own.* Render rule 8 reads the record whose own page this is (`public/<section>/<slug>/index.html`, whatever the page's markup, because JSON-LD does not depend on element nesting). On a record page every `WebPage` `datePublished` equals the record's `date`; on a report page `lastReviewed` equals `params.last_reviewed`. Both are string equality on `YYYY-MM-DD`. On any other page, a nested page under a record directory included, a `WebPage` with `datePublished` is a finding.
 

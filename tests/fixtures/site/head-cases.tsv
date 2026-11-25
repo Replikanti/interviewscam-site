@@ -40,7 +40,7 @@ pass-ascii-whitespace-in-head	public/index.html	<meta charset="utf-8">	<meta cha
 text-after-body	public/index.html	</body>	</body>.	(m) the text '[.]' after <body>
 nested-head-in-body	public/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><head><meta name="x" content="y"></head>	(m) <meta
 second-html-elements	public/index.html	</html>	</html><html></html>	(m) <meta
-tag-swapped-same-attributes	public/index.html	<title>fixture</title>	<noscript></noscript>	(m) the head holds
+tag-swapped-same-attributes	public/index.html	<title>fixture · interviewscam.com</title>	<noscript></noscript>	(m) the head holds
 attribute-missing-any-value	public/index.html	<meta name="description" content="A fixture page.">	<meta name="description">	(m) the head holds
 # Fix round 9 (QA recheck of e5c348a): U+000B and U+200B, which are not
 # ASCII whitespace, as text at each position, and one row per element
@@ -216,3 +216,35 @@ csp-charref-content	public/index.html	content="default-src 'none'; img-src	conte
 csp-charref-text-in-head	public/index.html	<meta charset="utf-8">	<meta charset="utf-8">&#1;	CSP: the text 
 csp-end-br-in-head	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"></br>	CSP: the token 
 csp-end-body-in-head	public/index.html	<meta charset="utf-8">	<meta charset="utf-8"></body>	CSP: the token 
+# Replikanti/interviewscam#44: the eight link preview children of rule (m),
+# each fixed value, its content missing, an attribute added, its key on the
+# other attribute, and their order.
+value-og-type	public/index.html	<meta property="og:type" content="website">	<meta property="og:type" content="Website">	(m) the head holds
+value-twitter-card	public/index.html	<meta name="twitter:card" content="summary">	<meta name="twitter:card" content="summary_large_image">	(m) the head holds
+preview-content-missing-og-type	public/index.html	<meta property="og:type" content="website">	<meta property="og:type">	(m) the head holds
+preview-attribute-added-og-type	public/index.html	<meta property="og:type" content="website">	<meta property="og:type" content="website" lang="en">	(m) the head holds
+preview-key-attribute-og-type	public/index.html	<meta property="og:type" content="website">	<meta name="og:type" content="website">	(m) the head holds
+preview-content-missing-og-site-name	public/index.html	<meta property="og:site_name" content="interviewscam.com">	<meta property="og:site_name">	(m) the head holds
+preview-attribute-added-og-site-name	public/index.html	<meta property="og:site_name" content="interviewscam.com">	<meta property="og:site_name" content="interviewscam.com" lang="en">	(m) the head holds
+preview-key-attribute-og-site-name	public/index.html	<meta property="og:site_name" content="interviewscam.com">	<meta name="og:site_name" content="interviewscam.com">	(m) the head holds
+preview-content-missing-og-title	public/index.html	<meta property="og:title" content="fixture">	<meta property="og:title">	(m) the head holds
+preview-attribute-added-og-title	public/index.html	<meta property="og:title" content="fixture">	<meta property="og:title" content="fixture" lang="en">	(m) the head holds
+preview-key-attribute-og-title	public/index.html	<meta property="og:title" content="fixture">	<meta name="og:title" content="fixture">	(m) the head holds
+preview-content-missing-og-description	public/index.html	<meta property="og:description" content="A fixture page.">	<meta property="og:description">	(m) the head holds
+preview-attribute-added-og-description	public/index.html	<meta property="og:description" content="A fixture page.">	<meta property="og:description" content="A fixture page." lang="en">	(m) the head holds
+preview-key-attribute-og-description	public/index.html	<meta property="og:description" content="A fixture page.">	<meta name="og:description" content="A fixture page.">	(m) the head holds
+preview-content-missing-og-url	public/index.html	<meta property="og:url" content="https://interviewscam.com/">	<meta property="og:url">	(m) the head holds
+preview-attribute-added-og-url	public/index.html	<meta property="og:url" content="https://interviewscam.com/">	<meta property="og:url" content="https://interviewscam.com/" lang="en">	(m) the head holds
+preview-key-attribute-og-url	public/index.html	<meta property="og:url" content="https://interviewscam.com/">	<meta name="og:url" content="https://interviewscam.com/">	(m) the head holds
+preview-content-missing-twitter-card	public/index.html	<meta name="twitter:card" content="summary">	<meta name="twitter:card">	(m) the head holds
+preview-attribute-added-twitter-card	public/index.html	<meta name="twitter:card" content="summary">	<meta name="twitter:card" content="summary" lang="en">	(m) the head holds
+preview-key-attribute-twitter-card	public/index.html	<meta name="twitter:card" content="summary">	<meta property="twitter:card" content="summary">	(m) the head holds
+preview-content-missing-twitter-title	public/index.html	<meta name="twitter:title" content="fixture">	<meta name="twitter:title">	(m) the head holds
+preview-attribute-added-twitter-title	public/index.html	<meta name="twitter:title" content="fixture">	<meta name="twitter:title" content="fixture" lang="en">	(m) the head holds
+preview-key-attribute-twitter-title	public/index.html	<meta name="twitter:title" content="fixture">	<meta property="twitter:title" content="fixture">	(m) the head holds
+preview-content-missing-twitter-description	public/index.html	<meta name="twitter:description" content="A fixture page.">	<meta name="twitter:description">	(m) the head holds
+preview-attribute-added-twitter-description	public/index.html	<meta name="twitter:description" content="A fixture page.">	<meta name="twitter:description" content="A fixture page." lang="en">	(m) the head holds
+preview-key-attribute-twitter-description	public/index.html	<meta name="twitter:description" content="A fixture page.">	<meta property="twitter:description" content="A fixture page.">	(m) the head holds
+preview-order-swapped	public/index.html	<meta property="og:type" content="website"><meta property="og:site_name" content="interviewscam.com">	<meta property="og:site_name" content="interviewscam.com"><meta property="og:type" content="website">	(m) the head holds
+preview-before-canonical	public/index.html	<link rel="canonical" href="https://interviewscam.com/"><meta property="og:type" content="website">	<meta property="og:type" content="website"><link rel="canonical" href="https://interviewscam.com/">	(m) the head holds
+preview-after-theme-color	public/index.html	<meta name="twitter:description" content="A fixture page."><meta name="theme-color" content="#FFFFFF">	<meta name="theme-color" content="#FFFFFF"><meta name="twitter:description" content="A fixture page.">	(m) the head holds
