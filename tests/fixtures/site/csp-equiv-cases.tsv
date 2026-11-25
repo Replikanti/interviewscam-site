@@ -207,3 +207,14 @@ prefix/html-tag-renamed	public/report-a-scam/index.html	<html lang=en>	<span lan
 prefix/head-tag-renamed	public/report-a-scam/index.html	<head>	<span>	CSP: the page does not open with the start tags <html> and <head>
 prefix/csp-before-charset	public/report-a-scam/index.html	<meta charset=utf-8>		the first element in <head> must be <meta charset>	<meta name=viewport 	<meta charset=utf-8><meta name=viewport 
 prefix/charset-long-s	public/report-a-scam/index.html	<meta charset=utf-8>	<meta char\u{017F}et=utf-8>	the first element in <head> must be <meta charset>
+# QA round 1 (Replikanti/interviewscam#54): ASCII whitespace around '=',
+# named references in both refused values, and the reference rule and
+# is_csp_meta held to meta start tags (an element named metax, a link
+# and an end tag pass).
+tokenizer/pass-space-around-equals	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv = Content-Security-Policy 	PASS
+tokenizer/pass-newline-before-quoted-value	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv=\n"Content-Security-Policy" 	PASS
+charref/equiv-named	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv="Content-Security-Policy&amp;" 	CSP: '&' in the http-equiv of a <meta>
+charref/content-named	public/report-a-scam/index.html	content="default-src 'none'; img-src	content="default-src&amp; 'none'; img-src	CSP: '&' in the content of the Content-Security-Policy meta
+charref/pass-equiv-not-meta	public/report-a-scam/index.html	<meta name=viewport 	<link http-equiv="refresh&#1;"><meta name=viewport 	PASS
+charref/pass-equiv-end-tag	public/report-a-scam/index.html	<meta name=viewport 	</meta http-equiv="refresh&#1;"><meta name=viewport 	PASS
+tokenizer/pass-metax	public/report-a-scam/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><metax http-equiv=Content-Security-Policy content="default-src *">	PASS
