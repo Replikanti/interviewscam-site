@@ -1266,9 +1266,15 @@ PY
 # member of CSP_DIRECTIVES but form-action (csp-intake/<directive>, the intake
 # origin in that directive), and site-intake/coverage takes that set from
 # the code. Then the real cmd_site runs:
-# expect PASS needs exit 0, any other expect exit 1 with that text in the
-# output. The last line, site-intake/table, counts the rows. The label of
-# the lines is site-intake unless [label] names another (site-csp-equiv,
+# expect PASS needs exit 0, PASS-OR-ONLY <text> exit 0 or exit 1 with
+# <text> in every finding (a row whose decoy site rule (o8) refuses on its
+# own: whether html.parser reads a meta inside an end tag's quoted value as
+# an element depends on its build, so (o8) fires on 3.14 and on CI's
+# Ubuntu 3.12.3 and not on an upstream 3.12.3, while no CSP rule may read
+# it on any; (o8) itself is pinned by the site-preview rows), any other
+# expect exit 1 with that text in the output. The last line,
+# site-intake/table, counts the rows. The label of the lines is
+# site-intake unless [label] names another (site-csp-equiv,
 # Replikanti/interviewscam#32). -B: no tools/__pycache__.
 site_intake_runner() {
   python3 -I -B - "$1" "$2" "$3" "$4" "${5:-site-intake}" <<'PY'
@@ -1341,14 +1347,19 @@ for row in rows:
                 records=str(root), schemas=str(schema_dir), no_built_pins=True,
                 public=str(public)))
         output = buffer.getvalue()
-    if expect == "PASS" and rc == 0:
+    only = expect.removeprefix("PASS-OR-ONLY ") if expect.startswith("PASS-OR-ONLY ") else None
+    findings = [line for line in output.splitlines() if line.startswith("FAIL: ")]
+    if (expect == "PASS" or only) and rc == 0:
         print(f"ok   {label}/{name} (passed as expected)")
-    elif expect != "PASS" and rc == 1 and expect in output:
+    elif only and rc == 1 and findings and all(only in line for line in findings):
+        print(f"ok   {label}/{name} (failed only as allowed: {only})")
+    elif expect != "PASS" and not only and rc == 1 and expect in output:
         print(f"ok   {label}/{name} (failed as expected: {expect})")
     else:
-        print(f"FAIL {label}/{name}: expected "
-              f"{'exit 0' if expect == 'PASS' else 'exit 1 and ' + repr(expect)}; got exit "
-              f"{rc}; output:")
+        want = ("exit 0" if expect == "PASS" else
+                f"exit 0, or exit 1 with {only!r} in every finding" if only else
+                "exit 1 and " + repr(expect))
+        print(f"FAIL {label}/{name}: expected {want}; got exit {rc}; output:")
         for line in output.splitlines():
             print(f"     | {line}")
 if not rows or bad:
@@ -5773,22 +5784,24 @@ PINNED
   fi
   if selftest_wants site-intake-expect; then
     # site-intake-expect (the negative proof of site_intake_runner's expect):
-    # a real row with an expect text the findings do not hold must fail, and
-    # a PASS row that fails must fail too.
+    # a real row with an expect text the findings do not hold must fail, a
+    # PASS row that fails must fail too, and so must a PASS-OR-ONLY row with
+    # a finding outside its text (Replikanti/interviewscam#44).
     local expect_table
     expect_table=$(mktemp)
     awk -F'\t' -v OFS='\t' '
       $1 == "fail-input-formaction-intake" { $1 = $1 "-wrong-expect"; $5 = "(a) <form action> submits to"; print }
       $1 == "fail-button-formaction-intake" { $1 = $1 "-as-pass"; $5 = "PASS"; print }
+      $1 == "csp-intake/form-action-wildcard" { $1 = $1 "-only-other"; $5 = "PASS-OR-ONLY (o8)"; print }
     ' "$FIXTURES/site/intake-cases.tsv" >"$expect_table"
     site_intake_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$expect_table" \
       "$FIXTURES/render/pass-intake" "$SELFTEST_ROOT/schema" >"$out" 2>&1
     rm -f "$expect_table"
-    if [[ "$(grep -cE '^FAIL site-intake/fail-(input|button)-formaction-intake-(wrong-expect|as-pass):' "$out")" == 2 ]]; then
-      echo "ok   site-intake-expect (a wrong expect and a failing PASS row each fail)"
+    if [[ "$(grep -cE '^FAIL site-intake/(fail-(input|button)-formaction-intake-(wrong-expect|as-pass)|csp-intake/form-action-wildcard-only-other):' "$out")" == 3 ]]; then
+      echo "ok   site-intake-expect (a wrong expect, a failing PASS row and a PASS-OR-ONLY row with another finding each fail)"
       n_passed=$((n_passed + 1))
     else
-      echo "FAIL site-intake-expect: a row with a wrong expect or a failing PASS row did not fail; output:"
+      echo "FAIL site-intake-expect: a row with a wrong expect, a failing PASS row or a PASS-OR-ONLY row with another finding did not fail; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi
