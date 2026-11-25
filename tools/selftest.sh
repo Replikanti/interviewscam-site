@@ -1183,6 +1183,74 @@ else:
 PY
 }
 
+# meta_fields_coverage <sitecheck.py> <partials dir> (Replikanti/interviewscam#44
+# fix round 3, review run 3 finding A): records-meta/coverage reads
+# preview-meta.html and every partial it calls (by `partial "<name>.html"`,
+# transitively) and collects each front-matter field they read: .Title,
+# .Description (not site.Title), Params.<key> and <$alias>.<key> for an
+# alias assigned from Params. Each must be a member of PREVIEW_META_FIELDS
+# (R20 reads it) or of NOT_PREVIEW_TEXT below with the reason its value
+# never reaches a preview attribute as written, and each member of
+# PREVIEW_META_FIELDS must be read; records-meta/coverage-fails-on-missing-
+# member drops each member in turn and needs the coverage to fail.
+# -B: no tools/__pycache__.
+meta_fields_coverage() {
+  python3 -I -B - "$1" "$2" <<'PY'
+import importlib.util
+import re
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sc)
+partials = Path(sys.argv[2])
+NOT_PREVIEW_TEXT = {
+    "title": "overridden on every page R20 reads: home.title, title.<section>, a record title",
+    "params.state": "a labels.toml key (state.<state>.chip)",
+    "params.name_type": "a condition", "params.hide_name": "a condition",
+    "params.first_seen": "a date through time.Format", "params.last_seen": "a date through time.Format",
+    "params.last_reviewed": "a date through time.Format",
+    "params.independent_reports": "a count through int", "params.sources": "a count through len",
+}
+seen, queue, read = set(), ["preview-meta.html"], set()
+while queue:
+    name = queue.pop()
+    if name in seen:
+        continue
+    seen.add(name)
+    text = (partials / name).read_text(encoding="utf-8")
+    queue += re.findall(r'partial "([\w-]+\.html)"', text)
+    read |= {f"params.{k}" for k in re.findall(r"\bParams\.(\w+)", text)}
+    for alias in re.findall(r"\$(\w+)\s*:?=\s*[\w.$]*\bParams\b(?!\.)", text):
+        read |= {f"params.{k}" for k in re.findall(rf"\${alias}\.(\w+)", text)}
+    read |= {k.lower() for k in re.findall(r"(?<![\w$])\.(Title|Description)\b", text)}
+
+
+def gaps(pinned):
+    out = [f"{f} is read by a preview partial but neither pinned nor listed as no preview text"
+           for f in sorted(read - pinned - set(NOT_PREVIEW_TEXT))]
+    out += [f"{f} is pinned but no preview partial reads it" for f in sorted(pinned - read)]
+    return out
+
+
+pinned = {f for fields in sc.PREVIEW_META_FIELDS.values() for f in fields}
+found = gaps(pinned)
+if found or len(seen) < 2:
+    print("FAIL records-meta/coverage: " + "; ".join(found or ["no partial called"]))
+else:
+    print(f"ok   records-meta/coverage ({len(seen)} partials, {len(read)} fields read, "
+          f"{len(pinned)} pinned)")
+held = [f for f in sorted(pinned) if not gaps(pinned - {f})]
+if held or not pinned:
+    print("FAIL records-meta/coverage-fails-on-missing-member: coverage still passes without "
+          + (", ".join(held) or "any member"))
+else:
+    print(f"ok   records-meta/coverage-fails-on-missing-member ({len(pinned)} members, each "
+          "dropped fails the coverage)")
+PY
+}
+
 # site_intake_runner <sitecheck.py> <cases table> <base case> <schema dir>
 # [label] (M5b PR 3, ADR-0006 part 9): site rule (a) for the intake endpoint and
 # the intake origin in the CSP, one branch and one variant per row, on a
@@ -5978,14 +6046,22 @@ PY
     # records-meta/<row> (Replikanti/interviewscam#44 fix round 2): records
     # rule R20 from tests/fixtures/records/meta-cases.tsv on a copy of
     # records/pass-fixture-site (search_cases_runner with the records
-    # command), one row per raw form and place, and the PASS rows for the
-    # forms that stay escaped on the page.
+    # command), one row per pinned field and raw form, the PASS rows for the
+    # forms that stay escaped on the page and the fields no preview reads,
+    # then records-meta/coverage (meta_fields_coverage above).
     search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
       "$FIXTURES/records/meta-cases.tsv" "$FIXTURES/records/pass-fixture-site" \
       "$SELFTEST_ROOT/schema" records-meta records >"$out" 2>&1
+    meta_fields_coverage "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$SELFTEST_ROOT/layouts/_partials" >>"$out" 2>&1
     sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
     n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
     n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )records-meta/coverage-fails-on-missing-member' "$out"; then
+      echo "FAIL records-meta: the coverage did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
     if ! grep -qE '^(ok   |FAIL )records-meta/table' "$out"; then
       echo "FAIL records-meta: the runner did not finish; output:"
       sed 's/^/     | /' "$out"

@@ -17,8 +17,8 @@ internal error, so a crash never reads as a finding or as a pass.
       R19 of ADR-0004 (slugs, persona names, references, dates, evidence,
       hostnames and IP forms in record text, _index.md, verdict phrases,
       source hosts, bidi controls, labelled artifacts, names with text,
-      artifact whitespace) and R20 of ADR-0009 (no raw "<meta"),
-      with the retired slugs of
+      artifact whitespace) and R20 of ADR-0009 (no raw "<meta" in a
+      field a link preview reads), with the retired slugs of
       DIR/record-policy.json.
   site --records DIR [--schemas DIR] PUBLIC
       The built site in PUBLIC makes no third-party request (D9). Every page
@@ -1106,26 +1106,57 @@ def bidi_problems(record):
     return problems
 
 
-def raw_meta_problems(record):
+# R20's fields (Replikanti/interviewscam#44 fix round 3, review run 3
+# finding A): the front-matter strings whose value reaches a link preview
+# attribute, read from layouts/_partials/preview-meta.html and the partials
+# it calls (record-title.html, record-name.html, report-label.html,
+# label.html), with the preview keys each one feeds. On a record page the
+# title is record-title.html over params.name (record-name.html), except for
+# a persona with hide_name, whose title is title.hidden and whose name no
+# template reads; the description is the record's facts and params.summary.
+# On an _index.md page the description is its description; its title never
+# reaches a preview, because the only section pages are the home page
+# (home.title) and the record sections (title.<section>), both from
+# labels.toml. Every other value those partials read is a labels.toml key
+# (state), a condition (name_type, hide_name), a date through time.Format
+# (first_seen, last_seen, last_reviewed), a count (independent_reports,
+# sources) or a page field that is no front-matter string (Kind, Section,
+# Permalink); records-meta/coverage in tools/selftest.sh maps every field
+# reference in those partials to this table or to that list.
+PREVIEW_DESCRIPTION_KEYS = "og:description and twitter:description"
+PREVIEW_META_FIELDS = {
+    "record": {"params.name": "og:title and twitter:title",
+               "params.summary": PREVIEW_DESCRIPTION_KEYS},
+    "index": {"description": PREVIEW_DESCRIPTION_KEYS},
+}
+
+
+def raw_meta_problems(record, kind="record"):
     """R20 (Replikanti/interviewscam#44 fix round 2, review run 2 finding 1;
-    ADR-0009 part 3): no front-matter string, artifacts and source URLs
-    included, holds "<meta" in any case (PREVIEW_RAW_META, the pattern of
-    site rule (o8)). The pinned minifier writes the "<" of an attribute
-    value raw, and the link preview metas carry the title, the name and the
-    summary in attributes, where a scraper that reads the page with a
-    regular expression takes "<meta" for a tag, so site rule (o8) would
-    fail the built page. Every string, not only those a template puts into
-    an attribute today, so no later template edit reopens the gap; read as
-    written, because an entity such as &lt;meta stays escaped on the page.
-    The body renders as element text, where the minifier keeps &lt;."""
+    fix round 3, review run 3 finding A; ADR-0009 part 3): no front-matter
+    string that reaches a link preview attribute (PREVIEW_META_FIELDS of
+    kind, record or index) holds "<meta" in any case (PREVIEW_RAW_META, the
+    pattern of site rule (o8)). The pinned minifier writes the "<" of an
+    attribute value raw, where a scraper that reads the page with a regular
+    expression takes "<meta" for a tag, so site rule (o8) would fail the
+    built page. The other strings render as element text, where the build
+    escapes the "<" (a "Name <address>" sender line, a source title that
+    quotes a tag), so they pass; (o8) stays the backstop if a template moves
+    one of them into the head. A hidden persona's name reaches no page.
+    Read as written, because an entity such as &lt;meta stays escaped."""
     problems = []
-    for path, text in iter_strings(record.data, ""):
-        match = PREVIEW_RAW_META.search(text)
+    for path, keys in PREVIEW_META_FIELDS[kind].items():
+        if path == "params.name" and is_hidden(record):
+            continue
+        value = record.data
+        for part in path.split("."):
+            value = value.get(part) if isinstance(value, dict) else None
+        match = PREVIEW_RAW_META.search(value) if isinstance(value, str) else None
         if match:
-            problems.append(f"{path}: holds {show(match.group())}, which the build writes "
-                            "raw into the link preview attributes, where a scraper takes it "
-                            "for a tag (site rule (o8) would fail the page): write it in "
-                            "words, such as 'a meta refresh tag' (R20)")
+            problems.append(f"{path}: holds {show(match.group())}, and this field reaches "
+                            f"{keys}, whose attribute the build writes with the '<' raw, where "
+                            "a scraper takes it for a tag (site rule (o8) would fail the "
+                            "page): write it in words, such as 'a meta refresh tag' (R20)")
     return problems
 
 
@@ -1675,7 +1706,8 @@ def cmd_records(args):
     for record, problem in persona_problems(records) + source_problems(records):
         findings.add(record.rel, problem)
     for page in index_pages:
-        for problem in index_problems(page) + bidi_problems(page) + raw_meta_problems(page):
+        for problem in (index_problems(page) + bidi_problems(page)
+                        + raw_meta_problems(page, "index")):
             findings.add(page.rel, problem)
     n_reports = sum(r.section == "reports" for r in records)
     n_artifacts = sum(len(declared_artifacts(r)) for r in records)
@@ -12431,10 +12463,17 @@ PREVIEW_URL = re.compile(re.escape(SITE_ORIGIN) + r"/[^?#\\\s]*")
 # with a digit, and in "2026-11-02T10:30" the run T10 follows a digit, so
 # it is no token start. A colon right after a word ("Re:x", a defanged
 # host with a port, "evil[.]example:8080") is a finding: write it with a
-# space or without the port.
+# space or without the port. One exception (fix round 3, review run 3
+# finding B): a run that is exactly UTC or GMT, then "+" or "-", one or two
+# digits, the colon and exactly two digits, followed by the end of the
+# value, whitespace or one of ")", ",", "." and ";" (PREVIEW_TZ_OFFSET), is
+# a time-zone offset of prose ("15:00 (UTC+01:00)", "GMT+1:00",
+# "UTC-05:30"), not a scheme; "utc+01:x", "UTC01:00", "UTC+100:00",
+# "UTC+01:0", "UTC+01:00x" and "est+05:00" stay findings.
 PREVIEW_PROTOCOL_RELATIVE = re.compile(r"(?:^|(?<=[\s\"'(<\[]))//(?=[^\s/])")
 PREVIEW_SCHEME = re.compile(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9+.-]*):(?=\S)")
 PREVIEW_DEFANGED_SCHEMES = frozenset({"hxxp", "hxxps"})
+PREVIEW_TZ_OFFSET = re.compile(r"(?:utc|gmt)[+-][0-9]{1,2}:[0-9]{2}(?![^\s),.;])")
 # (o8) the scraper's view (review run 1 finding 2). A scraper that reads
 # the raw page with a regular expression takes every "<meta" for a tag, in
 # a comment, an attribute value or a script too, may read the attributes of
@@ -12503,7 +12542,8 @@ def preview_text_problems(key, value):
             problems.append(f"(o7) {key} holds a protocol-relative URL (//host; D8)")
         # Every variant is case-folded (norm), so HXXPS reads as hxxps.
         match = next((m for m in PREVIEW_SCHEME.finditer(variant)
-                      if m.group(1) not in PREVIEW_DEFANGED_SCHEMES), None)
+                      if m.group(1) not in PREVIEW_DEFANGED_SCHEMES
+                      and not PREVIEW_TZ_OFFSET.match(variant, m.start())), None)
         if match:
             problems.append(f"(o7) {key} holds the scheme {show(match.group())}, which a "
                             "card app may turn into a link (D8: defang it as hxxps://, or "
