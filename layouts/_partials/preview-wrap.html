@@ -1,0 +1,112 @@
+{{- /* The lines of one block of a link preview card (ADR-0009 parts 4 and
+  6; sitecheck preview_wrap is its replica, the self-test compares them row
+  by row). Called with (dict "text" "face" "size" "width"): face is a key
+  of hugo.Data.preview.face, size the font size and width the line width in
+  px. Returns the slice of lines, or false when a character of the text has
+  no advance entry (it is not drawable, ADR-0009 part 5).
+
+  Greedy at U+0020 (empty words dropped, so runs of spaces collapse); a
+  word wider than the width is broken between characters. A line's width is
+  the sum of its advances plus every positive kern of a neighbouring pair
+  (the table holds only those: a negative kern only narrows the line), in
+  font units, so a line fits when units x size <= width x unitsPerEm. Two
+  guards turn a wrapping bug into a failed build instead of a card that
+  lost text: the lines joined back (words with U+0020, the pieces of a
+  broken word with nothing) equal the space-collapsed text, and every line
+  measured again on its own fits the width.
+
+  Number literals: 0 starts a sum, -1 steps back one place (literals
+  LITERALS_FILE_NUMBERS). */ -}}
+{{- $p := hugo.Data.preview -}}
+{{- $advance := index $p.advance .face -}}
+{{- $kern := index $p.kern .face -}}
+{{- $upm := (index $p.face .face).units_per_em -}}
+{{- $size := .size -}}
+{{- $width := .width -}}
+{{- $limit := mul $width $upm -}}
+{{- $space := index $advance " " -}}
+{{- $ok := true -}}
+{{- $lines := slice -}}
+{{- $seps := slice -}}
+{{- $line := "" -}}
+{{- $units := 0 -}}
+{{- $last := "" -}}
+{{- $collapsed := "" -}}
+{{- range split .text " " -}}
+  {{- if and $ok . -}}
+    {{- $word := . -}}
+    {{- $collapsed = cond (eq $collapsed "") $word (printf "%s %s" $collapsed $word) -}}
+    {{- $chars := split $word "" -}}
+    {{- $wide := 0 -}}
+    {{- $prev := "" -}}
+    {{- range $chars -}}
+      {{- $a := index $advance . -}}
+      {{- if not $a -}}
+        {{- $ok = false -}}
+      {{- else -}}
+        {{- $wide = add $wide $a (index $kern (printf "%s%s" $prev .) | default 0) -}}
+      {{- end -}}
+      {{- $prev = . -}}
+    {{- end -}}
+    {{- if $ok -}}
+      {{- $first := index $chars 0 -}}
+      {{- $joined := add $units (index $kern (printf "%s " $last) | default 0) $space (index $kern (printf " %s" $first) | default 0) $wide -}}
+      {{- if and $line (ge $limit (mul $joined $size)) -}}
+        {{- $line = printf "%s %s" $line $word -}}
+        {{- $units = $joined -}}
+      {{- else -}}
+        {{- if $line -}}
+          {{- $lines = $lines | append $line -}}
+          {{- $seps = $seps | append " " -}}
+        {{- end -}}
+        {{- if ge $limit (mul $wide $size) -}}
+          {{- $line = $word -}}
+          {{- $units = $wide -}}
+        {{- else -}}
+          {{- $line = "" -}}
+          {{- $units = 0 -}}
+          {{- $prev = "" -}}
+          {{- range $chars -}}
+            {{- $grown := add $units (index $kern (printf "%s%s" $prev .) | default 0) (index $advance .) -}}
+            {{- if and $line (not (ge $limit (mul $grown $size))) -}}
+              {{- $lines = $lines | append $line -}}
+              {{- $seps = $seps | append "" -}}
+              {{- $line = . -}}
+              {{- $units = index $advance . -}}
+            {{- else -}}
+              {{- $line = printf "%s%s" $line . -}}
+              {{- $units = $grown -}}
+            {{- end -}}
+            {{- $prev = . -}}
+          {{- end -}}
+        {{- end -}}
+      {{- end -}}
+      {{- $last = index $chars (len $chars | add -1) -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- if $ok -}}
+  {{- if $line -}}
+    {{- $lines = $lines | append $line -}}
+  {{- end -}}
+  {{- $rebuilt := "" -}}
+  {{- range $i, $l := $lines -}}
+    {{- if $i -}}
+      {{- $rebuilt = printf "%s%s" $rebuilt (index $seps (add $i -1)) -}}
+    {{- end -}}
+    {{- $rebuilt = printf "%s%s" $rebuilt $l -}}
+    {{- $u := 0 -}}
+    {{- $prev := "" -}}
+    {{- range split $l "" -}}
+      {{- $u = add $u (index $advance .) (index $kern (printf "%s%s" $prev .) | default 0) -}}
+      {{- $prev = . -}}
+    {{- end -}}
+    {{- if not (ge $limit (mul $u $size)) -}}
+      {{- errorf "preview-wrap.html: the line %s is %d font units wide, more than %d px at %d px (a wrapping bug)" $l $u $width $size -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if ne $rebuilt $collapsed -}}
+    {{- errorf "preview-wrap.html: the lines joined back are %s, not the text %s (a wrapping bug)" $rebuilt $collapsed -}}
+  {{- end -}}
+{{- end -}}
+{{- return cond $ok $lines false -}}

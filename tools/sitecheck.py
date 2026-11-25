@@ -28,7 +28,10 @@ internal error, so a crash never reads as a finding or as a pass.
       web manifest, no inline style, script or event handler, one canonical
       link to the page itself, no mailto: link, only token colours, no SMIL
       animation, and .visually-hidden and !important only where ADR-0003
-      part 6 allows them (counted across all built CSS).
+      part 6 allows them (counted across all built CSS). Site rule (o)
+      holds the link preview metadata and its card images (ADR-0009);
+      --preview-pixels (the fixture build only) also reads every card's
+      pixels: ground outside the content box, primary in the bar.
   render --records DIR [--schemas DIR] PUBLIC
       The built record pages in PUBLIC follow the markup contract of
       ADR-0004 (milestone 3): one page per record and none without one, the
@@ -71,7 +74,14 @@ internal error, so a crash never reads as a finding or as a pass.
       to a 40-hex commit SHA (ADR-0002 part 6); Pages off until M6. Only
       tools/lighthouse.sh may name the registry tools, only
       .github/workflows/lighthouse.yml may run it, and the job that does has
-      no token permissions and no checkout (ADR-0003 part 2).
+      no token permissions and no checkout (ADR-0003 part 2). The link
+      preview card files (ADR-0009 part 5): the pinned base image, fonts
+      and licence, data/ closed, and data/preview.toml's generated part
+      equal to the output of preview-metrics.
+  preview-metrics [--root DIR]
+      Prints the generated part of data/preview.toml (ADR-0009 part 5): the
+      vertical metrics, ink slack, advances and positive kerning bound of
+      every drawable character of the two pinned Noto Sans faces.
   lighthouse --reports DIR --version V
       The score gate of ADR-0003 part 3 on the JSON reports in DIR: exactly
       3 runs per page, the pinned version, the mobile profile, a median of at
@@ -2999,6 +3009,7 @@ def cmd_site(args):
     hidden_files = {cls: set() for cls in HIDDEN_UNTIL_SCRIPT}
     vh_files, reveal_files = set(), set()  # the same for the definition and the reveal
     stylesheets = {}  # page rel -> the site paths of the stylesheets it applies
+    preview_images = {}  # page rel -> (og:image, og:image:alt), site rule (o)
     n_html = 0
     files = sorted(p for p in public.rglob("*") if p.is_file())
     css_files = {"/" + p.relative_to(public).as_posix() for p in files
@@ -3080,7 +3091,8 @@ def cmd_site(args):
                 for problem in head_problems(text, rel, not args.no_built_pins):
                     findings.add(rel, problem)
                 # (o) the link preview metadata (Replikanti/interviewscam#44).
-                for problem in preview_problems(text, rel, not args.no_built_pins):
+                for problem in preview_problems(text, rel, not args.no_built_pins,
+                                                preview_images):
                     findings.add(rel, problem)
                 # (k) per page (M3 PR 10): the stylesheets every page applies.
                 stylesheets[rel], problems = stylesheet_links(page, css_files)
@@ -3317,6 +3329,10 @@ def cmd_site(args):
                          "page applies (a <link rel=stylesheet> in the closed form of "
                          "rule (k)), so the skip link stays a 1 x 1 px box on keyboard "
                          "focus (WCAG 2.2 SC 2.4.7; ADR-0003 part 6)")
+    for where, problem in preview_image_problems(root, public, files, preview_images,
+                                                 not args.no_built_pins,
+                                                 getattr(args, "preview_pixels", False)):
+        findings.add(where, problem)
     if n_html == 0:
         findings.add("public", "no HTML pages found; nothing was checked")
     return findings.report(
@@ -8573,6 +8589,11 @@ def cmd_tokens(args):
         try:
             text = path.read_bytes().decode("utf-8")
         except UnicodeDecodeError:
+            # The link preview fonts (ADR-0009 part 5) hold no CSS colour;
+            # only their pinned bytes pass, every other font fails closed.
+            pinned = PREVIEW_ASSET_SHA256.get(rel)
+            if pinned is not None and pinned == hashlib.sha256(path.read_bytes()).hexdigest():
+                continue
             if path.suffix.lower() not in RASTER_SUFFIXES:
                 findings.add(rel, "not UTF-8 text and not a raster image; the colour "
                              "scan cannot read it (fails closed)")
@@ -8621,9 +8642,15 @@ LITERALS_TEXT_CONTENT_KEYS = {"property", "itemprop"}
 # token) and og:url (the page's own URL) as a property, exactly as written;
 # every other property meta (og:title, og:description) keeps visible
 # content.
+# The second PR of Replikanti/interviewscam#44 (ADR-0009 parts 4 to 6) adds
+# the image keys whose content no card shows as text: og:image and
+# twitter:image (the card's URL), og:image:type (a MIME type token),
+# og:image:width and og:image:height (numbers); og:image:alt and
+# twitter:image:alt are text a screen reader reads, so they stay visible.
 LITERALS_META_PLAIN_NAMES = frozenset({"viewport", "color-scheme", "theme-color",
-                                       "twitter:card"})
-LITERALS_META_PLAIN_PROPERTIES = frozenset({"og:type", "og:url"})
+                                       "twitter:card", "twitter:image"})
+LITERALS_META_PLAIN_PROPERTIES = frozenset({"og:type", "og:url", "og:image", "og:image:type",
+                                            "og:image:width", "og:image:height"})
 LITERALS_META_PLAIN_HTTP_EQUIV = frozenset({"content-security-policy"})
 # Attributes whose value assets/js/copy.js writes into the page as text
 # (the two statuses of a Copy button): a visible attribute for L2 and for
@@ -8764,7 +8791,13 @@ LITERALS_SITE_MEMBERS = {"Title", "Home", "RegularPages", "Pages", "GetPage",
 # into the action of the intake form (its value kind is url, which no text
 # sink takes).
 LITERALS_SITE_PARAMS = {"operator", "contact", "csp", "intake"}
-LITERALS_HUGO_DATA = {"labels", "tokens"}
+LITERALS_HUGO_DATA = {"labels", "tokens", "preview"}
+# hugo.Data.preview (data/preview.toml, the card layout and font tables of
+# ADR-0009 parts 5 and 6) is read only by the two card partials, which draw
+# it into no text: its numbers and keys reach images.Padding, images.Text
+# options and the wrap's arithmetic.
+LITERALS_PREVIEW_DATA_READERS = frozenset({"layouts/_partials/preview-image.html",
+                                           "layouts/_partials/preview-wrap.html"})
 # hugo: only Data (hugo.Sites, hugo.Environment, ... read config).
 LITERALS_HUGO_MEMBERS = {"Data"}
 # Every occurrence, overlapping: site.Home.Site.Params.x has two.
@@ -8823,19 +8856,38 @@ LITERALS_BANNED_STATE = {"newScratch", "collections.NewScratch", "emojify",
 #                           methods) a chain may read; lowercase segments
 #                           are params and dict keys, which are data.
 LITERALS_FUNCTIONS = frozenset("""
-absURL add and append cond default dict eq errorf first ge htmlEscape in index int
-jsonify len lower merge ne not partial printf reflect.IsMap reflect.IsSlice relURL
-replaceRE resources.Concat resources.ExecuteAsTemplate resources.Fingerprint resources.Get
-resources.Minify safeHTML safeJS slice sort split time.Format where
+absURL add and append cond default dict div eq errorf first float ge htmlEscape
+images.Filter images.Padding images.Text in index int jsonify len lower math.Ceil merge
+mul ne not partial printf reflect.IsMap reflect.IsSlice relURL replaceRE resources.Concat
+resources.ExecuteAsTemplate resources.Fingerprint resources.Get resources.Minify
+safeHTML safeJS slice sort split sub time.Format where
 """.split())
 LITERALS_CSS_FUNCTIONS = frozenset("div float index replace safeCSS slice".split())
-LITERALS_FILE_FUNCTIONS = {"split": frozenset(LITERALS_LABELS_READERS),
+# The link preview cards (Replikanti/interviewscam#44, ADR-0009 parts 4 to
+# 6): preview-wrap.html cuts a label into words and characters (split) and
+# measures them (mul); preview-image.html reads the base image and the two
+# fonts (resources.Get), computes the line pitch and the content box (sub,
+# mul, div, float, math.Ceil) and draws the card (images.Filter,
+# images.Padding, images.Text, whose text operand is a print sink of its
+# own). No other images.* function (QR, Overlay, Mask, ...) is on the list.
+LITERALS_FILE_FUNCTIONS = {"split": frozenset(LITERALS_LABELS_READERS
+                                              | {"layouts/_partials/preview-wrap.html"}),
                            "first": frozenset({"layouts/home.html"}),
                            "replaceRE": frozenset({"layouts/_partials/box-label.html"}),
                            **{f: frozenset({"layouts/baseof.html"}) for f in (
                                "resources.Concat", "resources.ExecuteAsTemplate",
-                               "resources.Fingerprint", "resources.Get",
-                               "resources.Minify")}}
+                               "resources.Fingerprint", "resources.Minify")},
+                           "resources.Get": frozenset({"layouts/baseof.html",
+                                                       "layouts/_partials/preview-image.html"}),
+                           "mul": LITERALS_PREVIEW_DATA_READERS,
+                           **{f: frozenset({"layouts/_partials/preview-image.html"}) for f in (
+                               "sub", "math.Ceil", "images.Filter", "images.Padding",
+                               "images.Text")},
+                           # div and float: also the CSS template tokens.css
+                           # (LITERALS_CSS_FUNCTIONS), which computes its sizes.
+                           **{f: frozenset({"assets/css/tokens.css",
+                                            "layouts/_partials/preview-image.html"})
+                              for f in ("div", "float")}}
 # The literal operands a resources.* call may take (review3 3): a resource
 # prints its name (`{{ . }}`, .Title, .RelPermalink, and the target name of
 # ExecuteAsTemplate or Concat is any string), so the names are a closed
@@ -8844,7 +8896,8 @@ LITERALS_FILE_FUNCTIONS = {"split": frozenset(LITERALS_LABELS_READERS),
 # Known limit 3), and from M4 PR 3 the search script js/search.js (ADR-0005
 # part 5). ExecuteAsTemplate's context is the bare dot, nothing else.
 LITERALS_RESOURCE_KEYS = frozenset({"favicon.svg", "css/tokens.css", "css/site.css",
-                                    "js/copy.js", "js/search.js", "sha384"})
+                                    "js/copy.js", "js/search.js", "sha384", "og/base.png",
+                                    "fonts/noto-sans-regular.ttf", "fonts/noto-sans-bold.ttf"})
 # The resources.* functions whose first operand names the resource they
 # build (M3 PR 9 fix round 2, delta review 4): that name sets the served
 # file's path and suffix. Named as a script (a suffix of JS_SUFFIXES, ASCII
@@ -8871,9 +8924,9 @@ LITERALS_LABEL_ASSIGNS = frozenset({
 LITERALS_RAWTEXT_ELEMENTS = ("title", "textarea", "xmp", "plaintext", "noembed",
                              "noframes", "iframe", "noscript")
 LITERALS_MEMBERS = frozenset("""
-ByDate Content ContentBaseName Data Date Description File Format GetPage
+ByDate Content ContentBaseName Data Date Description File Format GetPage Height
 Home Integrity Kind Pages Params Path Permalink RegularPages RelPermalink Reverse
-Section Sections Title
+Section Sections Title Width
 """.split())
 # The positions of the closed-world rule (L3). A literal in a value
 # position (one whose text can reach the page) passes only with a shape
@@ -8904,7 +8957,14 @@ LITERALS_DICT_KEYS = frozenset("""
 check details fields first head html icon id items jsonld key label
 malwarebazaar page part search tile title value virustotal warning
 """.split())
-LITERALS_FILE_DICT_KEYS = {"layouts/home.feed.json": frozenset("""
+LITERALS_FILE_DICT_KEYS = {
+    # The card partial's dicts (ADR-0009 part 6): its blocks, the wrap's
+    # arguments, the fonts by face, the images.Text options and the dict it
+    # returns; none of them is printed.
+    "layouts/_partials/preview-image.html": frozenset("""
+alt bold color face font image regular size text width x y
+""".split()),
+    "layouts/home.feed.json": frozenset("""
 aliases artifact artifacts attribution basis campaign campaigns delivery
 documentation_url evidence first_seen home_page_url independent_reports
 last_reviewed last_seen lookup_urls name_hidden name_label name_type published
@@ -8943,6 +9003,21 @@ LITERALS_COLLECTION_VALUES = frozenset({
     ("layouts/home.feed.json", "1"),  # the feed's version (ADR-0004 part 7)
     ("layouts/reports/page.html", "summary"),
     ("layouts/reports/page.html", "basis"),
+    # The two faces of the card blocks (ADR-0009 part 6), keys of
+    # hugo.Data.preview.face and of the partial's fonts.
+    ("layouts/_partials/preview-image.html", "bold"),
+    ("layouts/_partials/preview-image.html", "regular"),
+})
+# The number literals a template may hold in a value position, by file
+# (Replikanti/interviewscam#44, ADR-0009 part 6): every other number comes
+# from data/preview.toml. 0 starts a sum or a padding side, -1 steps one
+# place back or crops the base pixel; neither is drawn (images.Text takes
+# only visible sources) nor printed.
+LITERALS_FILE_NUMBERS = frozenset({
+    ("layouts/_partials/preview-wrap.html", "0"),
+    ("layouts/_partials/preview-wrap.html", "-1"),
+    ("layouts/_partials/preview-image.html", "0"),
+    ("layouts/_partials/preview-image.html", "-1"),
 })
 LITERALS_DATE_LAYOUTS = frozenset({"2006-01-02"})
 LITERALS_CONTEXT_PARTIALS = {"icon.html": frozenset({"check", "search", "warning"})}
@@ -8969,6 +9044,7 @@ LITERALS_PASSING_SETS = (
     "LITERALS_RESOURCE_KEYS", "LITERALS_LABEL_ASSIGNS", "LITERALS_PASSING_SETS",
     "LITERALS_PRINT_SOURCES", "LITERALS_META_PLAIN_NAMES", "LITERALS_META_PLAIN_HTTP_EQUIV",
     "LITERALS_SCRIPT_PATTERNS", "LITERALS_META_PLAIN_PROPERTIES",
+    "LITERALS_PREVIEW_DATA_READERS", "LITERALS_FILE_NUMBERS",
 )
 # The allowlists whose contents the self-test pins entry by entry in
 # tests/fixtures/literals/allowlists.tsv (review3 A3): every passing set of
@@ -9627,6 +9703,8 @@ def position_problems(rel, pipeline, binds, keywords):
         elif kind in ("value", "format"):
             if string and value_shape(text):
                 continue
+            if not string and (rel, text) in LITERALS_FILE_NUMBERS:
+                continue
             if binds and whole_literal:
                 yield command, token, (f"the action binds a value computed from literals alone "
                               f"({show(text)}), which a later print shows (L3)")
@@ -9729,11 +9807,16 @@ def copy_source_problems(rel, tokens, literals, css=False):
             if member is None:
                 problems.append((t, f"{w} without a member (L4)"))
             elif member == "Data" and sub not in LITERALS_HUGO_DATA:
-                problems.append((t, f"{w}: hugo.Data only as hugo.Data.labels or "
-                                 "hugo.Data.tokens (L4)"))
+                problems.append((t, f"{w}: hugo.Data only as hugo.Data.labels, "
+                                 "hugo.Data.tokens or hugo.Data.preview (L4)"))
             elif member == "Data" and sub == "labels" and rel not in LITERALS_LABELS_READERS:
                 problems.append((t, f"{w}: data/labels.toml is read only inside "
                                  "label.html and label-list.html (L4)"))
+            elif member == "Data" and sub == "preview" \
+                    and rel not in LITERALS_PREVIEW_DATA_READERS:
+                problems.append((t, f"{w}: data/preview.toml is read only inside "
+                                 "preview-image.html and preview-wrap.html (L4, "
+                                 "LITERALS_PREVIEW_DATA_READERS)"))
             elif member not in LITERALS_HUGO_MEMBERS:
                 problems.append((t, f"{w}: hugo.{member} is not a member a template may "
                                  "read; it reads the config or other sites (L4)"))
@@ -9786,8 +9869,10 @@ def copy_source_problems(rel, tokens, literals, css=False):
                                  "); a new one comes with its own review of what it "
                                  "can print (L3)"))
             elif files is not None and rel not in files:
-                why = ("it cuts a string (L3)" if not w.startswith("resources.") else
-                       "a resource prints its raw file and its name (L4, review3 3)")
+                why = ("it cuts a string (L3)" if w in ("split", "first", "replaceRE") else
+                       "a resource prints its raw file and its name (L4, review3 3)"
+                       if w.startswith("resources.") else
+                       "it draws or measures a link preview card (ADR-0009 part 6, L3)")
                 problems.append((t, f"{w}: only {', '.join(sorted(files))} may call it, "
                                  f"because {why}"))
     for t, _, _ in literals:
@@ -11343,6 +11428,7 @@ class SinkAnalysis:
         self.memo, self.running = {}, set()
         self.printed = {}  # (rel, index) -> value
         self.problems = []  # (rel, index, message) for analysis failures
+        self.at = None  # (rel, index) of the action being evaluated (images.Text)
 
     # -- values ---------------------------------------------------------
     def operand(self, op, st):
@@ -11522,6 +11608,25 @@ class SinkAnalysis:
             return kinds("runtime")
         if fn.startswith("resources."):
             return kinds("resource")
+        if fn == "images.Text":
+            # A print sink of its own (ADR-0009 part 6): the text an image
+            # draws takes only what a visible attribute takes, so a
+            # literal, a URL, a number or a page drawn into a card fails as
+            # it would in an alt.
+            text = ev(ops[0]) if ops else UNKNOWN
+            bad = sorted({s for s in text if s not in LITERALS_PRINT_SOURCES["visible"]
+                          and s not in SINK_REPORTED}, key=repr)
+            if bad and self.at is not None:
+                problem = (*self.at, f"images.Text draws {', '.join(describe(s) for s in bad)} "
+                           "into a card image; the text of an image takes only a label "
+                           "partial, a content field, site.Title, site.Params.operator or "
+                           ".contact, a date in the pinned layout, or printf of those without "
+                           f"markup (LITERALS_PRINT_SOURCES, L3 print sinks); {LITERALS_FIX}")
+                if problem not in self.problems:
+                    self.problems.append(problem)
+            return UNKNOWN
+        if fn == "images.Filter":
+            return kinds("resource")
         if fn in LITERALS_MESSAGE_FUNCS:
             return EMPTY
         return UNKNOWN
@@ -11630,9 +11735,12 @@ class SinkAnalysis:
         return st
 
     def value(self, rel, index, pipeline, st):
+        self.at = (rel, index)
         return kinds("flagged") if self.flagged(rel, index) else self.pipeline(pipeline, st)
 
     def step(self, rel, stmt, st, returns):
+        if stmt.kind in ("print", "return"):
+            self.at = (rel, stmt.index)
         if stmt.kind == "print":
             key = (rel, stmt.index)
             if self.files[rel]["sinks"][stmt.index][0] == "data":
@@ -12185,17 +12293,25 @@ HEAD_CANONICAL = ("link", {"rel": "canonical", "href": None})
 # canonical link on every page but the 404, in this order, Open Graph as
 # <meta property>, Twitter cards as <meta name>, each with its content.
 # The four sets below partition PREVIEW_KEYS by how rule (o) checks the
-# value (site-preview/coverage proves it): the fixed values, the one URL,
-# and the text a link card shows.
+# value (site-preview/coverage proves it): the fixed values, the URLs, and
+# the text a link card shows. The second PR of Replikanti/interviewscam#44
+# (ADR-0009 parts 4 to 6) adds the card image: og:image and its type, size
+# and alt after og:url, twitter:image and its alt last, and twitter:card
+# summary_large_image.
 PREVIEW_KEYS = {
     "og:type": "property", "og:site_name": "property", "og:title": "property",
-    "og:description": "property", "og:url": "property", "twitter:card": "name",
-    "twitter:title": "name", "twitter:description": "name",
+    "og:description": "property", "og:url": "property", "og:image": "property",
+    "og:image:type": "property", "og:image:width": "property",
+    "og:image:height": "property", "og:image:alt": "property", "twitter:card": "name",
+    "twitter:title": "name", "twitter:description": "name", "twitter:image": "name",
+    "twitter:image:alt": "name",
 }
-PREVIEW_FIXED = {"og:type": "website", "twitter:card": "summary"}
-PREVIEW_URL_KEYS = frozenset({"og:url"})
-PREVIEW_TEXT_KEYS = frozenset({"og:site_name", "og:title", "og:description", "twitter:title",
-                               "twitter:description"})
+PREVIEW_FIXED = {"og:type": "website", "og:image:type": "image/png",
+                 "og:image:width": "1200", "og:image:height": "630",
+                 "twitter:card": "summary_large_image"}
+PREVIEW_URL_KEYS = frozenset({"og:url", "og:image", "twitter:image"})
+PREVIEW_TEXT_KEYS = frozenset({"og:site_name", "og:title", "og:description", "og:image:alt",
+                               "twitter:title", "twitter:description", "twitter:image:alt"})
 # Render rule 8's one RDFa exception (ADR-0009 part 2): the Open Graph keys.
 PREVIEW_PROPERTIES = frozenset(k for k, attr in PREVIEW_KEYS.items() if attr == "property")
 PREVIEW_HEAD = [("meta", {attr: key, "content": PREVIEW_FIXED.get(key)})
@@ -12486,6 +12602,18 @@ PREVIEW_TZ_OFFSET = re.compile(r"(?:utc|gmt)[+-][0-9]{1,2}:[0-9]{2}(?![^\s),.;])
 # first, then content, nothing else); and no element anywhere repeats an
 # attribute name.
 PREVIEW_RAW_META = re.compile(r"(?i)<meta")
+# (o9) the one card image URL form (ADR-0009 part 6): the site's origin,
+# /og/, a name of lowercase ASCII letters, digits, "_" and "-" (Hugo's
+# processed-image names, base_hu_<hash>), and .png; no query, fragment,
+# dot segment, escape, other case or other type.
+PREVIEW_IMAGE_URL = re.compile(re.escape(SITE_ORIGIN) + r"/og/[a-z0-9_-]+\.png")
+PREVIEW_IMAGE_DIR = "og/"
+# (o13) the alt of the site card, which every page but a record's own page
+# links: preview.alt_site of data/labels.toml over header.brand,
+# header.brand_tld and site.description, pinned here a second time so a
+# wording change is a safety-net diff too (ADR-0009 part 6).
+PREVIEW_ALT_SITE = ("interviewscam.com: A community registry of fake job-interview scams "
+                    "that target developers.")
 
 
 def preview_tag(attr, key):
@@ -12582,13 +12710,30 @@ def preview_scraper_problems(text, tree):
     return list(dict.fromkeys(problems))
 
 
-def preview_problems(text, rel, built):
+def preview_problems(text, rel, built, images=None):
     """Site rule (o) on one HTML page (see PREVIEW_KEYS). built: also the
-    presence and the values (o1 to o6), which the hand-made site fixtures
-    without the built pins do not carry; (o7), (o8) and the look-alikes of
-    (o1) read every page."""
+    presence and the values (o1 to o6, o10's fixed values), which the
+    hand-made site fixtures without the built pins do not carry; (o7),
+    (o8), the look-alikes of (o1) and the image URL and alt twins (o9, o11)
+    read every page. images: a dict that gets rel -> (og:image, og:image:alt)
+    of a page with one of each, for the tree-wide branches (preview_image_problems)."""
     tree = parse_render_page(text)
     found, problems = preview_values(tree)
+    image, alt = found["og:image"], found["og:image:alt"]
+    for key in ("og:image", "twitter:image"):
+        for value in found[key]:
+            if value is not None and not PREVIEW_IMAGE_URL.fullmatch(value):
+                problems.append(f"(o9) {key} is {show(value)}, not {SITE_ORIGIN}/og/<name>.png "
+                                "with a name of a-z, 0-9, _ and - (the card image the build "
+                                "draws, served from the site's own host)")
+    if image and found["twitter:image"] and found["twitter:image"][0] != image[0]:
+        problems.append(f"(o9) twitter:image is {show(found['twitter:image'][0])}, not "
+                        f"og:image's {show(image[0])}; both are the same whole string")
+    if alt and found["twitter:image:alt"] and found["twitter:image:alt"][0] != alt[0]:
+        problems.append(f"(o11) twitter:image:alt is {show(found['twitter:image:alt'][0])}, "
+                        f"not og:image:alt's {show(alt[0])}; both are the same whole string")
+    if images is not None and len(image) == 1 and image[0] is not None:
+        images[rel] = (image[0], alt[0] if len(alt) == 1 else None)
     for key, values in found.items():
         for value in values:
             if value is not None:
@@ -12613,7 +12758,8 @@ def preview_problems(text, rel, built):
             one[key] = values[0]
     for key, want in PREVIEW_FIXED.items():
         if key in one and one[key] != want:
-            problems.append(f"(o2) {key} is {show(one[key])}, not {show(want)}")
+            branch = "(o10)" if key.startswith("og:image") else "(o2)"
+            problems.append(f"{branch} {key} is {show(one[key])}, not {show(want)}")
     page_url = SITE_ORIGIN + own_path(rel[len("public/"):])
     if "og:url" in one and one["og:url"] != page_url:
         problems.append(f"(o3) og:url is {show(one['og:url'])}, not this page's canonical URL "
@@ -12643,6 +12789,794 @@ def preview_problems(text, rel, built):
             and squash(one["og:description"]) != squash(descriptions[0]):
         problems.append(f"(o6) og:description is {show(one['og:description'])}, not the meta "
                         f"description {show(descriptions[0])}")
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# The link preview card images (Replikanti/interviewscam#44, ADR-0009 parts
+# 4 to 6). The pinned Hugo draws each card at build time with images.Filter
+# over images.Padding and images.Text, from layouts/_partials/preview-image.html
+# with the bundled Noto Sans; layouts/_partials/preview-wrap.html breaks the
+# lines itself from the advance table in data/preview.toml, so Hugo never
+# re-wraps one. This section holds the font reader that prints that table
+# (`sitecheck preview-metrics`), the guard of the pinned files, the PNG reader
+# of site rule (o) and the pixel check of `site --preview-pixels`.
+
+# The pinned files of the cards (guard_preview_pins, literals L6): the 1 x 1
+# base image the filters grow into the card, the two static Noto Sans v2.015
+# faces (notofonts/notofonts.github.io commit 28b15b4b43b7, unhinted ttf,
+# downloaded and measured 2026-11-24 and again 2026-11-25), and their SIL
+# OFL 1.1 text (notofonts/latin-greek-cyrillic commit ffaec0a75687), which
+# the licence asks to travel with the fonts. The licence lives under docs/
+# because a text file under assets/ fails literals L1.
+PREVIEW_BASE = "assets/og/base.png"
+PREVIEW_FONTS = {"regular": "assets/fonts/noto-sans-regular.ttf",
+                 "bold": "assets/fonts/noto-sans-bold.ttf"}
+PREVIEW_LICENCE = "docs/licenses/NotoSans-OFL.txt"
+PREVIEW_ASSET_SHA256 = {
+    PREVIEW_BASE: "1280e8de649805526731cc11672b0479f5ca25d9bd7ebf7a3375f8a9c966205e",
+    PREVIEW_FONTS["regular"]: "f3961a9cde016d41a4879aecda1474d3a36d6bf54fa0e4643de029cc2248b0e8",
+    PREVIEW_FONTS["bold"]: "87cb2d84472a7d66da659ee47b6cdb9552326e8c128245231f191b6ac72529d9",
+    PREVIEW_LICENCE: "cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a",
+}
+# The two directories that hold only those files, and the font suffixes no
+# other path under assets/ or static/ (and no path of the built tree, site
+# rule (o12)) may carry, compared folded: a second font would draw a card
+# with outlines nobody measured, and a published font is a file nobody asked
+# for (D9 holds either way: the card needs no request at view time).
+PREVIEW_ASSET_DIRS = ("assets/og", "assets/fonts")
+PREVIEW_FONT_SUFFIXES = (".ttf", ".otf", ".ttc", ".woff", ".woff2")
+# data/ holds exactly these files. Hugo merges every file under data/ by
+# its path into hugo.Data (hugolib handleDataFile), so a data/preview.yaml
+# or data/preview/x.toml would merge into hugo.Data.preview, past the
+# metrics check below, and any other file would be a copy source no check
+# reads.
+DATA_FILES = ("data/labels.toml", "data/preview.toml", "data/tokens.toml")
+PREVIEW_DATA = "data/preview.toml"
+# The line of data/preview.toml after which the file is exactly the output
+# of `sitecheck preview-metrics` (the guard compares the bytes).
+PREVIEW_METRICS_MARK = ("# Generated by `python3 -I tools/sitecheck.py preview-metrics`. Do not "
+                        "edit below this line; the guard compares it with that output.")
+# The drawable characters (ADR-0009 part 5): the code points of these
+# blocks that the font maps to a glyph with a non-zero advance, minus the
+# default-ignorable ones (INVISIBLE), every space but U+0020 that Go's
+# strings.Fields splits on (PARSER_ONLY_SPACE, U+00A0 among them: Hugo's
+# images.Text would redraw it as U+0020 at another width), C0 and C1, and
+# the right-to-left letters (bidi classes R and AL of the vendored
+# DerivedBidiClass.txt), which x/image draws in logical order. Every input
+# is a pinned file, so the set is the same on every runner.
+PREVIEW_BLOCKS = (
+    (0x0020, 0x007E),  # Basic Latin, printable
+    (0x00A0, 0x00FF),  # Latin-1 Supplement
+    (0x0100, 0x024F),  # Latin Extended-A and -B
+    (0x0370, 0x03FF),  # Greek and Coptic
+    (0x0400, 0x04FF),  # Cyrillic
+    (0x1E00, 0x1EFF),  # Latin Extended Additional
+    (0x2010, 0x2044),  # General Punctuation, dashes to the fraction slash
+)
+# ink_slack is measured at the largest size a card draws (ADR-0009 Numbers:
+# the 72 px brand and, from the record cards, the first name size), plus
+# 2 px: 1 for the anti-aliased edge and 1 for Hugo's rounding (images.Text
+# puts the baseline at y + Ceil(ascent), and x/image rounds every advance to
+# 1/64 px).
+PREVIEW_INK_SIZE = 72
+PREVIEW_INK_EXTRA = 2
+# The layout keys of data/preview.toml above the generated part, each an
+# integer (ADR-0009 Numbers): the canvas, the margin on every side, the left
+# bar inside the margin, the gap between blocks, and the two sizes of the
+# site card. X's large card crops 15 px at the top and the bottom of a
+# 1200 x 630 image (2:1 of 1.91:1), so the margin covers that crop plus the
+# ink slack (guard_preview_pins).
+PREVIEW_LAYOUT = {"canvas": ("width", "height", "margin", "bar", "gap"),
+                  "site": ("brand_size", "description_size")}
+PREVIEW_CROP = 15
+# The card image (site rule (o10)): 1200 x 630, 8-bit RGB or RGBA, no
+# interlace; then only IDAT chunks and IEND. Go's PNG encoder writes nothing
+# else, and an ancillary chunk (tEXt, zTXt, iTXt, eXIf) carries text no
+# check reads.
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+PREVIEW_IMAGE_SIZE = (1200, 630)
+PREVIEW_IMAGE_COLOUR_TYPES = {2: 3, 6: 4}  # colour type -> bytes per pixel
+
+
+class FontError(Exception):
+    """A font this reader does not take, with the reason."""
+
+
+def font_u16(b, at):
+    if at < 0 or at + 2 > len(b):
+        raise FontError("a field past the end of its table")
+    return struct.unpack_from(">H", b, at)[0]
+
+
+def font_i16(b, at):
+    if at < 0 or at + 2 > len(b):
+        raise FontError("a field past the end of its table")
+    return struct.unpack_from(">h", b, at)[0]
+
+
+def font_u32(b, at):
+    if at < 0 or at + 4 > len(b):
+        raise FontError("a field past the end of its table")
+    return struct.unpack_from(">I", b, at)[0]
+
+
+def font_tables(data):
+    """{tag: bytes} of a TrueType-outline sfnt file."""
+    if font_u32(data, 0) != 0x00010000:
+        raise FontError("not a TrueType-outline font (sfnt version 0x00010000)")
+    tables = {}
+    for i in range(font_u16(data, 4)):
+        at = 12 + 16 * i
+        tag = data[at:at + 4]
+        offset, length = font_u32(data, at + 8), font_u32(data, at + 12)
+        if len(tag) != 4 or offset + length > len(data):
+            raise FontError("the table directory points past the end of the file")
+        tables[tag.decode("latin-1")] = data[offset:offset + length]
+    return tables
+
+
+def font_cmap(b):
+    """The Unicode character map: every Unicode subtable (platform 0, or
+    platform 3 encoding 1 or 10) of format 4 or 12, which must agree on every
+    code point of PREVIEW_BLOCKS; any other format of such a subtable is a
+    FontError (x/image picks one of them, so they must not differ)."""
+    maps = []
+    for k in range(font_u16(b, 2)):
+        platform, encoding = font_u16(b, 4 + 8 * k), font_u16(b, 6 + 8 * k)
+        offset = font_u32(b, 8 + 8 * k)
+        if platform != 0 and (platform, encoding) not in ((3, 1), (3, 10)):
+            continue
+        fmt, out = font_u16(b, offset), {}
+        if fmt == 4:
+            segs = font_u16(b, offset + 6) // 2
+            ends, starts = offset + 14, offset + 16 + 2 * segs
+            deltas, ranges = starts + 2 * segs, starts + 4 * segs
+            for s in range(segs):
+                end, start = font_u16(b, ends + 2 * s), font_u16(b, starts + 2 * s)
+                delta, roff = font_u16(b, deltas + 2 * s), font_u16(b, ranges + 2 * s)
+                for c in range(start, end + 1):
+                    if c == 0xFFFF:
+                        continue
+                    g = c if roff == 0 else font_u16(b, ranges + 2 * s + roff + 2 * (c - start))
+                    if roff == 0 or g:
+                        g = (g + delta) & 0xFFFF
+                    if g:
+                        out[c] = g
+        elif fmt == 12:
+            for k2 in range(font_u32(b, offset + 12)):
+                at = offset + 16 + 12 * k2
+                start, end, gid = font_u32(b, at), font_u32(b, at + 4), font_u32(b, at + 8)
+                if end < start or end > 0x10FFFF:
+                    raise FontError("a cmap format 12 group out of order")
+                for c in range(start, min(end, 0x2FFFF) + 1):
+                    if gid + c - start:
+                        out[c] = gid + c - start
+        else:
+            raise FontError(f"a Unicode cmap subtable of format {fmt}, not 4 or 12")
+        maps.append(out)
+    if not maps:
+        raise FontError("no Unicode cmap subtable of format 4 or 12")
+    for lo, hi in PREVIEW_BLOCKS:
+        for c in range(lo, hi + 1):
+            if len({m.get(c) for m in maps}) != 1:
+                raise FontError(f"the Unicode cmap subtables map U+{c:04X} differently")
+    return maps[0]
+
+
+def font_coverage(b, at):
+    """{glyph: coverage index} of an OpenType Coverage table."""
+    fmt, out = font_u16(b, at), {}
+    if fmt == 1:
+        for i in range(font_u16(b, at + 2)):
+            out[font_u16(b, at + 4 + 2 * i)] = i
+    elif fmt == 2:
+        for i in range(font_u16(b, at + 2)):
+            s, e = font_u16(b, at + 4 + 6 * i), font_u16(b, at + 6 + 6 * i)
+            for g in range(s, e + 1):
+                out[g] = font_u16(b, at + 8 + 6 * i) + g - s
+    else:
+        raise FontError(f"a GPOS coverage table of format {fmt}")
+    return out
+
+
+def font_classes(b, at):
+    """{glyph: class} of an OpenType ClassDef table (absent glyphs: 0)."""
+    fmt, out = font_u16(b, at), {}
+    if fmt == 1:
+        start = font_u16(b, at + 2)
+        for i in range(font_u16(b, at + 4)):
+            out[start + i] = font_u16(b, at + 6 + 2 * i)
+    elif fmt == 2:
+        for i in range(font_u16(b, at + 2)):
+            s, e = font_u16(b, at + 4 + 6 * i), font_u16(b, at + 6 + 6 * i)
+            for g in range(s, e + 1):
+                out[g] = font_u16(b, at + 8 + 6 * i)
+    else:
+        raise FontError(f"a GPOS class table of format {fmt}")
+    return out
+
+
+def font_kern_bound(b):
+    """{(glyph 1, glyph 2): kern} for every pair a GPOS pair-adjustment
+    subtable (lookup type 2, or 9 wrapping 2) moves apart, with the largest
+    value any subtable gives it (ADR-0009 part 5). x/image (v0.47.0, the
+    pinned Hugo's) kerns with the first subtable of a kern feature of the
+    latn or DFLT script whose value formats are exactly X_ADVANCE of the
+    first glyph (0x0004, 0x0000); reading every such subtable of every
+    lookup and keeping the largest positive value is an upper bound of what
+    it applies to any pair, whatever the lookup order, and a negative kern
+    only narrows a line, so the bound leaves it out."""
+    if not b:
+        return {}
+    if font_u16(b, 0) != 1:
+        raise FontError("a GPOS table of another major version than 1")
+    lookups, out = font_u16(b, 8), {}
+    for k in range(font_u16(b, lookups)):
+        table = lookups + font_u16(b, lookups + 2 + 2 * k)
+        kind = font_u16(b, table)
+        for s in range(font_u16(b, table + 4)):
+            sub, sub_kind = table + font_u16(b, table + 6 + 2 * s), kind
+            if kind == 9:
+                if font_u16(b, sub) != 1:
+                    raise FontError("a GPOS extension subtable of another format than 1")
+                sub_kind, sub = font_u16(b, sub + 2), sub + font_u32(b, sub + 4)
+            if sub_kind != 2 or (font_u16(b, sub + 4), font_u16(b, sub + 6)) != (4, 0):
+                continue
+            fmt, cover = font_u16(b, sub), font_coverage(b, sub + font_u16(b, sub + 2))
+            if fmt == 1:
+                sets = font_u16(b, sub + 8)
+                for g1, idx in cover.items():
+                    if idx >= sets:
+                        continue
+                    pairs = sub + font_u16(b, sub + 10 + 2 * idx)
+                    for i in range(font_u16(b, pairs)):
+                        g2, v = font_u16(b, pairs + 2 + 4 * i), font_i16(b, pairs + 4 + 4 * i)
+                        if v > out.get((g1, g2), 0):
+                            out[(g1, g2)] = v
+            elif fmt == 2:
+                first = font_classes(b, sub + font_u16(b, sub + 8))
+                second = font_classes(b, sub + font_u16(b, sub + 10))
+                n1, n2 = font_u16(b, sub + 12), font_u16(b, sub + 14)
+                members = {}
+                for g, c in second.items():
+                    members.setdefault(c, []).append(g)
+                for g1 in cover:
+                    c1 = first.get(g1, 0)
+                    if c1 >= n1:
+                        raise FontError("a GPOS class past the class count")
+                    for c2 in range(n2):
+                        v = font_i16(b, sub + 16 + 2 * (c1 * n2 + c2))
+                        if v <= 0:
+                            continue
+                        if c2 == 0:
+                            raise FontError("a positive GPOS kern on class 0 (every glyph "
+                                            "no class names), which this reader does not "
+                                            "expand")
+                        for g2 in members.get(c2, ()):
+                            if v > out.get((g1, g2), 0):
+                                out[(g1, g2)] = v
+            else:
+                raise FontError(f"a GPOS pair-adjustment subtable of format {fmt}")
+    return out
+
+
+def font_metrics(data):
+    """What a card needs from one font file: the vertical metrics, the
+    advance and outline bounding box of every glyph, the character map and
+    the kerning bound. Any shape outside what this reader takes is a
+    FontError: no TrueType outlines, a missing table, a kern table (x/image
+    would kern with it), a hhea and an OS/2 typo metric that disagree while
+    USE_TYPO_METRICS is set (x/image may read either)."""
+    tables = font_tables(data)
+    for tag in ("head", "hhea", "maxp", "hmtx", "cmap", "loca", "glyf", "OS/2"):
+        if tag not in tables:
+            raise FontError(f"no {tag} table")
+    if "kern" in tables:
+        raise FontError("a kern table, which x/image applies and this reader does not read")
+    head, hhea, os2 = tables["head"], tables["hhea"], tables["OS/2"]
+    if font_u32(head, 12) != 0x5F0F3CF5:
+        raise FontError("the head table's magic number is wrong")
+    upm, loca_format = font_u16(head, 18), font_i16(head, 50)
+    ascender, descender, line_gap = font_i16(hhea, 4), font_i16(hhea, 6), font_i16(hhea, 8)
+    if font_u16(os2, 62) & 0x80 and (font_i16(os2, 68), font_i16(os2, 70),
+                                     font_i16(os2, 72)) != (ascender, descender, line_gap):
+        raise FontError("USE_TYPO_METRICS is set and the OS/2 typo metrics differ from hhea")
+    glyphs, metrics = font_u16(tables["maxp"], 4), font_u16(hhea, 34)
+    if not 0 < metrics <= glyphs or upm == 0 or loca_format not in (0, 1):
+        raise FontError("the glyph count, the metric count, unitsPerEm or the loca format "
+                        "is out of range")
+    hmtx, loca, glyf = tables["hmtx"], tables["loca"], tables["glyf"]
+    advance = [font_u16(hmtx, 4 * min(g, metrics - 1)) for g in range(glyphs)]
+    offsets = [font_u16(loca, 2 * g) * 2 if loca_format == 0 else font_u32(loca, 4 * g)
+               for g in range(glyphs + 1)]
+    boxes = {g: tuple(font_i16(glyf, offsets[g] + k) for k in (2, 4, 6, 8))
+             for g in range(glyphs) if offsets[g + 1] > offsets[g]}
+    return {"units_per_em": upm, "ascender": ascender, "descender": descender,
+            "line_gap": line_gap, "advance": advance, "boxes": boxes,
+            "cmap": font_cmap(tables["cmap"]), "kern": font_kern_bound(tables.get("GPOS"))}
+
+
+def preview_drawable(metrics, bidi):
+    """The drawable code points of one font (see PREVIEW_BLOCKS), in order."""
+    rtl = {BIDI_CLASSES.index("R"), BIDI_CLASSES.index("AL")}
+    out = []
+    for lo, hi in PREVIEW_BLOCKS:
+        for c in range(lo, hi + 1):
+            glyph = metrics["cmap"].get(c)
+            if not glyph or not metrics["advance"][glyph] or c in INVISIBLE \
+                    or c in PARSER_ONLY_SPACE or c < 0x20 or 0x7F <= c <= 0x9F \
+                    or bidi[c] in rtl:
+                continue
+            out.append(c)
+    return out
+
+
+def preview_toml_key(text):
+    """A TOML basic string of text: printable ASCII as written (with \\" and
+    \\\\), everything else as \\uXXXX, so no editor's normalisation can turn
+    one key into another."""
+    out = []
+    for c in text:
+        if c in '"\\':
+            out.append("\\" + c)
+        elif 0x20 <= ord(c) <= 0x7E:
+            out.append(c)
+        else:
+            out.append(f"\\u{ord(c):04X}")
+    return '"' + "".join(out) + '"'
+
+
+def preview_metrics(root):
+    """{face: {"face": {...}, "advance": {char: units}, "kern": {pair:
+    units}}} from the two pinned fonts under root (FontError or OSError
+    when one cannot be read)."""
+    bidi = load_bidi_classes(BIDI_CLASS_PATH, BIDI_CLASS_SHA256, UNICODE_DATA_VERSION,
+                             BIDI_CLASS_ENTRIES)
+    out = {}
+    for face, rel in PREVIEW_FONTS.items():
+        try:
+            metrics = font_metrics((root / rel).read_bytes())
+        except FontError as exc:
+            raise FontError(f"{rel}: {exc}") from None
+        chars = preview_drawable(metrics, bidi)
+        glyph = {c: metrics["cmap"][c] for c in chars}
+        overhang = 0
+        for c in chars:
+            box = metrics["boxes"].get(glyph[c])
+            if box is not None:
+                xmin, ymin, xmax, ymax = box
+                overhang = max(overhang, -xmin, xmax - metrics["advance"][glyph[c]],
+                               ymax - metrics["ascender"], metrics["descender"] - ymin)
+        upm = metrics["units_per_em"]
+        slack = -(-overhang * PREVIEW_INK_SIZE // upm) + PREVIEW_INK_EXTRA
+        by_glyph = {}
+        for c in chars:
+            by_glyph.setdefault(glyph[c], []).append(c)
+        kern = {}
+        for (g1, g2), v in metrics["kern"].items():
+            for a in by_glyph.get(g1, ()):
+                for b in by_glyph.get(g2, ()):
+                    kern[chr(a) + chr(b)] = v
+        out[face] = {
+            "face": {"units_per_em": upm, "ascender": metrics["ascender"],
+                     "descender": metrics["descender"], "line_gap": metrics["line_gap"],
+                     "ink_slack": slack},
+            "advance": {chr(c): metrics["advance"][glyph[c]] for c in chars},
+            "kern": kern,
+        }
+    return out
+
+
+def preview_metrics_text(metrics):
+    """The canonical text of the generated part of data/preview.toml."""
+    lines = [PREVIEW_METRICS_MARK]
+    for table in ("face", "advance", "kern"):
+        for face in PREVIEW_FONTS:
+            lines += ["", f"[{table}.{face}]"]
+            items = metrics[face][table].items()
+            if table != "face":
+                items = sorted(items, key=lambda kv: [ord(c) for c in kv[0]])
+            lines += [f"{k if table == 'face' else preview_toml_key(k)} = {v}"
+                      for k, v in items]
+    return "\n".join(lines) + "\n"
+
+
+def cmd_preview_metrics(args):
+    root = Path(args.root).resolve()
+    try:
+        text = preview_metrics_text(preview_metrics(root))
+    except (OSError, FontError) as exc:
+        raise UsageError(f"cannot read the preview fonts: {exc}") from None
+    sys.stdout.write(text)
+    return 0
+
+
+def preview_layout(root):
+    """(layout, metrics, problems) of root's data/preview.toml: the layout
+    tables of PREVIEW_LAYOUT as integers, and the generated tables as Hugo
+    reads them."""
+    try:
+        data = tomllib.loads((root / PREVIEW_DATA).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        return None, None, [f"cannot read: {exc}"]
+    problems, layout = [], {}
+    tables = set(PREVIEW_LAYOUT) | {"face", "advance", "kern"}
+    for name in sorted(set(data) - tables):
+        problems.append(f"the table [{name}] is none of {', '.join(sorted(tables))}")
+    for name, keys in PREVIEW_LAYOUT.items():
+        table = data.get(name)
+        if not isinstance(table, dict) or sorted(table) != sorted(keys):
+            problems.append(f"[{name}] holds exactly {', '.join(keys)}")
+            continue
+        for key in keys:
+            value = table[key]
+            if type(value) is not int or value <= 0:
+                problems.append(f"[{name}] {key} is {value!r}, not a positive integer")
+        layout[name] = table
+    return layout, data, problems
+
+
+def guard_preview_pins(root, files, findings):
+    """The card's pinned files and closed lists (ADR-0009 part 5): each of
+    PREVIEW_ASSET_SHA256 a regular file (no symlink) with its SHA-256,
+    assets/og/ and assets/fonts/ holding nothing else, no font suffix
+    anywhere else under assets/ or static/, data/ exactly DATA_FILES, the
+    base image exactly 1 x 1, 8-bit RGB, and data/preview.toml's generated
+    part byte for byte the output of `sitecheck preview-metrics`, its layout
+    tables complete, and a margin that holds the crop and the ink slack."""
+    why = "ADR-0009 part 5"
+    for rel in files:
+        folded = guard_fold(rel)
+        if rel.startswith(tuple(d + "/" for d in PREVIEW_ASSET_DIRS)) \
+                and rel not in PREVIEW_ASSET_SHA256:
+            findings.add(rel, f"assets/og/ and assets/fonts/ hold only the pinned files of "
+                         f"PREVIEW_ASSET_SHA256 ({why})")
+        elif rel.startswith(PUBLIC_IMAGE_DIRS) and folded.endswith(PREVIEW_FONT_SUFFIXES) \
+                and rel not in PREVIEW_ASSET_SHA256:
+            findings.add(rel, f"a font file under assets/ or static/ that is not pinned; the "
+                         f"cards draw only with the two pinned faces ({why})")
+        if rel.startswith("data/") and rel not in DATA_FILES:
+            findings.add(rel, f"data/ holds exactly {', '.join(DATA_FILES)}: Hugo merges "
+                         "every file under data/ into hugo.Data by its path, so another file "
+                         "is a copy source no check reads, and data/preview.yaml or "
+                         f"data/preview/x.toml would merge into the card metrics ({why})")
+    # A root with none of the card's files (a guard fixture of another
+    # rule) has no cards to hold; the real templates fail the build without
+    # data/preview.toml, a font or the base image (measured with the pinned
+    # Hugo: `sub` of nil, `invalid text font source: <nil>`).
+    card_paths = [*PREVIEW_ASSET_SHA256, PREVIEW_DATA, *PREVIEW_ASSET_DIRS]
+    if not any((root / p).exists() or (root / p).is_symlink() for p in card_paths):
+        return
+    for rel, pinned in PREVIEW_ASSET_SHA256.items():
+        path = root / rel
+        if path.is_symlink() or not path.is_file():
+            findings.add(rel, f"a pinned link preview file is missing, a symlink or not a "
+                         f"regular file; it is exactly the pinned file ({why})")
+            continue
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != pinned:
+            findings.add(rel, f"the SHA-256 is {digest}, not the one pinned in "
+                         "tools/sitecheck.py (PREVIEW_ASSET_SHA256); a new font, base image "
+                         f"or licence text is a tools/ change with the safety-net review ({why})")
+    base = root / PREVIEW_BASE
+    if base.is_file() and not base.is_symlink():
+        data = base.read_bytes()
+        if data[:8] != PNG_SIGNATURE or data[12:16] != b"IHDR" \
+                or data[16:26] != b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02":
+            findings.add(PREVIEW_BASE, "not a 1 x 1, 8-bit RGB PNG (colour type 2); the "
+                         "first filters crop its one pixel away, and another size or colour "
+                         f"type would change the card's size or alpha ({why})")
+    if any((root / rel).is_symlink() or not (root / rel).is_file()
+           for rel in PREVIEW_FONTS.values()):
+        return  # reported above; the metrics need both fonts
+    try:
+        computed = preview_metrics(root)
+        want = preview_metrics_text(computed)
+    except (OSError, FontError) as exc:
+        findings.add(PREVIEW_DATA, f"cannot compute the metrics from the pinned fonts: {exc}")
+        return
+    try:
+        text = (root / PREVIEW_DATA).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        findings.add(PREVIEW_DATA, f"cannot read: {exc}")
+        return
+    at = text.find(PREVIEW_METRICS_MARK + "\n")
+    if at < 0 or (at and text[at - 1] != "\n") or text[at:] != want:
+        findings.add(PREVIEW_DATA, "the part from the line PREVIEW_METRICS_MARK on is not "
+                     "byte for byte the output of `python3 -I tools/sitecheck.py "
+                     "preview-metrics`; replace it with that output (the advance and kern "
+                     f"tables must be the pinned fonts' own, {why})")
+    layout, _, problems = preview_layout(root)
+    for problem in problems:
+        findings.add(PREVIEW_DATA, f"{problem} ({why})")
+    if layout and "canvas" in layout and not problems:
+        canvas = layout["canvas"]
+        slack = max(face["face"]["ink_slack"] for face in computed.values())
+        if (canvas["width"], canvas["height"]) != PREVIEW_IMAGE_SIZE:
+            findings.add(PREVIEW_DATA, f"[canvas] is {canvas['width']} x {canvas['height']}, "
+                         f"not {PREVIEW_IMAGE_SIZE[0]} x {PREVIEW_IMAGE_SIZE[1]} (site rule "
+                         f"(o10), {why})")
+        if canvas["margin"] < PREVIEW_CROP + slack or canvas["margin"] < canvas["bar"] + slack:
+            findings.add(PREVIEW_DATA, f"[canvas] margin {canvas['margin']} is less than the "
+                         f"crop ({PREVIEW_CROP}) or the bar ({canvas['bar']}) plus the ink slack "
+                         f"({slack}); grow the margin ({why} Numbers)")
+        sizes = [v for v in layout.get("site", {}).values()]
+        if any(size > PREVIEW_INK_SIZE for size in sizes):
+            findings.add(PREVIEW_DATA, f"a size above {PREVIEW_INK_SIZE} px, the size the ink "
+                         f"slack is measured at (PREVIEW_INK_SIZE, {why})")
+
+
+def preview_wrap(text, face, size, width, data):
+    """The replica of layouts/_partials/preview-wrap.html over data, the
+    parsed data/preview.toml: the lines of text in face at size px on a
+    line width px wide, or False when a character has no advance entry.
+    Greedy at U+0020 (empty words dropped); a word wider than the width is
+    broken between characters; a line fits when its units (advances plus
+    every positive kern of a neighbouring pair) x size <= width x
+    unitsPerEm. The self-test compares it with the template row by row."""
+    advance, kern = data["advance"][face], data["kern"][face]
+    limit = width * data["face"][face]["units_per_em"]
+    lines, line, units, last = [], "", 0, ""
+    for word in text.split(" "):
+        if not word:
+            continue
+        if any(c not in advance for c in word):
+            return False
+        wide = sum(advance[c] for c in word) + sum(kern.get(a + b, 0)
+                                                   for a, b in zip(word, word[1:]))
+        joined = units + kern.get(last + " ", 0) + advance[" "] + kern.get(" " + word[0], 0) + wide
+        if line and joined * size <= limit:
+            line, units = f"{line} {word}", joined
+        else:
+            if line:
+                lines.append(line)
+            if wide * size <= limit:
+                line, units = word, wide
+            else:
+                line, units, prev = "", 0, ""
+                for c in word:
+                    grown = units + kern.get(prev + c, 0) + advance[c]
+                    if line and grown * size > limit:
+                        lines.append(line)
+                        line, units = c, advance[c]
+                    else:
+                        line, units = line + c, grown
+                    prev = c
+        last = word[-1]
+    if line:
+        lines.append(line)
+    return lines
+
+
+def png_chunks(data):
+    """(chunks, problems) of one file read as PNG: chunks is [(type, body)]
+    up to IEND."""
+    if data[:8] != PNG_SIGNATURE:
+        return [], ["not a PNG (no PNG signature)"]
+    chunks, at, problems = [], 8, []
+    while True:
+        if at + 12 > len(data):
+            problems.append("truncated: the file ends inside a chunk or before IEND")
+            break
+        length = struct.unpack_from(">I", data, at)[0]
+        kind = data[at + 4:at + 8]
+        body = data[at + 8:at + 8 + length]
+        if at + 12 + length > len(data):
+            problems.append(f"truncated: the chunk {kind!r} runs past the end of the file")
+            break
+        crc = struct.unpack_from(">I", data, at + 8 + length)[0]
+        if zlib.crc32(kind + body) != crc:
+            problems.append(f"the chunk {kind!r} has a wrong CRC")
+        chunks.append((kind, body))
+        at += 12 + length
+        if kind == b"IEND":
+            if at != len(data):
+                problems.append(f"{len(data) - at} bytes after IEND")
+            break
+    return chunks, problems
+
+
+def png_problems(data):
+    """(o10) one card image: a PNG, IHDR first, PREVIEW_IMAGE_SIZE, 8-bit,
+    colour type 2 or 6, no interlace, then only IDAT chunks, then an empty
+    IEND and nothing after it, every CRC right."""
+    chunks, problems = png_chunks(data)
+    if not chunks:
+        return problems
+    kind, body = chunks[0]
+    if kind != b"IHDR" or len(body) != 13:
+        return problems + ["the first chunk is not a 13-byte IHDR"]
+    width, height, depth, colour, compression, filtering, interlace = \
+        struct.unpack(">IIBBBBB", body)
+    if (width, height) != PREVIEW_IMAGE_SIZE:
+        problems.append(f"{width} x {height}, not {PREVIEW_IMAGE_SIZE[0]} x "
+                        f"{PREVIEW_IMAGE_SIZE[1]}")
+    if depth != 8 or colour not in PREVIEW_IMAGE_COLOUR_TYPES:
+        problems.append(f"bit depth {depth} and colour type {colour}, not 8 and 2 or 6")
+    if (compression, filtering, interlace) != (0, 0, 0):
+        problems.append("compression, filter method or interlace not 0")
+    rest = [k for k, _ in chunks[1:]]
+    idats = len(rest) - 1 if rest and rest[-1] == b"IEND" else len(rest)
+    if not rest or rest[-1] != b"IEND" or chunks[-1][1]:
+        problems.append("no empty IEND chunk at the end")
+    if not idats or any(k != b"IDAT" for k in rest[:idats]):
+        others = sorted({k.decode("latin-1") for k in rest[:idats] if k != b"IDAT"})
+        problems.append("the chunks between IHDR and IEND are not IDAT alone"
+                        + (f" ({', '.join(others)}: an ancillary chunk can carry text no "
+                           "check reads)" if others else ""))
+    return problems
+
+
+def png_pixels(data):
+    """(width, height, bytes per pixel, rows) of a PNG that passes
+    png_problems: the IDAT stream inflated and unfiltered (the five filter
+    types of PNG, standard library only). A filter type above 4 or a stream
+    of the wrong length raises ValueError."""
+    chunks, _ = png_chunks(data)
+    width, height, _, colour = struct.unpack(">IIBB", chunks[0][1][:10])
+    bpp = PREVIEW_IMAGE_COLOUR_TYPES[colour]
+    raw = zlib.decompress(b"".join(body for kind, body in chunks if kind == b"IDAT"))
+    stride = width * bpp
+    if len(raw) != height * (stride + 1):
+        raise ValueError(f"the image data holds {len(raw)} bytes, not {height * (stride + 1)}")
+    rows, prior = [], bytearray(stride)
+    for y in range(height):
+        kind = raw[y * (stride + 1)]
+        line = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        if kind == 1:
+            for i in range(bpp, stride):
+                line[i] = (line[i] + line[i - bpp]) & 0xFF
+        elif kind == 2:
+            for i in range(stride):
+                line[i] = (line[i] + prior[i]) & 0xFF
+        elif kind == 3:
+            for i in range(stride):
+                left = line[i - bpp] if i >= bpp else 0
+                line[i] = (line[i] + ((left + prior[i]) >> 1)) & 0xFF
+        elif kind == 4:
+            for i in range(stride):
+                a = line[i - bpp] if i >= bpp else 0
+                b, c = prior[i], prior[i - bpp] if i >= bpp else 0
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) \
+                    & 0xFF
+        elif kind != 0:
+            raise ValueError(f"row {y} has the filter type {kind}; PNG has types 0 to 4")
+        rows.append(bytes(line))
+        prior = line
+    return width, height, bpp, rows
+
+
+def hex_rgb(value):
+    return tuple(int(value[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def preview_pixel_problems(width, height, bpp, rows, box, bar, ground, primary):
+    """--preview-pixels on one decoded card: every pixel outside box (x0, y0,
+    x1, y1, half-open: the content box grown by the ink slack) and right of
+    the bar is ground, every pixel of the bar (x < bar) is primary. Rows are
+    compared as byte strings, pixel by pixel only where one differs."""
+    x0, y0, x1, y1 = box
+    alpha = b"\xff" if bpp == 4 else b""
+    want = {"ground": bytes(ground) + alpha, "primary": bytes(primary) + alpha}
+    bad = {"ground": [0, None], "primary": [0, None]}
+
+    def segment(y, row, start, end, name):
+        if start >= end or row[start * bpp:end * bpp] == want[name] * (end - start):
+            return
+        for x in range(start, end):
+            if row[x * bpp:(x + 1) * bpp] != want[name]:
+                bad[name][0] += 1
+                if bad[name][1] is None:
+                    bad[name][1] = (x, y, row[x * bpp:(x + 1) * bpp].hex())
+
+    for y, row in enumerate(rows):
+        segment(y, row, 0, bar, "primary")
+        if y0 <= y < y1:
+            segment(y, row, bar, max(bar, x0), "ground")
+            segment(y, row, max(bar, x1), width, "ground")
+        else:
+            segment(y, row, bar, width, "ground")
+    problems = []
+    for name, (count, first) in bad.items():
+        if count:
+            where = ("in the left bar" if name == "primary" else
+                     f"outside the content box grown by the ink slack, x {x0} to {x1 - 1}, "
+                     f"y {y0} to {y1 - 1}")
+            problems.append(f"{count} pixel(s) {where} are not the {name} colour (first at "
+                            f"x {first[0]}, y {first[1]}: #{first[2]}); a card's text overran "
+                            "its box or the layout moved")
+    return problems
+
+
+def preview_card_geometry(root):
+    """(box, bar, ground, primary, problems) of root for --preview-pixels:
+    the content box (the margin on every side) grown by the largest ink
+    slack of data/preview.toml, as (x0, y0, x1, y1) half-open, the bar width,
+    and the ground and primary colours of data/tokens.toml as RGB."""
+    layout, data, problems = preview_layout(root)
+    ground = primary = box = bar = None
+    try:
+        colours = tomllib.loads((root / TOKENS_FILE).read_text(encoding="utf-8"))["color"]
+        ground, primary = hex_rgb(colours["ground"]), hex_rgb(colours["primary"])
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, KeyError, TypeError,
+            ValueError) as exc:
+        problems = problems + [f"cannot read the ground and primary colours of "
+                               f"{TOKENS_FILE}: {exc!r}"]
+    if not problems:
+        try:
+            slack = max(face["ink_slack"] for face in data["face"].values())
+        except (KeyError, TypeError, AttributeError, ValueError):
+            return None, None, None, None, ["no [face.*] ink_slack"]
+        canvas = layout["canvas"]
+        m, bar = canvas["margin"], canvas["bar"]
+        box = (m - slack, m - slack, canvas["width"] - m + slack, canvas["height"] - m + slack)
+    return box, bar, ground, primary, problems
+
+
+def preview_image_problems(root, public, files, images, built, pixels):
+    """Site rule (o)'s tree-wide branches (ADR-0009 part 6). images: page
+    rel -> (og:image, og:image:alt) (preview_problems). (o9) the file each
+    og:image names is a regular file of the built tree; (o10) it is a card
+    PNG (png_problems); (o12) every file under og/ is some page's og:image
+    and no font file is anywhere in the tree; with the built pins, (o13)
+    every page that is not a record's own page has Home's og:image and the
+    site card's alt (PREVIEW_ALT_SITE). pixels (--preview-pixels, the fixture
+    build only): every card passes preview_pixel_problems with the content
+    box and colours of root's data/preview.toml and data/tokens.toml.
+    Returns [(where, message)]."""
+    problems, named = [], {}
+    for rel, (url, _) in sorted(images.items()):
+        if not PREVIEW_IMAGE_URL.fullmatch(url):
+            continue  # (o9) on the page already
+        path = public / url[len(SITE_ORIGIN) + 1:]
+        if path.is_symlink() or not path.is_file():
+            problems.append((rel, f"(o9) og:image names {show(url)}, which is no regular file "
+                             "of the built tree"))
+        else:
+            named.setdefault(path, rel)
+    cards = []
+    for path, rel in sorted(named.items()):
+        where = "public/" + path.relative_to(public).as_posix()
+        found = png_problems(path.read_bytes())
+        for problem in found:
+            problems.append((where, f"(o10) the card image of {rel}: {problem}"))
+        if not found:
+            cards.append((where, path))
+    for path in files:
+        site_rel = path.relative_to(public).as_posix()
+        if site_rel.startswith(PREVIEW_IMAGE_DIR) and path not in named:
+            problems.append(("public/" + site_rel, "(o12) a file under og/ that no page "
+                             "names as its og:image; og/ holds only the cards the pages link"))
+        if guard_fold(site_rel).endswith(PREVIEW_FONT_SUFFIXES):
+            problems.append(("public/" + site_rel, "(o12) a font file in the built tree; the "
+                             "card fonts are drawn at build time and never published"))
+    home = images.get("public/index.html")
+    if built:
+        for rel, (url, alt) in sorted(images.items()):
+            if PREVIEW_RECORD_PAGE.fullmatch(rel):
+                continue
+            if home is not None and url != home[0]:
+                problems.append((rel, f"(o13) og:image is {show(url)}, not Home's {show(home[0])}; "
+                                 "every page but a record's own page links the site card"))
+            if alt != PREVIEW_ALT_SITE:
+                problems.append((rel, f"(o13) og:image:alt is {show(alt)}, not the site card's "
+                                 f"{show(PREVIEW_ALT_SITE)} (PREVIEW_ALT_SITE)"))
+    if pixels:
+        box, bar, ground, primary, found = preview_card_geometry(root)
+        if found:
+            return problems + [(PREVIEW_DATA, f"--preview-pixels: {p}") for p in found]
+        for where, path in cards:
+            try:
+                width, height, bpp, rows = png_pixels(path.read_bytes())
+            except (ValueError, zlib.error) as exc:
+                problems.append((where, f"(o10) the card image cannot be decoded: {exc}"))
+                continue
+            for problem in preview_pixel_problems(width, height, bpp, rows, box, bar,
+                                                  ground, primary):
+                problems.append((where, f"--preview-pixels: {problem}"))
     return problems
 
 
@@ -12784,6 +13718,23 @@ def cmd_literals(args):
         for path in sorted(p for p in base.rglob("*") if p.is_file()):
             rel = path.relative_to(root).as_posix()
             suffix = path.suffix.lower()
+            pinned = PREVIEW_ASSET_SHA256.get(rel)
+            if pinned is not None:
+                # The card's base image and fonts (ADR-0009 part 5): passed
+                # exactly when their bytes are the pin; guard holds the pin.
+                try:
+                    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                except OSError as exc:
+                    findings.add(rel, f"cannot read: {exc}")
+                    continue
+                if digest != pinned:
+                    findings.add(rel, f"a link preview file whose SHA-256 is {digest}, not "
+                                 "its pin in PREVIEW_ASSET_SHA256; an image or font can draw "
+                                 "text this check cannot read, so only the pinned bytes pass "
+                                 "(L6)")
+                else:
+                    counts["other"] += 1
+                continue
             if top != "layouts" and suffix in RASTER_SUFFIXES:
                 # An image can draw text that no check reads. None exists
                 # today; the first one comes with its own review rule.
@@ -17466,6 +18417,10 @@ HUGO_CONFIG_PINNED = {
     # one URL a form may leave the origin for (site rule (a)), so it can
     # only change with the constant.
     "params.intake": INTAKE_ACTION,
+    # No file cache for processed images (ADR-0009 part 4): Hugo keys a
+    # drawn card by its font's path, so a cached card survives a replaced
+    # font or base image.
+    "caches.images.maxAge": 0,
 }
 HUGO_CONFIG_STRINGS = ("title", "params.operator", "params.contact", "params.csp")
 # The HUGO_* environment variables the build may see: this repo's own tool
@@ -17708,6 +18663,16 @@ def guard_hugo_config(root, hugo_bin, findings):
         if disable is not True:
             findings.add(where, f"privacy.{key}.disable is {json.dumps(disable)}, "
                                 "must be true (ADR-0001, D9)")
+    # ADR-0009 part 4: Hugo prints maxAge 0 as "0s"; the default is -1
+    # (never expires), which would reuse a card drawn with a replaced font.
+    # Only on a root with the card files (guard_preview_pins' condition): a
+    # guard fixture of another rule draws no card.
+    max_age = dig(effective, "caches", "images", "maxage")
+    cards = any((root / p).exists() or (root / p).is_symlink()
+                for p in (*PREVIEW_ASSET_SHA256, PREVIEW_DATA, *PREVIEW_ASSET_DIRS))
+    if cards and max_age not in (0, "0s"):
+        findings.add(where, f"caches.images.maxAge is {json.dumps(max_age)}, must be 0 (a "
+                            "cached card would survive a replaced font, ADR-0009 part 4)")
     # The records check reads content/; Hugo must build exactly that tree.
     contentdir = effective.get("contentdir")
     if contentdir != "content":
@@ -19123,6 +20088,7 @@ def cmd_guard(args):
     guard_worker_pins(root, findings)
     guard_confusables_pin(root, findings)
     guard_records_templates(root, findings)
+    guard_preview_pins(root, files, findings)
     n_workflows = sum(f.startswith(".github/workflows/") for f in files)
     return findings.report(f"guard checked: {len(files)} files, "
                            f"{n_workflows} workflows")
@@ -20043,6 +21009,9 @@ def build_parser():
     p.add_argument("--records", required=True)
     p.add_argument("--schemas")
     p.add_argument("--no-built-pins", action="store_true")
+    # Site rule (o)'s pixel check of the card images (ADR-0009 part 6):
+    # check.sh passes it on the fixture build only.
+    p.add_argument("--preview-pixels", action="store_true")
     p.add_argument("public")
     p.set_defaults(func=cmd_site)
     p = sub.add_parser("render", allow_abbrev=False)
@@ -20101,6 +21070,10 @@ def build_parser():
     p.add_argument("lockfile")
     p.add_argument("--expect", required=True)
     p.set_defaults(func=cmd_tree_digest)
+    # The generated part of data/preview.toml (ADR-0009 part 5).
+    p = sub.add_parser("preview-metrics", allow_abbrev=False)
+    p.add_argument("--root", default=".")
+    p.set_defaults(func=cmd_preview_metrics)
     return parser
 
 

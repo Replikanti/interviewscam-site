@@ -347,9 +347,9 @@ LITERALS_FILE_FUNCTIONS	replaceRE	layouts/_partials/box-label.html
 LITERALS_FILE_FUNCTIONS	resources.Concat	layouts/baseof.html
 LITERALS_FILE_FUNCTIONS	resources.ExecuteAsTemplate	layouts/baseof.html
 LITERALS_FILE_FUNCTIONS	resources.Fingerprint	layouts/baseof.html
-LITERALS_FILE_FUNCTIONS	resources.Get	layouts/baseof.html
+LITERALS_FILE_FUNCTIONS	resources.Get	layouts/_partials/preview-image.html layouts/baseof.html
 LITERALS_FILE_FUNCTIONS	resources.Minify	layouts/baseof.html
-LITERALS_FILE_FUNCTIONS	split	layouts/_partials/label-list.html layouts/_partials/label.html
+LITERALS_FILE_FUNCTIONS	split	layouts/_partials/label-list.html layouts/_partials/label.html layouts/_partials/preview-wrap.html
 LITERALS_MEMBERS	ByDate
 LITERALS_MEMBERS	Content
 LITERALS_MEMBERS	ContentBaseName
@@ -717,3 +717,43 @@ RECORDS_WITH	upload-artifact	{"name": "built-site", "path": ["site/public", "sit
 RECORDS_WITH	download-artifact	{"name": "built-site"}
 RECORDS_PERMISSIONS	contents	read
 RECORDS_JOB_PERMISSIONS	lighthouse.yml lighthouse	{}
+# The link preview card images (Replikanti/interviewscam#44 PR 2, ADR-0009 parts 4 to 6).
+HUGO_CONFIG_PINNED	caches.images.maxAge	0
+LITERALS_COLLECTION_VALUES	layouts/_partials/preview-image.html	bold
+LITERALS_COLLECTION_VALUES	layouts/_partials/preview-image.html	regular
+LITERALS_FILE_DICT_KEYS	layouts/_partials/preview-image.html	alt bold color face font image regular size text width x y
+LITERALS_FILE_FUNCTIONS	div	assets/css/tokens.css layouts/_partials/preview-image.html
+LITERALS_FILE_FUNCTIONS	float	assets/css/tokens.css layouts/_partials/preview-image.html
+LITERALS_FILE_FUNCTIONS	images.Filter	layouts/_partials/preview-image.html
+LITERALS_FILE_FUNCTIONS	images.Padding	layouts/_partials/preview-image.html
+LITERALS_FILE_FUNCTIONS	images.Text	layouts/_partials/preview-image.html
+LITERALS_FILE_FUNCTIONS	math.Ceil	layouts/_partials/preview-image.html
+LITERALS_FILE_FUNCTIONS	mul	layouts/_partials/preview-image.html layouts/_partials/preview-wrap.html
+LITERALS_FILE_FUNCTIONS	sub	layouts/_partials/preview-image.html
+LITERALS_FILE_NUMBERS	layouts/_partials/preview-image.html	-1
+LITERALS_FILE_NUMBERS	layouts/_partials/preview-image.html	0
+LITERALS_FILE_NUMBERS	layouts/_partials/preview-wrap.html	-1
+LITERALS_FILE_NUMBERS	layouts/_partials/preview-wrap.html	0
+LITERALS_FUNCTIONS	div
+LITERALS_FUNCTIONS	float
+LITERALS_FUNCTIONS	images.Filter
+LITERALS_FUNCTIONS	images.Padding
+LITERALS_FUNCTIONS	images.Text
+LITERALS_FUNCTIONS	math.Ceil
+LITERALS_FUNCTIONS	mul
+LITERALS_FUNCTIONS	sub
+LITERALS_HUGO_DATA	preview
+LITERALS_MEMBERS	Height
+LITERALS_MEMBERS	Width
+LITERALS_META_PLAIN_NAMES	twitter:image
+LITERALS_META_PLAIN_PROPERTIES	og:image
+LITERALS_META_PLAIN_PROPERTIES	og:image:height
+LITERALS_META_PLAIN_PROPERTIES	og:image:type
+LITERALS_META_PLAIN_PROPERTIES	og:image:width
+LITERALS_PASSING_SETS	LITERALS_FILE_NUMBERS
+LITERALS_PASSING_SETS	LITERALS_PREVIEW_DATA_READERS
+LITERALS_PREVIEW_DATA_READERS	layouts/_partials/preview-image.html
+LITERALS_PREVIEW_DATA_READERS	layouts/_partials/preview-wrap.html
+LITERALS_RESOURCE_KEYS	fonts/noto-sans-bold.ttf
+LITERALS_RESOURCE_KEYS	fonts/noto-sans-regular.ttf
+LITERALS_RESOURCE_KEYS	og/base.png

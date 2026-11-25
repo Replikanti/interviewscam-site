@@ -1,0 +1,1 @@
+(o10) the card image of public/index.html: not a PNG

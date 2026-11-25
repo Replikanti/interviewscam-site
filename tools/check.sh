@@ -256,15 +256,21 @@ guard_check() { sitecheck guard --root "$1" --hugo "$HUGO_BIN"; }
 # every record and _index.md under <root>/content.
 records_check() { sitecheck records --root "$1" --schemas "$2"; }
 
-# site_check <root> <schema dir> <built dir> [no-built-pins]: third-party
-# requests (D9), the CSP meta from <root>/hugo.toml, no live artifact in the
-# build (R3), and the built stylesheet and scripts against their pins; the
-# fourth argument turns those pins off, for the self-test's hand-made site
-# fixtures only (the check steps never pass it, wiring/site-built-pins).
+# site_check <root> <schema dir> <built dir> [no-built-pins|preview-pixels]:
+# third-party requests (D9), the CSP meta from <root>/hugo.toml, no live
+# artifact in the build (R3), and the built stylesheet and scripts against
+# their pins; the fourth argument turns those pins off, for the self-test's
+# hand-made site fixtures only (the check steps never pass it,
+# wiring/site-built-pins), or adds the pixel check of the link preview card
+# images (site rule (o), ADR-0009 part 6), which only the fixture build
+# runs (wiring/site-preview-pixels): its cost grows with the records, on the
+# private repo's metered minutes, and the fixture build holds the worst
+# cases of the same template, whose errorf guards hold every build.
 site_check() {
-  local pins=()
+  local pins=() pixels=()
   [[ "${4:-}" == no-built-pins ]] && pins=(--no-built-pins)
-  sitecheck site --records "$1" --schemas "$2" "${pins[@]}" "$3"
+  [[ "${4:-}" == preview-pixels ]] && pixels=(--preview-pixels)
+  sitecheck site --records "$1" --schemas "$2" "${pins[@]}" "${pixels[@]}" "$3"
 }
 
 # render_check <root> <schema dir> <built dir> [<fixtures dir>] [no-feed]
@@ -378,7 +384,9 @@ step_literals() { literals_check "$CHECK_ROOT"; }
 
 step_site() { site_check "$CHECK_ROOT" "$CHECK_ROOT/schema" "$CHECK_ROOT/public"; }
 
-step_site_fixtures() { site_check "$FIXTURE_SITE" "$CHECK_ROOT/schema" "$FIXTURE_PUBLIC"; }
+step_site_fixtures() {
+  site_check "$FIXTURE_SITE" "$CHECK_ROOT/schema" "$FIXTURE_PUBLIC" preview-pixels
+}
 
 step_render() {
   render_check "$CHECK_ROOT" "$CHECK_ROOT/schema" "$CHECK_ROOT/public" \

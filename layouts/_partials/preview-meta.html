@@ -8,7 +8,9 @@
   facts followed by its summary: a report's state chip and D7 label
   (preview.report_description), a campaign's first and last seen dates
   (preview.description over preview.campaign_fact). Every value is a
-  returned partial value or a page field, never printed partial output. */ -}}
+  returned partial value or a page field, never printed partial output.
+  The card image (ADR-0009 parts 4 to 6) comes from preview-image.html:
+  the site card on every page, its alt the card's whole text. */ -}}
 {{- $title := .Title -}}
 {{- $description := .Description | default (partial "label.html" "site.description") -}}
 {{- $record := in (slice "reports" "campaigns") .Section -}}
@@ -25,12 +27,20 @@
     {{- $fact := printf (partial "label.html" "preview.campaign_fact") (time.Format "2006-01-02" .Params.first_seen) (time.Format "2006-01-02" .Params.last_seen) -}}
     {{- $description = printf (partial "label.html" "preview.description") $fact .Params.summary -}}
   {{- end -}}
-{{- end }}
+{{- end -}}
+{{- $card := partial "preview-image.html" . }}
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="{{ site.Title }}">
 <meta property="og:title" content="{{ $title }}">
 <meta property="og:description" content="{{ $description }}">
 <meta property="og:url" content="{{ .Permalink }}">
-<meta name="twitter:card" content="summary">
+<meta property="og:image" content="{{ $card.image.Permalink }}">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="{{ $card.image.Width }}">
+<meta property="og:image:height" content="{{ $card.image.Height }}">
+<meta property="og:image:alt" content="{{ $card.alt }}">
+<meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="{{ $title }}">
 <meta name="twitter:description" content="{{ $description }}">
+<meta name="twitter:image" content="{{ $card.image.Permalink }}">
+<meta name="twitter:image:alt" content="{{ $card.alt }}">
