@@ -346,6 +346,11 @@ sources = "Named in %d cited sources, reviewed on %s"
 report_description = "%s. %s. %s"
 description = "%s. %s"
 campaign_fact = "First seen %s, last seen %s"
+# The alt text of the site card image (og:image:alt, twitter:image:alt;
+# ADR-0009 part 6): every block the card draws, in drawing order, so the
+# alt is the image's whole text: header.brand (%s first), header.brand_tld
+# (%s second) and site.description (%s third).
+alt_site = "%s%s: %s"
 
 # The campaign line of a report page and the attribution of a campaign page
 # (ADR-0004 part 6). The parts sit around links, so they are stored as

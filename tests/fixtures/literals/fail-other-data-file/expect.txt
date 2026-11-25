@@ -1,1 +1,1 @@
-hugo.Data.checklist.warning: hugo.Data only as hugo.Data.labels or hugo.Data.tokens (L4)
+hugo.Data.checklist.warning: hugo.Data only as hugo.Data.labels, hugo.Data.tokens or hugo.Data.preview (L4)

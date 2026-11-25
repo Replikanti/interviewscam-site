@@ -1,0 +1,29 @@
+# preview-wrap rows (Replikanti/interviewscam#44, ADR-0009 part 6): name, text
+# (\u{XXXX} for a code point), face, size px, width px, the expected lines as
+# JSON (false: a character has no advance entry). selftest.sh builds a Hugo
+# site with the real preview-wrap.html and data/preview.toml, runs every row
+# through the template and through sitecheck's preview_wrap, and needs both
+# to give the expected lines. Size 1000 px with a 1000-unit em makes the
+# width a count of font units, so the boundary rows sit on exact sums.
+case-distinct	Aa	regular	1000	1200	["Aa"]
+empty		regular	40	1088	[]
+one-char	x	regular	40	1088	["x"]
+line-exact	ab cd	regular	1000	2531	["ab cd"]
+line-plus-one	ab cd	regular	1000	2530	["ab", "cd"]
+word-exact	abcdef	regular	1000	3179	["abcdef"]
+word-plus-one	abcdef	regular	1000	3178	["abcde", "f"]
+word-double	abcdefghij	regular	1000	1971	["abc", "def", "ghij"]
+two-spaces	ab  cd	regular	40	1088	["ab cd"]
+edge-spaces	  ab cd  	regular	40	1088	["ab cd"]
+nbsp	ab\u{00A0}cd	regular	40	1088	false
+combining	e\u{0301}	regular	40	1088	false
+emoji	a \u{1F600}	regular	40	1088	false
+middle-dot	a · b	regular	40	1088	["a · b"]
+kern-exact	"T	regular	1000	984	["\"T"]
+kern-minus-one	"T	regular	1000	983	["\"", "T"]
+label-72	Avery Exampleton (name used by the campaign, possibly a stolen identity)	bold	72	1088	["Avery Exampleton (name", "used by the campaign,", "possibly a stolen identity)"]
+label-60	Avery Exampleton (name used by the campaign, possibly a stolen identity)	bold	60	1088	["Avery Exampleton (name used by", "the campaign, possibly a stolen", "identity)"]
+label-48	Avery Exampleton (name used by the campaign, possibly a stolen identity)	bold	48	1088	["Avery Exampleton (name used by the", "campaign, possibly a stolen identity)"]
+label-40	Avery Exampleton (name used by the campaign, possibly a stolen identity)	bold	40	1088	["Avery Exampleton (name used by the campaign,", "possibly a stolen identity)"]
+site-brand	interviewscam.com	bold	72	1088	["interviewscam.com"]
+site-description	A community registry of fake job-interview scams that target developers.	regular	40	1088	["A community registry of fake job-interview scams that", "target developers."]

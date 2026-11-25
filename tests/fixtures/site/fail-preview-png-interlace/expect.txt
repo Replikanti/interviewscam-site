@@ -1,0 +1,1 @@
+compression, filter method or interlace not 0

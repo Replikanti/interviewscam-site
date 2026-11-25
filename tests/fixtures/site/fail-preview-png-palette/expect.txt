@@ -1,0 +1,1 @@
+bit depth 8 and colour type 3

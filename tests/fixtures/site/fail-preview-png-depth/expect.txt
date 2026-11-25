@@ -1,0 +1,1 @@
+bit depth 16 and colour type 2

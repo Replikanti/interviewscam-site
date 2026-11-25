@@ -1,0 +1,1 @@
+(o10) the card image of public/index.html: the first chunk is not a 13-byte IHDR

@@ -220,7 +220,7 @@ csp-end-body-in-head	public/index.html	<meta charset="utf-8">	<meta charset="utf
 # each fixed value, its content missing, an attribute added, its key on the
 # other attribute, and their order.
 value-og-type	public/index.html	<meta property="og:type" content="website">	<meta property="og:type" content="Website">	(m) the head holds
-value-twitter-card	public/index.html	<meta name="twitter:card" content="summary">	<meta name="twitter:card" content="summary_large_image">	(m) the head holds
+value-twitter-card	public/index.html	<meta name="twitter:card" content="summary_large_image">	<meta name="twitter:card" content="summary">	(m) the head holds
 preview-content-missing-og-type	public/index.html	<meta property="og:type" content="website">	<meta property="og:type">	(m) the head holds
 preview-attribute-added-og-type	public/index.html	<meta property="og:type" content="website">	<meta property="og:type" content="website" lang="en">	(m) the head holds
 preview-key-attribute-og-type	public/index.html	<meta property="og:type" content="website">	<meta name="og:type" content="website">	(m) the head holds
@@ -236,9 +236,9 @@ preview-key-attribute-og-description	public/index.html	<meta property="og:descri
 preview-content-missing-og-url	public/index.html	<meta property="og:url" content="https://interviewscam.com/">	<meta property="og:url">	(m) the head holds
 preview-attribute-added-og-url	public/index.html	<meta property="og:url" content="https://interviewscam.com/">	<meta property="og:url" content="https://interviewscam.com/" lang="en">	(m) the head holds
 preview-key-attribute-og-url	public/index.html	<meta property="og:url" content="https://interviewscam.com/">	<meta name="og:url" content="https://interviewscam.com/">	(m) the head holds
-preview-content-missing-twitter-card	public/index.html	<meta name="twitter:card" content="summary">	<meta name="twitter:card">	(m) the head holds
-preview-attribute-added-twitter-card	public/index.html	<meta name="twitter:card" content="summary">	<meta name="twitter:card" content="summary" lang="en">	(m) the head holds
-preview-key-attribute-twitter-card	public/index.html	<meta name="twitter:card" content="summary">	<meta property="twitter:card" content="summary">	(m) the head holds
+preview-content-missing-twitter-card	public/index.html	<meta name="twitter:card" content="summary_large_image">	<meta name="twitter:card">	(m) the head holds
+preview-attribute-added-twitter-card	public/index.html	<meta name="twitter:card" content="summary_large_image">	<meta name="twitter:card" content="summary" lang="en">	(m) the head holds
+preview-key-attribute-twitter-card	public/index.html	<meta name="twitter:card" content="summary_large_image">	<meta property="twitter:card" content="summary_large_image">	(m) the head holds
 preview-content-missing-twitter-title	public/index.html	<meta name="twitter:title" content="fixture">	<meta name="twitter:title">	(m) the head holds
 preview-attribute-added-twitter-title	public/index.html	<meta name="twitter:title" content="fixture">	<meta name="twitter:title" content="fixture" lang="en">	(m) the head holds
 preview-key-attribute-twitter-title	public/index.html	<meta name="twitter:title" content="fixture">	<meta property="twitter:title" content="fixture">	(m) the head holds
@@ -247,4 +247,29 @@ preview-attribute-added-twitter-description	public/index.html	<meta name="twitte
 preview-key-attribute-twitter-description	public/index.html	<meta name="twitter:description" content="A fixture page.">	<meta property="twitter:description" content="A fixture page.">	(m) the head holds
 preview-order-swapped	public/index.html	<meta property="og:type" content="website"><meta property="og:site_name" content="interviewscam.com">	<meta property="og:site_name" content="interviewscam.com"><meta property="og:type" content="website">	(m) the head holds
 preview-before-canonical	public/index.html	<link rel="canonical" href="https://interviewscam.com/"><meta property="og:type" content="website">	<meta property="og:type" content="website"><link rel="canonical" href="https://interviewscam.com/">	(m) the head holds
-preview-after-theme-color	public/index.html	<meta name="twitter:description" content="A fixture page."><meta name="theme-color" content="#FFFFFF">	<meta name="theme-color" content="#FFFFFF"><meta name="twitter:description" content="A fixture page.">	(m) the head holds
+preview-after-theme-color	public/index.html	<meta name="twitter:image:alt" content="interviewscam.com: A community registry of fake job-interview scams that target developers."><meta name="theme-color" content="#FFFFFF">	<meta name="theme-color" content="#FFFFFF"><meta name="twitter:image:alt" content="interviewscam.com: A community registry of fake job-interview scams that target developers.">	(m) the head holds
+preview-content-missing-og-image	public/index.html	<meta property="og:image" content="https://interviewscam.com/og/base_hu_fc1bae042c28cc73.png">	<meta property="og:image">	(m) the head holds
+preview-attribute-added-og-image	public/index.html	<meta property="og:image" content="https://interviewscam.com/og/base_hu_fc1bae042c28cc73.png">	<meta property="og:image" content="https://interviewscam.com/og/base_hu_fc1bae042c28cc73.png" lang="en">	(m) the head holds
+preview-key-attribute-og-image	public/index.html	<meta property="og:image" content="https://interviewscam.com/og/base_hu_fc1bae042c28cc73.png">	<meta name="og:image" content="https://interviewscam.com/og/base_hu_fc1bae042c28cc73.png">	(m) the head holds
+preview-content-missing-og-image-type	public/index.html	<meta property="og:image:type" content="image/png">	<meta property="og:image:type">	(m) the head holds
+preview-attribute-added-og-image-type	public/index.html	<meta property="og:image:type" content="image/png">	<meta property="og:image:type" content="image/png" lang="en">	(m) the head holds
+preview-key-attribute-og-image-type	public/index.html	<meta property="og:image:type" content="image/png">	<meta name="og:image:type" content="image/png">	(m) the head holds
+preview-content-missing-og-image-width	public/index.html	<meta property="og:image:width" content="1200">	<meta property="og:image:width">	(m) the head holds
+preview-attribute-added-og-image-width	public/index.html	<meta property="og:image:width" content="1200">	<meta property="og:image:width" content="1200" lang="en">	(m) the head holds
+preview-key-attribute-og-image-width	public/index.html	<meta property="og:image:width" content="1200">	<meta name="og:image:width" content="1200">	(m) the head holds
+preview-content-missing-og-image-height	public/index.html	<meta property="og:image:height" content="630">	<meta property="og:image:height">	(m) the head holds
+preview-attribute-added-og-image-height	public/index.html	<meta property="og:image:height" content="630">	<meta property="og:image:height" content="630" lang="en">	(m) the head holds
+preview-key-attribute-og-image-height	public/index.html	<meta property="og:image:height" content="630">	<meta name="og:image:height" content="630">	(m) the head holds
+preview-content-missing-og-image-alt	public/index.html	<meta property="og:image:alt" content="interviewscam.com: A community registry of fake job-interview scams that target developers.">	<meta property="og:image:alt">	(m) the head holds
+preview-attribute-added-og-image-alt	public/index.html	<meta property="og:image:alt" content="interviewscam.com: A community registry of fake job-interview scams that target developers.">	<meta property="og:image:alt" content="interviewscam.com: A community registry of fake job-interview scams that target developers." lang="en">	(m) the head holds
+preview-key-attribute-og-image-alt	public/index.html	<meta property="og:image:alt" content="interviewscam.com: A community registry of fake job-interview scams that target developers.">	<meta name="og:image:alt" content="interviewscam.com: A community registry of fake job-interview scams that target developers.">	(m) the head holds
+preview-content-missing-twitter-image	public/index.html	<meta name="twitter:image" content="https://interviewscam.com/og/base_hu_fc1bae042c28cc73.png">	<meta name="twitter:image">	(m) the head holds
+preview-attribute-added-twitter-image	public/index.html	<meta name="twitter:image" content="https://interviewscam.com/og/base_hu_fc1bae042c28cc73.png">	<meta name="twitter:image" content="https://interviewscam.com/og/base_hu_fc1bae042c28cc73.png" lang="en">	(m) the head holds
+preview-key-attribute-twitter-image	public/index.html	<meta name="twitter:image" content="https://interviewscam.com/og/base_hu_fc1bae042c28cc73.png">	<meta property="twitter:image" content="https://interviewscam.com/og/base_hu_fc1bae042c28cc73.png">	(m) the head holds
+preview-content-missing-twitter-image-alt	public/index.html	<meta name="twitter:image:alt" content="interviewscam.com: A community registry of fake job-interview scams that target developers.">	<meta name="twitter:image:alt">	(m) the head holds
+preview-attribute-added-twitter-image-alt	public/index.html	<meta name="twitter:image:alt" content="interviewscam.com: A community registry of fake job-interview scams that target developers.">	<meta name="twitter:image:alt" content="interviewscam.com: A community registry of fake job-interview scams that target developers." lang="en">	(m) the head holds
+preview-key-attribute-twitter-image-alt	public/index.html	<meta name="twitter:image:alt" content="interviewscam.com: A community registry of fake job-interview scams that target developers.">	<meta property="twitter:image:alt" content="interviewscam.com: A community registry of fake job-interview scams that target developers.">	(m) the head holds
+value-og-image-type	public/index.html	<meta property="og:image:type" content="image/png">	<meta property="og:image:type" content="image/jpeg">	(m) the head holds
+value-og-image-width	public/index.html	<meta property="og:image:width" content="1200">	<meta property="og:image:width" content="1201">	(m) the head holds
+value-og-image-height	public/index.html	<meta property="og:image:height" content="630">	<meta property="og:image:height" content="629">	(m) the head holds
+preview-image-before-url	public/index.html	<meta property="og:url" content="https://interviewscam.com/"><meta property="og:image" content="https://interviewscam.com/og/base_hu_fc1bae042c28cc73.png">	<meta property="og:image" content="https://interviewscam.com/og/base_hu_fc1bae042c28cc73.png"><meta property="og:url" content="https://interviewscam.com/">	(m) the head holds

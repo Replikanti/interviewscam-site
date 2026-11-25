@@ -1,0 +1,56 @@
+{{- /* The link preview card image of a page (SPEC section 6, ADR-0009
+  parts 4 and 6; sitecheck site rule (o), --preview-pixels). Returns (dict
+  "image" <the PNG resource> "alt" <its text>). This part draws the site
+  card, which every page links: the brand, then the site description.
+
+  One images.Filter call over one slice of filters, from the 1 x 1 base
+  image: the ground grows it to 1185 x 631 (the first padding), the second
+  padding crops the base pixel away (1184 x 630), the third adds the bar at
+  the left edge (1200 x 630), then one images.Text per line. Every number
+  comes from data/preview.toml; lines start at the margin, a block's lines
+  follow at its line pitch, the font's own line height ceil((ascender -
+  descender + lineGap) x size / unitsPerEm), and blocks are a gap apart. A
+  card whose blocks do not fit the content box, or whose text has a
+  character the font tables lack, fails the build (errorf) instead of
+  drawing a card that lost text.
+
+  The alt is preview.alt_site over every drawn block in drawing order, so
+  it holds the image's whole text. Number literals: 0 and -1 in the
+  paddings (literals LITERALS_FILE_NUMBERS). */ -}}
+{{- $p := hugo.Data.preview -}}
+{{- $c := $p.canvas -}}
+{{- $width := sub (sub $c.width $c.margin) $c.margin -}}
+{{- $height := sub (sub $c.height $c.margin) $c.margin -}}
+{{- $brand := partial "label.html" "header.brand" -}}
+{{- $tld := partial "label.html" "header.brand_tld" -}}
+{{- $description := partial "label.html" "site.description" -}}
+{{- $blocks := slice
+  (dict "text" (printf "%s%s" $brand $tld) "face" "bold" "size" $p.site.brand_size "color" hugo.Data.tokens.color.text)
+  (dict "text" $description "face" "regular" "size" $p.site.description_size "color" hugo.Data.tokens.color.muted) -}}
+{{- $filters := slice
+  (images.Padding 0 (sub $c.width $c.bar) $c.height 0 hugo.Data.tokens.color.ground)
+  (images.Padding -1 0 0 -1)
+  (images.Padding 0 0 0 $c.bar hugo.Data.tokens.color.primary) -}}
+{{- $y := $c.margin -}}
+{{- $fonts := dict "regular" (resources.Get "fonts/noto-sans-regular.ttf") "bold" (resources.Get "fonts/noto-sans-bold.ttf") -}}
+{{- range $i, $b := $blocks -}}
+  {{- if $i -}}
+    {{- $y = add $y $c.gap -}}
+  {{- end -}}
+  {{- $face := index $p.face $b.face -}}
+  {{- $pitch := int (math.Ceil (div (mul (add (sub $face.ascender $face.descender) $face.line_gap) $b.size) (float $face.units_per_em))) -}}
+  {{- with partial "preview-wrap.html" (dict "text" $b.text "face" $b.face "size" $b.size "width" $width) -}}
+    {{- range . -}}
+      {{- $filters = $filters | append (images.Text . (dict "font" (index $fonts $b.face) "size" $b.size "x" $c.margin "y" $y "color" $b.color)) -}}
+      {{- $y = add $y $pitch -}}
+    {{- end -}}
+  {{- else -}}
+    {{- errorf "preview-image.html: the site card text %s has no lines or a character the font tables lack" $b.text -}}
+  {{- end -}}
+{{- end -}}
+{{- if not (ge (add $c.margin $height) $y) -}}
+  {{- errorf "preview-image.html: the site card's blocks end at y %d, below the content box (%d)" $y (add $c.margin $height) -}}
+{{- end -}}
+{{- $image := resources.Get "og/base.png" | images.Filter $filters -}}
+{{- $alt := printf (partial "label.html" "preview.alt_site") $brand $tld $description -}}
+{{- return dict "image" $image "alt" $alt -}}

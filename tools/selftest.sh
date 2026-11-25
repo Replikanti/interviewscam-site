@@ -128,9 +128,9 @@ for row in rows:
             print(f"     | {out_line}")
 # The flagging sets, taken from the code, and their pinned numbers.
 EXPECTED_FLAGGING_SETS = 19
-EXPECTED_PASSING_SETS = 36
-EXPECTED_DERIVED_MEMBERS = {"RAWTEXT_END_TAG": 10, "LITERALS_META_PLAIN_NAMES": 4,
-                            "LITERALS_META_PLAIN_PROPERTIES": 2,
+EXPECTED_PASSING_SETS = 38
+EXPECTED_DERIVED_MEMBERS = {"RAWTEXT_END_TAG": 10, "LITERALS_META_PLAIN_NAMES": 5,
+                            "LITERALS_META_PLAIN_PROPERTIES": 6,
                             "LITERALS_META_PLAIN_HTTP_EQUIV": 1, "PAGE_MEMBERS": 16,
                             "SINK_KINDS": 27, "JS_SUFFIXES": 2}
 names = {n for n, v in vars(sitecheck).items()
@@ -1110,6 +1110,461 @@ if not rows or bad:
     print(f"FAIL {label}/table: {len(rows)} rows, {bad} malformed")
 else:
     print(f"ok   {label}/table ({len(rows)} rows)")
+PY
+}
+
+# preview_wrap_runner <sitecheck.py> <cases table> <repo root>
+# (Replikanti/interviewscam#44, ADR-0009 part 6): builds a small Hugo site in
+# a temporary directory with the real layouts/_partials/preview-wrap.html and
+# data/preview.toml of <repo root> (through hugo_build, so with the pinned
+# Hugo and its flags), runs every row of the table through the template and
+# through sitecheck's preview_wrap, and needs both to give the row's
+# expected lines (template against replica, and both against the table).
+# -B: no tools/__pycache__.
+preview_wrap_runner() {
+  local tmp
+  tmp="$(mktemp -d)"
+  if ! python3 -I -B - "$2" "$3" "$tmp/site" <<'PY'
+import json
+import re
+import shutil
+import sys
+from pathlib import Path
+
+table, root, site = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+
+
+def unescape(text):
+    return re.sub(r"\\u\{([0-9A-F]{4,6})\}", lambda m: chr(int(m.group(1), 16)), text)
+
+
+(site / "layouts" / "_partials").mkdir(parents=True)
+(site / "data").mkdir()
+shutil.copyfile(root / "layouts/_partials/preview-wrap.html",
+                site / "layouts/_partials/preview-wrap.html")
+shutil.copyfile(root / "data/preview.toml", site / "data/preview.toml")
+(site / "hugo.toml").write_text(
+    'baseURL = "https://example.invalid/"\n'
+    'disableKinds = ["page", "section", "taxonomy", "term", "rss", "sitemap", "robotstxt", "404"]\n'
+    '[outputs]\nhome = ["json"]\n', encoding="utf-8")
+(site / "layouts" / "home.json").write_text(
+    '{{- $out := slice -}}\n'
+    '{{- range hugo.Data.cases.case -}}\n'
+    '{{- $lines := partial "preview-wrap.html" (dict "text" .text "face" .face "size" .size "width" .width) -}}\n'
+    '{{- $out = $out | append (dict "name" .name "lines" $lines) -}}\n'
+    '{{- end -}}\n'
+    '{{- jsonify $out -}}\n', encoding="utf-8")
+cases = []
+for line in table.read_text(encoding="utf-8").splitlines():
+    if not line or line.startswith("#"):
+        continue
+    name, text, face, size, width, _ = line.split("\t")
+    cases.append("[[case]]\n" + "".join(
+        f"{k} = {v}\n" for k, v in (("name", json.dumps(name)),
+                                     ("text", json.dumps(unescape(text), ensure_ascii=False)),
+                                     ("face", json.dumps(face)), ("size", int(size)),
+                                     ("width", int(width)))))
+(site / "data" / "cases.toml").write_text("\n".join(cases), encoding="utf-8")
+PY
+  then
+    echo "FAIL preview-wrap/table: the test site could not be written"
+    rm -rf "$tmp"
+    return
+  fi
+  if ! hugo_build "$tmp/site" "$tmp/out" >"$tmp/build.log" 2>&1; then
+    echo "FAIL preview-wrap/build: the test site with the real preview-wrap.html does not build:"
+    sed 's/^/     | /' "$tmp/build.log"
+    rm -rf "$tmp"
+    return
+  fi
+  python3 -I -B - "$1" "$2" "$3" "$tmp/out/index.json" <<'PY'
+import importlib.util
+import json
+import re
+import sys
+import tomllib
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sc)
+table, root = Path(sys.argv[2]), Path(sys.argv[3])
+data = tomllib.loads((root / "data/preview.toml").read_text(encoding="utf-8"))
+built = {row["name"]: row["lines"]
+         for row in json.loads(Path(sys.argv[4]).read_text(encoding="utf-8"))}
+
+
+def unescape(text):
+    return re.sub(r"\\u\{([0-9A-F]{4,6})\}", lambda m: chr(int(m.group(1), 16)), text)
+
+
+n = 0
+for line in table.read_text(encoding="utf-8").splitlines():
+    if not line or line.startswith("#"):
+        continue
+    name, text, face, size, width, expect = line.split("\t")
+    n += 1
+    want = json.loads(expect)
+    replica = sc.preview_wrap(unescape(text), face, int(size), int(width), data)
+    template = built.get(name, "missing")
+    if template == want and replica == want:
+        print(f"ok   preview-wrap/{name} (template and replica: {expect})")
+    else:
+        print(f"FAIL preview-wrap/{name}: expected {expect}; the template gave "
+              f"{json.dumps(template, ensure_ascii=False)}, the replica "
+              f"{json.dumps(replica, ensure_ascii=False)}")
+print(f"ok   preview-wrap/table ({n} rows)" if n and len(built) == n else
+      f"FAIL preview-wrap/table: {n} rows, {len(built)} built")
+PY
+  rm -rf "$tmp"
+}
+
+# preview_image_runner <repo root> (Replikanti/interviewscam#44, ADR-0009
+# part 4): preview-image/deterministic builds a small Hugo site with the real
+# card partials, label.html, data/ and the pinned base image and fonts twice
+# (through hugo_build, into two directories) and needs at least one card and
+# the same SHA-256 for every PNG under og/ in both.
+preview_image_runner() {
+  local tmp root="$1" n=0 a b
+  tmp="$(mktemp -d)"
+  mkdir -p "$tmp/site/layouts/_partials" "$tmp/site/assets"
+  cp -R "$root/layouts/_partials/." "$tmp/site/layouts/_partials/"
+  cp -R "$root/data" "$tmp/site/data"
+  cp -R "$root/assets/og" "$root/assets/fonts" "$tmp/site/assets/"
+  printf '%s\n' 'baseURL = "https://example.invalid/"' \
+    'disableKinds = ["page", "section", "taxonomy", "term", "rss", "sitemap", "robotstxt", "404"]' \
+    '[caches.images]' 'maxAge = 0' >"$tmp/site/hugo.toml"
+  printf '%s\n' '{{ (partial "preview-image.html" .).image.RelPermalink }}' \
+    >"$tmp/site/layouts/home.html"
+  if ! hugo_build "$tmp/site" "$tmp/one" >"$tmp/build.log" 2>&1 \
+      || ! hugo_build "$tmp/site" "$tmp/two" >>"$tmp/build.log" 2>&1; then
+    echo "FAIL preview-image/deterministic: the test site with the real card partials does not build:"
+    sed 's/^/     | /' "$tmp/build.log"
+    rm -rf "$tmp"
+    return
+  fi
+  a="$(cd "$tmp/one" && find og -type f -name '*.png' -exec sha256sum {} + 2>/dev/null | sort)"
+  b="$(cd "$tmp/two" && find og -type f -name '*.png' -exec sha256sum {} + 2>/dev/null | sort)"
+  n="$(grep -c . <<<"$a")"
+  if [[ -n "$a" && "$a" == "$b" ]]; then
+    echo "ok   preview-image/deterministic ($n card(s), the same SHA-256 in two builds)"
+  else
+    echo "FAIL preview-image/deterministic: the two builds differ or drew no card:"
+    printf '     | one: %s\n' "$a"
+    printf '     | two: %s\n' "$b"
+  fi
+  rm -rf "$tmp"
+}
+
+# preview_png_runner <sitecheck.py> <repo root> (Replikanti/interviewscam#44,
+# ADR-0009 part 6): the PNG decoder and the pixel check of --preview-pixels
+# through importlib. preview-png/filter-<n> encodes a known image with every
+# row in filter type n (an encoder written here, not sitecheck's) and needs
+# png_pixels to give its pixels back; filter-5 needs a ValueError. The band
+# rows draw one ink pixel on a card of the ground colour with the primary bar
+# at the place the row names (the content box and colours from <repo root>'s
+# data/preview.toml and data/tokens.toml) and need a finding, or none for the
+# PASS row; bar-colour changes one channel of one bar pixel by one.
+# -B: no tools/__pycache__.
+preview_png_runner() {
+  python3 -I -B - "$1" "$2" <<'PY'
+import importlib.util
+import struct
+import sys
+import zlib
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sc)
+root = Path(sys.argv[2])
+
+
+def chunk(kind, body):
+    return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+
+def encode(rows, width, bpp, kind):
+    out, prior = bytearray(), bytes(width * bpp)
+    for row in rows:
+        line = bytearray()
+        for i, value in enumerate(row):
+            a = row[i - bpp] if i >= bpp else 0
+            b, c = prior[i], prior[i - bpp] if i >= bpp else 0
+            if kind == 0:
+                pred = 0
+            elif kind == 1:
+                pred = a
+            elif kind == 2:
+                pred = b
+            elif kind == 3:
+                pred = (a + b) // 2
+            else:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                pred = a if pa <= pb and pa <= pc else b if pb <= pc else c
+            line.append((value - pred) & 0xFF)
+        out += bytes([kind]) + line
+        prior = row
+    return bytes(out)
+
+
+def png(width, height, colour, raw):
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, colour, 0, 0, 0)
+    return (sc.PNG_SIGNATURE + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b""))
+
+
+n_ok = n_fail = 0
+
+
+def report(name, ok, detail):
+    global n_ok, n_fail
+    if ok:
+        n_ok += 1
+        print(f"ok   preview-png/{name} ({detail})")
+    else:
+        n_fail += 1
+        print(f"FAIL preview-png/{name}: {detail}")
+
+
+# Filters: a 7 x 5 RGB and RGBA image whose bytes differ from every
+# neighbour, so each predictor gives other residuals.
+for bpp, colour in ((3, 2), (4, 6)):
+    width, height = 7, 5
+    rows = [bytes((x * 37 + y * 91 + c * 53 + x * y * 11) & 0xFF for x in range(width)
+                  for c in range(bpp)) for y in range(height)]
+    for kind in range(5):
+        data = png(width, height, colour, encode(rows, width, bpp, kind))
+        try:
+            got = sc.png_pixels(data)
+            ok = got == (width, height, bpp, rows)
+            detail = f"colour type {colour}: {'the pixels come back' if ok else 'other pixels'}"
+        except Exception as exc:  # noqa: BLE001 (any error is a failed row)
+            ok, detail = False, f"colour type {colour}: {exc!r}"
+        report(f"filter-{kind}-colour-{colour}", ok, detail)
+    raw = bytearray(encode(rows, width, bpp, 0))
+    raw[(width * bpp + 1) * 2] = 5
+    try:
+        sc.png_pixels(png(width, height, colour, bytes(raw)))
+        report(f"filter-5-colour-{colour}", False, "no error for the filter type 5")
+    except ValueError as exc:
+        report(f"filter-5-colour-{colour}", "filter type 5" in str(exc), str(exc))
+
+box, bar, ground, primary, problems = sc.preview_card_geometry(root)
+if problems:
+    report("geometry", False, "; ".join(problems))
+    sys.exit(0)
+width, height = sc.PREVIEW_IMAGE_SIZE
+x0, y0, x1, y1 = box
+ink = bytes((0x0F, 0x17, 0x2A))
+
+
+def card(marks):
+    rows = []
+    for y in range(height):
+        row = bytearray(bytes(primary) * bar + bytes(ground) * (width - bar))
+        for (x, yy), value in marks.items():
+            if yy == y:
+                row[x * 3:x * 3 + 3] = value
+        rows.append(bytes(row))
+    return rows
+
+
+off = bytes((primary[0] ^ 1, primary[1], primary[2]))
+for name, marks, want in (
+        ("band-last-pixel", {(x0 - 1, (y0 + y1) // 2): ink}, 1),
+        ("pass-band-first-content-pixel", {(x0, y0): ink, (x1 - 1, y1 - 1): ink}, 0),
+        ("band-right", {(x1, (y0 + y1) // 2): ink}, 1),
+        ("band-top", {((x0 + x1) // 2, y0 - 1): ink}, 1),
+        ("band-bottom", {((x0 + x1) // 2, y1): ink}, 1),
+        ("bar-colour", {(bar - 1, height // 2): off}, 1),
+        ("pass-ground-card", {}, 0)):
+    rows = card(marks)
+    found = sc.preview_pixel_problems(width, height, 3, rows, box, bar, ground, primary)
+    encoded = png(width, height, 2, encode(rows, width, 3, 0))
+    decoded = sc.png_pixels(encoded)[3] == rows and not sc.png_problems(encoded)
+    report(name, len(found) == want and decoded,
+           f"{len(found)} finding(s), {want} expected" + (f": {found[0]}" if found else "")
+           + ("" if decoded else "; the card did not round-trip"))
+print(f"preview-png: {n_ok} passed, {n_fail} failed")
+PY
+}
+
+# preview_guard_runner <sitecheck.py> <repo root> (Replikanti/interviewscam#44,
+# ADR-0009 part 5): guard_preview_pins through importlib on temporary roots
+# that copy the card files of <repo root> (the base image, the fonts, the
+# licence and data/), one edit each: every pinned file changed, missing or a
+# symlink, a font or data file off the closed lists, a base image of another
+# shape (its pin patched to the new bytes, so only the shape rule speaks),
+# an advance or kern entry changed, missing or extra, a face metric changed,
+# the generated part reformatted, and the layout rules. Each row needs
+# findings that all hold its text (none for PASS rows), so a row is proven
+# on its own. guard/preview-metrics-round-trip parses the output of
+# `sitecheck preview-metrics` with tomllib and needs it to equal the tables
+# preview_metrics computes. -B: no tools/__pycache__.
+preview_guard_runner() {
+  python3 -I -B - "$1" "$2" <<'PY'
+import contextlib
+import hashlib
+import importlib.util
+import io
+import os
+import shutil
+import struct
+import sys
+import tempfile
+import tomllib
+import zlib
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sc)
+repo = Path(sys.argv[2])
+COPY = [*sc.PREVIEW_ASSET_SHA256, *sc.DATA_FILES]
+BASE, REG, BOLD, LIC = (sc.PREVIEW_BASE, sc.PREVIEW_FONTS["regular"], sc.PREVIEW_FONTS["bold"],
+                        sc.PREVIEW_LICENCE)
+
+
+def png_1x1(width=1, colour=2):
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+    bpp = 4 if colour == 6 else 3
+    raw = (b"\x00" + b"\x00" * bpp * width)
+    return (sc.PNG_SIGNATURE + chunk(b"IHDR", struct.pack(">IIBBBBB", width, 1, 8, colour, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def edit_text(rel, old, new):
+    def run(root):
+        path = root / rel
+        text = path.read_text(encoding="utf-8")
+        assert text.count(old) == 1, (rel, old)
+        path.write_text(text.replace(old, new), encoding="utf-8")
+    return run
+
+
+def write(rel, data):
+    def run(root):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(data)
+    return run
+
+
+def remove(rel):
+    return lambda root: (root / rel).unlink()
+
+
+def symlink(rel):
+    def run(root):
+        (root / rel).rename(root / "real-file")
+        os.symlink(root / "real-file", root / rel)
+    return run
+
+
+def append(rel):
+    return lambda root: (root / rel).write_bytes((root / rel).read_bytes() + b"\n")
+
+
+ROWS = [
+    ("pass-preview-real-copy", None, "PASS"),
+    ("fail-preview-base-changed", append(BASE), "the SHA-256 is"),
+    ("fail-preview-regular-changed", append(REG), "the SHA-256 is"),
+    ("fail-preview-bold-changed", append(BOLD), "the SHA-256 is"),
+    ("fail-preview-licence-changed", append(LIC), "the SHA-256 is"),
+    ("fail-preview-base-missing", remove(BASE), "missing, a symlink or not a regular file"),
+    ("fail-preview-regular-missing", remove(REG), "missing, a symlink or not a regular file"),
+    ("fail-preview-bold-missing", remove(BOLD), "missing, a symlink or not a regular file"),
+    ("fail-preview-licence-missing", remove(LIC), "missing, a symlink or not a regular file"),
+    ("fail-preview-base-symlink", symlink(BASE), "missing, a symlink or not a regular file"),
+    ("fail-preview-regular-symlink", symlink(REG), "missing, a symlink or not a regular file"),
+    ("fail-preview-bold-symlink", symlink(BOLD), "missing, a symlink or not a regular file"),
+    ("fail-preview-licence-symlink", symlink(LIC), "missing, a symlink or not a regular file"),
+    ("fail-preview-extra-font", write("assets/fonts/extra.ttf", b"x"), "hold only the pinned files"),
+    ("fail-preview-extra-og-file", write("assets/og/other.png", b"x"), "hold only the pinned files"),
+    ("fail-preview-otf-in-assets", write("assets/x.otf", b"x"), "a font file under assets/ or static/"),
+    ("fail-preview-otf-in-static", write("static/x.otf", b"x"), "a font file under assets/ or static/"),
+    ("fail-preview-woff2-upper-case", write("static/x.WOFF2", b"x"), "a font file under assets/ or static/"),
+    ("pass-preview-font-suffix-elsewhere", write("docs/x.ttf.md", b"x"), "PASS"),
+    ("fail-preview-base-2x1", ("pin", BASE, png_1x1(width=2)), "not a 1 x 1, 8-bit RGB PNG"),
+    ("fail-preview-base-rgba", ("pin", BASE, png_1x1(colour=6)), "not a 1 x 1, 8-bit RGB PNG"),
+    ("fail-preview-data-subdir", write("data/preview/x.toml", b"x = 1\n"), "data/ holds exactly"),
+    ("fail-preview-data-yaml", write("data/preview.yaml", b"x: 1\n"), "data/ holds exactly"),
+    ("fail-preview-data-other", write("data/other.toml", b"x = 1\n"), "data/ holds exactly"),
+    ("fail-preview-advance-changed", edit_text(sc.PREVIEW_DATA, '\n"A" = 639\n', '\n"A" = 640\n'),
+     "is not byte for byte the output"),
+    ("fail-preview-advance-missing", edit_text(sc.PREVIEW_DATA, '\n"A" = 639\n', "\n"),
+     "is not byte for byte the output"),
+    ("fail-preview-advance-extra", edit_text(sc.PREVIEW_DATA, '\n"A" = 639\n',
+                                             '\n"A" = 639\n"\\u05D0" = 600\n'),
+     "is not byte for byte the output"),
+    ("fail-preview-kern-changed", edit_text(sc.PREVIEW_DATA, '\n"\\u010F)" = 90\n', '\n"\\u010F)" = 89\n'),
+     "is not byte for byte the output"),
+    ("fail-preview-ascender-changed", edit_text(sc.PREVIEW_DATA, "[face.bold]\nunits_per_em = 1000\nascender = 1069",
+                                                "[face.bold]\nunits_per_em = 1000\nascender = 1070"),
+     "is not byte for byte the output"),
+    ("fail-preview-metrics-reformatted", edit_text(sc.PREVIEW_DATA, '\n"A" = 639\n', '\n"A"=639\n'),
+     "is not byte for byte the output"),
+    ("fail-preview-mark-missing", edit_text(sc.PREVIEW_DATA, sc.PREVIEW_METRICS_MARK + "\n", ""),
+     "is not byte for byte the output"),
+    ("fail-preview-margin-small", edit_text(sc.PREVIEW_DATA, "\nmargin = 56\n", "\nmargin = 30\n"),
+     "grow the margin"),
+    ("fail-preview-canvas-size", edit_text(sc.PREVIEW_DATA, "\nwidth = 1200\n", "\nwidth = 1201\n"),
+     "[canvas] is 1201 x 630"),
+    ("fail-preview-layout-extra-key", edit_text(sc.PREVIEW_DATA, "\ngap = 24\n", "\ngap = 24\nx = 1\n"),
+     "holds exactly"),
+    ("fail-preview-layout-not-integer", edit_text(sc.PREVIEW_DATA, "\ngap = 24\n", "\ngap = 24.0\n"),
+     "not a positive integer"),
+    ("fail-preview-size-above-ink", edit_text(sc.PREVIEW_DATA, "\nbrand_size = 72\n",
+                                              "\nbrand_size = 80\n"), "a size above 72 px"),
+]
+# The edits above must hit the data file as written.
+fails = 0
+for name, edit, expect in ROWS:
+    pins = dict(sc.PREVIEW_ASSET_SHA256)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for rel in COPY:
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(repo / rel, root / rel)
+        try:
+            if isinstance(edit, tuple):
+                _, rel, data = edit
+                (root / rel).write_bytes(data)
+                sc.PREVIEW_ASSET_SHA256[rel] = hashlib.sha256(data).hexdigest()
+            elif edit is not None:
+                edit(root)
+            files = sorted(p.relative_to(root).as_posix() for p in root.rglob("*")
+                           if p.is_file() or p.is_symlink())
+            findings = sc.Findings()
+            sc.guard_preview_pins(root, files, findings)
+            items = findings.items
+        except Exception as exc:  # noqa: BLE001 (a crash is a failed row)
+            items = [f"crash: {exc!r}"]
+        finally:
+            sc.PREVIEW_ASSET_SHA256.clear()
+            sc.PREVIEW_ASSET_SHA256.update(pins)
+    if (expect == "PASS" and not items) or (expect != "PASS" and items
+                                            and all(expect in item for item in items)):
+        print(f"ok   guard/{name} ({'passed' if expect == 'PASS' else expect})")
+    else:
+        fails += 1
+        print(f"FAIL guard/{name}: expected {expect!r}; got:")
+        for item in items or ["(no finding)"]:
+            print(f"     | {item}")
+buffer = io.StringIO()
+with contextlib.redirect_stdout(buffer):
+    rc = sc.cmd_preview_metrics(type("A", (), {"root": str(repo)})())
+printed = tomllib.loads(buffer.getvalue())
+computed = sc.preview_metrics(repo)
+want = {t: {f: computed[f][t] for f in sc.PREVIEW_FONTS} for t in ("face", "advance", "kern")}
+if rc == 0 and printed == want:
+    print(f"ok   guard/preview-metrics-round-trip ({sum(len(v) for v in want['advance'].values())} "
+          "advances, the printed tables parse back to the computed ones)")
+else:
+    print("FAIL guard/preview-metrics-round-trip: the printed tables differ from the computed ones")
+print(f"preview-guard: {len(ROWS) + 1} rows")
 PY
 }
 
@@ -5125,6 +5580,25 @@ selftest_blocks() {
       n_passed=$((n_passed + 1))
     fi
 
+    # Wiring: the pixel check of the link preview cards (site rule (o),
+    # ADR-0009 part 6) runs on the fixture build and on no other site step:
+    # step_site_fixtures, run against a stub sitecheck, passes
+    # --preview-pixels; step_site and step_records_site do not.
+    local pixel_fixture pixel_other
+    # shellcheck disable=SC2317,SC2329 # step_site_fixtures calls the stub
+    pixel_fixture="$(sitecheck() { printf '%s\n' "$@"; }; step_site_fixtures)"
+    pixel_other="$(sitecheck() { printf '%s\n' "$@"; }; RECORDS_SITE=/x; step_site; step_records_site)"
+    if ! grep -qx -- '--preview-pixels' <<<"$pixel_fixture" \
+        || [[ "$(grep -c '^site$' <<<"$pixel_other")" != 2 ]] \
+        || grep -qx -- '--preview-pixels' <<<"$pixel_other"; then
+      echo "FAIL wiring/site-preview-pixels: step_site_fixtures in tools/check.sh does not" \
+        "pass --preview-pixels to sitecheck site, or step_site or step_records_site does"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   wiring/site-preview-pixels (the fixture build's site step checks the card pixels; the production and records steps do not)"
+      n_passed=$((n_passed + 1))
+    fi
+
     # Wiring: both builds run the search rules (render rules 15 and 16, ADR-0005 part
     # 6), the --no-feed precedent: neither step_render nor
     # step_render_fixtures, run against a stub sitecheck, passes --no-search,
@@ -5709,6 +6183,65 @@ PINNED
     if ! grep -qE '^(ok   |FAIL )site-preview/table' "$out" \
         || ! grep -qE '^(ok   |FAIL )site-preview/coverage-fails-on-missing-row' "$out"; then
       echo "FAIL site-preview: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+
+  if selftest_wants guard; then
+    # guard rows of the link preview cards (Replikanti/interviewscam#44,
+    # ADR-0009 part 5): guard_preview_pins on edited copies of the card
+    # files (preview_guard_runner above).
+    preview_guard_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$SELFTEST_ROOT" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^preview-guard: [0-9]+ rows' "$out"; then
+      echo "FAIL guard/preview: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+
+  if selftest_wants preview-wrap; then
+    # preview-wrap (Replikanti/interviewscam#44, ADR-0009 part 6): the real
+    # preview-wrap.html against sitecheck's preview_wrap, row by row from
+    # tests/fixtures/site/preview-wrap-cases.tsv (preview_wrap_runner above).
+    preview_wrap_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/site/preview-wrap-cases.tsv" "$SELFTEST_ROOT" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )preview-wrap/(table|build)' "$out"; then
+      echo "FAIL preview-wrap: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+
+  if selftest_wants preview-image; then
+    # preview-image (Replikanti/interviewscam#44, ADR-0009 part 4): the card
+    # drawn twice gives the same bytes (preview_image_runner above).
+    preview_image_runner "$SELFTEST_ROOT" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )preview-image/deterministic' "$out"; then
+      echo "FAIL preview-image: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+
+  if selftest_wants preview-png; then
+    # preview-png (Replikanti/interviewscam#44, ADR-0009 part 6): the PNG
+    # decoder and the pixel check (preview_png_runner above).
+    preview_png_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$SELFTEST_ROOT" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^preview-png: [0-9]+ passed' "$out"; then
+      echo "FAIL preview-png: the runner did not finish; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi

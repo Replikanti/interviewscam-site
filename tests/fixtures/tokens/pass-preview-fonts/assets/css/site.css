@@ -1,0 +1,6 @@
+/* Colours only through the custom properties. */
+:root { color-scheme: light; }
+body { color: var(--color-text); background: var(--color-ground); font-family: system-ui, sans-serif; }
+a { color: var(--color-primary); text-decoration-color: currentColor; transition: color 0.2s, background 0.2s; }
+.icon { fill: none; stroke: currentcolor; background: transparent; border-color: inherit; }
+#main:focus { outline: 3px solid var(--color-primary); }

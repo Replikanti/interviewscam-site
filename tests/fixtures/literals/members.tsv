@@ -216,7 +216,7 @@ RAWTEXT_END_TAG	noframes	layouts/page.html	<p></p><noframes></noframes x>	end ta
 RAWTEXT_END_TAG	iframe	layouts/page.html	<p></p><iframe></iframe x>	end tag '</iframe x>': a iframe end tag	1
 RAWTEXT_END_TAG	noscript	layouts/page.html	<p></p><noscript></noscript x>	end tag '</noscript x>': a noscript end tag	1
 branch	chained-group-literal	layouts/page.html	<p>{{ (dict "title" "free").title }}</p>	the dict value 'free' is not on LITERALS_COLLECTION_VALUES for this file	1
-branch	resources-outside-baseof	layouts/page.html	{{ with resources.Get "favicon.svg" }}<link rel="icon" href="{{ .RelPermalink }}">{{ end }}	resources.Get: only layouts/baseof.html may call it	1
+branch	resources-outside-baseof	layouts/page.html	{{ with resources.Get "favicon.svg" }}<link rel="icon" href="{{ .RelPermalink }}">{{ end }}	resources.Get: only layouts/_partials/preview-image.html, layouts/baseof.html may call it	1
 branch	resource-key-not-listed	layouts/baseof.html	{{ with resources.Get "x.css" }}<link rel="stylesheet" href="{{ .RelPermalink }}">{{ end }}	resources.Get takes 'x[.]css', which is not a literal on LITERALS_RESOURCE_KEYS	1
 branch	resource-key-not-literal	layouts/baseof.html	{{ with resources.Get .Kind }}<link rel="stylesheet" href="{{ .RelPermalink }}">{{ end }}	resources.Get takes '[.]Kind', which is not a literal on LITERALS_RESOURCE_KEYS	1
 branch	resource-context-not-dot	layouts/baseof.html	{{ with resources.Get "favicon.svg" | resources.ExecuteAsTemplate "favicon.svg" .Params }}<link rel="icon" href="{{ .RelPermalink }}">{{ end }}	resources.ExecuteAsTemplate takes the bare `.` (the page) as its context	1
@@ -267,7 +267,7 @@ branch	sink-data-nested-name	layouts/page.html	<script type="application/ld+json
 branch	sink-text-layout	layouts/robots.txt	{{ .Kind }}	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into a text layout	1
 branch	sink-one-defect-one-finding	layouts/page.html	{{ $x := slice "free" }}{{ range $x }}<p>{{ . }}</p>{{ end }}	the slice value 'free' is not on LITERALS_COLLECTION_VALUES	1
 branch	resource-copy-js-content-baseof	layouts/baseof.html	{{ with resources.Get "js/copy.js" }}{{ .Content }}{{ end }}	.Content: none in baseof.html, where the dot of a `with` can be a resource	1
-branch	resource-copy-js-content-partial	layouts/_partials/copy.html	{{ with resources.Get "js/copy.js" }}{{ .Content }}{{ end }}	resources.Get: only layouts/baseof.html may call it	1
+branch	resource-copy-js-content-partial	layouts/_partials/copy.html	{{ with resources.Get "js/copy.js" }}{{ .Content }}{{ end }}	resources.Get: only layouts/_partials/preview-image.html, layouts/baseof.html may call it	1
 branch	resource-fingerprint-other-algorithm	layouts/baseof.html	{{ with resources.Get "js/copy.js" | resources.Fingerprint "md5" }}<script src="{{ .RelPermalink }}"></script>{{ end }}	resources.Fingerprint takes 'md5', which is not a literal on LITERALS_RESOURCE_KEYS	1
 branch	resource-fingerprint-in-partial	layouts/_partials/copy.html	{{ with resources.Get "js/copy.js" | resources.Fingerprint "sha384" }}<script src="{{ .RelPermalink }}"></script>{{ end }}	only layouts/baseof.html may call it	2
 branch	collection-contact-other-file	layouts/page.html	{{ $c := dict "id" "contact" }}	the dict value 'contact' is not on LITERALS_COLLECTION_VALUES for this file	1
@@ -374,7 +374,7 @@ SINK_KINDS	time	layouts/page.html	<p>{{ .Date }}</p>	the action prints a time in
 SINK_KINDS	resource	layouts/baseof.html	{{ with resources.Get "js/copy.js" }}<p>{{ . }}</p>{{ end }}	the action prints a resource into the page text	1
 SINK_KINDS	resource-data	layouts/baseof.html	{{ with resources.Get "js/copy.js" | resources.Fingerprint "sha384" }}<p>{{ .Data }}</p>{{ end }}	the action prints a resource-data into the page text	1
 SINK_KINDS	siteparams	layouts/page.html	<p>{{ .Site.Params }}</p>	.Site.Params: site.Params only as operator, contact, csp or intake (L4)	1
-SINK_KINDS	hugodata	layouts/page.html	{{ with hugo.Data }}<p>{{ . }}</p>{{ end }}	hugo.Data: hugo.Data only as hugo.Data.labels or hugo.Data.tokens (L4)	1
+SINK_KINDS	hugodata	layouts/page.html	{{ with hugo.Data }}<p>{{ . }}</p>{{ end }}	hugo.Data: hugo.Data only as hugo.Data.labels, hugo.Data.tokens or hugo.Data.preview (L4)	1
 SINK_KINDS	label-entry	layouts/page.html	{{ range partial "label-list.html" (dict "key" "copy" "fields" (slice "title")) }}<p>{{ . }}</p>{{ end }}	the action prints a table of data/labels.toml into the page text	1
 +		layouts/_partials/label-list.html	{{- $v := hugo.Data.labels -}}{{- return $v -}}		
 SINK_KINDS	dict	layouts/page.html	<p>{{ dict "title" .Title }}</p>	the action prints a dict into the page text	1
@@ -441,3 +441,36 @@ JS_SUFFIXES	.mjs	layouts/baseof.html	{{ with resources.Get "css/tokens.css" | re
 branch	dict-number-key	layouts/page.html	{{ $d := dict 1 .Title }}<p>{{ index $d 1 }}</p>	the dict key '1' is not on LITERALS_DICT_KEYS	1
 branch	preview-og-type-padded	layouts/page.html	<meta property=" og:type" content="{{ .Kind }}">	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the attribute content; a visible attribute takes only	1
 branch	meta-content-plain-name-on-link	layouts/page.html	<link name="color-scheme" content="light">	attribute content='light' is not on LITERALS_PLAIN_ATTRS, the attributes that never show text, and holds a letter or digit (L2)	1
+LITERALS_META_PLAIN_PROPERTIES	og:image	layouts/page.html	<meta property="og:image" content="{{ .Kind }}"><p>{{ .Kind }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+LITERALS_META_PLAIN_PROPERTIES	og:image:type	layouts/page.html	<meta property="og:image:type" content="{{ .Kind }}"><p>{{ .Kind }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+LITERALS_META_PLAIN_PROPERTIES	og:image:width	layouts/page.html	<meta property="og:image:width" content="{{ .Kind }}"><p>{{ .Kind }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+LITERALS_META_PLAIN_PROPERTIES	og:image:height	layouts/page.html	<meta property="og:image:height" content="{{ .Kind }}"><p>{{ .Kind }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+LITERALS_META_PLAIN_NAMES	twitter:image	layouts/page.html	<meta name="twitter:image" content="{{ .Kind }}"><p>{{ .Kind }}</p>	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the page text	1
+branch	preview-og-image-alt-visible	layouts/page.html	<meta property="og:image:alt" content="{{ .Kind }}">	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the attribute content; a visible attribute takes only	1
+branch	preview-twitter-image-alt-visible	layouts/page.html	<meta name="twitter:image:alt" content="{{ .Kind }}">	the action prints a word Hugo writes for a value (.Kind, .Section, %T, a time, a resource) into the attribute content; a visible attribute takes only	1
+branch	preview-asset-unpinned-png	assets/og/other.png	x	a raster image: it can draw text this check cannot read	1
+branch	preview-asset-pinned-name-other-bytes	assets/og/base.png	x	a link preview file whose SHA-256 is	1
+branch	preview-asset-pinned-font-other-bytes	assets/fonts/noto-sans-bold.ttf	x	a link preview file whose SHA-256 is	1
+branch	preview-images-qr	layouts/_partials/preview-image.html	{{- $x := images.QR .Title -}}	images.QR: not on the list of functions	1
+branch	preview-images-overlay	layouts/_partials/preview-image.html	{{- $x := images.Overlay .Title -}}	images.Overlay: not on the list of functions	1
+branch	preview-images-text-literal	layouts/_partials/preview-image.html	{{- $x := images.Text "Free" -}}	string literal 'Free' is copy (L3)	1
++		layouts/page.html	{{ partial "preview-image.html" . }}		
+branch	preview-images-text-permalink	layouts/_partials/preview-image.html	{{- $x := images.Text .Permalink -}}	images.Text draws a URL into a card image	1
++		layouts/page.html	{{ partial "preview-image.html" . }}		
+branch	preview-images-text-token	layouts/_partials/preview-image.html	{{- $x := images.Text "free" -}}	the action binds a value computed from literals alone ('free')	1
++		layouts/page.html	{{ partial "preview-image.html" . }}		
+branch	preview-images-text-runtime	layouts/_partials/preview-image.html	{{- $x := images.Text .Kind -}}	images.Text draws a word Hugo writes for a value	1
++		layouts/page.html	{{ partial "preview-image.html" . }}		
+branch	preview-images-text-number	layouts/_partials/preview-image.html	{{- $x := images.Text (int .Kind) -}}	images.Text draws a number into a card image	1
++		layouts/page.html	{{ partial "preview-image.html" . }}		
+branch	preview-images-text-elsewhere	layouts/_partials/other.html	{{- $x := images.Text .Title -}}	images.Text: only layouts/_partials/preview-image.html may call it	1
+branch	preview-images-filter-elsewhere	layouts/_partials/other.html	{{- $x := images.Filter .Title -}}	images.Filter: only layouts/_partials/preview-image.html may call it	1
+branch	preview-resources-get-font-elsewhere	layouts/_partials/other.html	{{- $x := resources.Get "fonts/noto-sans-bold.ttf" -}}	resources.Get: only layouts/_partials/preview-image.html, layouts/baseof.html may call it	1
+branch	preview-hugo-data-elsewhere	layouts/_partials/other.html	{{- $x := hugo.Data.preview -}}	data/preview.toml is read only inside	1
+branch	preview-split-elsewhere	layouts/_partials/other.html	{{- $x := split .Title "" -}}	split: only	1
+branch	preview-mul-elsewhere	layouts/_partials/other.html	{{- $x := mul .Title .Title -}}	mul: only	1
+branch	preview-number-elsewhere	layouts/_partials/other.html	{{- $x := add .Title 0 -}}	the literal '0' sits in a value position of add	1
+branch	preview-number-other-value	layouts/_partials/preview-image.html	{{- $x := add .Title 2 -}}	the literal '2' sits in a value position of add	1
+branch	preview-resource-key-other-font	layouts/_partials/preview-image.html	{{- $x := resources.Get "fonts/other.ttf" -}}	which is not a literal on LITERALS_RESOURCE_KEYS	1
+branch	preview-dict-key-elsewhere	layouts/_partials/other.html	{{- $x := dict "font" .Title -}}	the dict key 'font' is not on LITERALS_DICT_KEYS	1
+branch	preview-collection-value-elsewhere	layouts/_partials/other.html	{{- $x := slice "bold" -}}	the slice value 'bold' is not on LITERALS_COLLECTION_VALUES	1

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+{{- /* A meta CSP applies only to content after it, so it comes right after the charset (D9). */}}
+<meta http-equiv="Content-Security-Policy" content="{{ site.Params.csp }}">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{{- /* The page's own description, else the site's; Lighthouse's SEO category needs one on every page. */}}
+<meta name="description" content="{{ .Description | default site.Params.description }}">
+<title>{{ block "title" . }}{{ site.Title }}{{ end }}</title>
+{{- /* The absolute URL of the page itself (ADR-0003 part 3; sitecheck site rule (d)). The 404 page has none: it answers for every missing URL. */}}
+{{- if ne .Kind "404" }}
+<link rel="canonical" href="{{ .Permalink }}">
+{{- end }}
+{{- with resources.Get "css/site.css" | resources.Minify | resources.Fingerprint }}
+<link rel="stylesheet" href="{{ .RelPermalink }}">
+{{- end }}
+</head>
+<body>
+{{ block "main" . }}{{ end }}
+</body>
+</html>

@@ -31,6 +31,15 @@ mediaType = "application/json"
 baseName = "feed"
 isPlainText = true
 
+# The link preview card images (ADR-0009 part 4): no file cache for
+# processed images. Hugo keys a drawn image by the path of its font, not
+# its bytes, so a cached card would survive a replaced font or base image
+# (measured with the pinned Hugo: the same name, the old bytes); maxAge 0
+# draws every card on every build. The guard pins the key and reads it in
+# the effective config.
+[caches.images]
+maxAge = 0
+
 [markup.goldmark.renderer]
 # Raw HTML in Markdown is omitted. Already the default; explicit so the guard
 # can assert it (D8, D7).
