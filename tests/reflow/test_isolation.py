@@ -49,7 +49,7 @@ DEFAULTS = {"visibility": "visible", "outline-style": "none", "text-decoration-l
             "filter": "none", "opacity": "1", "mask-image": "none",
             "-webkit-mask-box-image-source": "none", "clip-path": "none",
             "mix-blend-mode": "normal", "backdrop-filter": "none", "will-change": "auto",
-            "view-transition-name": "none"}
+            "view-transition-name": "none", "-webkit-box-reflect": "none"}
 
 
 class Snapshot:
@@ -343,7 +343,7 @@ class AncestorPaint(unittest.TestCase):
                           "overflow-x", "overflow-y", "resize", "filter", "opacity",
                           "mask-image", "-webkit-mask-box-image-source", "clip-path",
                           "mix-blend-mode", "backdrop-filter", "will-change",
-                          "view-transition-name"))
+                          "view-transition-name", "-webkit-box-reflect"))
 
     def test_outline_on_root(self):
         self.assertEqual(self.paint({"outline-style": "dashed"}, on="root_style"),
@@ -388,7 +388,8 @@ TRIGGERS = (("filter", "opacity(1)"), ("filter", "blur(0px)"), ("opacity", "0.99
             ("will-change", "opacity"), ("will-change", "clip-path"), ("will-change", "mask"),
             ("will-change", "backdrop-filter"), ("will-change", "mix-blend-mode"),
             ("will-change", "transform"), ("will-change", "filter, opacity"),
-            ("view-transition-name", "x"))
+            ("view-transition-name", "x"), ("-webkit-box-reflect", "below 0px none"),
+            ("-webkit-box-reflect", "right 0px none"))
 
 
 class BackdropRoot(unittest.TestCase):
@@ -406,7 +407,8 @@ class BackdropRoot(unittest.TestCase):
                          {"filter": "none", "opacity": "1", "mask-image": "none",
                           "-webkit-mask-box-image-source": "none", "clip-path": "none",
                           "mix-blend-mode": "normal", "backdrop-filter": "none",
-                          "will-change": "auto", "view-transition-name": "none"})
+                          "will-change": "auto", "view-transition-name": "none",
+                          "-webkit-box-reflect": "none"})
         self.assertEqual({prop for prop, _ in TRIGGERS},
                          set(sitecheck.REFLOW_BACKDROP_ROOT_STYLES))
 

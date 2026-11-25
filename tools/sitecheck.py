@@ -12373,8 +12373,9 @@ REFLOW_PAINT_STYLES = ("outline-style", "text-decoration-line", "overflow-x", "o
 # mask (mask-image; Chrome has no unprefixed mask-border, its source is
 # -webkit-mask-box-image-source), a clip-path, a blend mode, a backdrop
 # filter, will-change (any value but auto, since it names any property,
-# prefixed aliases and shorthands of the triggers included) and a view
-# transition name (a Backdrop Root in Chrome 147). A part's backdrop-filter
+# prefixed aliases and shorthands of the triggers included), and two that
+# Chrome 147 adds: a view transition name and a box reflection
+# (-webkit-box-reflect, fix round 2, review run 2). A part's backdrop-filter
 # reads only what is painted inside its nearest Backdrop Root, so with an
 # ancestor of the region, the region itself or an element in it as one,
 # the blank captures hide everything the filter reads and the stripes
@@ -12385,7 +12386,8 @@ REFLOW_PAINT_STYLES = ("outline-style", "text-decoration-line", "overflow-x", "o
 REFLOW_BACKDROP_ROOT_STYLES = {"filter": "none", "opacity": "1", "mask-image": "none",
                                "-webkit-mask-box-image-source": "none", "clip-path": "none",
                                "mix-blend-mode": "normal", "backdrop-filter": "none",
-                               "will-change": "auto", "view-transition-name": "none"}
+                               "will-change": "auto", "view-transition-name": "none",
+                               "-webkit-box-reflect": "none"}
 # The view-transition-name Chrome's user-agent stylesheet gives the root
 # element (:root{view-transition-name:root}; every page's <html> computes
 # it). The root element is a Backdrop Root by definition, so its own name
