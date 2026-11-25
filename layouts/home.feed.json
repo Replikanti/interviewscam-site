@@ -25,7 +25,11 @@
     aliases; every other name has name_label null.
   - Artifacts are the record's typed lists as stored, defanged (D8); each
     sha256 item adds lookup_urls, the lookup pages its listed_on names
-    (lookups.html). */ -}}
+    (lookups.html).
+  - license (ADR-0010): the licence of the records and the feed, from
+    feed_license in data/labels.toml; terms_url is the /data-feed/
+    permalink with the id of its Licence heading as the fragment. The
+    schema pins each value as a const. */ -}}
 {{- /* JSON null: the value of a key no dict holds. */ -}}
 {{- $null := index (dict) "null" -}}
 {{- $lookups := partial "lookups.html" . -}}
@@ -129,6 +133,12 @@
     "sources" $p.sources
   ) -}}
 {{- end -}}
+{{- $license := dict
+  "id" (partial "label.html" "feed_license.id")
+  "name" (partial "label.html" "feed_license.name")
+  "url" (partial "label.html" "feed_license.url")
+  "terms_url" (printf "%s#%s" (site.GetPage "/data-feed").Permalink (partial "label.html" "feed_license.anchor"))
+-}}
 {{- $updated := $null -}}
 {{- with $dates }}{{ $updated = index (sort . "value" "desc") 0 }}{{ end -}}
 {{- $feed := dict
@@ -136,6 +146,7 @@
   "home_page_url" site.Home.Permalink
   "documentation_url" (site.GetPage "/data-feed").Permalink
   "updated" $updated
+  "license" $license
   "reports" $reports
   "campaigns" $campaigns
 -}}

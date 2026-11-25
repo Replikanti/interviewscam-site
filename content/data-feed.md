@@ -1,6 +1,6 @@
 +++
 title = "Data feed"
-description = "The JSON feed of every published report and campaign family: its address, its fields and how its version changes."
+description = "The JSON feed of every published report and campaign family: its address, its fields, how its version changes and its licence."
 +++
 
 The data feed lists every published report and campaign family in one JSON document, for researchers and tools. It is at [/feed.json](/feed.json), and it changes whenever the site changes.
@@ -9,9 +9,23 @@ The data feed lists every published report and campaign family in one JSON docum
 
 Each report and each campaign family has one entry, with the same facts its page shows. Record bodies are not in the feed. Entries are sorted by slug.
 
-Every artifact is written defanged, as on the pages, so nothing in the feed is a live link to an attacker. `hxxps` stands for `https`, `[.]` for a dot and `[@]` for the at sign. Restore them only where you mean to use the value. The only live URLs are the pages of this site, the cited sources and the lookup pages of a file hash.
+Every artifact is written defanged, as on the pages, so nothing in the feed is a live link to an attacker. `hxxps` stands for `https`, `[.]` for a dot and `[@]` for the at sign. Restore them only where you mean to use the value. The only live URLs are the pages of this site, the cited sources, the lookup pages of a file hash and the licence.
 
 A recruiter name that is hidden on request appears as `null`, with no aliases. A recruiter name that is shown comes with the label in `name_label`, "(name used by the campaign, possibly a stolen identity)", and the label belongs with the name and its aliases wherever you show them. The name can also appear inside that recruiter's own artifacts, such as a handle or an email address, as the campaign used them.
+
+## Licence
+
+The reports, the campaign families and this feed are licensed under the [Creative Commons Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/legalcode.en) licence (CC BY 4.0). The licensor is {{< param operator >}}. The field `license` of the feed names the same licence.
+
+You may copy, share and adapt the data for any purpose, commercial use included, and the licence also covers the collection as a whole. In return, credit interviewscam.com, name the licence with a link to it, link the report or campaign page where you can, and say what you changed. For example: "Source: interviewscam.com, `https://interviewscam.com/reports/<slug>/`, CC BY 4.0, shortened." If you are asked to remove the credit from your copy, remove it as far as you reasonably can.
+
+The licence does not cover the code and the checks of the site, the text of its other pages, the name and the logo of interviewscam.com, or the sources a record cites. Of a source, a record holds only its title, publisher, date and address. Who is behind a campaign family is written as a cited source states it, and the licence covers that wording only as far as it is the operator's to license. The lookup pages of a file hash belong to their services.
+
+The licence gives no rights in anyone's personal data. If you use a name from the feed, that use is yours to justify under data protection law. Please show a recruiter name with the label in `name_label`, and every name with its state, because a name a campaign used can belong to a real person or company that had no part in it. A name that is `null` is hidden on request, so keep it hidden.
+
+A report can be corrected or removed, and a name can be hidden on request. A copy that was already made keeps its licence, so the feed is always the current state. Please fetch the feed at least once every 24 hours, and drop the entries that are gone and the names that became `null`.
+
+A report describes the artifacts that were reported and reviewed on the date it states. It is not a verdict about a company or a person. The data comes with no warranty, as the licence states.
 
 ## Versioning
 
@@ -32,6 +46,21 @@ A path such as `reports[].artifacts.sha256[].value` names the field `value` in e
 
 `updated`
 : Date or `null`. The latest publication or review date of any report or campaign family. `null` when there are none.
+
+`license`
+: Object. The licence of the reports, the campaign families and this feed, described under Licence above.
+
+`license.id`
+: Text. The SPDX identifier of the licence, `CC-BY-4.0`.
+
+`license.name`
+: Text. The name of the licence, "Creative Commons Attribution 4.0 International".
+
+`license.url`
+: Text. The address of the licence's legal code.
+
+`license.terms_url`
+: Text. The address of the Licence section of this page.
 
 `reports`
 : List. Every published report, one per name a candidate sees.

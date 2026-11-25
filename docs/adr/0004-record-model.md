@@ -319,7 +319,7 @@ It is a custom output format of the home page (`[outputFormats.feed]`, `[outputs
 
 **Weak point:** no off-the-shelf reader support, and a consumer that rejects unknown fields breaks on an addition.
 
-**Rejected:** JSON Feed 1.1; docs only in `docs/` (invisible to users); a semver string (only breaking changes need a signal, so one integer carries all the information needed). The data licence is deferred to issue #19 (P2; SPEC §10 already lists data licensing as out of MVP scope). M3 decides no licence.
+**Rejected:** JSON Feed 1.1; docs only in `docs/` (invisible to users); a semver string (only breaking changes need a signal, so one integer carries all the information needed). The data licence is deferred to issue #19 (P2; SPEC §10 already lists data licensing as out of MVP scope). M3 decides no licence. [ADR-0010](0010-data-licence.md) decides it: CC BY 4.0, with a top-level `license` object in the feed.
 
 *Amended in M3 PR 8 (the implementation):*
 
