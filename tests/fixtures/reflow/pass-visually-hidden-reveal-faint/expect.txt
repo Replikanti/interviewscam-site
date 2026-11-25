@@ -1,1 +1,0 @@
-skip-link reveals: 1

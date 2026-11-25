@@ -1,7 +1,8 @@
 # reflow case (8), the search (M4 PR 4, ADR-0005 part 6), one row per
 # finding branch and per pinned region kind of the hit test and the paint
 # check, on a copy of reflow/pass-search with today's assets/js/search.js
-# (reflow_search_runner in tools/selftest.sh, CI only). Columns: name, file
+# (reflow_search_runner in tools/selftest.sh, CI only), and case (7)'s
+# legibility (Replikanti/interviewscam#34) on the real built stylesheet. Columns: name, file
 # (search.js is the script, any other a path in the tree), find (exactly one
 # occurrence; - leaves the file as it is, * deletes it), replace, expect
 # (PASS, or a text the findings must hold), and an optional NAME=number list of module
@@ -178,3 +179,25 @@ oc-pass-backdrop-root-none	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9
 # root next to the guard's own finding (a patch list allows no part).
 hv-br-hover-root-parked	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}main>progress{display:block;appearance:none;visibility:hidden;position:relative;top:-5.6rem;width:100%;height:2.4rem;border:0;background:none}main>progress::-webkit-progress-bar{visibility:visible;background:transparent;backdrop-filter:brightness(20)}main>progress::-webkit-progress-value{visibility:hidden;background:transparent}body:hover main{clip-path:inset(0)}	is not the stripes		index.html	<h1 class=home-title>Check a name from your interview invite</h1>	<h1 class=home-title>Check a name from your interview invite</h1><progress value=1 max=1></progress>
 hv-br-hover-root-on-page	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body:hover main{clip-path:inset(0)}	is a Backdrop Root:	SEARCH_PARK_X=40,SEARCH_PARK_Y=300
+legible-token-redefined	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{--color-primary:var(--color-card)}	MEASURE-ONLY
+legible-font-size-zero	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{font-size:0}	MEASURE-ONLY
+legible-text-indent	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{text-indent:-9999px}	MEASURE-ONLY
+legible-scale	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{transform:scale(.08)}	MEASURE-ONLY
+legible-blur	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{filter:blur(6px)}	MEASURE-ONLY
+legible-opacity	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{opacity:.05}	MEASURE-ONLY
+legible-contrast-at-aa	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{-webkit-text-fill-color:#767676;font-size:2rem}	MEASURE-ONLY
+legible-contrast-below-aa	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{-webkit-text-fill-color:#777777;font-size:2rem}	MEASURE-ONLY
+legible-inset-outline	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a:focus-visible{-webkit-text-fill-color:var(--color-card);outline:1em solid;outline-offset:-1em}	MEASURE-ONLY
+legible-small	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{font-size:15px}	MEASURE-ONLY
+legible-smaller	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{font-size:8px}	MEASURE-ONLY
+legible-fill-transition	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{transition:-webkit-text-fill-color 2s linear,color 2s linear}	MEASURE-ONLY
+measure-34-size-16px	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{font-size:16px}	MEASURE-ONLY
+measure-34-size-15px	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{font-size:15px}	MEASURE-ONLY
+measure-34-size-14px	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{font-size:14px}	MEASURE-ONLY
+measure-34-size-13px	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{font-size:13px}	MEASURE-ONLY
+measure-34-size-12px	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{font-size:12px}	MEASURE-ONLY
+measure-34-size-11px	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{font-size:11px}	MEASURE-ONLY
+measure-34-size-10px	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{font-size:10px}	MEASURE-ONLY
+measure-34-size-9px	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{font-size:9px}	MEASURE-ONLY
+measure-34-size-8px	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{font-size:8px}	MEASURE-ONLY
+measure-34-size-7px	css/site.min.470be46f742fb0e78ec74a50fb4760c6c8ff56e9ab80f27762e41059b559bc38.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{font-size:7px}	MEASURE-ONLY
