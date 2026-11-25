@@ -1226,6 +1226,57 @@ else:
 PY
 }
 
+# csp_html_parser_reading <sitecheck.py> (Replikanti/interviewscam#54): the
+# evidence line site-csp-equiv/html-parser-reading names the members that
+# this interpreter's html.parser reads unlike HTML's tokenizer, each on a
+# minimal page through sitecheck.parse_page: a doubled '=' (html.parser
+# before the 2025 tag fix reads it as one), a meta inside the quoted value
+# of an end tag (read as an element there), a numeric reference that
+# html.unescape drops (&#1;, every version) and a marked section
+# (<![temp[ read to ']]>'). It cannot fail by design: the CSP rules no
+# longer read html.parser, and the line is there so QA cites the runner's
+# own reading from the check log instead of inferring it. -B: no
+# tools/__pycache__.
+csp_html_parser_reading() {
+  python3 -I -B - "$1" <<'PY'
+import importlib.util
+import platform
+import sys
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+
+
+def metas(page):
+    try:
+        return [attrs for tag, attrs in sitecheck.parse_page(page).elements if tag == "meta"]
+    except Exception as exc:  # html.parser 3.12.3 asserts on an unknown marked section
+        return exc
+
+
+# (member, page, a test on its metas that holds when html.parser reads it unlike HTML)
+members = (
+    ("a doubled '='", "<meta http-equiv==Content-Security-Policy>",
+     lambda m: m[0].get("http-equiv") == "Content-Security-Policy"),
+    ("a meta in an end tag's quoted value",
+     '</x a="><meta http-equiv=Content-Security-Policy></x b=">', lambda m: len(m) == 1),
+    ("&#1; in a value", '<meta http-equiv="Content-Security-Policy&#1;">',
+     lambda m: m[0].get("http-equiv") == "Content-Security-Policy"),
+    ("<![temp[", "<![temp[ x><meta http-equiv=refresh>]]>", lambda m: m == []),
+)
+differ = []
+for label, page, unlike in members:
+    found = metas(page)
+    if isinstance(found, Exception):
+        differ.append(f"{label} (raises {type(found).__name__})")
+    elif unlike(found):
+        differ.append(label)
+print(f"ok   site-csp-equiv/html-parser-reading (Python {platform.python_version()}: "
+      f"html.parser reads {', '.join(differ) or 'none of the members'} unlike HTML)")
+PY
+}
+
 # intake_coverage <sitecheck.py> <render table> <site table> [drop] (M5b
 # PR 3): the rows of tests/fixtures/render/intake-cases.tsv and
 # tests/fixtures/site/intake-cases.tsv cover every member of the sets render
@@ -5575,6 +5626,17 @@ PINNED
     n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
     if [[ "$(grep -cE '^ok   site-csp-equiv/(coverage|space-set) ' "$out")" != 2 ]]; then
       echo "FAIL site-csp-equiv/coverage-lines: the coverage lines did not both pass; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+    # The evidence line (csp_html_parser_reading): the members this
+    # interpreter's html.parser reads unlike HTML (Replikanti/interviewscam#54).
+    csp_html_parser_reading "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1
+    if grep -qE '^ok   site-csp-equiv/html-parser-reading ' "$out"; then
+      grep -E '^ok   site-csp-equiv/html-parser-reading ' "$out"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL site-csp-equiv/html-parser-reading: the evidence line did not print; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi

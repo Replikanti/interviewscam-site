@@ -1945,20 +1945,42 @@ def is_csp_meta(tag, attrs):
     str.strip() also removes U+00A0, U+0085, U+3000 and other Unicode
     whitespace, and a padded value is inert in the browser. ASCII folding
     only, because casefold() and NFKC map non-ASCII code points (U+017F,
-    the long s, to s) onto these letters, which the browser does not."""
+    the long s, to s) onto these letters, which the browser does not. tag
+    and attrs come from csp_metas (a tag_tokens start tag and its
+    first_attrs, Replikanti/interviewscam#54)."""
     return tag == "meta" and \
         ascii_lower(attrs.get("http-equiv", "")) == "content-security-policy"
 
 
-def intake_csp_problems(page):
+def csp_metas(text):
+    """The attributes (first_attrs) of every CSP meta of a built page, in
+    order, read with HTML's tokenizer (tag_tokens), not html.parser
+    (Replikanti/interviewscam#54): html.parser 3.12.3 reads a doubled '='
+    (http-equiv==Content-Security-Policy) as the keyword and a meta inside
+    the quoted value of an end tag (</x a="><meta ...></x b=">) as an
+    element, where HTML reads neither, and later versions read them as HTML
+    does, so a reading through html.parser depends on the patch level. Every
+    CSP rule of `site` reads these: the count and position, the policy and
+    rule (a)'s form-action. Inside an element whose content HTML does not
+    tokenize as tags (title, textarea, script, style, the obsolete raw-text
+    elements) the tokenizer still reads tags; rule (i) refuses '<' there,
+    and a meta counted there only adds findings."""
+    metas = []
+    for _, _, _, kind, name, attrs in tag_tokens(text):
+        if kind == "start":
+            first = first_attrs(attrs)
+            if is_csp_meta(name, first):
+                metas.append(first)
+    return metas
+
+
+def intake_csp_problems(metas):
     """Site rule (a) on a page with the intake form: every CSP meta's
     form-action lists INTAKE_ORIGIN (a missing form-action does not; the
     browser would then allow every target, and the policy names its
-    targets)."""
+    targets). metas: csp_metas of the page."""
     problems = []
-    for tag, attrs in page.elements:
-        if not is_csp_meta(tag, attrs):
-            continue
+    for attrs in metas:
         sources = []
         for directive in (d.strip(CSP_WHITESPACE) for d in attrs.get("content", "").split(";")):
             name, *rest = re.split(f"[{CSP_WHITESPACE}]+", directive) if directive else [""]
@@ -1972,22 +1994,96 @@ def intake_csp_problems(page):
     return problems
 
 
-def csp_position_problems(page, csp):
+CSP_PREFIX_TAIL = ("before the Content-Security-Policy meta; only ASCII whitespace may stand "
+                   "between <!doctype html>, <html>, <head>, <meta charset> and the CSP meta, "
+                   "or the browser can end the head first and ignore the CSP")
+
+
+def csp_prefix_problem(text):
+    """The place of the CSP meta as one closed form (Replikanti/interviewscam#54),
+    read with tag_tokens from byte 0: the page starts with PAGE_DOCTYPE, then
+    the start tags <html>, <head>, a <meta> with a charset attribute and the
+    CSP meta follow in this order, with nothing but ASCII_WHITESPACE between
+    them. By HTML's tree construction that makes the CSP meta the second
+    child of the head, where the browser applies it. Anything else in a gap
+    can end the head before the CSP meta, and the CSP meta in the body is
+    ignored: text that is not ASCII whitespace (also a numeric reference
+    that html.unescape drops, like &#1;, which the browser keeps as text) and
+    an end tag (</br>, </body>). The form is narrower than the browser: a
+    </head>, a bogus comment or a processing instruction there is refused
+    too, although the browser would still apply the CSP, because the build
+    writes none and a closed form needs no model of tree construction. The
+    first problem only, or None."""
+    if not text.startswith(PAGE_DOCTYPE):
+        return (f"the page does not start with {PAGE_DOCTYPE}, so the place of its CSP "
+                "meta is not read; fails closed")
+    tokens = tag_tokens(text)
+    pos = next(tokens)[1]  # the doctype, a '<!' token to its '>'
+    for step in ("html", "head", "charset", "csp"):
+        token = next(tokens, None)
+        start = len(text) if token is None else token[0]
+        gap = text[pos:start]
+        if gap.strip(ASCII_WHITESPACE):
+            return f"the text {show(gap)} {CSP_PREFIX_TAIL}"
+        if token is not None and token[3] != "start":
+            return f"the token {show(text[token[0]:token[1]])} {CSP_PREFIX_TAIL}"
+        name = None if token is None else token[4]
+        attrs = {} if token is None else first_attrs(token[5])
+        if step in ("html", "head") and name != step:
+            return "the page does not open with the start tags <html> and <head>"
+        if step == "charset" and not (name == "meta" and "charset" in attrs):
+            return "the first element in <head> must be <meta charset>"
+        if step == "csp" and not is_csp_meta(name, attrs):
+            return ("the Content-Security-Policy meta is not the first element "
+                    "after <meta charset>")
+        pos = token[1]
+    return None
+
+
+def csp_position_problems(text, metas, csp):
+    """Exactly one CSP meta (metas: csp_metas of the page), in its place
+    (csp_prefix_problem), and each one equal to params.csp."""
     problems = []
-    metas = [attrs for tag, attrs in page.elements if is_csp_meta(tag, attrs)]
     if len(metas) != 1:
         problems.append(f"expected exactly one Content-Security-Policy meta, found "
                         f"{len(metas)}")
-    head = [(tag, attrs) for tag, attrs in page.elements if tag not in ("html", "head")]
-    if not head or head[0][0] != "meta" or "charset" not in head[0][1]:
-        problems.append("the first element in <head> must be <meta charset>")
-    elif len(head) < 2 or not is_csp_meta(*head[1]):
-        problems.append("the Content-Security-Policy meta is not the first element "
-                        "after <meta charset>")
+    problem = csp_prefix_problem(text)
+    if problem:
+        problems.append(problem)
     for attrs in metas:
         if attrs.get("content", "") != csp:
             problems.append("the Content-Security-Policy meta does not equal "
                             "params.csp in hugo.toml")
+    return problems
+
+
+def csp_reference_problems(text, metas):
+    """No '&' in the http-equiv of any meta and none in the content of a CSP
+    meta (metas: csp_metas of the page; Replikanti/interviewscam#54). The
+    CSP rules compare the raw values, and html.parser and the browser
+    decode character references differently: html.unescape drops 94 code
+    points (U+0001 to U+0008, U+000B, U+000E to U+001F, U+007F, U+FDD0 to
+    U+FDEF and the two last code points of every plane, measured the same
+    on CPython 3.11 to 3.14) that the browser keeps, so
+    http-equiv="Content-Security-Policy&#1;" is a CSP meta to html.parser
+    and inert to the browser, and default-src&#1; is a directive the
+    browser drops. The build writes no '&' in either value (Hugo's minifier
+    writes the policy with raw quotes), so a refusal of every '&', raw or
+    not, leaves no decoding to model. Other metas' content is not read
+    here."""
+    problems = []
+    for _, _, _, kind, name, attrs in tag_tokens(text):
+        if kind == "start" and name == "meta" and "&" in first_attrs(attrs).get("http-equiv", ""):
+            problems.append("'&' in the http-equiv of a <meta>: html.parser and the browser "
+                            "decode character references differently (html.unescape drops "
+                            "94 code points the browser keeps), so no meta's http-equiv "
+                            "holds one; fails closed")
+    for attrs in metas:
+        if "&" in attrs.get("content", ""):
+            problems.append("'&' in the content of the Content-Security-Policy meta: "
+                            "html.parser and the browser decode character references "
+                            "differently (html.unescape drops 94 code points the browser "
+                            "keeps), so the CSP meta's content holds none; fails closed")
     return problems
 
 
@@ -2892,13 +2988,17 @@ def cmd_site(args):
                                  "browser cases of reflow load (fail closed)")
                 for problem in html_request_problems(page):
                     findings.add(rel, f"third-party request: {problem} (D9)")
+                # Every CSP rule reads the CSP meta with HTML's tokenizer
+                # (csp_metas), not page.elements (Replikanti/interviewscam#54).
+                metas = csp_metas(text)
                 if csp is not None:
-                    for problem in csp_position_problems(page, csp):
+                    for problem in csp_position_problems(text, metas, csp):
                         findings.add(rel, f"CSP: {problem}")
-                for tag, attrs in page.elements:
-                    if is_csp_meta(tag, attrs):
-                        for problem in csp_problems(attrs.get("content", "")):
-                            findings.add(rel, problem)
+                for problem in csp_reference_problems(text, metas):
+                    findings.add(rel, f"CSP: {problem}")
+                for attrs in metas:
+                    for problem in csp_problems(attrs.get("content", "")):
+                        findings.add(rel, problem)
                 for problem in markup_problems(page, path.relative_to(public).as_posix()):
                     findings.add(rel, problem)
                 # (a) A page that posts to the intake endpoint lists the
@@ -2906,7 +3006,7 @@ def cmd_site(args):
                 # block the form without a word (ADR-0006 part 9).
                 if any(is_intake_action(tag, "action", attrs.get("action"))
                        for tag, attrs in page.elements):
-                    for problem in intake_csp_problems(page):
+                    for problem in intake_csp_problems(metas):
                         findings.add(rel, problem)
                 for problem in rawtext_built_problems(text):
                     findings.add(rel, problem)
@@ -10117,17 +10217,27 @@ PARSER_ONLY_SPACE_ANY = re.compile("[" + "".join(chr(c) for c in sorted(PARSER_O
 TAG_NAME_SHOWN = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*|<[!?]", re.A)
 
 
-def tag_spans(text):
-    """(start, end, quoted) of every tag of a built page as HTML's
-    tokenizer reads it, from its '<' through its closing '>' (or the end of
-    the file): a start or end tag ('<' or '</' and an ASCII letter) with its
-    attributes, where a quote opens a value only right after '=' and ASCII
-    whitespace, so a '>' inside a quoted value does not end the tag; '<!',
-    '<?' and '</' with anything but an ASCII letter after it (a bogus
-    comment) run to the next '>'. quoted: the (start, end) of the text
-    inside each quoted value, the quotes left out. Comments get no reading
-    of their own, because rule (i) fails every '<!--'. Read with a pattern
-    of states, not html.parser, whose whitespace is what this rule checks."""
+def tag_tokens(text):
+    """(start, end, quoted, kind, name, attrs) of every tag of a built page
+    as HTML's tokenizer reads it, from its '<' through its closing '>' (or
+    the end of the file): a start or end tag ('<' or '</' and an ASCII
+    letter) with its attributes, where a quote opens a value only right
+    after '=' and ASCII whitespace, so a '>' inside a quoted value does not
+    end the tag; '<!', '<?' and '</' with anything but an ASCII letter after
+    it (a bogus comment) run to the next '>'. quoted: the (start, end) of
+    the text inside each quoted value, the quotes left out. kind: "start",
+    "end" or "other" (the '<!', '<?' and bogus-comment forms). name: the
+    tag name with A to Z lowered and nothing else (ascii_lower, as HTML
+    lowers it), None for "other". attrs: (name, value) of every attribute
+    in source order, the name lowered like the tag name; the value raw,
+    character references not decoded: "" for an attribute without one, a
+    quoted value without its quotes, an unquoted value up to ASCII
+    whitespace or '>' (a '/' stays in it). A tag that runs to the end of
+    the file is yielded as read so far. Comments get no reading of their
+    own, because rule (i) fails every '<!--'. Read with a pattern of states,
+    not html.parser, whose whitespace is what rule (i) checks and whose
+    reading of tag markup changed after CPython 3.12.3 (a doubled '=', an
+    end tag that ends at its first '>'; Replikanti/interviewscam#54)."""
     pos, n = 0, len(text)
     while True:
         lt = text.find("<", pos)
@@ -10137,7 +10247,7 @@ def tag_spans(text):
         if nxt in ("!", "?"):
             gt = text.find(">", lt + 2)
             pos = n if gt < 0 else gt + 1
-            yield lt, pos, ()
+            yield lt, pos, (), "other", None, ()
             continue
         i = lt + 2 if nxt == "/" else lt + 1
         letter = "a" <= text[i:i + 1].lower() <= "z" and text[i:i + 1].isascii()
@@ -10148,22 +10258,28 @@ def tag_spans(text):
             # (Replikanti/interviewscam#32 fix round 2).
             gt = text.find(">", i)
             pos = n if gt < 0 else gt + 1
-            yield lt, pos, ()
+            yield lt, pos, (), "other", None, ()
             continue
         if not letter:
             pos = lt + 1
             continue
+        # mark: where the tag name, the current attribute name or the
+        # current unquoted value began; attrs: [name, value] lists, each
+        # name and value set when the tokenizer leaves its state.
         state, quoted, opened = "name", [], None
+        mark, name, attrs = i, None, []
         while i < n:
             c = text[i]
             if state == "dq":
                 if c == '"':
                     state = "before"
                     quoted.append((opened, i))
+                    attrs[-1][1] = text[opened:i]
             elif state == "sq":
                 if c == "'":
                     state = "before"
                     quoted.append((opened, i))
+                    attrs[-1][1] = text[opened:i]
             elif c == ">":
                 break
             elif state == "value":
@@ -10174,22 +10290,62 @@ def tag_spans(text):
                 elif c == "'":
                     state, opened = "sq", i + 1
                 else:
-                    state = "unquoted"
+                    state, mark = "unquoted", i
             elif state == "unquoted":
-                state = "before" if c in ASCII_WHITESPACE else state
+                if c in ASCII_WHITESPACE:
+                    state = "before"
+                    attrs[-1][1] = text[mark:i]
             elif c in ASCII_WHITESPACE:
-                state = "after" if state == "attr" else "before" if state == "name" else state
+                if state == "attr":
+                    attrs[-1][0] = text[mark:i]
+                    state = "after"
+                elif state == "name":
+                    name = text[mark:i]
+                    state = "before"
             elif c == "/":
+                if state == "attr":
+                    attrs[-1][0] = text[mark:i]
+                elif state == "name":
+                    name = text[mark:i]
                 state = "before"
             elif c == "=" and state in ("attr", "after"):
+                if state == "attr":
+                    attrs[-1][0] = text[mark:i]
                 state = "value"
             elif state in ("before", "after"):
-                state = "attr"
+                state, mark = "attr", i
+                attrs.append([None, ""])
             i += 1
         if state in ("dq", "sq"):
             quoted.append((opened, i))
+            attrs[-1][1] = text[opened:i]
+        elif state == "unquoted":
+            attrs[-1][1] = text[mark:i]
+        elif state == "attr":
+            attrs[-1][0] = text[mark:i]
+        elif state == "name":
+            name = text[mark:i]
         pos = min(i + 1, n)
-        yield lt, pos, tuple(quoted)
+        yield (lt, pos, tuple(quoted), "end" if nxt == "/" else "start", ascii_lower(name),
+               tuple((ascii_lower(key), value) for key, value in attrs))
+
+
+def tag_spans(text):
+    """(start, end, quoted) of every tag of a built page as HTML's
+    tokenizer reads it (tag_tokens, which holds the reading): from its '<'
+    through its closing '>' (or the end of the file), quoted the (start,
+    end) of the text inside each quoted value, the quotes left out."""
+    for start, end, quoted, *_ in tag_tokens(text):
+        yield start, end, quoted
+
+
+def first_attrs(attrs):
+    """The attributes of a tag_tokens tag as a dict, the first of two
+    attributes with one name kept, as HTML keeps it (and Page._element)."""
+    first = {}
+    for key, value in attrs:
+        first.setdefault(key, value)
+    return first
 
 
 def tag_space_hits(text):
@@ -10242,7 +10398,11 @@ def rawtext_built_problems(text):
     A1: so does a script or style whose content holds '<': inside svg or
     math a browser reads that content as markup, and this check does not
     track svg and math, so it fails wherever the element is; for the same
-    reason any `<![CDATA[` fails (the minifier leaves none). review7 A1: an
+    reason any `<![CDATA[` fails (the minifier leaves none), and so does
+    every other `<![`: html.parser 3.12.3 reads `<![temp[` to `]]>` and
+    `<![if` to `]>`, HTML a bogus comment to the first `>`, so a refresh
+    meta between them reaches the browser and not the request rules
+    (Replikanti/interviewscam#54). review7 A1: an
     end tag of RAWTEXT_END_TAG that is more than its name and ASCII
     whitespace, and a script or style without an end tag, fail closed:
     html.parser before the 2025 HTML5 tag fix reads past them to the end of
@@ -10256,6 +10416,11 @@ def rawtext_built_problems(text):
         problems.append("(i) '<![CDATA[': text to ']]>' inside svg or math and a "
                         "comment to '>' elsewhere, so this check and a browser could "
                         "read what follows differently; fails closed")
+    if re.search(r"<!\[(?!CDATA\[)", text):
+        problems.append("(i) '<![': a marked section, which html.parser 3.12.3 reads to "
+                        "']]>' or ']>' and HTML as a comment to the first '>', so markup "
+                        "between them is read by one and not the other; fails closed "
+                        "(Replikanti/interviewscam#54)")
     for _, name, token in rawtext_end_tags(text):
         problems.append(f"(i) {rawtext_end_tag_message(name, token)} (review7 A1)")
     if any(name in ("script", "style") and end == len(text)

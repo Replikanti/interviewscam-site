@@ -1,7 +1,7 @@
 # What counts as the CSP meta (Replikanti/interviewscam#32): a meta whose
 # http-equiv is an ASCII case-insensitive match for Content-Security-Policy,
 # untrimmed, as the browser matches the keyword (is_csp_meta in
-# tools/sitecheck.py). One row per reader of the CSP meta and per padding
+# tools/sitecheck.py), read with HTML's tokenizer (csp_metas). One row per reader of the CSP meta and per padding
 # member (a leading or trailing space, a tab, a newline, U+00A0 and the
 # non-ASCII guard U+017F, the long s that casefold and NFKC fold to s), plus
 # the case variants, a valueless and a duplicate http-equiv, a non-meta
@@ -12,10 +12,12 @@
 # built pages, no built pins, so rule (m) does not hide a row) through
 # site_intake_runner in tools/selftest.sh, label site-csp-equiv. Columns:
 # name, file, find, replace, expect (PASS, or a text the findings must
-# hold). \n and \t in find and replace are a newline and a tab, \u{XXXX}
-# that code point; in the attribute rows U+00A0 and U+017F are character
-# references, which html.parser and the browser both decode in an attribute
-# value, so the table holds only ASCII. The tag-space/ rows (fix round 1)
+# hold), then optional further find and replace pairs. \n and \t in find
+# and replace are a newline and a tab, \u{XXXX} that code point, so the
+# table holds only ASCII; U+00A0 and U+017F go into the attribute rows raw,
+# not as character references, because the CSP rules read the raw value
+# with HTML's tokenizer and refuse every '&' there
+# (Replikanti/interviewscam#54). The tag-space/ rows (fix round 1)
 # write a raw code point into tag markup. Outside a quoted value site rule
 # (i) fails it before any parser's reading matters, so the verdict is the
 # same on every html.parser: per member of PARSER_ONLY_SPACE one row in the
@@ -46,14 +48,14 @@ only/newline	public/report-a-scam/index.html	<meta http-equiv=Content-Security-P
 first/newline	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8><meta http-equiv="Content-Security-Policy\n" content="default-src 'none'">	the Content-Security-Policy meta is not the first element after <meta charset>
 intake/newline	public/report-a-scam/index.html	<meta name=viewport 	<meta http-equiv="Content-Security-Policy\n" content="default-src 'none'; form-action 'self'"><meta name=viewport 	PASS
 policy/newline	public/report-a-scam/index.html	<meta name=viewport 	<meta http-equiv="Content-Security-Policy\n" content="form-action https://intake.interviewscam.com"><meta name=viewport 	PASS
-only/nbsp	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv="Content-Security-Policy&#160;" 	expected exactly one Content-Security-Policy meta, found 0
-first/nbsp	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8><meta http-equiv="Content-Security-Policy&#160;" content="default-src 'none'">	the Content-Security-Policy meta is not the first element after <meta charset>
-intake/nbsp	public/report-a-scam/index.html	<meta name=viewport 	<meta http-equiv="Content-Security-Policy&#160;" content="default-src 'none'; form-action 'self'"><meta name=viewport 	PASS
-policy/nbsp	public/report-a-scam/index.html	<meta name=viewport 	<meta http-equiv="Content-Security-Policy&#160;" content="form-action https://intake.interviewscam.com"><meta name=viewport 	PASS
-only/long-s	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv="Content-&#383;ecurity-Policy" 	expected exactly one Content-Security-Policy meta, found 0
-first/long-s	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8><meta http-equiv="Content-&#383;ecurity-Policy" content="default-src 'none'">	the Content-Security-Policy meta is not the first element after <meta charset>
-intake/long-s	public/report-a-scam/index.html	<meta name=viewport 	<meta http-equiv="Content-&#383;ecurity-Policy" content="default-src 'none'; form-action 'self'"><meta name=viewport 	PASS
-policy/long-s	public/report-a-scam/index.html	<meta name=viewport 	<meta http-equiv="Content-&#383;ecurity-Policy" content="form-action https://intake.interviewscam.com"><meta name=viewport 	PASS
+only/nbsp	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv="Content-Security-Policy\u{00A0}" 	expected exactly one Content-Security-Policy meta, found 0
+first/nbsp	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8><meta http-equiv="Content-Security-Policy\u{00A0}" content="default-src 'none'">	the Content-Security-Policy meta is not the first element after <meta charset>
+intake/nbsp	public/report-a-scam/index.html	<meta name=viewport 	<meta http-equiv="Content-Security-Policy\u{00A0}" content="default-src 'none'; form-action 'self'"><meta name=viewport 	PASS
+policy/nbsp	public/report-a-scam/index.html	<meta name=viewport 	<meta http-equiv="Content-Security-Policy\u{00A0}" content="form-action https://intake.interviewscam.com"><meta name=viewport 	PASS
+only/long-s	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv="Content-\u{017F}ecurity-Policy" 	expected exactly one Content-Security-Policy meta, found 0
+first/long-s	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8><meta http-equiv="Content-\u{017F}ecurity-Policy" content="default-src 'none'">	the Content-Security-Policy meta is not the first element after <meta charset>
+intake/long-s	public/report-a-scam/index.html	<meta name=viewport 	<meta http-equiv="Content-\u{017F}ecurity-Policy" content="default-src 'none'; form-action 'self'"><meta name=viewport 	PASS
+policy/long-s	public/report-a-scam/index.html	<meta name=viewport 	<meta http-equiv="Content-\u{017F}ecurity-Policy" content="form-action https://intake.interviewscam.com"><meta name=viewport 	PASS
 only/valueless	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv 	expected exactly one Content-Security-Policy meta, found 0
 only/duplicate-padded-first	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv=" Content-Security-Policy" http-equiv=Content-Security-Policy 	expected exactly one Content-Security-Policy meta, found 0
 pass-exact	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv="Content-Security-Policy" 	PASS
@@ -138,3 +140,81 @@ tag-space/pass-quoted/u0085	public/report-a-scam/index.html	<meta name=descripti
 tag-space/pass-quoted/u2028	public/report-a-scam/index.html	<meta name=description content="How to report	<meta name=description content="How\u{2028}to report	PASS
 tag-space/pass-quoted/u3000	public/report-a-scam/index.html	<meta name=description content="How to report	<meta name=description content="How\u{3000}to report	PASS
 tag-space/pass-single-quoted/u00a0	public/report-a-scam/index.html	<meta name=viewport 	<meta name=x-test content='a\u{00A0}b'><meta name=viewport 	PASS
+# Replikanti/interviewscam#54: the CSP rules read the CSP meta with HTML's
+# tokenizer (tag_tokens), not html.parser, whose reading of tag markup
+# differs by patch level. tokenizer/ rows: a doubled '=' and an end tag
+# that wraps a meta in a quoted value (html.parser 3.12.3 reads a CSP meta
+# in both, HTML none: found 0, and as an extra meta the policy rules and
+# rule (a) ignore it), then one row per reader branch (a '/' in an
+# unquoted value, '/' between the tag name and an attribute, upper-case
+# names, a single-quoted value, the first of two contents, no content, an
+# end tag with attributes, look-alike tag and attribute names, a
+# zero-width keyword). charref/ rows: no '&' in any meta's http-equiv and
+# none in the CSP meta's content, because html.unescape drops 94 code
+# points (controls and noncharacters) that the browser keeps; a valid
+# reference is refused too, and other metas' content is not read. prefix/
+# rows: the page opens with exactly <!doctype html>, <html>, <head>,
+# <meta charset> and the CSP meta, with only ASCII whitespace between
+# them (one pass row per member), so no text and no end tag can end the
+# head before the CSP meta.
+tokenizer/double-equals-unquoted	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv==Content-Security-Policy 	expected exactly one Content-Security-Policy meta, found 0
+tokenizer/double-equals-quoted	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv=="Content-Security-Policy" 	expected exactly one Content-Security-Policy meta, found 0
+tokenizer/end-tag-wrap-dq	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content="default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self' https://intake.interviewscam.com">	</x a="><meta http-equiv=Content-Security-Policy content='default-src &#39;none&#39;; img-src &#39;self&#39;; style-src &#39;self&#39;; script-src &#39;self&#39;; font-src &#39;self&#39;; connect-src &#39;self&#39;; manifest-src &#39;self&#39;; base-uri &#39;none&#39;; form-action &#39;self&#39; https://intake.interviewscam.com'></x b=">	expected exactly one Content-Security-Policy meta, found 0
+tokenizer/end-tag-wrap-sq	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content="default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self' https://intake.interviewscam.com">	</x a='><meta http-equiv=Content-Security-Policy content="default-src &#39;none&#39;; img-src &#39;self&#39;; style-src &#39;self&#39;; script-src &#39;self&#39;; font-src &#39;self&#39;; connect-src &#39;self&#39;; manifest-src &#39;self&#39;; base-uri &#39;none&#39;; form-action &#39;self&#39; https://intake.interviewscam.com"></x b='>	expected exactly one Content-Security-Policy meta, found 0
+policy/double-equals	public/report-a-scam/index.html	<meta name=viewport 	<meta http-equiv==Content-Security-Policy content="form-action https://intake.interviewscam.com"><meta name=viewport 	PASS
+intake/double-equals	public/report-a-scam/index.html	<meta name=viewport 	<meta http-equiv==Content-Security-Policy content="default-src 'none'; form-action 'self'"><meta name=viewport 	PASS
+policy/end-tag-wrap	public/report-a-scam/index.html	<meta name=viewport 	</x a="><meta http-equiv=Content-Security-Policy content='form-action https://intake.interviewscam.com'></x b="><meta name=viewport 	PASS
+tokenizer/unquoted-slash	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv=Content-Security-Policy/ 	expected exactly one Content-Security-Policy meta, found 0
+tokenizer/slash-separator	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta/http-equiv=Content-Security-Policy 	PASS
+tokenizer/upper-names	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<META HTTP-EQUIV=Content-Security-Policy CONTENT=	PASS
+tokenizer/single-quoted-http-equiv	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv='Content-Security-Policy' 	PASS
+tokenizer/duplicate-content-first-wins	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv=Content-Security-Policy content="x" content=	the Content-Security-Policy meta does not equal params.csp in hugo.toml
+tokenizer/no-content	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy content=	<meta http-equiv=Content-Security-Policy data-x=	the Content-Security-Policy meta does not equal params.csp in hugo.toml
+tokenizer/end-tag-not-counted	public/report-a-scam/index.html	<meta name=viewport 	</meta http-equiv=Content-Security-Policy content="default-src *"><meta name=viewport 	PASS
+tokenizer/lookalike-tag	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<m\u{0435}ta http-equiv=Content-Security-Policy 	expected exactly one Content-Security-Policy meta, found 0
+tokenizer/lookalike-attribute	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http\u{2010}equiv=Content-Security-Policy 	expected exactly one Content-Security-Policy meta, found 0
+tokenizer/zero-width-keyword	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv="Content-Security\u{200C}-Policy" 	expected exactly one Content-Security-Policy meta, found 0
+charref/equiv-control	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv="Content-Security-Policy&#1;" 	CSP: '&' in the http-equiv of a <meta>
+charref/equiv-noncharacter	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv="Content-Security-Policy&#xFDD0;" 	CSP: '&' in the http-equiv of a <meta>
+charref/equiv-valid-reference	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv=Content&#45;Security-Policy 	CSP: '&' in the http-equiv of a <meta>
+charref/equiv-other-meta	public/report-a-scam/index.html	<meta name=viewport 	<meta http-equiv="refresh&#1;" content="5"><meta name=viewport 	CSP: '&' in the http-equiv of a <meta>
+charref/content-directive	public/report-a-scam/index.html	content="default-src 'none'; img-src	content="default-src&#1; 'none'; img-src	CSP: '&' in the content of the Content-Security-Policy meta
+charref/content-intake-origin	public/report-a-scam/index.html	form-action 'self' https://intake.interviewscam.com">	form-action 'self' https://intake.interviewscam.com&#1;">	CSP: '&' in the content of the Content-Security-Policy meta
+charref/content-valid-reference	public/report-a-scam/index.html	content="default-src 'none'; img-src	content="default-src &#39;none&#39;; img-src	CSP: '&' in the content of the Content-Security-Policy meta
+charref/pass-other-content	public/report-a-scam/index.html	<meta name=description content="How to report	<meta name=description content="How &amp; to report	PASS
+prefix/charref-text-in-head	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8>&#1;	CSP: the text 
+prefix/charref-text-before-html	public/report-a-scam/index.html	<html lang=en>	&#1;<html lang=en>	CSP: the text 
+prefix/charref-text-before-head	public/report-a-scam/index.html	<head>	&#xFFFE;<head>	CSP: the text 
+prefix/stray-lt	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8>< 	CSP: the text 
+prefix/nbsp	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8>\u{00A0}	CSP: the text 
+prefix/vt	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8>\u{000B}	CSP: the text 
+prefix/zwsp	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8>\u{200B}	CSP: the text 
+prefix/end-br	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8></br>	CSP: the token 
+prefix/end-body	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8></body>	CSP: the token 
+prefix/end-head	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8></head>	CSP: the token 
+prefix/bogus-comment	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8><!x>	CSP: the token 
+prefix/processing-instruction	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8><?x>	CSP: the token 
+prefix/pass-space	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8> 	PASS
+prefix/pass-tab	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8>\t	PASS
+prefix/pass-lf	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8>\n	PASS
+prefix/pass-ff	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8>\u{000C}	PASS
+prefix/pass-cr	public/report-a-scam/index.html	<meta charset=utf-8>	<meta charset=utf-8>\u{000D}	PASS
+prefix/pass-every-gap	public/report-a-scam/index.html	<!doctype html><html lang=en><head><meta charset=utf-8><meta http-equiv	<!doctype html> <html lang=en>\t<head>\n<meta charset=utf-8>\u{000C}<meta http-equiv	PASS
+prefix/no-doctype	public/report-a-scam/index.html	<!doctype html>		CSP: the page does not start with <!doctype html>
+prefix/no-html-tag	public/report-a-scam/index.html	<html lang=en>		CSP: the page does not open with the start tags <html> and <head>
+prefix/no-head-tag	public/report-a-scam/index.html	<head>		CSP: the page does not open with the start tags <html> and <head>
+prefix/html-tag-renamed	public/report-a-scam/index.html	<html lang=en>	<span lang=en>	CSP: the page does not open with the start tags <html> and <head>
+prefix/head-tag-renamed	public/report-a-scam/index.html	<head>	<span>	CSP: the page does not open with the start tags <html> and <head>
+prefix/csp-before-charset	public/report-a-scam/index.html	<meta charset=utf-8>		the first element in <head> must be <meta charset>	<meta name=viewport 	<meta charset=utf-8><meta name=viewport 
+prefix/charset-long-s	public/report-a-scam/index.html	<meta charset=utf-8>	<meta char\u{017F}et=utf-8>	the first element in <head> must be <meta charset>
+# QA round 1 (Replikanti/interviewscam#54): ASCII whitespace around '=',
+# named references in both refused values, and the reference rule and
+# is_csp_meta held to meta start tags (an element named metax, a link
+# and an end tag pass).
+tokenizer/pass-space-around-equals	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv = Content-Security-Policy 	PASS
+tokenizer/pass-newline-before-quoted-value	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv=\n"Content-Security-Policy" 	PASS
+charref/equiv-named	public/report-a-scam/index.html	<meta http-equiv=Content-Security-Policy 	<meta http-equiv="Content-Security-Policy&amp;" 	CSP: '&' in the http-equiv of a <meta>
+charref/content-named	public/report-a-scam/index.html	content="default-src 'none'; img-src	content="default-src&amp; 'none'; img-src	CSP: '&' in the content of the Content-Security-Policy meta
+charref/pass-equiv-not-meta	public/report-a-scam/index.html	<meta name=viewport 	<link http-equiv="refresh&#1;"><meta name=viewport 	PASS
+charref/pass-equiv-end-tag	public/report-a-scam/index.html	<meta name=viewport 	</meta http-equiv="refresh&#1;"><meta name=viewport 	PASS
+tokenizer/pass-metax	public/report-a-scam/index.html	<main id=main class=container tabindex=-1>	<main id=main class=container tabindex=-1><metax http-equiv=Content-Security-Policy content="default-src *">	PASS
