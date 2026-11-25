@@ -5585,7 +5585,7 @@ selftest_blocks() {
     # step_site_fixtures, run against a stub sitecheck, passes
     # --preview-pixels; step_site and step_records_site do not.
     local pixel_fixture pixel_other
-    # shellcheck disable=SC2329 # step_site_fixtures calls the stub
+    # shellcheck disable=SC2317,SC2329 # step_site_fixtures calls the stub
     pixel_fixture="$(sitecheck() { printf '%s\n' "$@"; }; step_site_fixtures)"
     pixel_other="$(sitecheck() { printf '%s\n' "$@"; }; RECORDS_SITE=/x; step_site; step_records_site)"
     if ! grep -qx -- '--preview-pixels' <<<"$pixel_fixture" \
