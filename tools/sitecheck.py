@@ -2301,6 +2301,11 @@ VH_REVEAL_DECLARATIONS = {
     "rotate": "none",
     "writing-mode": "horizontal-tb",
     "letter-spacing": "normal",
+    # Review run 2, finding 2: a text shadow counts as ink once the probe
+    # drops it (six blurred shadows of transparent glyphs counted 2510, a
+    # 2 px dilation 2112), and word spacing overlaps words (-1.5em, 539).
+    "word-spacing": "normal",
+    "text-shadow": "none",
 }
 # review5 A3: re.ASCII and CSS whitespace, because a browser matches the
 # keyword in ASCII case only (`!` U+0131 `mportant` is no `!important`; the
@@ -12462,7 +12467,7 @@ LITERALS_SCRIPT_PATTERNS = frozenset({("assets/js/search.js", "[\\p{L}\\p{N}]")}
 # every style attribute and <style> element of a built page, and the CSP's
 # style-src 'self' would block them.
 STYLESHEET_SHA256 = {
-    "assets/css/site.css": "cd311c4ba72b450f0cb7e3c3ea1208473004e8884b2dac5e2df9083ccc2a4a79",
+    "assets/css/site.css": "9f13023f5b37cea252e1c853f7c3b585bcc9eeafc4c91698e93a7907ad418115",
     "assets/css/tokens.css": "725a7b2808e32866e206468f43b1097c8b34e879e13baeee309391f1fe53ad27",
     "data/tokens.toml": "b867bb5bae4cc1a95bf730e132b3e2d4f0744a984308835837b73279dce39182",
 }
@@ -13823,7 +13828,7 @@ def preview_image_problems(root, public, files, images, built, pixels):
 
 
 BUILT_STYLESHEET_SHA256 = {
-    "site": "9a3452c1fa2a18c760366fbbfbe08f3e93e61a298612082920f5af6b0286482e",
+    "site": "ae37015b3eafa9eb7c983a507dc338b23c9c7383e7bd105f775d10fd7969e4af",
 }
 BUILT_SCRIPT_SHA384 = {
     "copy": "64df53ed5d62c8c5c8be3aee6bd39c1171a2bb88742b3424790354056657c3faf100ea7cc044affe06e76164b883b924",
@@ -14214,11 +14219,22 @@ REFLOW_INK_PROBE = (("transition", "none"), ("text-shadow", "none"),
 # here; this is the outcome half, on the focused element. A transform, scale, rotate or motion path on an
 # ancestor (`body{transform:scaleX(-1)}`) mirrors the label too, so those
 # four are read on every ancestor as well; the other four inherit and the
-# element's own pinned value decides.
-REFLOW_PLACEMENT_STYLES = {"transform": "none", "scale": "none", "rotate": "none",
-                           "offset-path": "none", "direction": "ltr",
-                           "unicode-bidi": "normal", "writing-mode": "horizontal-tb",
-                           "letter-spacing": "normal"}
+# element's own pinned value decides. Fix round 2 (review run 2): a rule on
+# the link's ::first-line or ::first-letter sets a property on the text
+# itself, past the element's !important pin (`::first-line{letter-spacing:
+# -.35em}` counted 456, a ::first-line shadow under white glyphs 720), so
+# the element's list is read on both pseudo-elements too
+# (REFLOW_PLACEMENT_PSEUDOS); and `word-spacing` and `text-shadow` join the
+# list (pinned in the reveal as well): shadow pixels count as ink once the
+# probe drops the shadow, and negative word spacing lays words over each
+# other. Each property maps to the computed values that pass; Chrome may
+# write word spacing's `normal` as `0px`, the same zero.
+REFLOW_PLACEMENT_STYLES = {"transform": ["none"], "scale": ["none"], "rotate": ["none"],
+                           "offset-path": ["none"], "direction": ["ltr"],
+                           "unicode-bidi": ["normal"], "writing-mode": ["horizontal-tb"],
+                           "letter-spacing": ["normal"], "word-spacing": ["normal", "0px"],
+                           "text-shadow": ["none"]}
+REFLOW_PLACEMENT_PSEUDOS = ("::first-line", "::first-letter")
 REFLOW_ANCESTOR_PLACEMENT = ("transform", "scale", "rotate", "offset-path")
 # The computed `content` Chrome returns for ::before and ::after without
 # generated content: measured on Chrome 157, `none` for no rule, for
@@ -14754,6 +14770,7 @@ REFLOW_FOCUS_SCRIPT = r"""
 (() => {
   const exempt = %(exempt)s, noGenerated = %(generated)s;
   const placement = %(placement)s, ancestorPlacement = %(ancestor)s;
+  const placementPseudos = %(pseudos)s;
   const label = (el) => {
     let s = el.tagName.toLowerCase();
     if (el.id) s += "#" + el.id;
@@ -14776,13 +14793,17 @@ REFLOW_FOCUS_SCRIPT = r"""
             .map((p) => [p, getComputedStyle(a, p).content])
             .filter(([, c]) => !noGenerated.includes(c)),
           textSecurity: cs.webkitTextSecurity,
-          placement: [a].concat((() => {
-            const up = [];
-            for (let e = a.parentElement; e; e = e.parentElement) up.push(e);
-            return up;
-          })()).flatMap((e) => (e === a ? Object.keys(placement) : ancestorPlacement)
-            .map((p) => [label(e), p, getComputedStyle(e).getPropertyValue(p)])
-            .filter(([, p, v]) => v !== placement[p]))};
+          placement: (() => {
+            const out = [];
+            const read = (e, pseudo, props) => props.forEach((p) => {
+              const v = getComputedStyle(e, pseudo).getPropertyValue(p);
+              if (!placement[p].includes(v)) out.push([label(e) + (pseudo || ""), p, v]);
+            });
+            read(a, null, Object.keys(placement));
+            for (const pseudo of placementPseudos) read(a, pseudo, Object.keys(placement));
+            for (let e = a.parentElement; e; e = e.parentElement) read(e, null, ancestorPlacement);
+            return out;
+          })()};
 })()
 """
 # Case (7), the paint (M3 PR 10 fix round 1, PR #33 review, finding 1): a
@@ -17543,9 +17564,10 @@ def cmd_reflow(args):
             if placed is None or placed:
                 findings.add(where, f"(7) the focused {label} is not drawn in reading order: "
                              f"{show(placed, 200)} (element, property, computed value; each "
-                             "must be " + ", ".join(f"{p} {v}" for p, v in
+                             "must be " + ", ".join(f"{p} {' or '.join(v)}" for p, v in
                                                     REFLOW_PLACEMENT_STYLES.items())
-                             + ", the first four on every ancestor too); the legibility count "
+                             + ", on the element, its ::first-line and ::first-letter, and "
+                             "the first four on every ancestor too); the legibility count "
                              "reads pixels, not their order, so a mirrored, rotated, reordered "
                              "or overlapped label would count as legible")
                 return None
@@ -17573,7 +17595,8 @@ def cmd_reflow(args):
             "exempt": json.dumps(VISUALLY_HIDDEN),
             "generated": json.dumps(sorted(REFLOW_NO_GENERATED)),
             "placement": json.dumps(REFLOW_PLACEMENT_STYLES),
-            "ancestor": json.dumps(list(REFLOW_ANCESTOR_PLACEMENT))}
+            "ancestor": json.dumps(list(REFLOW_ANCESTOR_PLACEMENT)),
+            "pseudos": json.dumps(list(REFLOW_PLACEMENT_PSEUDOS))}
         for rel, path in pages:
             where = f"public/{rel}"
             elements = parse_page((public / rel).read_text(encoding="utf-8",

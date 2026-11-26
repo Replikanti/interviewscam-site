@@ -78,12 +78,16 @@ body {
      reversed bidi run needs `direction` or `unicode-bidi`, which render
      rule 19 refuses anywhere in the built stylesheet; `offset-path` is
      unknown to the Nu Html Checker's CSS validator, so reflow alone reads
-     it. */
+     it. A text shadow counts as ink and can smear or replace the glyphs,
+     and word spacing can lay words over each other, so both are pinned
+     too (review run 2, finding 2). */
   transform: none !important;
   scale: none !important;
   rotate: none !important;
   writing-mode: horizontal-tb !important;
   letter-spacing: normal !important;
+  word-spacing: normal !important;
+  text-shadow: none !important;
 }
 
 /* Keyboard focus (SC 2.4.7): primary is 6.35:1 on the ground and 6.87:1 on
