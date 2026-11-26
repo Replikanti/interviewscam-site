@@ -76,7 +76,7 @@ RECORDS_NOT_RUN_LINE="NOT RUN (records mode): machinery only, held by the pinned
 source "$CHECK_ROOT/tools/fetch-tools.sh"
 
 HTML_NOT_RUN_LINE='NOT RUN: HTML validation (Nu Html Checker) was NOT run locally. It runs only in CI (required check job). A local green does not mean the HTML is valid.'
-REFLOW_NOT_RUN_LINE='NOT RUN: reflow at 320 CSS px (sitecheck reflow) was NOT run locally, and with it its hidden-state cases (the Copy button hidden without its script, the search results hidden until a query, the skip link shown on keyboard focus, the honeypot of the intake forms without a box), the hit test and paint check of the pinned regions (the intake forms and the result sections of /not-sent/ among them), and case (8), the search typed and submitted on Home against the oracle. It runs only in CI, in the runner'"'"'s Google Chrome. A local green does not mean the pages reflow or hide and reveal as they should, or that the search answers.'
+REFLOW_NOT_RUN_LINE='NOT RUN: reflow at 320 CSS px (sitecheck reflow) was NOT run locally, and with it its hidden-state cases (the Copy button hidden without its script, the search results hidden until a query, the skip link shown and legible on keyboard focus, the honeypot of the intake forms without a box), the hit test and paint check of the pinned regions (the intake forms and the result sections of /not-sent/ among them), and case (8), the search typed and submitted on Home against the oracle. It runs only in CI, in the runner'"'"'s Google Chrome. A local green does not mean the pages reflow or hide and reveal as they should, or that the search answers.'
 
 in_github_actions() { [[ "${GITHUB_ACTIONS:-}" == true ]]; }
 

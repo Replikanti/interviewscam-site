@@ -2286,6 +2286,37 @@ VH_REVEAL_DECLARATIONS = {
     "border-radius": "var(--radius-control)",
     "color": "var(--color-primary)",
     "font-weight": "var(--weight-label)",
+    # Replikanti/interviewscam#34 review run 1, findings 3 and 4: case (7)'s
+    # legibility step counts the label's pixels, not their order, so the
+    # reveal also pins every property that moves them (a mirroring
+    # transform, scale or rotate, a vertical writing mode, overlapping
+    # glyphs). With !important banned elsewhere, no other rule can set them
+    # on the skip link. A reversed bidi run needs `direction` or
+    # `unicode-bidi`, which render rule 19 refuses in the built stylesheet,
+    # and the Nu Html Checker's CSS validator refuses `offset-path` as an
+    # unknown property, so those three are not declared here. Reflow case (7) reads
+    # all eight computed values too (REFLOW_PLACEMENT_STYLES).
+    "transform": "none",
+    "scale": "none",
+    "rotate": "none",
+    "writing-mode": "horizontal-tb",
+    "letter-spacing": "normal",
+    # Review run 2, finding 2: a text shadow counts as ink once the probe
+    # drops it (six blurred shadows of transparent glyphs counted 2510, a
+    # 2 px dilation 2112), and word spacing overlaps words (-1.5em, 539).
+    "word-spacing": "normal",
+    "text-shadow": "none",
+    # Review run 3: a line height of 0 under a narrow maximum width stacked
+    # the lines on one baseline (537), and a decoration takes the glyph fill
+    # colour, so the probe removed a line-through bar with the glyphs and
+    # counted it as ink (1056); the line metrics and today's underline are
+    # pinned. Width and height need no pin of their own: the reveal already
+    # holds them at auto.
+    "line-height": "var(--line-height-body)",
+    "max-width": "none",
+    "text-decoration-line": "underline",
+    "text-decoration-thickness": "var(--underline-thickness)",
+    "text-underline-offset": "var(--underline-offset)",
 }
 # review5 A3: re.ASCII and CSS whitespace, because a browser matches the
 # keyword in ASCII case only (`!` U+0131 `mportant` is no `!important`; the
@@ -2521,6 +2552,73 @@ def css_hover_problems(css):
     return hover_rule_problems(rules) + hover_var_problems(rules)
 
 
+# ADR-0003 part 6, amendment of Replikanti/interviewscam#34: custom
+# properties live only in the token block. Eight of the fourteen pinned
+# declarations of the .visually-hidden reveal read a token through var(), and
+# a custom property cascades and inherits like any property, so one rule
+# such as `body>a{--color-primary:var(--color-card)}` redefined the token for
+# the skip link alone and drew its label white on white while every pin held.
+# So a custom property may be declared only in a top-level rule whose
+# selector is exactly :root (tokens.css emits all 57 of today's there), each
+# name once across all built CSS, and no @property rule registers one (a
+# registered property's initial value applies to every element the root's
+# value does not reach, since it need not inherit). Names are compared with
+# their case kept: custom property names are case-sensitive.
+CUSTOM_PROPERTY_BLOCK = ":root"
+
+
+def css_declaration_name(text):
+    """The property name of a declaration text, unescaped and stripped, case
+    kept (css_declaration lowercases it, which a custom property name is
+    not)."""
+    name, sep, _ = text.partition(":")
+    return css_unescape(name).strip() if sep else ""
+
+
+def css_custom_property_problems(rules):
+    """(problems, names) of the custom property rule on css_rules' rules:
+    names lists every custom property declaration in order, so the caller
+    can count a name across files."""
+    problems, names = [], []
+    for rule in rules:
+        selector = css_selector_text(rule.prelude)
+        if selector.lower().startswith("@property"):
+            problems.append(f"{show(selector, 120)}: a registered property gives every element "
+                            "but the root its own initial value, so it can set a token for "
+                            "single elements; custom properties are declared only in the "
+                            f"top-level {CUSTOM_PROPERTY_BLOCK} rule (the token block, "
+                            "Replikanti/interviewscam#34)")
+        for declaration in rule.declarations:
+            name = css_declaration_name(declaration)
+            if not name.startswith("--"):
+                continue
+            names.append(name)
+            if rule.parents:
+                inside = " inside ".join(show(css_selector_text(p), 80)
+                                         for p in reversed(rule.parents))
+                problems.append(f"{show(selector, 120)}: the custom property {show(name, 80)} "
+                                f"is declared inside {inside}; a nested or conditional rule "
+                                "can set a token for single elements or states, so custom "
+                                "properties are declared only in the top-level "
+                                f"{CUSTOM_PROPERTY_BLOCK} rule (the token block, "
+                                "Replikanti/interviewscam#34)")
+            elif selector != CUSTOM_PROPERTY_BLOCK:
+                problems.append(f"{show(selector, 120)}: the custom property {show(name, 80)} "
+                                f"is not in the top-level {CUSTOM_PROPERTY_BLOCK} rule (the "
+                                "token block); any other rule can redefine a token for the "
+                                "elements it matches, the skip link's colours among them "
+                                "(Replikanti/interviewscam#34)")
+    counts = {}
+    for name in names:
+        counts[name] = counts.get(name, 0) + 1
+    for name, count in counts.items():
+        if count > 1:
+            problems.append(f"the custom property {show(name, 80)} is declared {count} times; "
+                            "each token is declared once, so no later declaration can "
+                            "override it (Replikanti/interviewscam#34)")
+    return problems, names
+
+
 # Review run 3 of Replikanti/interviewscam#55: css_rules, and the string and
 # comment scanner under it, do not tokenize as a browser does. (1) A browser
 # ends a string at an unescaped newline (a bad string, CSS Syntax 4.3.5), the
@@ -2577,6 +2675,7 @@ class CssRuleResult:
         self.definitions = 0
         self.reveals = 0
         self.hidden_rules = dict.fromkeys(HIDDEN_UNTIL_SCRIPT, 0)  # class -> count
+        self.custom_properties = []  # every custom property name declared, in order
 
 
 def css_rule_problems(css):
@@ -2586,6 +2685,9 @@ def css_rule_problems(css):
     problems = result.problems
     problems.extend(css_desync_problems(css))
     problems.extend(css_hover_problems(css))
+    custom, result.custom_properties = css_custom_property_problems(
+        css_rules(css_strip_comments(css)))
+    problems.extend(custom)
     attributed = 0
     for rule in css_rules(css):
         selector = css_selector_text(rule.prelude)
@@ -3000,6 +3102,9 @@ def cmd_site(args):
     scripts = []  # (rel, page path, src) of every <script src>, for rule (j)
     page_scripts = {}  # page rel -> the attributes of each of its <script> elements
     vh_definitions = vh_reveals = 0
+    # Replikanti/interviewscam#34: custom property name -> the built CSS
+    # files that declare it, so a token stays declared once across files.
+    custom_files = {}
     vh_used = []
     # Per class of HIDDEN_UNTIL_SCRIPT: the number of its rules across the
     # built CSS, the pages with an element of the class, and the site paths
@@ -3129,6 +3234,8 @@ def cmd_site(args):
             result = css_rule_problems(text)
             vh_definitions += result.definitions
             vh_reveals += result.reveals
+            for name in dict.fromkeys(result.custom_properties):
+                custom_files.setdefault(name, []).append(rel)
             for cls, count in result.hidden_rules.items():
                 hidden_counts[cls] += count
                 if count:
@@ -3297,6 +3404,12 @@ def cmd_site(args):
     if vh_reveals > 1:
         findings.add("public", f"CSS: {vh_reveals} .visually-hidden reveal rules across "
                      "the built CSS; at most one is allowed (ADR-0003 part 6)")
+    for name, declared in sorted(custom_files.items()):
+        if len(declared) > 1:
+            findings.add("public", f"CSS: the custom property {show(name, 80)} is declared in "
+                         f"{len(declared)} built CSS files ({', '.join(declared)}); each token is "
+                         "declared once, in the token block (ADR-0003 part 6, "
+                         "Replikanti/interviewscam#34)")
     # Per class of the table (M4 PR 3): one rule across all built CSS, and
     # (fix round 2 of M3 PR 9, delta review 3) per page: the rule counts
     # only in a stylesheet the page itself applies, so a built CSS file no
@@ -8468,14 +8581,22 @@ STATIC_SUFFIXES = {".html", ".svg", ".xml", ".css"}
 RASTER_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico"}
 
 
+# WCAG 2.2 relative luminance: each 8-bit sRGB channel value linearised (the
+# 0.04045 threshold of WCAG 2.2's definition), one table for the token pairs
+# of `tokens` and the pixels of reflow case (7)'s legibility step
+# (Replikanti/interviewscam#34), so both use one formula.
+SRGB_LINEAR = tuple(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+                    for c in (v / 255 for v in range(256)))
+
+
+def rgb_luminance(r, g, b):
+    """WCAG 2.2 relative luminance of an opaque 8-bit sRGB colour."""
+    return 0.2126 * SRGB_LINEAR[r] + 0.7152 * SRGB_LINEAR[g] + 0.0722 * SRGB_LINEAR[b]
+
+
 def srgb_luminance(hex_color):
     """WCAG 2.2 relative luminance of an opaque #RRGGBB colour."""
-    channels = []
-    for i in (1, 3, 5):
-        c = int(hex_color[i:i + 2], 16) / 255
-        channels.append(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4)
-    r, g, b = channels
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return rgb_luminance(*(int(hex_color[i:i + 2], 16) for i in (1, 3, 5)))
 
 
 def contrast_ratio(a, b):
@@ -12357,7 +12478,7 @@ LITERALS_SCRIPT_PATTERNS = frozenset({("assets/js/search.js", "[\\p{L}\\p{N}]")}
 # every style attribute and <style> element of a built page, and the CSP's
 # style-src 'self' would block them.
 STYLESHEET_SHA256 = {
-    "assets/css/site.css": "6140f5782ce7cab0aa23ee3b45b58e93b13dea79c8885e2e828937d771d93652",
+    "assets/css/site.css": "dddd5cd33123d39e82c279fa389aba72325f0b55eaaaf376d179c1e50b661597",
     "assets/css/tokens.css": "725a7b2808e32866e206468f43b1097c8b34e879e13baeee309391f1fe53ad27",
     "data/tokens.toml": "b867bb5bae4cc1a95bf730e132b3e2d4f0744a984308835837b73279dce39182",
 }
@@ -13718,7 +13839,7 @@ def preview_image_problems(root, public, files, images, built, pixels):
 
 
 BUILT_STYLESHEET_SHA256 = {
-    "site": "f0029531c083fb96a2c5602c1b04f5996446d4e056f24a72b994edac6185a23c",
+    "site": "bf20c09576316697a6574c3162c51cd14012138656de88fd8b064ec5ed32559f",
 }
 BUILT_SCRIPT_SHA384 = {
     "copy": "64df53ed5d62c8c5c8be3aee6bd39c1171a2bb88742b3424790354056657c3faf100ea7cc044affe06e76164b883b924",
@@ -13976,14 +14097,15 @@ REFLOW_HEIGHT = 640
 # attempt alone outlasts the longest stall seen, at most 70.3 s (PR 5 job
 # 20, image 20261101), so it is absorbed whether a killed Chrome keeps its
 # progress, the stall lies outside the VM, or only a fresh Chrome helps.
-# Upper bound: the 140-minute workflow cap (derived from the job duration
-# on a bucketed base of 4200 s, the slowest green job, 3874 s, plus 46 s of
+# Upper bound: the 170-minute workflow cap (derived from the job duration
+# on a bucketed base of 5100 s, the slowest green job, 4817 s, plus 46 s of
 # drift, rounded up to the next 5 minutes; M5b PR 2 fix rounds 9 and 10,
-# re-derived in Replikanti/interviewscam#40 PR 2, #28 PR 2, #39 and twice
-# in #58, ADR-0004 Numbers) holds the base, a fully used window (2 x L) and
-# one more 70 s stall, so L is at most 2065 s; 75 s leaves 3980 s of the
-# cap. Below 71 s job 20's shape depends on a restart helping again; above
-# 2065 s an absorbed window plus a second stall is cancelled at 140 minutes.
+# re-derived in Replikanti/interviewscam#40 PR 2, #28 PR 2, #39, twice in
+# #58 and in #34, ADR-0004 Numbers) holds the base, a fully used window
+# (2 x L) and one more 70 s stall, so L is at most 2515 s; 75 s leaves
+# 4880 s of the cap. Below 71 s job 20's shape depends on a restart helping
+# again; above 2515 s an absorbed window plus a second stall is cancelled at
+# 170 minutes.
 REFLOW_LAUNCH_TIMEOUT = 75
 # The budget of every later answer (ADR-0003 Numbers). A 23-page call makes
 # about 70 page-level calls in 1.9 to 2.8 s on the runner, and no later call
@@ -14049,9 +14171,11 @@ REFLOW_REVEAL_MIN = 1.5
 # the opacity round trip, differ by 1 at 6 anti-aliased pixels of the
 # rounded corners (the raster path changes), while the link against its
 # box without it differs by far more (its text, primary on card at 6.87:1).
-# At 0 that raster noise fails every page; far above (64) a faint but
-# readable link could count as painting nothing, the safe direction but
-# red on a working page. 8 is eight times the measured noise. The pinned
+# At 0 that raster noise fails every page; far above (64) a faint link
+# could count as painting nothing, the safe direction but red on a working
+# page. 8 is eight times the measured noise. A faint link that paints (the
+# reflow fixture at opacity .15 differs by 39) now fails the legibility step
+# below instead (Replikanti/interviewscam#34): its text reaches 1.26:1. The pinned
 # regions' pixel occlusion check uses the same 8 with its own reason
 # (ADR-0005 part 6, amendment of Replikanti/interviewscam#39): a mark that
 # stays within 8 of what it covers has at most 1.09:1 contrast against it
@@ -14060,6 +14184,89 @@ REFLOW_REVEAL_MIN = 1.5
 # overprint stays under it; rows px-tolerance-at (8, passes) and
 # px-tolerance-above (9, fails) pin it from both sides.
 REFLOW_PAINT_TOLERANCE = 8
+# Case (7), the legibility (Replikanti/interviewscam#34, ADR-0003 part 6
+# amendment and Numbers): the paint check proves that the revealed skip link
+# draws something, not that its label can be read. So the box is captured
+# again with only the glyph fill made transparent (REFLOW_INK_PROBE) and
+# restored; the pixels that change are the text. A pixel counts as legible
+# when its colour as shown reaches REFLOW_TEXT_CONTRAST against the same
+# pixel without the text (WCAG 2.2 SC 1.4.3, AA for normal text, "at
+# least"), and at least REFLOW_TEXT_MIN_PIXELS pixels must count. Per pixel,
+# with no colour estimate: an anti-aliased edge pixel below 4.5:1 simply
+# does not count, so a blur, a faint opacity, a token redefined to the
+# background, a zero size, a pushed-out indent and a tiny scale all fall to
+# about none, whatever the cause. K = 343 is half of the smallest count
+# measured on every page of both trees (687, Chrome 157, DejaVu Sans Bold at
+# 16 px; ADR-0003 Numbers): the six one-rule additions of the issue count 0,
+# so any K between them and 687 catches them, and one half leaves a factor
+# of 2 for raster and font drift on the unpinned runner. Re-derive it, as
+# the Numbers row says, when a runner image moves the count below K.
+REFLOW_TEXT_CONTRAST = 4.5
+REFLOW_TEXT_MIN_PIXELS = 343
+# The inline properties each probe of case (7) sets, in order, each
+# !important; restored in reverse order with a style flush after each, so
+# `transition: none` is set first and put back last and no transition
+# starts either way. The paint probe hides the whole element (opacity keeps
+# focus where it is, visibility would move it). The ink probe changes only
+# the glyph fill: `color` would also change every currentcolor outline,
+# border, box shadow and column rule, which would then count as text (an
+# inset `outline: 1em solid; outline-offset: -1em` over invisible glyphs).
+# The ink probe also drops the text shadow (fix round 1, review run 1,
+# findings 1 and 2), so the reference is the box with no text paint at all:
+# with the shadow kept, white glyphs on white over `text-shadow: 0 0 #000`
+# counted 720 (the probe uncovered the shadow), and a drop shadow under a
+# readable label counted 220 (each glyph was compared with its shadow).
+REFLOW_PAINT_PROBE = (("transition", "none"), ("opacity", "0"))
+REFLOW_INK_PROBE = (("transition", "none"), ("text-shadow", "none"),
+                    ("-webkit-text-fill-color", "transparent"))
+# The computed values that keep the label's pixels in reading order (fix
+# round 1, review run 1, findings 3 and 4): the count reads pixels, not
+# their order, so a mirroring `transform: scaleX(-1)` (689) and a reversed
+# `unicode-bidi: bidi-override; direction: rtl` (695) kept the count, and
+# `letter-spacing: -.35em` (456) lays the glyphs over each other. The
+# reveal pins five (VH_REVEAL_DECLARATIONS), render rule 19 refuses any
+# `direction` or `unicode-bidi` in the built stylesheet, and `offset-path`
+# (which the Nu Html Checker's CSS validator does not know) is read only
+# here; this is the outcome half, on the focused element. A transform, scale, rotate or motion path on an
+# ancestor (`body{transform:scaleX(-1)}`) mirrors the label too, so those
+# four are read on every ancestor as well; the other four inherit and the
+# element's own pinned value decides. Fix round 2 (review run 2): a rule on
+# the link's ::first-line or ::first-letter sets a property on the text
+# itself, past the element's !important pin (`::first-line{letter-spacing:
+# -.35em}` counted 456, a ::first-line shadow under white glyphs 720), so
+# the element's list is read on both pseudo-elements too
+# (REFLOW_PLACEMENT_PSEUDOS); and `word-spacing` and `text-shadow` join the
+# list (pinned in the reveal as well): shadow pixels count as ink once the
+# probe drops the shadow, and negative word spacing lays words over each
+# other. Each property maps to the computed values that pass; Chrome may
+# write word spacing's `normal` as `0px`, the same zero.
+REFLOW_PLACEMENT_STYLES = {"transform": ["none"], "scale": ["none"], "rotate": ["none"],
+                           "offset-path": ["none"], "direction": ["ltr"],
+                           "unicode-bidi": ["normal"], "writing-mode": ["horizontal-tb"],
+                           "letter-spacing": ["normal"], "word-spacing": ["normal", "0px"],
+                           "text-shadow": ["none"], "line-height": ["normal"],
+                           "max-width": ["none"], "text-decoration-line": ["underline", "none"],
+                           "text-decoration-thickness": ["1px", "auto"],
+                           "text-underline-offset": ["3px", "auto"]}
+# Fix round 3 (review run 3): the line metrics and the decoration. A line
+# height passes as `normal` or as at least REFLOW_MIN_LINE_HEIGHT times the
+# computed font size of the same element or pseudo-element, so no two lines
+# share a baseline; a decoration passes as an underline or none (no
+# line-through or overline across the glyphs; ::first-line and
+# ::first-letter compute none of their own), 1 px thick and 3 px below the
+# baseline as data/tokens.toml [underline] gives them, or Chrome's `auto` of
+# an unstyled link (the hand-made reflow cases).
+REFLOW_MIN_LINE_HEIGHT = 1
+REFLOW_PLACEMENT_PSEUDOS = ("::first-line", "::first-letter")
+REFLOW_ANCESTOR_PLACEMENT = ("transform", "scale", "rotate", "offset-path")
+# The computed `content` Chrome returns for ::before and ::after without
+# generated content: measured on Chrome 157, `none` for no rule, for
+# `content: none` and for `content: normal` alike (reflow fixture
+# pass-visually-hidden-legible-content-none). Anything else draws something
+# the ink probe changes with the label (`content: "Skip"` over an empty or
+# hidden label), so it fails before the probe; a closed set, so
+# `content: ""` fails too.
+REFLOW_NO_GENERATED = frozenset({"none"})
 # The pixel occlusion check's proof of the hiding (Replikanti/interviewscam#39,
 # ADR-0005 part 6 amendment): the computed styles DOMSnapshot.captureSnapshot
 # returns for every layout object, in this order. visibility proves that
@@ -14584,7 +14791,9 @@ def static_head(text):
 
 REFLOW_FOCUS_SCRIPT = r"""
 (() => {
-  const exempt = %(exempt)s;
+  const exempt = %(exempt)s, noGenerated = %(generated)s;
+  const placement = %(placement)s, ancestorPlacement = %(ancestor)s;
+  const placementPseudos = %(pseudos)s, minLineHeight = %(minline)s;
   const label = (el) => {
     let s = el.tagName.toLowerCase();
     if (el.id) s += "#" + el.id;
@@ -14602,7 +14811,24 @@ REFLOW_FOCUS_SCRIPT = r"""
           left: r.left, top: r.top, right: r.right, bottom: r.bottom,
           width: r.width, height: r.height, x: scrollX, y: scrollY,
           opacity: cs.opacity, visibility: cs.visibility, clip: cs.clip,
-          clipPath: cs.clipPath, centre: hit ? label(hit) : null};
+          clipPath: cs.clipPath, centre: hit ? label(hit) : null,
+          generated: ["::before", "::after"]
+            .map((p) => [p, getComputedStyle(a, p).content])
+            .filter(([, c]) => !noGenerated.includes(c)),
+          textSecurity: cs.webkitTextSecurity,
+          placement: (() => {
+            const out = [];
+            const read = (e, pseudo, props) => props.forEach((p) => {
+              const cs = getComputedStyle(e, pseudo), v = cs.getPropertyValue(p);
+              const ok = placement[p].includes(v) || (p === "line-height"
+                && parseFloat(v) >= minLineHeight * parseFloat(cs.fontSize));
+              if (!ok) out.push([label(e) + (pseudo || ""), p, v]);
+            });
+            read(a, null, Object.keys(placement));
+            for (const pseudo of placementPseudos) read(a, pseudo, Object.keys(placement));
+            for (let e = a.parentElement; e; e = e.parentElement) read(e, null, ancestorPlacement);
+            return out;
+          })()};
 })()
 """
 # Case (7), the paint (M3 PR 10 fix round 1, PR #33 review, finding 1): a
@@ -14611,30 +14837,32 @@ REFLOW_FOCUS_SCRIPT = r"""
 # so the focused element's box is captured (Page.captureScreenshot, clipped
 # to the box, scale 1), then again with the element's inline opacity at 0
 # !important, then again restored. Equal first and second images mean the
-# element contributes no visible pixel there, whatever the cause. Opacity,
-# not visibility, because an element with visibility hidden loses focus;
-# `transition: none` with it, so the change is instant both ways (opacity
-# is restored and the style flushed before the transition, so no
-# transition starts). The third image must equal the first (the box holds
-# still), and the scroll position must be the same for all three. mode
-# "hide" returns the inline values it replaced, which "restore" puts back.
+# element contributes no visible pixel there, whatever the cause. The third
+# image must equal the first (the box holds still), and the scroll position
+# must be the same for all three. The legibility step (Replikanti/
+# interviewscam#34) runs the same script with REFLOW_INK_PROBE. %(props)s is
+# the probe, a list of [property, value]: mode "hide" sets them in order,
+# each !important, and returns the inline values it replaced; "restore" puts
+# those back in reverse order, the style flushed after each, so with
+# `transition: none` first in the probe the change is instant both ways
+# (the property is restored and flushed before the transition, so no
+# transition starts).
 REFLOW_PAINT_SCRIPT = r"""
 (() => {
   const a = document.activeElement;
-  const mode = %(mode)s, saved = %(saved)s;
-  const props = ["opacity", "transition"];
+  const mode = %(mode)s, saved = %(saved)s, probe = %(props)s;
   let old = null;
   if (a && a.style) {
     if (mode === "hide") {
-      old = props.map((p) => [a.style.getPropertyValue(p), a.style.getPropertyPriority(p)]);
-      a.style.setProperty("transition", "none", "important");
-      a.style.setProperty("opacity", "0", "important");
+      old = probe.map(([p]) => [a.style.getPropertyValue(p), a.style.getPropertyPriority(p)]);
+      probe.forEach(([p, v]) => a.style.setProperty(p, v, "important"));
     } else if (mode === "restore" && saved) {
-      props.forEach((p, i) => {
+      for (let i = probe.length - 1; i >= 0; i--) {
+        const p = probe[i][0];
         if (saved[i][0]) a.style.setProperty(p, saved[i][0], saved[i][1]);
         else a.style.removeProperty(p);
         getComputedStyle(a).opacity;
-      });
+      }
     }
   }
   return {x: scrollX, y: scrollY, saved: old};
@@ -15204,6 +15432,75 @@ def png_difference(first, second):
         return 255
     return max((max(abs(x - y) for x, y in zip(ra, rb)) for ra, rb in zip(a[3], b[3])
                 if ra), default=0)
+
+
+def rgb_pixels(rows, channels):
+    """[(r, g, b)] of png_rows' rows, row-major; None when an RGBA pixel is
+    not fully opaque (its colour on the page is then unknown)."""
+    pixels = []
+    for row in rows:
+        if channels == 4:
+            if any(a != 255 for a in row[3::4]):
+                return None
+            pixels.extend(zip(row[0::4], row[1::4], row[2::4]))
+        else:
+            pixels.extend(zip(row[0::3], row[1::3], row[2::3]))
+    return pixels
+
+
+def text_pixels(shown, blank):
+    """Case (7)'s legibility measure (Replikanti/interviewscam#34) on two
+    screenshots of the focused element's box (base64 PNG): as shown, and
+    with only its glyph fill made transparent. (legible, painting): the
+    pixels whose two colours reach REFLOW_TEXT_CONTRAST (WCAG 2.2:
+    (L1 + 0.05) / (L2 + 0.05)), and those that differ by more than
+    REFLOW_PAINT_TOLERANCE in a channel (a diagnostic). None when the
+    images differ in size or hold a pixel that is not fully opaque."""
+    a = png_rows(base64.b64decode(shown))
+    b = png_rows(base64.b64decode(blank))
+    if a[:2] != b[:2]:
+        return None
+    first, second = rgb_pixels(a[3], a[2]), rgb_pixels(b[3], b[2])
+    if first is None or second is None:
+        return None
+    legible = painting = 0
+    for p, q in zip(first, second):
+        if p == q:
+            continue
+        if max(abs(x - y) for x, y in zip(p, q)) > REFLOW_PAINT_TOLERANCE:
+            painting += 1
+        hi, lo = sorted((rgb_luminance(*p), rgb_luminance(*q)), reverse=True)
+        if (hi + 0.05) / (lo + 0.05) >= REFLOW_TEXT_CONTRAST:
+            legible += 1
+    return legible, painting
+
+
+def legibility_summary(reveals, legible, counts):
+    """The summary segment of case (7): the reveals, the legible ones, and
+    the range of the measured text pixel counts when any was measured."""
+    text = f"skip-link reveals: {reveals}, legible {legible}"
+    if counts:
+        text += (f" (text pixels at {REFLOW_TEXT_CONTRAST:g}:1 or more: {min(counts)} to "
+                 f"{max(counts)}, at least {REFLOW_TEXT_MIN_PIXELS})")
+    return text
+
+
+def legibility_problem(label, box, counts):
+    """The finding of case (7)'s legibility step for the counts of
+    text_pixels, None when the label is legible: at least
+    REFLOW_TEXT_MIN_PIXELS pixels of its text reach REFLOW_TEXT_CONTRAST."""
+    if counts is None:
+        return (f"(7) the captures of the focused {label} ({box}) with and without its text "
+                "differ in size or hold a transparent pixel, so its text cannot be measured; "
+                "the revealed skip link must be legible on keyboard focus")
+    legible, painting = counts
+    if legible >= REFLOW_TEXT_MIN_PIXELS:
+        return None
+    return (f"(7) the label of the focused {label} ({box}) is not legible: {legible} of its "
+            f"{painting} text pixel(s) reach {REFLOW_TEXT_CONTRAST:g}:1 against what lies "
+            f"under them, {REFLOW_TEXT_MIN_PIXELS} needed (WCAG 2.2 SC 1.4.3); it is too "
+            "small, faint, blurred, covered or moved out of its box, or drawn in the "
+            "colour behind it")
 
 
 class SnapshotError(Exception):
@@ -17098,7 +17395,8 @@ def cmd_reflow(args):
     launched = False
     n_items = 0
     n_copy = n_search = n_reveals = n_revealed = n_heads = n_regions = n_documents = 0
-    n_hit_regions = n_honeypots = 0
+    n_hit_regions = n_honeypots = n_legible = 0
+    text_counts = []
     search_summary = "; search: not run (--no-search)"
     try:
         # The launch: start Chrome and wait for its first answer, within
@@ -17211,22 +17509,33 @@ def cmd_reflow(args):
                                  f"{kind} shadow root; the page script and the static "
                                  "checks see no element inside it (ADR-0003 part 6)")
 
-        def reveal_paint(where, focus, box):
-            """Case (7), the paint: the focused element's box captured as is,
-            with the element at opacity 0, and restored (REFLOW_PAINT_SCRIPT).
-            The scroll position holds for all three, the first and third
-            images are equal, and the first and second differ."""
+        def reveal_captures(focus, probe, shown=True):
+            """(shots, scrolls) of one probe round trip on the focused
+            element's box (REFLOW_PAINT_SCRIPT): the box captured as is
+            (unless shown is False), with the probe set, and restored; the
+            scroll position after each of the three steps."""
             clip = {"x": focus["left"] + focus["x"], "y": focus["top"] + focus["y"],
                     "width": focus["width"], "height": focus["height"], "scale": 1}
             shots, scrolls, saved = [], [], None
             for mode in ("hide", "restore", "read"):
-                shots.append(tools.send("Page.captureScreenshot",
-                                        {"format": "png", "clip": clip},
-                                        session=session).get("data"))
+                if shown or mode != "hide":
+                    shots.append(tools.send("Page.captureScreenshot",
+                                            {"format": "png", "clip": clip},
+                                            session=session).get("data"))
                 state = reflow_value(tools, session, REFLOW_PAINT_SCRIPT % {
-                    "mode": json.dumps(mode), "saved": json.dumps(saved)}, where)
+                    "mode": json.dumps(mode), "saved": json.dumps(saved),
+                    "props": json.dumps([list(p) for p in probe])}, where)
                 scrolls.append((state.get("x"), state.get("y")))
                 saved = state.get("saved") if mode == "hide" else saved
+            return shots, scrolls
+
+        def reveal_paint(where, focus, box):
+            """Case (7), the paint: the focused element's box captured as is,
+            with the element at opacity 0, and restored (REFLOW_PAINT_PROBE).
+            The scroll position holds for all three, the first and third
+            images are equal, and the first and second differ. The capture
+            as is when all three hold, else None."""
+            shots, scrolls = reveal_captures(focus, REFLOW_PAINT_PROBE)
             label = show(focus["label"], 80)
             if any(xy != (focus["x"], focus["y"]) for xy in scrolls):
                 findings.add(where, f"(7) the page scrolled while the paint of the focused "
@@ -17250,8 +17559,72 @@ def cmd_reflow(args):
                              f"{show(focus.get('centre') or 'nothing', 80)}), so it is "
                              "clipped, transparent, filtered or covered, and the skip link "
                              "stays invisible on keyboard focus (WCAG 2.2 SC 2.4.7)")
+            else:
+                return shots[0]
+            return None
 
-        focus_script = REFLOW_FOCUS_SCRIPT % {"exempt": json.dumps(VISUALLY_HIDDEN)}
+        def reveal_legibility(where, focus, box, shown):
+            """Case (7), the legibility (Replikanti/interviewscam#34): no
+            generated content and no text security, so the ink is the
+            label's own characters; then the box captured with the glyph
+            fill transparent and restored (REFLOW_INK_PROBE): the scroll
+            holds, the restored image equals the one as shown, and at least
+            REFLOW_TEXT_MIN_PIXELS text pixels reach REFLOW_TEXT_CONTRAST
+            (text_pixels). The counts, or None when no capture was made or
+            they could not be measured."""
+            label = show(focus["label"], 80)
+            generated = focus.get("generated")
+            if generated is None or generated:
+                findings.add(where, f"(7) the focused {label} draws generated content "
+                             f"({show(generated, 120)}, computed content of ::before and "
+                             "::after); its text would no longer be only the label's own "
+                             "characters, so its legibility cannot be measured")
+                return None
+            if focus.get("textSecurity") != "none":
+                findings.add(where, f"(7) the focused {label} has -webkit-text-security "
+                             f"{show(focus.get('textSecurity'))}: its label is drawn as "
+                             "substitute symbols, not its characters")
+                return None
+            placed = focus.get("placement")
+            if placed is None or placed:
+                findings.add(where, f"(7) the focused {label} is not drawn in reading order: "
+                             f"{show(placed, 200)} (element, property, computed value; each "
+                             "must be " + ", ".join(f"{p} {' or '.join(v)}" for p, v in
+                                                    REFLOW_PLACEMENT_STYLES.items())
+                             + f" (line-height also at least {REFLOW_MIN_LINE_HEIGHT:g} x the "
+                             "font size)"
+                             + ", on the element, its ::first-line and ::first-letter, and "
+                             "the first four on every ancestor too); the legibility count "
+                             "reads pixels, not their order, so a mirrored, rotated, reordered "
+                             "or overlapped label would count as legible")
+                return None
+            shots, scrolls = reveal_captures(focus, REFLOW_INK_PROBE, shown=False)
+            counts = None
+            if any(xy != (focus["x"], focus["y"]) for xy in scrolls):
+                findings.add(where, f"(7) the page scrolled while the text of the focused "
+                             f"{label} was measured (from x {focus['x']}, y {focus['y']} to "
+                             f"{', '.join(f'x {x}, y {y}' for x, y in scrolls)}); the "
+                             "revealed skip link must hold still on keyboard focus")
+            elif (noise := png_difference(shown, shots[1])) > REFLOW_PAINT_TOLERANCE:
+                findings.add(where, f"(7) the box of the focused {label} ({box}) changes by "
+                             f"itself during the text round trip: as shown and restored it "
+                             f"differs by up to {noise} of 255 in a channel (tolerance "
+                             f"{REFLOW_PAINT_TOLERANCE}), so its text cannot be measured; "
+                             "the revealed skip link must hold still on keyboard focus")
+            else:
+                counts = text_pixels(shown, shots[0])
+                problem = legibility_problem(label, box, counts)
+                if problem:
+                    findings.add(where, problem)
+            return counts
+
+        focus_script = REFLOW_FOCUS_SCRIPT % {
+            "exempt": json.dumps(VISUALLY_HIDDEN),
+            "generated": json.dumps(sorted(REFLOW_NO_GENERATED)),
+            "placement": json.dumps(REFLOW_PLACEMENT_STYLES),
+            "ancestor": json.dumps(list(REFLOW_ANCESTOR_PLACEMENT)),
+            "pseudos": json.dumps(list(REFLOW_PLACEMENT_PSEUDOS)),
+            "minline": json.dumps(REFLOW_MIN_LINE_HEIGHT)}
         for rel, path in pages:
             where = f"public/{rel}"
             elements = parse_page((public / rel).read_text(encoding="utf-8",
@@ -17377,8 +17750,11 @@ def cmd_reflow(args):
                     findings.add(where, f"(7) the focused {show(focus['label'], 80)} is "
                                  f"{box}, outside the {REFLOW_WIDTH} x {REFLOW_HEIGHT} "
                                  "viewport; the revealed skip link must be on screen")
-                else:
-                    reveal_paint(where, focus, box)
+                elif (shown := reveal_paint(where, focus, box)) is not None:
+                    counts = reveal_legibility(where, focus, box, shown)
+                    if counts is not None:
+                        text_counts.append(counts[0])
+                        n_legible += counts[0] >= REFLOW_TEXT_MIN_PIXELS
             # The hit test and the paint check of the shown pinned regions
             # (M4 PR 4, the amendment's items 3 and 7), S0.
             n_hit_regions += reflow_hits(tools, session, findings, where)
@@ -17493,7 +17869,8 @@ def cmd_reflow(args):
                            f"hidden without the script: {n_copy} in 2 states; search "
                            f"results hidden until a query: {n_search} in 3 states, "
                            f"{n_revealed} sections revealed and reachable; "
-                           f"skip-link reveals: {n_reveals}; heads as parsed: {n_heads}; "
+                           + legibility_summary(n_reveals, n_legible, text_counts)
+                           + f"; heads as parsed: {n_heads}; "
                            f"pinned regions as parsed: {n_regions}; documents as parsed "
                            f"(scripting off): {n_documents}; regions hit-tested and painting: "
                            f"{n_hit_regions}; honeypots without a box, counted per state "
