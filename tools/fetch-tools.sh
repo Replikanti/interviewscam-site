@@ -87,8 +87,8 @@ fetch_verified() {
     echo "fetch-tools: downloading $name $version"
     rm -f "$archive.part"
     curl -q --fail --silent --show-error --location "${FETCH_RETRY_ARGS[@]}" --proto '=https' --tlsv1.2 --output "$archive.part" "$url" || return 1
-    if [[ ! -f "$archive.part" ]]; then
-      echo "fetch-tools: FAIL: $name $version: curl ended without a file (a Retry-After past the retry window ends curl with exit 0)" >&2
+    if [[ ! -s "$archive.part" ]]; then
+      echo "fetch-tools: FAIL: $name $version: curl ended without a file or with an empty one (a Retry-After past the retry window ends curl with exit 0)" >&2
       return 1
     fi
     mv "$archive.part" "$archive" || return 1

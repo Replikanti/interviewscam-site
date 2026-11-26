@@ -4622,12 +4622,14 @@ fetch_row() {
 #   cache-verified: a cached archive is checked against the pin without a
 #     download, the right one passes and a wrong one is deleted with the
 #     three mismatch lines (the SHA-256 path is unchanged by #41).
-#   gave-up-without-file: curl exits 0 and writes nothing (what a
-#     Retry-After past the retry window does), and a stale .part of an
-#     earlier run is there: fetch_verified fails closed, names the missing
-#     file, and promotes nothing.
+#   gave-up-without-file: curl exits 0 and (a) writes nothing (what a
+#     Retry-After past the retry window does), with a stale .part of an
+#     earlier run there, or (b) leaves an empty .part (an attempt cut off
+#     mid-body, truncated, then such a Retry-After): fetch_verified fails
+#     closed, names the missing or empty file, and promotes nothing.
 #   vnu-present: a docker stub; an image present by digest is not pulled,
-#     an absent one is pulled once, a failed pull is FAIL as before.
+#     an absent one is pulled once, a failed pull is FAIL as before; (a)
+#     and (b) inspect exactly the pinned digest reference.
 #   retry-schedule: the real curl with FETCH_RETRY_ARGS against a loopback
 #     server that answers 504, 404, an empty reply, 504 and then 200: the
 #     file holds the 200 body, 5 requests, every gap 2.5 s or more (the
@@ -4648,8 +4650,9 @@ fetch_rows() {
   sha="$(sha256sum "$fx/body" | cut -d' ' -f1)"
   archive="$fx/tools/cache/$sha-hugo.tar.gz"
   # The curl stub: one --call-- line and then its arguments, one per line;
-  # with $fx/write present it writes the body to the path after --output.
-  # It finds $fx from its own path.
+  # with $fx/write present it writes the body to the path after --output,
+  # with $fx/empty present an empty file there. It finds $fx from its own
+  # path.
   cat >"$fx/bin/curl" <<'STUB'
 #!/bin/sh
 fx="${0%/bin/curl}"
@@ -4661,6 +4664,7 @@ for a in "$@"; do
   prev="$a"
 done
 [ -f "$fx/write" ] && [ -n "$dest" ] && cp "$fx/body" "$dest"
+[ -f "$fx/empty" ] && [ -n "$dest" ] && : >"$dest"
 exit 0
 STUB
   chmod +x "$fx/bin/curl"
@@ -4720,23 +4724,31 @@ STUB
   fi
   fetch_row cache-verified "$problem" "right: verified, no download; wrong: deleted, three lines"
 
-  # fetch/gave-up-without-file: curl exits 0 without a file, a stale .part
-  # with other bytes is there.
-  rm -rf "$fx/tools" "$fx/calls"
-  mkdir -p "$fx/tools/cache"
-  printf 'stale bytes of an earlier run\n' >"$archive.part"
-  TOOLS_DIR="$fx/tools" PATH="$fx/bin:$PATH" \
-    fetch_verified hugo 0.0 "$url" "$sha" >"$out" 2>&1
-  rc=$?
+  # fetch/gave-up-without-file: curl exits 0 (a) without a file, a stale
+  # .part with other bytes there, (b) with an empty .part.
+  local gave_case
   problem=""
-  if [[ $rc -ne 1 ]]; then
-    problem="expected exit 1, got $rc"
-  elif ! grep -qxF 'fetch-tools: FAIL: hugo 0.0: curl ended without a file (a Retry-After past the retry window ends curl with exit 0)' "$out"; then
-    problem="no 'curl ended without a file' line"
-  elif [[ -e "$archive" || -e "$archive.part" ]]; then
-    problem="an archive or a .part file is left"
-  fi
-  fetch_row gave-up-without-file "$problem" "exit 1, the stale .part removed, nothing promoted"
+  for gave_case in a b; do
+    rm -rf "$fx/tools" "$fx/calls"
+    mkdir -p "$fx/tools/cache"
+    printf 'stale bytes of an earlier run\n' >"$archive.part"
+    [[ $gave_case == b ]] && : >"$fx/empty"
+    TOOLS_DIR="$fx/tools" PATH="$fx/bin:$PATH" \
+      fetch_verified hugo 0.0 "$url" "$sha" >"$out" 2>&1
+    rc=$?
+    rm -f "$fx/empty"
+    if [[ $rc -ne 1 ]]; then
+      problem="($gave_case) expected exit 1, got $rc"
+    elif ! grep -qxF 'fetch-tools: FAIL: hugo 0.0: curl ended without a file or with an empty one (a Retry-After past the retry window ends curl with exit 0)' "$out"; then
+      problem="($gave_case) no 'curl ended without a file or with an empty one' line"
+    elif [[ -e "$archive" ]]; then
+      problem="($gave_case) an archive was promoted"
+    elif [[ $gave_case == a && -e "$archive.part" ]]; then
+      problem="(a) the stale .part file is left"
+    fi
+    [[ -n "$problem" ]] && break
+  done
+  fetch_row gave-up-without-file "$problem" "missing or empty file: exit 1, the stale .part removed, nothing promoted"
 
   # fetch/vnu-present: a docker stub that records its calls and answers
   # image inspect and pull with the codes in $fx/inspect and $fx/pull.
@@ -4770,6 +4782,8 @@ STUB
           problem="(a) present: expected exit 0, got $rc"
         elif [[ "${calls:-0}" != 0 ]]; then
           problem="(a) an image present by digest was pulled"
+        elif [[ "$(cat "$fx/docker-calls" 2>/dev/null)" != "image inspect $vnu_image" ]]; then
+          problem="(a) present: docker was not called exactly once as 'image inspect' of the pinned digest reference"
         elif ! grep -qxF 'fetch-tools: Nu Html Checker image already present by digest' "$out"; then
           problem="(a) no 'already present by digest' line"
         fi
@@ -4779,6 +4793,8 @@ STUB
           problem="(b) absent: expected exit 0, got $rc"
         elif [[ "$(grep '^pull ' "$fx/docker-calls" 2>/dev/null)" != "pull --quiet $vnu_image" ]]; then
           problem="(b) an absent image was not pulled exactly once by digest"
+        elif ! grep -qxF "image inspect $vnu_image" "$fx/docker-calls"; then
+          problem="(b) absent: the pinned digest reference was not the one inspected"
         fi
         ;;
       c)
