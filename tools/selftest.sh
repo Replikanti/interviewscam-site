@@ -4679,6 +4679,26 @@ selftest_wants() {
   return 1
 }
 
+# st_alive <pid>: true while the process runs. A zombie counts as gone:
+# under a child subreaper (tools/mutate.py sets PR_SET_CHILD_SUBREAPER on
+# its shard) a killed orphan stays a zombie until the runner reaps it, and
+# `kill -0` still succeeds on it. The state is the field after the last
+# `) ` of /proc/<pid>/stat (the command name may hold spaces and parens);
+# without /proc (not Linux) it is `kill -0` alone. Exported where a row
+# starts a `bash -c` that asks it.
+st_alive() {
+  local st
+  kill -0 "$1" 2>/dev/null || return 1
+  if [[ -r "/proc/$1/stat" ]]; then
+    { st="$(<"/proc/$1/stat")"; } 2>/dev/null || return 1
+    st="${st##*) }"
+    if [[ "${st%% *}" == [ZXx] ]]; then
+      return 1
+    fi
+  fi
+  return 0
+}
+
 # selftest_suite <suite> <other>...: the suite a block names in a line it
 # prints outside its runner's rows (the runner did not finish): <suite>
 # without --only or when it is selected, else the first selected <other>,
@@ -7504,7 +7524,7 @@ STUB
       # case leaves no stub behind.
       if [[ -f "$stub_dir/launches" ]]; then
         while read -r pid; do
-          if kill -0 "$pid" 2>/dev/null; then
+          if st_alive "$pid"; then
             [[ -z "$problem" ]] && problem="stub browser PID $pid still alive after sitecheck returned"
             kill "$pid" 2>/dev/null
           fi
@@ -7711,6 +7731,8 @@ PY
     #     read set (one file outside the root; no symlink, FIFO; names with
     #     a space, a newline, a leading dash, non-ASCII; a mode-000 file).
     #   libs-parse: one ldd line at a time.
+    #   zombie-is-gone: st_alive (the liveness check of these rows) treats a
+    #     zombie as gone, as a killed orphan is under a child subreaper.
     #   off-ci-noop, no-chrome, finish-without-start, finish-twice,
     #   slow-reader-capped, silent-while-running, reflow-failure-stays-red:
     #     the start and the join (no process off CI; a missing Chrome still
@@ -7755,6 +7777,7 @@ PY
     }
     # ww_fresh: a new case directory in ww_dir.
     ww_fresh() { ww_dir="$(mktemp -d -p "$ww_tmp")"; }
+    export -f st_alive
 
     # reads-install
     ww_fresh
@@ -7903,13 +7926,13 @@ LDD
         t1=$EPOCHREALTIME
         sleep 0.3
         alive=no
-        kill -0 "$pid" 2>/dev/null && alive=yes
+        st_alive "$pid" && alive=yes
         # the stub cat wrote its own pid (it execs sleep): no survivor
         group=nofile
         if [[ -s "$2/stub.pid" ]]; then
           read -r spid <"$2/stub.pid"
           group=no
-          kill -0 "$spid" 2>/dev/null && group=yes
+          st_alive "$spid" && group=yes
         fi
         awk -v a="$t0" -v b="$t1" -v l="$line" -v alive="$alive" -v g="$group" \
           "BEGIN { printf \"%.1f|%s|%s|%s\\n\", b - a, alive, g, l }"' _ \
@@ -7962,11 +7985,53 @@ LDD
         pid=$WARM_CHROME_PID; dir=$WARM_CHROME_DIR
         check_summary public >/dev/null 2>&1
         sleep 0.3
-        alive=no; kill -0 "$pid" 2>/dev/null && alive=yes
+        alive=no; st_alive "$pid" && alive=yes
         left=no; [[ -e "$dir" ]] && left=yes
         echo "$alive|$left|[$WARM_CHROME_PID]"' _ "$SELFTEST_ROOT/tools/check.sh" 2>&1)"
     [[ "$ww_got" == "no|no|[]" ]] || ww_bad="after check_summary (reader alive|directory left|pid) the state is '$ww_got', want no|no|[]"
     ww_row join-before-summary "check_summary joins a reader the reflow step never reached: reader gone, directory removed"
+
+    # zombie-is-gone: under a child subreaper (the mutation shard's runner,
+    # tools/mutate.py) a killed orphan stays a zombie and `kill -0` still
+    # sees it; st_alive must not. The row makes the zombie itself: python3
+    # sets PR_SET_CHILD_SUBREAPER on itself and runs a shell (st_alive
+    # exported above) that starts an orphan, kills it and asks both ways.
+    # Wanted: seen|Z|gone, the plain `kill -0` answer being the control that
+    # the zombie exists. Skipped where there is no prctl or /proc (not Linux).
+    ww_fresh
+    ww_bad=""
+    # shellcheck disable=SC2016 # the inner shell expands the variables
+    ww_got="$(python3 -I -B - "$ww_dir" <<'PY' 2>&1
+import ctypes, subprocess, sys
+try:
+    if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
+        raise OSError("prctl")
+    open("/proc/self/stat").close()
+except (OSError, AttributeError):
+    print("skip")
+    sys.exit(0)
+script = r"""
+( sh -c 'echo $$ >"$1/orphan.pid"; exec sleep 30' _ "$1" & )
+for _ in {1..100}; do [[ -s "$1/orphan.pid" ]] && break; sleep 0.1; done
+read -r pid <"$1/orphan.pid"
+kill -KILL "$pid"
+sleep 0.3
+raw=gone; kill -0 "$pid" 2>/dev/null && raw=seen
+st=none
+if [[ -r "/proc/$pid/stat" ]]; then st="$(<"/proc/$pid/stat")"; st="${st##*) }"; st="${st%% *}"; fi
+now=gone; st_alive "$pid" && now=alive
+echo "$raw|$st|$now"
+"""
+print(subprocess.run(["bash", "-c", script, "_", sys.argv[1]], capture_output=True, text=True, timeout=30).stdout.strip())
+PY
+)"
+    if [[ "$ww_got" == "skip" ]]; then
+      echo "ok   reflow-warmup/zombie-is-gone (skipped: no child subreaper or /proc here)"
+      n_passed=$((n_passed + 1))
+    else
+      [[ "$ww_got" == "seen|Z|gone" ]] || ww_bad="the orphan after SIGKILL gave '$ww_got' (kill -0|state|st_alive), want seen|Z|gone"
+      ww_row zombie-is-gone "a killed orphan under a child subreaper stays a zombie that kill -0 sees; st_alive says gone"
+    fi
 
     # reflow-failure-stays-red: step_reflow with a started warm-up.
     ww_fresh
@@ -7979,6 +8044,7 @@ LDD
       [[ "$ww_got" == "$ww_n" ]] || ww_bad+=" sitecheck exit $ww_n gave step_reflow rc '$ww_got';"
     done
     ww_row reflow-failure-stays-red "step_reflow returns what sitecheck returned (1 and 0) with a warm-up started"
+    export -nf st_alive
     rm -rf "$ww_tmp"
   fi
 
