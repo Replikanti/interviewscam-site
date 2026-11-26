@@ -1335,6 +1335,130 @@ preview_image_runner() {
   rm -rf "$tmp"
 }
 
+# preview_fit_runner <sitecheck.py> <cases table> <repo root>
+# (Replikanti/interviewscam#44 PR 3, ADR-0009 parts 7 and 8): for each
+# canvas height of the table, builds a small Hugo site in a temporary
+# directory with the real layouts/_partials/, data/ (data/preview.toml with
+# that height), the base image and the fonts of <repo root> (through
+# hugo_build), one record page per row, each printing as JSON what
+# preview-image.html returns (the name size, the drawn lines, the alt, the
+# image path), and needs sitecheck's preview_card (the replica) to give the
+# same lines and alt, and both the row's name size and line count (0 = the
+# site card). preview-fit/shared-image needs every image file to carry one
+# alt, whitespace collapsed (a run of spaces draws as one, so
+# double-space and size-72 share a file). -B: no tools/__pycache__.
+preview_fit_runner() {
+  local tmp height
+  tmp="$(mktemp -d)"
+  if ! python3 -I -B - "$2" "$3" "$tmp" <<'PY'
+import shutil
+import sys
+from pathlib import Path
+
+table, root, tmp = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+data = (root / "data/preview.toml").read_text(encoding="utf-8")
+heights = {}
+for line in table.read_text(encoding="utf-8").splitlines():
+    if line and not line.startswith("#"):
+        name, section, height, params, _ = line.split("\t")
+        heights.setdefault(height, []).append((name, section, params))
+for height, rows in heights.items():
+    site = tmp / f"site-{height}"
+    shutil.copytree(root / "layouts/_partials", site / "layouts/_partials")
+    shutil.copytree(root / "data", site / "data")
+    for d in ("og", "fonts"):
+        shutil.copytree(root / "assets" / d, site / "assets" / d)
+    if "\nheight = 630\n" not in data:
+        raise SystemExit("data/preview.toml holds no height = 630 line")
+    (site / "data/preview.toml").write_text(data.replace("\nheight = 630\n",
+                                                         f"\nheight = {height}\n"),
+                                            encoding="utf-8")
+    (site / "hugo.toml").write_text(
+        'baseURL = "https://example.invalid/"\n'
+        'disableKinds = ["home", "section", "taxonomy", "term", "rss", "sitemap", "robotstxt", "404"]\n'
+        '[outputs]\npage = ["json"]\n[caches.images]\nmaxAge = 0\n', encoding="utf-8")
+    (site / "layouts/page.json").write_text(
+        '{{- $c := partial "preview-image.html" . -}}\n'
+        '{{- jsonify (dict "size" $c.size "lines" $c.lines "alt" $c.alt "image" $c.image.RelPermalink) -}}\n',
+        encoding="utf-8")
+    for name, section, params in rows:
+        base = ('name_type = "company"\nstate = "front"\nindependent_reports = 1\n'
+                'last_reviewed = 2026-11-01\n' if section == "reports" else
+                'first_seen = 2026-08-15\nlast_seen = 2026-10-31\n')
+        own = "\n".join(params.split(" | ")) + "\n"
+        keys = {kv.split("=")[0].strip() for kv in own.splitlines()}
+        base = "".join(kv + "\n" for kv in base.splitlines() if kv.split("=")[0].strip() not in keys)
+        page = site / "content" / section / f"{name}.md"
+        page.parent.mkdir(parents=True, exist_ok=True)
+        page.write_text(f"+++\ndate = 2026-11-01\n[params]\n{base}{own}+++\n", encoding="utf-8")
+    print(height)
+PY
+  then
+    echo "FAIL preview-fit/table: the test sites could not be written"
+    rm -rf "$tmp"
+    return
+  fi
+  for height in "$tmp"/site-*; do
+    height="${height##*/site-}"
+    if ! hugo_build "$tmp/site-$height" "$tmp/out-$height" >"$tmp/build.log" 2>&1; then
+      echo "FAIL preview-fit/build: the test site (height $height) with the real card partials does not build:"
+      sed 's/^/     | /' "$tmp/build.log"
+      rm -rf "$tmp"
+      return
+    fi
+  done
+  python3 -I -B - "$1" "$2" "$tmp" <<'PY'
+import importlib.util
+import json
+import sys
+import tomllib
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sc)
+table, tmp = Path(sys.argv[2]), Path(sys.argv[3])
+n, images = 0, {}
+for line in table.read_text(encoding="utf-8").splitlines():
+    if not line or line.startswith("#"):
+        continue
+    name, section, height, params, expect = line.split("\t")
+    n += 1
+    site = tmp / f"site-{height}"
+    data = tomllib.loads((site / "data/preview.toml").read_text(encoding="utf-8"))
+    rel = f"content/{section}/{name}.md"
+    front = (site / rel).read_text(encoding="utf-8").split("+++")[1]
+    record = sc.Record(rel, sc.plain(tomllib.loads(front)), "", 0)
+    replica = sc.preview_card(record, data)
+    try:
+        built = json.loads((tmp / f"out-{height}" / section / name / "index.json")
+                           .read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"FAIL preview-fit/{name}: no template output ({exc})")
+        continue
+    images.setdefault(built["image"], set()).add(sc.squash(built["alt"]))
+    size, count = (int(x) for x in expect.split())
+    got = (built["size"], built["lines"], built["alt"])
+    if replica is None or got != (replica["size"], replica["lines"], replica["alt"]):
+        print(f"FAIL preview-fit/{name}: the template gave size {got[0]}, lines "
+              f"{json.dumps(got[1], ensure_ascii=False)}, alt {got[2]!r}; the replica "
+              + ("none" if replica is None else
+                 f"size {replica['size']}, lines {json.dumps(replica['lines'], ensure_ascii=False)}, "
+                 f"alt {replica['alt']!r}"))
+    elif (got[0], len(got[1])) != (size, count):
+        print(f"FAIL preview-fit/{name}: template and replica agree on size {got[0]} and "
+              f"{len(got[1])} lines; the row expects {expect}")
+    else:
+        what = "the site card" if size == 0 else f"the record card at {size} px"
+        print(f"ok   preview-fit/{name} (template and replica: {what}, {count} lines)")
+shared = [image for image, alts in images.items() if len(alts) > 1]
+print(f"ok   preview-fit/shared-image ({len(images)} images, one text each)" if not shared
+      else f"FAIL preview-fit/shared-image: {shared[0]} drawn for {len(images[shared[0]])} alts")
+print(f"ok   preview-fit/table ({n} rows)" if n else "FAIL preview-fit/table: no rows")
+PY
+  rm -rf "$tmp"
+}
+
 # preview_png_runner <sitecheck.py> <repo root> (Replikanti/interviewscam#44,
 # ADR-0009 part 6): the PNG decoder and the pixel check of --preview-pixels
 # through importlib. preview-png/filter-<n> encodes a known image with every
@@ -1439,13 +1563,14 @@ x0, y0, x1, y1 = box
 ink = bytes((0x0F, 0x17, 0x2A))
 
 
-def card(marks):
+def card(marks, bpp=3):
+    alpha = b"\xff" * (bpp - 3)
     rows = []
     for y in range(height):
-        row = bytearray(bytes(primary) * bar + bytes(ground) * (width - bar))
+        row = bytearray((bytes(primary) + alpha) * bar + (bytes(ground) + alpha) * (width - bar))
         for (x, yy), value in marks.items():
             if yy == y:
-                row[x * 3:x * 3 + 3] = value
+                row[x * bpp:x * bpp + bpp] = value + alpha if len(value) == 3 else value
         rows.append(bytes(row))
     return rows
 
@@ -1466,6 +1591,267 @@ for name, marks, want in (
     report(name, len(found) == want and decoded,
            f"{len(found)} finding(s), {want} expected" + (f": {found[0]}" if found else "")
            + ("" if decoded else "; the card did not round-trip"))
+
+# The ink check (Replikanti/interviewscam#44 PR 3, ADR-0009 part 7):
+# preview_ink_problems against the line boxes of the site card's replica
+# (preview_card over <repo root>'s data/preview.toml). Each row puts one
+# pixel of each line's colour inside its box, then changes one thing: a
+# line left blank, a line in another token's colour, ink just outside a
+# line's box grown by the ink slack (right, left, above the first line, and
+# below the last line, which is inside the content box the band check
+# reads) or just inside it. Fix round 1 (QA F3): the first line's one
+# pixel at each edge of its box (first and last row and column), its
+# colour's bytes straddling two pixels (no pixel is that colour), and the
+# whole card in RGBA (colour type 6, the 4-byte path).
+import tomllib  # noqa: E402
+
+data = tomllib.loads((root / "data/preview.toml").read_text(encoding="utf-8"))
+tokens = tomllib.loads((root / "data/tokens.toml").read_text(encoding="utf-8"))["color"]
+colours = {k: sc.hex_rgb(v) for k, v in tokens.items() if isinstance(v, str)}
+slack = max(f["ink_slack"] for f in data["face"].values())
+boxes = sc.preview_line_boxes(sc.preview_card(None, data), data)
+lx0, ly0, lx1, ly1 = boxes[0][:4]
+last = boxes[-1]
+text = bytes(colours["text"])
+mid = (ly0 + ly1) // 2
+for name, change, want, bpp in (
+        ("pass-ink-every-line", {}, 0, 3),
+        ("ink-line-blank", {"blank": 1}, 1, 3),
+        ("ink-line-other-colour", {"colour": 0}, 1, 3),
+        ("ink-right-of-slack", {(lx1 + slack, ly0): text}, 1, 3),
+        ("pass-ink-last-slack-pixel", {(lx1 + slack - 1, ly0): text}, 0, 3),
+        ("ink-left-of-slack", {(lx0 - slack - 1, ly0): text}, 1, 3),
+        ("pass-ink-left-slack-pixel", {(lx0 - slack, ly0): text}, 0, 3),
+        ("ink-above-slack", {(lx0 + 1, ly0 - slack - 1): text}, 1, 3),
+        ("pass-ink-top-slack-pixel", {(lx0 + 1, ly0 - slack): text}, 0, 3),
+        ("ink-below-last-line", {(last[0], last[3] + slack): bytes(colours["muted"])}, 1, 3),
+        ("pass-ink-bottom-slack-pixel", {(last[0], last[3] + slack - 1):
+                                         bytes(colours["muted"])}, 0, 3),
+        ("pass-ink-box-first-column", {"first": (lx0, mid)}, 0, 3),
+        ("pass-ink-box-last-column", {"first": (lx1 - 1, mid)}, 0, 3),
+        ("pass-ink-box-first-row", {"first": (lx0 + 1, ly0)}, 0, 3),
+        ("pass-ink-box-last-row", {"first": (lx0 + 1, ly1 - 1)}, 0, 3),
+        ("ink-colour-straddles-pixels", {"blank": 0, (lx0 + 1, mid): b"\x00" + text[:2],
+                                         (lx0 + 2, mid): text[2:] + b"\x00\x00"}, 1, 3),
+        ("pass-ink-rgba", {}, 0, 4),
+        ("ink-rgba-line-blank", {"blank": 1}, 1, 4)):
+    marks = {k: v for k, v in change.items() if isinstance(k, tuple)}
+    for i, (x0, y0, x1, y1, token, _) in enumerate(boxes):
+        if change.get("blank") == i:
+            continue
+        colour = colours["muted" if token == "text" else "text"] \
+            if change.get("colour") == i else colours[token]
+        at = change["first"] if i == 0 and "first" in change else (x0 + 1, (y0 + y1) // 2)
+        marks[at] = bytes(colour)
+    found = sc.preview_ink_problems(width, bpp, card(marks, bpp), boxes, slack, bar, colours)
+    report(name, len(found) == want,
+           f"{len(found)} finding(s), {want} expected" + (f": {found[0]}" if found else ""))
+
+# The line boxes (ADR-0009 Numbers, "Line box"): from the margin to the
+# line's width in font units (advances plus the kerning bound) x size /
+# unitsPerEm rounded up, plus 2 px, and from the line's y down one pitch,
+# each line of a block one pitch below the last; worked out here apart from
+# preview_line_boxes, over the site card, the worst-case persona card and a
+# block with a kerned pair (\"T is kerned in the pinned tables). The row
+# needs a kerned pair, a width that is no whole number of px and a block of
+# two lines among them, so each part of the rule is read.
+margin = data["canvas"]["margin"]
+persona = sc.Record("content/reports/persona-1.md", {"params": {
+    "name": "Avery Exampleton", "name_type": "persona", "state": "front",
+    "independent_reports": 2, "last_reviewed": "2026-11-01"}}, "", 0)
+kerned = {"blocks": [{"lines": ['A "T line', 'and "T'], "y": 300, "pitch": 55,
+                      "face": "regular", "size": 40, "colour": "text"}]}
+want_boxes, seen_kern, seen_fraction, seen_two = [], False, False, False
+cards = [sc.preview_card(None, data), sc.preview_card(persona, data), kerned]
+for c in cards:
+    for b in c["blocks"]:
+        adv, kern = data["advance"][b["face"]], data["kern"][b["face"]]
+        upm = data["face"][b["face"]]["units_per_em"]
+        seen_two = seen_two or len(b["lines"]) > 1
+        for i, line in enumerate(b["lines"]):
+            pairs = [kern.get(line[k:k + 2], 0) for k in range(len(line) - 1)]
+            units = sum(adv[ch] for ch in line) + sum(pairs)
+            seen_kern = seen_kern or any(pairs)
+            seen_fraction = seen_fraction or units * b["size"] % upm != 0
+            top = b["y"] + i * b["pitch"]
+            want_boxes.append((margin, top, margin + -(-units * b["size"] // upm) + 2,
+                               top + b["pitch"], b["colour"], line))
+got_boxes = [box for c in cards for box in sc.preview_line_boxes(c, data)]
+report("ink-line-boxes", got_boxes == want_boxes and seen_kern and seen_fraction and seen_two,
+       f"{len(got_boxes)} boxes" + ("" if got_boxes == want_boxes else
+                                    f", the first that differs: {next((g, w) for g, w in zip(got_boxes + [None] * len(want_boxes), want_boxes) if g != w)}")
+       + ("" if seen_kern and seen_fraction and seen_two else
+          f"; the rows read no kerned pair, fraction or two-line block "
+          f"({seen_kern}, {seen_fraction}, {seen_two})"))
+
+# --preview-copies (Replikanti/interviewscam#44 PR 3): preview_copy_problems
+# on a temporary fixtures tree and build. A copy equal to the built card of
+# its name passes; another name, other bytes, or no copy at all is a
+# finding; a hand-made card.png is not a copy and is not compared.
+import tempfile  # noqa: E402
+
+with tempfile.TemporaryDirectory() as tmp:
+    tmp = Path(tmp)
+    for name, files, want in (
+            ("copies-pass-equal", {"a/public/og/base_hu_0a1b.png": b"card"}, ""),
+            ("copies-stale-name", {"a/public/og/base_hu_ffff.png": b"card"},
+             "draws no card of this name"),
+            ("copies-other-bytes", {"a/public/og/base_hu_0a1b.png": b"cart"},
+             "differs from the card of the same name"),
+            ("copies-pass-hand-made-ignored", {"a/public/og/base_hu_0a1b.png": b"card",
+                                               "b/public/og/card.png": b"other"}, ""),
+            ("copies-none", {"b/public/og/card.png": b"other"}, "nothing was compared")):
+        fixtures, public = tmp / name / "fixtures", tmp / name / "public"
+        (public / "og").mkdir(parents=True)
+        (public / "og" / "base_hu_0a1b.png").write_bytes(b"card")
+        for rel, body in files.items():
+            (fixtures / rel).parent.mkdir(parents=True, exist_ok=True)
+            (fixtures / rel).write_bytes(body)
+        found, _ = sc.preview_copy_problems(fixtures, public)
+        ok = (not found) if not want else (len(found) == 1 and want in found[0][1])
+        report(name, ok, f"{len(found)} finding(s)" + (f": {found[0][1]}" if found else ""))
+
+# Fix round 1 (QA F2): the members of preview_copy_problems one by one. A
+# file outside a directory og/, or whose name only holds a built card's
+# name, is no copy; any <stem>_hu_<hash>.png under og/ is one; a copy or a
+# built card that is a symbolic link is a finding; a fixtures path that is
+# no directory is named as such.
+with tempfile.TemporaryDirectory() as tmp:
+    tmp = Path(tmp)
+    for name, files, links, want in (
+            ("copies-pass-not-under-og", {"a/public/og/base_hu_0a1b.png": b"card",
+                                          "a/public/img/base_hu_ffff.png": b"x"}, {}, ""),
+            ("copies-pass-name-only-contains", {"a/public/og/base_hu_0a1b.png": b"card",
+                                                "a/public/og/old.base_hu_ffff.png.orig": b"x"},
+             {}, ""),
+            ("copies-other-stem", {"a/public/og/other_hu_ffff.png": b"card"}, {},
+             "draws no card of this name"),
+            ("copies-symlink", {"a/real.png": b"card"},
+             {"a/public/og/base_hu_0a1b.png": "../../real.png"}, "no regular file"),
+            ("copies-built-symlink", {"a/public/og/base_hu_5e5e.png": b"card"},
+             {"@public/og/base_hu_5e5e.png": "base_hu_0a1b.png"}, "draws no card of this name"),
+            ("copies-fixtures-not-a-directory", {}, {}, "is not a directory")):
+        fixtures, public = tmp / name / "fixtures", tmp / name / "public"
+        (public / "og").mkdir(parents=True)
+        (public / "og" / "base_hu_0a1b.png").write_bytes(b"card")
+        for rel, body in files.items():
+            (fixtures / rel).parent.mkdir(parents=True, exist_ok=True)
+            (fixtures / rel).write_bytes(body)
+        for rel, target in links.items():
+            at = tmp / name / rel[1:] if rel.startswith("@") else fixtures / rel
+            at.parent.mkdir(parents=True, exist_ok=True)
+            at.symlink_to(target)
+        if not files and not links:
+            fixtures.write_bytes(b"not a directory")
+        found, _ = sc.preview_copy_problems(fixtures, public)
+        ok = (not found) if not want else (len(found) == 1 and want in found[0][1])
+        report(name, ok, f"{len(found)} finding(s)" + (f": {found[0][1]}" if found else ""))
+
+# Fix round 1 (QA F1, F2): `sitecheck site` end to end, as check.sh runs it,
+# on a small tree: a copy of site/pass-preview-record-pages (a report page
+# and a campaign page of the fixture build with their cards) with the two
+# records from the fixture records and <repo root>'s data/preview.toml.
+# tree-pass needs no finding with --preview-pixels; each other row changes
+# one thing and needs exit 1 and the text: a card whose bytes are the other
+# record's card, a page that links the other record's card (its page sorts
+# second, so every page of a card is read), a line of the card erased to
+# the ground colour (its colour is text), a record without a value the card
+# needs, and a committed copy of a card one byte off (--preview-copies,
+# against the same copy unchanged). tree-pass-ink-in-slack adds one pixel
+# inside the ink slack of the first line, which passes.
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+
+case = root / "tests/fixtures/site/pass-preview-record-pages"
+fixture_records = root / "tests/fixtures/records/pass-fixture-site/content"
+own = {"reports/persona-1.md": "public/reports/persona-1/index.html",
+       "campaigns/example-campaign-family.md": "public/campaigns/example-campaign-family/index.html"}
+persona_png, campaign_png = "public/og/base_hu_48c00efb023d2f67.png", "public/og/base_hu_5c588abccee972a3.png"
+persona_page = own["reports/persona-1.md"]
+
+
+def tree_card(tree, change):
+    """Decode the persona card of tree, let change edit its rows and the
+    replica's line boxes, and write it back (filter type 0)."""
+    path = tree / persona_png
+    w, h, bpp, rows = sc.png_pixels(path.read_bytes())
+    records = sc.load_records(tree, root / "schema", sc.Findings())
+    record = next(r for r in records if r.slug == "persona-1")
+    rows = [bytearray(r) for r in rows]
+    change(rows, bpp, sc.preview_line_boxes(sc.preview_card(record, data), data))
+    path.write_bytes(png(w, h, {3: 2, 4: 6}[bpp], encode([bytes(r) for r in rows], w, bpp, 0)))
+
+
+def erase_name(rows, bpp, boxes):
+    x0, y0, x1, y1 = next(b for b in boxes if b[4] == "text")[:4]
+    for y in range(y0, y1):
+        rows[y][x0 * bpp:x1 * bpp] = (bytes(colours["ground"]) + b"\xff" * (bpp - 3)) * (x1 - x0)
+
+
+def ink_in_slack(rows, bpp, boxes):
+    x1, y0 = boxes[0][2], boxes[0][1]
+    at = (x1 + slack - 1) * bpp
+    rows[y0][at:at + 3] = bytes(colours["text"])
+
+
+def swap_page(tree):
+    page = tree / persona_page
+    text = page.read_text(encoding="utf-8")
+    page.write_text(text.replace(persona_png[len("public/"):], campaign_png[len("public/"):]),
+                    encoding="utf-8")
+    (tree / persona_png).unlink()
+
+
+def bogus_state(tree):
+    rec = tree / "content/reports/persona-1.md"
+    rec.write_text(rec.read_text(encoding="utf-8").replace('state = "front"', 'state = "bogus"'),
+                   encoding="utf-8")
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    tmp = Path(tmp)
+    for name, flags, change, want in (
+            ("tree-pass", ["--preview-pixels"], None, None),
+            ("tree-pass-ink-in-slack", ["--preview-pixels"],
+             lambda t: tree_card(t, ink_in_slack), None),
+            ("tree-ink-swapped-card", ["--preview-pixels"],
+             lambda t: (t / persona_png).write_bytes((t / campaign_png).read_bytes()),
+             f"--preview-pixels: the card of {persona_page}"),
+            ("tree-ink-second-page", ["--preview-pixels"], swap_page,
+             f"--preview-pixels: the card of {persona_page}"),
+            ("tree-ink-line-erased", ["--preview-pixels"], lambda t: tree_card(t, erase_name),
+             "has no pixel of its colour text"),
+            ("tree-ink-no-card", ["--preview-pixels"], bogus_state,
+             f"--preview-pixels: no card layout for {persona_page}"),
+            ("tree-copies-pass", ["--preview-copies", "copies"], None,
+             ", 1 fixture card copies compared"),
+            ("tree-copies-changed", ["--preview-copies", "copies"], "flip",
+             "differs from the card of the same name")):
+        tree = tmp / name
+        shutil.copytree(case, tree)
+        shutil.copy(root / "data/preview.toml", tree / "data/preview.toml")
+        for rel in own:
+            (tree / "content" / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(fixture_records / rel, tree / "content" / rel)
+        if "--preview-copies" in flags:
+            copy = tmp / f"{name}-copies/x/public/og/{Path(persona_png).name}"
+            copy.parent.mkdir(parents=True)
+            body = bytearray((tree / persona_png).read_bytes())
+            if change == "flip":
+                body[-13] ^= 1
+            copy.write_bytes(bytes(body))
+            flags = ["--preview-copies", str(tmp / f"{name}-copies")]
+        elif change is not None:
+            change(tree)
+        run = subprocess.run([sys.executable, "-I", sys.argv[1], "site", "--records", str(tree),
+                              "--schemas", str(root / "schema"), *flags, str(tree / "public")],
+                             capture_output=True, text=True)
+        out = run.stdout + run.stderr
+        if want is None or want.startswith(", "):
+            ok = run.returncode == 0 and "site checked:" in out and (want or "") in out
+        else:
+            ok = run.returncode == 1 and want in out
+        report(name, ok, f"exit {run.returncode}: " + " | ".join(out.strip().splitlines()[-3:]))
 print(f"preview-png: {n_ok} passed, {n_fail} failed")
 PY
 }
@@ -1588,15 +1974,56 @@ ROWS = [
     ("fail-preview-mark-missing", edit_text(sc.PREVIEW_DATA, sc.PREVIEW_METRICS_MARK + "\n", ""),
      "is not byte for byte the output"),
     ("fail-preview-margin-small", edit_text(sc.PREVIEW_DATA, "\nmargin = 56\n", "\nmargin = 30\n"),
-     "grow the margin"),
+     ("[canvas] margin is 30, not the 56 pinned", "grow the margin")),
     ("fail-preview-canvas-size", edit_text(sc.PREVIEW_DATA, "\nwidth = 1200\n", "\nwidth = 1201\n"),
-     "[canvas] is 1201 x 630"),
+     ("[canvas] width is 1201, not the 1200 pinned", "[canvas] is 1201 x 630")),
     ("fail-preview-layout-extra-key", edit_text(sc.PREVIEW_DATA, "\ngap = 24\n", "\ngap = 24\nx = 1\n"),
      "holds exactly"),
     ("fail-preview-layout-not-integer", edit_text(sc.PREVIEW_DATA, "\ngap = 24\n", "\ngap = 24.0\n"),
      "not a positive integer"),
     ("fail-preview-size-above-ink", edit_text(sc.PREVIEW_DATA, "\nbrand_size = 72\n",
-                                              "\nbrand_size = 80\n"), "a size above 72 px"),
+                                              "\nbrand_size = 80\n"),
+     ("[site] brand_size is 80, not the 72 pinned", "a size above 72 px")),
+    # The layout pins (Replikanti/interviewscam#44 PR 3, PR 2's recorded
+    # item: description_size = 1 passed every check): every value of every
+    # layout table is the one PREVIEW_LAYOUT pins, types included.
+    ("fail-preview-pin-description-size-one", edit_text(
+        sc.PREVIEW_DATA, "\ndescription_size = 40\n", "\ndescription_size = 1\n"),
+     "[site] description_size is 1, not the 40 pinned"),
+    ("fail-preview-pin-brand-size", edit_text(
+        sc.PREVIEW_DATA, "\nbrand_size = 72\n", "\nbrand_size = 71\n"),
+     "[site] brand_size is 71, not the 72 pinned"),
+    ("fail-preview-pin-gap", edit_text(sc.PREVIEW_DATA, "\ngap = 24\n", "\ngap = 25\n"),
+     "[canvas] gap is 25, not the 24 pinned"),
+    ("fail-preview-pin-bar", edit_text(sc.PREVIEW_DATA, "\nbar = 16\n", "\nbar = 15\n"),
+     "[canvas] bar is 15, not the 16 pinned"),
+    ("fail-preview-pin-margin-larger", edit_text(sc.PREVIEW_DATA, "\nmargin = 56\n",
+                                                 "\nmargin = 57\n"),
+     "[canvas] margin is 57, not the 56 pinned"),
+    ("fail-preview-pin-height", edit_text(sc.PREVIEW_DATA, "\nheight = 630\n",
+                                          "\nheight = 631\n"),
+     ("[canvas] height is 631, not the 630 pinned", "[canvas] is 1200 x 631")),
+    ("fail-preview-pin-text-size", edit_text(sc.PREVIEW_DATA, "\ntext_size = 36\n",
+                                             "\ntext_size = 30\n"),
+     "[record] text_size is 30, not the 36 pinned"),
+    ("fail-preview-pin-name-sizes-order", edit_text(
+        sc.PREVIEW_DATA, "\nname_sizes = [72, 60, 48, 40]\n", "\nname_sizes = [72, 48, 60, 40]\n"),
+     "[record] name_sizes is [72, 48, 60, 40], not the [72, 60, 48, 40] pinned"),
+    ("fail-preview-pin-name-sizes-short", edit_text(
+        sc.PREVIEW_DATA, "\nname_sizes = [72, 60, 48, 40]\n", "\nname_sizes = [72, 60, 48]\n"),
+     "[record] name_sizes is [72, 60, 48], not the [72, 60, 48, 40] pinned"),
+    ("fail-preview-pin-name-sizes-float", edit_text(
+        sc.PREVIEW_DATA, "\nname_sizes = [72, 60, 48, 40]\n", "\nname_sizes = [72, 60, 48, 40.0]\n"),
+     "not a non-empty list of positive integers"),
+    ("fail-preview-pin-name-sizes-empty", edit_text(
+        sc.PREVIEW_DATA, "\nname_sizes = [72, 60, 48, 40]\n", "\nname_sizes = []\n"),
+     "not a non-empty list of positive integers"),
+    ("fail-preview-pin-name-sizes-scalar", edit_text(
+        sc.PREVIEW_DATA, "\nname_sizes = [72, 60, 48, 40]\n", "\nname_sizes = 72\n"),
+     "[record] name_sizes is 72, not a non-empty list of positive integers"),
+    ("fail-preview-pin-record-missing", edit_text(
+        sc.PREVIEW_DATA, "\n[record]\n", "\n[recordx]\n"),
+     ("[record] holds exactly", "the table [recordx] is none of")),
 ]
 # The edits above must hit the data file as written.
 fails = 0
@@ -1624,8 +2051,14 @@ for name, edit, expect in ROWS:
         finally:
             sc.PREVIEW_ASSET_SHA256.clear()
             sc.PREVIEW_ASSET_SHA256.update(pins)
+    # A tuple expect (PR 3, two rules on one edit): every finding holds one
+    # of its texts and every text is in some finding.
+    texts = expect if isinstance(expect, tuple) else (expect,)
     if (expect == "PASS" and not items) or (expect != "PASS" and items
-                                            and all(expect in item for item in items)):
+                                            and all(any(x in item for x in texts)
+                                                    for item in items)
+                                            and all(any(x in item for item in items)
+                                                    for x in texts)):
         print(f"ok   guard/{name} ({'passed' if expect == 'PASS' else expect})")
     else:
         fails += 1
@@ -1741,8 +2174,9 @@ spec.loader.exec_module(sc)
 partials = Path(sys.argv[2])
 NOT_PREVIEW_TEXT = {
     "title": "overridden on every page R20 reads: home.title, title.<section>, a record title",
-    "params.state": "a labels.toml key (state.<state>.chip)",
-    "params.name_type": "a condition", "params.hide_name": "a condition",
+    "params.state": "a labels.toml key (state.<state>.chip and .sentence)",
+    "params.name_type": "a condition and a labels.toml key (name_type.<type>)",
+    "params.hide_name": "a condition",
     "params.first_seen": "a date through time.Format", "params.last_seen": "a date through time.Format",
     "params.last_reviewed": "a date through time.Format",
     "params.independent_reports": "a count through int", "params.sources": "a count through len",
@@ -6019,6 +6453,21 @@ selftest_blocks() {
       n_passed=$((n_passed + 1))
     fi
 
+    # Wiring (Replikanti/interviewscam#44 PR 3, ADR-0009 part 7): the
+    # fixture build's site step compares the committed fixture copies of
+    # the cards with that build (--preview-copies, followed by this
+    # checkout's tests/fixtures); the production and records steps do not.
+    if ! grep -qx -- '--preview-copies' <<<"$pixel_fixture" \
+        || [[ "$(grep -A1 -x -- '--preview-copies' <<<"$pixel_fixture" | tail -n 1)" != "$CHECK_ROOT/tests/fixtures" ]] \
+        || grep -qx -- '--preview-copies' <<<"$pixel_other"; then
+      echo "FAIL wiring/site-preview-copies: step_site_fixtures in tools/check.sh does not" \
+        "pass --preview-copies \$CHECK_ROOT/tests/fixtures to sitecheck site, or step_site or step_records_site passes it"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   wiring/site-preview-copies (the fixture build's site step compares the fixture copies of the cards; the production and records steps do not)"
+      n_passed=$((n_passed + 1))
+    fi
+
     # Wiring: both builds run the search rules (render rules 15 and 16, ADR-0005 part
     # 6), the --no-feed precedent: neither step_render nor
     # step_render_fixtures, run against a stub sitecheck, passes --no-search,
@@ -6656,6 +7105,23 @@ PINNED
     fi
   fi
 
+  if selftest_wants preview-fit; then
+    # preview-fit (Replikanti/interviewscam#44 PR 3, ADR-0009 parts 7 and 8):
+    # the real preview-image.html against sitecheck's preview_card, row by
+    # row from tests/fixtures/site/preview-fit-cases.tsv (preview_fit_runner
+    # above): the name size, the lines, the alt and the site card fallback.
+    preview_fit_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/site/preview-fit-cases.tsv" "$SELFTEST_ROOT" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )preview-fit/(table|build)' "$out"; then
+      echo "FAIL preview-fit: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+
   if selftest_wants preview-png; then
     # preview-png (Replikanti/interviewscam#44, ADR-0009 part 6): the PNG
     # decoder and the pixel check (preview_png_runner above).
@@ -6946,6 +7412,66 @@ if gaps or not sc.RDFA_ATTRS:
     print(f"FAIL render-preview/coverage: no row {', '.join(gaps)}")
 else:
     print(f"ok   render-preview/coverage ({len(sc.RDFA_ATTRS)} RDFa attributes, 4 D7 branches)")
+PY
+    # Fix round 1 (QA F5): rule 21 when data/preview.toml of the checkout
+    # cannot be read (missing, not UTF-8, not TOML): a copy of sitecheck.py
+    # in a temporary root without a readable data/preview.toml, run on
+    # render/pass-report-pins, names every record page; and preview_card
+    # gives no card for a record without a value its card needs.
+    python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render/pass-report-pins" \
+      "$SELFTEST_ROOT/schema" >>"$out" 2>&1 <<'PY'
+import importlib.util
+import shutil
+import subprocess
+import sys
+import tempfile
+import tomllib
+from pathlib import Path
+
+tool, case, schema = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+spec = importlib.util.spec_from_file_location("sitecheck", tool)
+sc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sc)
+pages = len(list((case / "content/reports").glob("[!_]*.md"))) \
+    + len(list((case / "content/campaigns").glob("[!_]*.md")))
+with tempfile.TemporaryDirectory() as tmp:
+    for name, body in (("card-data-missing", None), ("card-data-not-utf8", b"\xff\n"),
+                       ("card-data-not-toml", b"[canvas\n")):
+        root = Path(tmp) / name
+        shutil.copytree(tool.parent, root / "tools",
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        if body is not None:
+            (root / "data").mkdir()
+            (root / "data/preview.toml").write_bytes(body)
+        run = subprocess.run([sys.executable, "-I", str(root / "tools/sitecheck.py"), "render",
+                              "--records", str(case), "--schemas", str(schema), "--no-intake",
+                              str(case / "public")], capture_output=True, text=True)
+        found = (run.stdout + run.stderr).count("rule 21: no card can be derived for this record")
+        if run.returncode == 1 and found == pages:
+            print(f"ok   render-preview/{name} (exit 1, {found} record pages named)")
+        else:
+            print(f"FAIL render-preview/{name}: exit {run.returncode}, {found} of {pages} record "
+                  f"pages named: {(run.stdout + run.stderr).strip().splitlines()[-1:]}")
+data = tomllib.loads((tool.parent.parent / "data/preview.toml").read_text(encoding="utf-8"))
+report = {"name": "Example Front Company", "name_type": "company", "state": "front",
+          "independent_reports": 1, "last_reviewed": "2026-11-01"}
+campaign = {"name": "Example Campaign Family", "first_seen": "2026-08-15",
+            "last_seen": "2026-10-31"}
+for name, section, params, drop in (
+        ("card-texts-pass-report", "reports", report, None),
+        ("card-texts-no-state", "reports", report, "state"),
+        ("card-texts-no-name-type", "reports", report, "name_type"),
+        ("card-texts-no-d7", "reports", report, "independent_reports"),
+        ("card-texts-pass-campaign", "campaigns", campaign, None),
+        ("card-texts-no-first-seen", "campaigns", campaign, "first_seen"),
+        ("card-texts-no-last-seen", "campaigns", campaign, "last_seen")):
+    own = {k: v for k, v in params.items() if k != drop}
+    card = sc.preview_card(sc.Record(f"content/{section}/x.md", {"params": own}, "", 0), data)
+    if (card is None) == (drop is not None):
+        print(f"ok   render-preview/{name} ({'no card' if card is None else 'a card'})")
+    else:
+        print(f"FAIL render-preview/{name}: preview_card gave "
+              + ("no card" if card is None else f"a card at {card['size']} px: {card['alt']!r}"))
 PY
     sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
     n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))

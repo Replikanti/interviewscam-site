@@ -3,16 +3,19 @@
   by row). Called with (dict "text" "face" "size" "width"): face is a key
   of hugo.Data.preview.face, size the font size and width the line width in
   px. Returns the slice of lines, or false when a character of the text has
-  no advance entry (it is not drawable, ADR-0009 part 5).
+  no advance entry (it is not drawable, ADR-0009 part 5) or a word is wider
+  than the width: a break inside a word would drop the word boundary from
+  the image, so two names that differ only there would draw one card
+  (ADR-0009 part 7); the caller then tries the next candidate.
 
-  Greedy at U+0020 (empty words dropped, so runs of spaces collapse); a
-  word wider than the width is broken between characters. A line's width is
+  Greedy at U+0020 (empty words dropped, so runs of spaces collapse), never
+  inside a word. A line's width is
   the sum of its advances plus every positive kern of a neighbouring pair
   (the table holds only those: a negative kern only narrows the line), in
   font units, so a line fits when units x size <= width x unitsPerEm. Two
   guards turn a wrapping bug into a failed build instead of a card that
-  lost text: the lines joined back (words with U+0020, the pieces of a
-  broken word with nothing) equal the space-collapsed text, and every line
+  lost text: the lines joined back with U+0020 equal the space-collapsed
+  text, and every line
   measured again on its own fits the width.
 
   Number literals: 0 starts a sum, -1 steps back one place (literals
@@ -27,7 +30,6 @@
 {{- $space := index $advance " " -}}
 {{- $ok := true -}}
 {{- $lines := slice -}}
-{{- $seps := slice -}}
 {{- $line := "" -}}
 {{- $units := 0 -}}
 {{- $last := "" -}}
@@ -57,28 +59,12 @@
       {{- else -}}
         {{- if $line -}}
           {{- $lines = $lines | append $line -}}
-          {{- $seps = $seps | append " " -}}
         {{- end -}}
         {{- if ge $limit (mul $wide $size) -}}
           {{- $line = $word -}}
           {{- $units = $wide -}}
         {{- else -}}
-          {{- $line = "" -}}
-          {{- $units = 0 -}}
-          {{- $prev = "" -}}
-          {{- range $chars -}}
-            {{- $grown := add $units (index $kern (printf "%s%s" $prev .) | default 0) (index $advance .) -}}
-            {{- if and $line (not (ge $limit (mul $grown $size))) -}}
-              {{- $lines = $lines | append $line -}}
-              {{- $seps = $seps | append "" -}}
-              {{- $line = . -}}
-              {{- $units = index $advance . -}}
-            {{- else -}}
-              {{- $line = printf "%s%s" $line . -}}
-              {{- $units = $grown -}}
-            {{- end -}}
-            {{- $prev = . -}}
-          {{- end -}}
+          {{- $ok = false -}}
         {{- end -}}
       {{- end -}}
       {{- $last = index $chars (len $chars | add -1) -}}
@@ -92,9 +78,10 @@
   {{- $rebuilt := "" -}}
   {{- range $i, $l := $lines -}}
     {{- if $i -}}
-      {{- $rebuilt = printf "%s%s" $rebuilt (index $seps (add $i -1)) -}}
+      {{- $rebuilt = printf "%s %s" $rebuilt $l -}}
+    {{- else -}}
+      {{- $rebuilt = $l -}}
     {{- end -}}
-    {{- $rebuilt = printf "%s%s" $rebuilt $l -}}
     {{- $u := 0 -}}
     {{- $prev := "" -}}
     {{- range split $l "" -}}

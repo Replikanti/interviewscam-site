@@ -346,7 +346,7 @@ LITERALS_FILE_FUNCTIONS	first	layouts/home.html
 LITERALS_FILE_FUNCTIONS	replaceRE	layouts/_partials/box-label.html
 LITERALS_FILE_FUNCTIONS	resources.Concat	layouts/baseof.html
 LITERALS_FILE_FUNCTIONS	resources.ExecuteAsTemplate	layouts/baseof.html
-LITERALS_FILE_FUNCTIONS	resources.Fingerprint	layouts/baseof.html
+LITERALS_FILE_FUNCTIONS	resources.Fingerprint	layouts/_partials/preview-image.html layouts/baseof.html
 LITERALS_FILE_FUNCTIONS	resources.Get	layouts/_partials/preview-image.html layouts/baseof.html
 LITERALS_FILE_FUNCTIONS	resources.Minify	layouts/baseof.html
 LITERALS_FILE_FUNCTIONS	split	layouts/_partials/label-list.html layouts/_partials/label.html layouts/_partials/preview-wrap.html
@@ -733,7 +733,8 @@ RECORDS_JOB_PERMISSIONS	lighthouse.yml lighthouse	{}
 HUGO_CONFIG_PINNED	caches.images.maxAge	0
 LITERALS_COLLECTION_VALUES	layouts/_partials/preview-image.html	bold
 LITERALS_COLLECTION_VALUES	layouts/_partials/preview-image.html	regular
-LITERALS_FILE_DICT_KEYS	layouts/_partials/preview-image.html	alt bold color face font image regular size text width x y
+LITERALS_COLLECTION_VALUES	layouts/_partials/preview-image.html	0
+LITERALS_FILE_DICT_KEYS	layouts/_partials/preview-image.html	alt blocks bold color face font image lines pitch regular size text width x y
 LITERALS_FILE_FUNCTIONS	div	assets/css/tokens.css layouts/_partials/preview-image.html
 LITERALS_FILE_FUNCTIONS	float	assets/css/tokens.css layouts/_partials/preview-image.html
 LITERALS_FILE_FUNCTIONS	images.Filter	layouts/_partials/preview-image.html

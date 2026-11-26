@@ -351,6 +351,18 @@ campaign_fact = "First seen %s, last seen %s"
 # alt is the image's whole text: header.brand (%s first), header.brand_tld
 # (%s second) and site.description (%s third).
 alt_site = "%s%s: %s"
+# The record cards (ADR-0009 part 7). chip_line is the first line of a
+# report card: the D6 state chip (%s first) and the name type (%s second),
+# as the type line under the h1 of a report page shows them. alt_report and
+# alt_campaign are their alt texts: every block the card draws, in drawing
+# order. A report: the chip line, the name as it renders (a visible persona
+# with its D10 label, a hidden one as persona.hidden_name), the D6 state
+# sentence (it ends with its own full stop), the D7 label, header.brand and
+# header.brand_tld. A campaign: a_z.campaign_type, the name, the dates
+# (campaign_fact), header.brand and header.brand_tld.
+chip_line = "%s · %s"
+alt_report = "%s. %s. %s %s. %s%s"
+alt_campaign = "%s: %s. %s. %s%s"
 
 # The campaign line of a report page and the attribution of a campaign page
 # (ADR-0004 part 6). The parts sit around links, so they are stored as

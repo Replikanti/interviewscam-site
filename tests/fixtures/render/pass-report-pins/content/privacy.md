@@ -1,9 +1,9 @@
 +++
 title = "Privacy"
-description = "What the site and GitHub log, and what happens with reports."
+description = "What the site, GitHub and Cloudflare log, and what happens with reports."
 +++
 
-This page explains what the site collects, what GitHub logs, what happens with the reports and requests you send, and what applies to people named on a page.
+This page explains what the site collects, what GitHub and Cloudflare log, what happens with the reports and requests you send, and what applies to people named on a page.
 
 ## Who is responsible
 
@@ -19,7 +19,7 @@ Search data comes from Google Search Console. It reports which searches led to t
 
 ## Reports you send
 
-When you send a report, the moderator receives your email address, your message and the evidence you attach. The legal basis is legitimate interest (GDPR Art. 6(1)(f)), namely warning candidates about fake interviews and moderating reports.
+You can send a report with the form on [Report a scam](/report-a-scam/) or by email to {{< param contact >}}. Either way, the moderator receives your email address, your message and the evidence you attach. The legal basis is legitimate interest (GDPR Art. 6(1)(f)), namely warning candidates about fake interviews and moderating reports.
 
 Providing data is voluntary. Without evidence, nothing is published.
 
@@ -30,6 +30,16 @@ Your report and evidence are not published. A published page shows only the arti
 When you ask for a correction or removal, the moderator receives your email address, your request and any evidence you send. The legal basis is legitimate interest (GDPR Art. 6(1)(f)), namely handling corrections and notices about the pages of the site. For a request under the GDPR, such as access, deletion or an objection, the legal basis is compliance with that law (GDPR Art. 6(1)(c) with Art. 12).
 
 Proof of identity is used only to check a request. It is deleted once the decision on the request is made.
+
+## The forms and the email address
+
+The forms on Report a scam and Corrections send what you enter to an endpoint at Cloudflare, `intake.interviewscam.com`. It mails your submission to the operator's mailbox and stores none of it. It sets no cookies.
+
+- **Your IP address.** To limit how often one network can send, the endpoint keeps a keyed hash of your IPv4 address, or of the /64 network of your IPv6 address, for about 1 hour. After a submission that was mailed, it keeps that hash until the end of the day in UTC, at most 24 hours, to count the submissions of the day. Without the endpoint's secret key, the hash cannot be turned back into the address.
+- **Its logs.** They hold event codes only, such as "sent" or "too large", never what you typed or your IP address. Cloudflare keeps them for 3 days.
+- **Cloudflare's mail log.** For every message, Cloudflare's mail activity log records its subject, sender, recipients, message ID and time, for 31 days. For a form submission, the subject holds what you typed as the scam's name, or the page URL on the correction form, and the sender and recipient are the site's own sending address and the operator's mailbox. For an email to {{< param contact >}}, the sender is your email address.
+- **Cloudflare's security logs.** They keep samples of the requests to the endpoint, form submissions included, and every request its rate limit blocks, each with the IP address, for 31 days.
+- **No copy of the mail at Cloudflare.** Cloudflare's preview of sent mail, which keeps a copy for about seven days, applies only to a sending domain, and this site has none.
 
 ## People named on a page
 
@@ -46,7 +56,8 @@ If this is your name, you have the rights listed below. If you object, your name
 ## Who receives the data
 
 - **GitHub** hosts the site and logs visitor IP addresses, as described above.
-- **Namecheap** forwards email sent to {{< param contact >}} to the operator's mailbox.
+- **Cloudflare** runs the site's DNS, the endpoint of the forms and the routing of email sent to {{< param contact >}} to the operator's mailbox, as described above.
+- **Namecheap** is only the domain's registrar.
 - **The operator's email provider** stores that mailbox.
 
 Some of these providers process data in the United States. Each provider's own privacy statement explains its safeguards for that.

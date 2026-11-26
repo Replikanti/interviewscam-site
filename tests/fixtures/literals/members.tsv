@@ -269,7 +269,7 @@ branch	sink-one-defect-one-finding	layouts/page.html	{{ $x := slice "free" }}{{ 
 branch	resource-copy-js-content-baseof	layouts/baseof.html	{{ with resources.Get "js/copy.js" }}{{ .Content }}{{ end }}	.Content: none in baseof.html, where the dot of a `with` can be a resource	1
 branch	resource-copy-js-content-partial	layouts/_partials/copy.html	{{ with resources.Get "js/copy.js" }}{{ .Content }}{{ end }}	resources.Get: only layouts/_partials/preview-image.html, layouts/baseof.html may call it	1
 branch	resource-fingerprint-other-algorithm	layouts/baseof.html	{{ with resources.Get "js/copy.js" | resources.Fingerprint "md5" }}<script src="{{ .RelPermalink }}"></script>{{ end }}	resources.Fingerprint takes 'md5', which is not a literal on LITERALS_RESOURCE_KEYS	1
-branch	resource-fingerprint-in-partial	layouts/_partials/copy.html	{{ with resources.Get "js/copy.js" | resources.Fingerprint "sha384" }}<script src="{{ .RelPermalink }}"></script>{{ end }}	only layouts/baseof.html may call it	2
+branch	resource-fingerprint-in-partial	layouts/_partials/copy.html	{{ with resources.Get "js/copy.js" | resources.Fingerprint "sha384" }}<script src="{{ .RelPermalink }}"></script>{{ end }}	only layouts/_partials/preview-image.html, layouts/baseof.html may call it	2
 branch	collection-contact-other-file	layouts/page.html	{{ $c := dict "id" "contact" }}	the dict value 'contact' is not on LITERALS_COLLECTION_VALUES for this file	1
 branch	collection-contact-send-other-file	layouts/_partials/footer.html	{{ $c := dict "id" "contact-send" }}	the dict value 'contact-send' is not on LITERALS_COLLECTION_VALUES for this file	1
 branch	script-literal-copy	assets/js/copy.js	status.textContent = "Copied";	string literal 'Copied' is copy (L7, the L3 test on a script literal)	2
