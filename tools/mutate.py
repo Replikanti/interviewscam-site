@@ -17,8 +17,9 @@ Subcommands. Each exits 2 on a usage or input error.
       the mutants whose edits do not each match exactly once, adds a
       detached worktree of HEAD under $RUNNER_TEMP/mutate/tree, runs one
       unmutated control per distinct suite set and then each mutant there
-      with `bash tools/selftest.sh [--only <suites>]` (part 5), restoring
-      the tree after every run. It writes $RUNNER_TEMP/mutate/out/
+      with `bash tools/selftest.sh [--only <suites>]` (part 5) and
+      SELFTEST_STOP_AT_FIRST_FAIL=1 in its environment (reflow-search
+      stops at its first failing row), restoring the tree after every run. It writes $RUNNER_TEMP/mutate/out/
       (results.tsv, meta.txt, mutants.jsonl, logs/) and a table to
       $GITHUB_STEP_SUMMARY. Exit 0 when every mutant of the shard has a
       verdict (KILLED, SURVIVED, INVALID, TIMEOUT), else 1. When the
@@ -310,11 +311,19 @@ def selftest_command(suites):
 
 
 def run_selftest(tree, suites, timeout, log_path, env):
-    """Run selftest.sh in tree in a new session, its output to log_path.
+    """Run selftest.sh in tree in a new session, its output to log_path,
+    with env plus SELFTEST_STOP_AT_FIRST_FAIL=1 (a copy: the caller's dict
+    is not changed). Every run of a shard gets it, controls and mutants
+    alike, and CI never does: reflow_search_runner in tools/selftest.sh
+    then stops after its first failing row (Replikanti/interviewscam#47,
+    ADR-0008 part 5). The row a kill names is the same, because the rows
+    print in table order and the first FAIL line is the killer either way;
+    a killed run only ends sooner, inside the budget instead of past it.
     At the timeout, or once the leader has exited, the whole process group
     gets SIGKILL before the leader is reaped (so its PGID cannot be reused
     in between and no background child keeps writing to the tree).
     Returns (exit code, output, timed out)."""
+    env = dict(env, SELFTEST_STOP_AT_FIRST_FAIL="1")
     with open(log_path, "wb") as log:
         proc = subprocess.Popen(selftest_command(suites), cwd=tree, env=env,
                                 stdin=subprocess.DEVNULL, stdout=log,

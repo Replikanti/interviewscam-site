@@ -203,3 +203,18 @@ state-hidden-span-split	public/reports/example-front-company/index.html	<h2 id=e
 state-artifact-split-copy-button	public/reports/example-front-company/index.html	<code class=artifact id=file_names-0>FrontCoMeet-Setup[.]exe</code>	<code class=artifact id=file_names-0>This name belongs to someone else[.] The campaign used it</code>	rule 17: the report page of a front record shows the name_abused sentence	<code class=artifact id=file_names-1>FrontCoMeet[.]dmg</code>	<code class=artifact id=file_names-1>without their involvement[.]</code>
 state-attribute-percent-encoded	public/reports/example-front-company/index.html	</main>	<p title="This%20name%20belongs%20to%20someone%20else%2E%20The%20campaign%20used%20it%20without%20their%20involvement%2E">x</p></main>	rule 17: the report page of a front record shows the name_abused sentence
 state-own-in-closed-details-passes	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x</p><details><summary>More</summary>This name belongs to someone else. The campaign used it without their involvement.</details><p>	COUNT=2 rule 20: <details>
+# Replikanti/interviewscam#47 (the survivors of the Replikanti/interviewscam#40
+# acceptance sweep, static set): a source without its url (COUNT=5: the
+# schema finding, rule 6 twice, rule 7 and rule 12; campaign_line_tree must
+# read the url only as a string, or it raises), a name_type outside
+# NAME_TYPES (COUNT=2: the schema finding and rule 12; report_regions must
+# return no region for it, or it raises), the state chip's text split from
+# it with the line's whole text unchanged (COUNT=4: rule 3 twice, rule 17
+# for the chip's own text and rule 21; the whole text of the line is the
+# same, so only the chip's pin gives the rule 17 finding), and the
+# other state's sentence split by a digit, which every reading keeps (no
+# digit but 0 and 1 maps to a letter in confusables.txt).
+campaign-source-url-missing	content/reports/example-abused-company.md	\nurl = "https://vendor.example/research/fake-meeting-apps"		COUNT=5 params.sources[0]: required property 'url' is missing
+name-type-unknown	content/reports/example-abused-company.md	name_type = "company"	name_type = "companyx"	COUNT=2 params.name_type: must be one of
+chip-text-split	public/reports/example-abused-company/index.html	<p class=record-type><span class=state-chip>Name abused</span> Company	<p class=record-type><span class=state-chip>Name</span> abused Company	COUNT=4 rule 17: the .record-type of the report page: <span class=state-chip> reads 'Name';
+state-digit-split-passes	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>No real com7pany, person or product was found behind this name. 	PASS
