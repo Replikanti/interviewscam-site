@@ -7996,8 +7996,10 @@ LDD
     # sees it; st_alive must not. The row makes the zombie itself: python3
     # sets PR_SET_CHILD_SUBREAPER on itself and runs a shell (st_alive
     # exported above) that starts an orphan, kills it and asks both ways.
-    # Wanted: seen|Z|gone, the plain `kill -0` answer being the control that
-    # the zombie exists. Skipped where there is no prctl or /proc (not Linux).
+    # Wanted: alive|seen|Z|gone: st_alive says alive while the orphan runs
+    # (a st_alive that always says gone passes every other row), and after
+    # the kill the plain `kill -0` answer is the control that the zombie
+    # exists. Skipped where there is no prctl or /proc (not Linux).
     ww_fresh
     ww_bad=""
     # shellcheck disable=SC2016 # the inner shell expands the variables
@@ -8014,13 +8016,14 @@ script = r"""
 ( sh -c 'echo $$ >"$1/orphan.pid"; exec sleep 30' _ "$1" & )
 for _ in {1..100}; do [[ -s "$1/orphan.pid" ]] && break; sleep 0.1; done
 read -r pid <"$1/orphan.pid"
+before=gone; st_alive "$pid" && before=alive
 kill -KILL "$pid"
 sleep 0.3
 raw=gone; kill -0 "$pid" 2>/dev/null && raw=seen
 st=none
 if [[ -r "/proc/$pid/stat" ]]; then st="$(<"/proc/$pid/stat")"; st="${st##*) }"; st="${st%% *}"; fi
 now=gone; st_alive "$pid" && now=alive
-echo "$raw|$st|$now"
+echo "$before|$raw|$st|$now"
 """
 print(subprocess.run(["bash", "-c", script, "_", sys.argv[1]], capture_output=True, text=True, timeout=30).stdout.strip())
 PY
@@ -8029,7 +8032,7 @@ PY
       echo "ok   reflow-warmup/zombie-is-gone (skipped: no child subreaper or /proc here)"
       n_passed=$((n_passed + 1))
     else
-      [[ "$ww_got" == "seen|Z|gone" ]] || ww_bad="the orphan after SIGKILL gave '$ww_got' (kill -0|state|st_alive), want seen|Z|gone"
+      [[ "$ww_got" == "alive|seen|Z|gone" ]] || ww_bad="the orphan gave '$ww_got' (st_alive before the kill|kill -0 after|state after|st_alive after), want alive|seen|Z|gone"
       ww_row zombie-is-gone "a killed orphan under a child subreaper stays a zombie that kill -0 sees; st_alive says gone"
     fi
 
