@@ -315,6 +315,10 @@ def meta(out):
     return (out / "meta.txt").read_text(encoding="utf-8").splitlines()
 
 
+def shortfalls(out):
+    return [line for line in meta(out) if line.startswith("shortfall")]
+
+
 class Patched(unittest.TestCase):
     """Shard cases on one shard with short budgets."""
 
@@ -521,6 +525,7 @@ class Shard(Patched):
         self.assertEqual(rows(out), {})
         self.assertIn("complete yes", meta(out))
         self.assertFalse([line for line in meta(out) if line.startswith("control ")])
+        self.assertEqual(shortfalls(out), [])
         self.assertEqual(repo.calls(), [])
         rc, out, _ = repo.run(shard=1)
         self.assertEqual((rc, verdicts(out)), (0, {"a": "SURVIVED"}))
@@ -555,6 +560,7 @@ class Shard(Patched):
         self.assertEqual(rc, 1)
         self.assertEqual(set(verdicts(out).values()), {"VOID"})
         self.assertIn("control broken FAIL", " ".join(meta(out)))
+        self.assertEqual(shortfalls(out), [])
 
     def test_no_controls_when_all_invalid(self):
         repo = Repo(self, mutants=[mutant("a", find="nothing"), mutant("b", find="zz")])
@@ -562,6 +568,7 @@ class Shard(Patched):
         self.assertEqual((rc, verdicts(out)), (0, {"a": "INVALID", "b": "INVALID"}))
         self.assertEqual(repo.calls(), [])
         self.assertIn("complete yes", meta(out))
+        self.assertEqual(shortfalls(out), [])
 
     def test_runner_files_mutable_in_tree(self):
         repo = Repo(self, mutants=[
@@ -614,18 +621,79 @@ class Shard(Patched):
 
     def test_admission_boundary(self):
         mutate.BUDGET_ADD_S = 5
-        for deadline, want in ((35, {"a": "SURVIVED", "b": "NOT-RUN", "c": "NOT-RUN"}),
-                               (34, {"a": "NOT-RUN", "b": "NOT-RUN", "c": "NOT-RUN"})):
+        for deadline, want, short in (
+                (35, {"a": "SURVIVED", "b": "NOT-RUN", "c": "NOT-RUN"},
+                 "shortfall 2 of 3 mutants NOT-RUN: b needs 25.0 s after 11.0 s, deadline 35 s"),
+                (34, {"a": "NOT-RUN", "b": "NOT-RUN", "c": "NOT-RUN"},
+                 "shortfall 3 of 3 mutants NOT-RUN: a needs 25.0 s after 10.0 s, deadline 34 s")):
             with self.subTest(deadline=deadline):
                 mutate.DEADLINE_S = deadline
                 repo = Repo(self, mutants=[mutant("a"), mutant("b"), mutant("c")])
                 clock = FakeClock()
-                rc, out, _ = repo.run(clock=clock, runner=clock.runner([10, 1, 1, 1]))
+                rc, out, err = repo.run(clock=clock, runner=clock.runner([10, 1, 1, 1]))
                 # Control 10 s, so B = 2 x 10 + 5 = 25; mutant a may start
                 # at elapsed 10 iff 10 + 25 <= D; after it, 11 + 25 > 35.
                 self.assertEqual(verdicts(out), want)
                 self.assertEqual(rc, 1)
                 self.assertEqual(clock.timeouts[1:], [25] if deadline == 35 else [])
+                self.assertEqual(shortfalls(out), [short])
+                self.assertIn("mutate: " + short.replace("shortfall ", "shortfall: ", 1), err)
+        with self.subTest(case="one mutant, refused"):
+            mutate.DEADLINE_S = 34
+            repo = Repo(self, mutants=[mutant("a")])
+            clock = FakeClock()
+            rc, out, _ = repo.run(clock=clock, runner=clock.runner([10]))
+            self.assertEqual((rc, verdicts(out)), (1, {"a": "NOT-RUN"}))
+            self.assertEqual(shortfalls(out), [
+                "shortfall 1 of 1 mutants NOT-RUN: a needs 25.0 s after 10.0 s, deadline 34 s"])
+
+    def test_shortfall_named(self):
+        mutate.BUDGET_ADD_S = 5
+        mutate.DEADLINE_S = 35
+        repo = Repo(self, mutants=[mutant("a", suites=["*"]), mutant("b", suites=["*"]),
+                                   mutant("c", suites=["*"])])
+        clock = FakeClock()
+        env = repo.env()
+        rc, out, err = repo.run(env=env, clock=clock, runner=clock.runner([10, 1]))
+        self.assertEqual(rc, 1)
+        self.assertEqual(verdicts(out), {"a": "SURVIVED", "b": "NOT-RUN", "c": "NOT-RUN"})
+        line = "shortfall 2 of 3 mutants NOT-RUN: b needs 25.0 s after 11.0 s, deadline 35 s"
+        self.assertEqual(shortfalls(out), [line])
+        self.assertEqual(len(meta(out)), 9)
+        summary = (Path(env["RUNNER_TEMP"]) / "summary.md").read_text()
+        self.assertIn("- shortfall: 2 of 3 mutants NOT-RUN", summary)
+        self.assertIn("INCOMPLETE", summary)
+        self.assertIn("mutate: shortfall: 2 of 3 mutants NOT-RUN", err)
+
+    def test_shortfall_counts_across_suite_sets(self):
+        # Controls `*` 8 s and `s` 1 s (elapsed 9). a: 9 + 21 <= 35, takes 1;
+        # b: 10 + 21 <= 35, takes 20; c (own set, B = 7): 30 + 7 > 35. The
+        # numbers are the refused mutant's own, not the first set's.
+        mutate.BUDGET_ADD_S = 5
+        mutate.DEADLINE_S = 35
+        repo = Repo(self, mutants=[mutant("a", suites=["*"]), mutant("b", suites=["*"]),
+                                   mutant("c", suites=["s"])])
+        clock = FakeClock()
+        rc, out, _ = repo.run(clock=clock, runner=clock.runner([8, 1, 1, 20]))
+        self.assertEqual(rc, 1)
+        self.assertEqual(verdicts(out), {"a": "SURVIVED", "b": "SURVIVED", "c": "NOT-RUN"})
+        self.assertEqual(shortfalls(out), [
+            "shortfall 1 of 3 mutants NOT-RUN: c needs 7.0 s after 30.0 s, deadline 35 s"])
+
+    def test_no_shortfall_when_all_admitted(self):
+        mutate.BUDGET_ADD_S = 5
+        mutate.DEADLINE_S = 200
+        repo = Repo(self, mutants=[mutant("a", suites=["*"]), mutant("b", suites=["*"]),
+                                   mutant("c", suites=["s"])])
+        clock = FakeClock()
+        env = repo.env()
+        rc, out, err = repo.run(env=env, clock=clock, runner=clock.runner([8, 1, 1, 20, 1]))
+        self.assertEqual(rc, 0)
+        self.assertEqual(shortfalls(out), [])
+        self.assertNotIn("shortfall", (out / "meta.txt").read_text())
+        summary = (Path(env["RUNNER_TEMP"]) / "summary.md").read_text()
+        self.assertNotIn("shortfall", summary)
+        self.assertNotIn("shortfall", err)
 
     def test_control_deadline(self):
         mutate.DEADLINE_S = 0.5
@@ -635,6 +703,7 @@ class Shard(Patched):
         self.assertLess(time.monotonic() - started, 20)
         self.assertEqual((rc, verdicts(out)), (1, {"a": "VOID", "b": "VOID"}))
         self.assertIn("control slow TIMEOUT", " ".join(meta(out)))
+        self.assertEqual(shortfalls(out), [])
 
     def test_tree_restored_after_dirt(self):
         repo = Repo(self, mutants=[mutant("a", replace="DIRT"),
@@ -812,6 +881,7 @@ class Shard(Patched):
                     os.environ.clear()
                     os.environ.update(saved)
                 self.assertEqual((rc, verdicts(out)), (1, {"a": "ERROR", "b": "NOT-RUN"}))
+                self.assertEqual(shortfalls(out), [])
                 log = (out / "logs" / "a.log").read_text()
                 self.assertIn("git state changed", log)
                 self.assertIn(reason, log.rsplit("git state changed", 1)[1])
@@ -1143,6 +1213,26 @@ class Merge(unittest.TestCase):
                 path.write_text(path.read_text().replace("\tSURVIVED\t", f"\t{verdict}\t"))
                 self.incomplete(sweep, verdict)
 
+    def test_merge_incomplete_shortfall(self):
+        line = "shortfall 1 of 2 mutants NOT-RUN: m needs 9298.0 s after 4559.0 s, deadline 10140 s"
+        sweep = self.copy()
+        with open(sweep / "shard-2" / "meta.txt", "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+        rc, out, err = self.merged(sweep)
+        self.assertEqual(rc, 1, err)
+        self.assertIn("INCOMPLETE", err)
+        self.assertIn("shard-2: shortfall: 1 of 2 mutants NOT-RUN: m needs 9298.0 s", err)
+        self.assertEqual(err.count("shortfall"), 1)
+        # Verdict counts and the table stay as the shards wrote them.
+        self.assertIn("mutate: 4 mutants: 2 killed, 1 survived, 1 invalid, 0 timeout;", err)
+        with self.subTest(case="twice"):
+            sweep = self.copy()
+            with open(sweep / "shard-2" / "meta.txt", "a", encoding="utf-8") as handle:
+                handle.write(line + "\n" + line + "\n")
+            self.incomplete(sweep, "shard-2: unreadable: shortfall twice")
+        with self.subTest(case="none"):
+            self.assertEqual(self.merged(self.sweep)[0], 0)
+
     def test_merge_incomplete_bad_killer(self):
         sweep = self.copy()
         path = sweep / "shard-1" / "results.tsv"
@@ -1230,6 +1320,21 @@ class Files(unittest.TestCase):
         self.assertEqual((mutate.SHARDS, mutate.BUDGET_FACTOR, mutate.BUDGET_ADD_S,
                           mutate.DEADLINE_MARGIN_S), (20, 2, 220, 60))
         self.assertEqual(mutate.DEADLINE_S, mutate.JOB_TIMEOUT_MIN * 60 - 60)
+
+
+class Capacity(unittest.TestCase):
+
+    def test_full_suite_capacity_arithmetic(self):
+        # ADR-0008 Numbers, row "Full-suite shard": mutants a shard admits
+        # after a control of T seconds (setup 20 s, a run takes T at most).
+        def admitted(t, setup=20):
+            n, elapsed = 0, setup + t
+            while elapsed + mutate.budget(t) <= mutate.DEADLINE_S:
+                n += 1
+                elapsed += t
+            return n
+        self.assertEqual([admitted(t) for t in (2322, 2850, 3198, 3300, 3301, 4539)],
+                         [2, 1, 1, 1, 0, 0])
 
 
 def upload_steps(text):
