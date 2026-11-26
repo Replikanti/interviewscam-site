@@ -4,6 +4,8 @@
 
 Accepted, 2026-11-04 (operator, issue #2, STOP 1, including the change that makes the Nu Html Checker CI-only). Implements the checks of SPEC §8 and the CI part of milestone 1.
 
+*Amended 2026-11-26 (Replikanti/interviewscam#41, decided by the planner under the operator's standing rule for this project):* part 8 gives every download of `tools/fetch-tools.sh` a derived retry schedule and skips the Nu Html Checker pull when the pinned image is already present; Numbers gains their rows.
+
 ## Context
 
 SPEC §8 sets the quality bar (valid HTML, no broken links, records that pass a schema, no third-party requests) and D3 forbids npm outside CI jobs that hold no write token. The checks must be pinned, so a green result means the same thing on every run. Milestone 1 defines one entry point, `bash tools/check.sh`, that CI calls verbatim. This ADR decides which tool does each job, where it runs and how it is pinned.
@@ -12,7 +14,7 @@ The operator's machine has no docker or podman, and the operator does not want a
 
 ## Decision
 
-Seven parts. Each has its own reason and rejected alternatives.
+Eight parts. Each has its own reason and rejected alternatives.
 
 ### 1. Nu Html Checker: CI only, container image pinned by digest
 
@@ -116,6 +118,41 @@ Data: external sources are third-party sites. 9 of the 10 source URLs in SPEC §
 - Accepting 403 (`accept` in `lychee.toml`). It keeps a block page or a login wall green, so the run no longer shows whether the source still says what the record cites.
 - An exclude per bot-walled URL. The link is never checked again, and a later removal of the source goes unseen.
 
+### 8. Download retries: a fixed delay inside a bounded window
+
+Every download of `tools/fetch-tools.sh` (`fetch_verified`: hugo, lychee, workerd) runs `curl -q --fail --silent --show-error --location` with `FETCH_RETRY_ARGS` (`--retry-all-errors --retry 19 --retry-delay 3 --retry-max-time 55 --max-time 40`), then `--proto =https --tlsv1.2`. `-q` comes first, so no curlrc of the user (a `limit-rate`, say) changes the schedule. The `.part` file of an earlier run is removed before the download, and a curl that ends without a file fails the download: curl 8.18.0 answers a `Retry-After` that passes the retry window with one request and exit 0, without an output file (measured on a loopback server, 2026-11-26). The SHA-256 check is unchanged: on every run, before any extraction, the download deleted on a mismatch. Values and what breaks at others: Numbers.
+
+Data:
+
+- Before this part, `--retry 3` with curl's backoff (1, 2, 4 s) gave up about 19 s after the first attempt, and without `--retry-max-time` curl honours any `Retry-After` (a 503 with `Retry-After: 3600` was still waiting at 60 s), so the old schedule had no time bound.
+- Outage E1, private run 42046723238 (lighthouse `build`, 2026-11-05): hugo's first attempt got a 504 after 11.07 s, the retries at +1, +2 and +4 s got instant 504s, and the self-test's own fetch got 4 more: 504s for 27.21 s on that runner (14:37:06.16 to 14:37:33.37), end unknown. The concurrent `check` job (run 42046723255) downloaded the same file in 8.94 s.
+- Outage E2, private run 42578942757 (`check`, 2026-11-09): a 504 after 11.23 s, then instant 504s until 18.39 s, then `fetch-tools: FAIL`, and every later step failed on the missing binary. The self-test's fetch started 21.79 s after the first attempt and succeeded (hugo, 21,121,058 B in 10.47 s, 2.02 MB/s). E2 lies inside GitHub's incident of 2026-11-09 05:10 to 08:15 UTC, when 38.5 % of release downloads timed out, 76 % in the 5-minute peak 07:40 to 07:45. On 2026-11-08 08:43 to 12:29 UTC 46.1 % of release asset downloads failed. Both incidents hit unauthenticated requests.
+- 12 of 12 failed attempts in E1 and E2 were 504, in one shape: one slow failure (11.07 s, 11.23 s), then fast ones (the 1, 2 and 4 s gaps measured 1.05, 2.05 and 4.06 s, so a fast 504 costs about 0.05 s).
+- The 30 latest green `ci.yml` runs (public): hugo 0.21 to 1.02 s, lychee 0.08 to 0.34 s, workerd 0.30 to 1.25 s. Archives: hugo 21,121,058 B, lychee 7,626,970 B, workerd 44,721,625 B.
+- Of the 78 failed runs across the three repos, one more is a fetch outage: public run 45530979139 (`check`, 2026-11-25), where seven nested `docker pull`s of the Nu Html Checker image (the self-test's `selftest-only` rows run `fetch-tools.sh` again) failed on registry timeouts for at least 113 s, although the job's own pull had succeeded and the image was present. No job's first pull failed.
+
+**Why:** a short upstream outage is the one download failure seen, and a job that fails its fetch fails every later step. A fixed delay, not curl's exponential backoff: in the observed shape an attempt is cheap, and the number of attempts inside the window is what beats a per-request failure rate. `--retry-all-errors`, because an outage can also show as a reset, an empty reply or a refused connection, which curl does not retry by default. `--max-time` bounds a hung attempt, so the worst case of a download is a sum of the three values.
+
+**The Nu Html Checker pull** (`fetch_vnu`, CI only) is skipped when `docker image inspect` finds the pinned reference: a digest names one content, and a runner's daemon serves only its own job. That removes the requests that failed on 2026-11-25; a job's first pull is unchanged.
+
+**Cost:** a permanent error (a removed pin URL) now fails after less than 98 s per download instead of at once. A link below 1,118,041 B/s (8.94 Mbit/s) cannot fetch workerd inside one 40 s attempt; there the archive is downloaded by hand and placed at `.tools/cache/<sha256>-<file name>`, where it is verified like any cached download.
+
+**Weak points:**
+
+- An outage in which every attempt fails slowly (11.23 s each) gives 5 attempts in the window, and at the 76 % peak 0.76^5 = 25.4 % per download, 58.4 % of jobs, fail. Both outages seen had the mixed shape; covering the all-slow one needs a window that the private 10-minute caps cannot hold (Numbers).
+- `--max-time` is pinned by value only (`fetch/retry-values`): a behaviour row for a hung attempt would cost 40 s per run.
+- The private records jobs stack this term with the launch stalls only in the rare case where all three events meet (Numbers, caps row).
+- The private records CI keeps the old flags until its next pin bump.
+
+**Rejected:**
+
+- Today's flags: 4 attempts in about 19 s fail 70.4 % of jobs at the 76 % peak and 12.9 % at 46.1 %, and a `Retry-After` has no bound.
+- curl's exponential backoff with a larger `--retry`: the gaps double, so a 55 s window holds only about 6 attempts.
+- An Actions cache of the archives: no workflow restores one (ADR-0003 Consequences), and a cache miss still downloads.
+- A mirror of the toolchain: a new upload path to maintain and to trust.
+- Authenticated downloads: records mode unsets the job token before `fetch-tools` (ADR-0007 part 5), and the token adds a secret to a step that needs none.
+- Raising the private 10-minute caps: they are derived (ADR-0007 Numbers) and metered; the schedule is sized to fit them instead.
+
 ## Numbers
 
 | Number | Derivation | What breaks at another value |
@@ -127,6 +164,15 @@ Data: external sources are third-party sites. 9 of the 10 source URLs in SPEC §
 | Runner `ubuntu-24.04` | A fixed image instead of the moving `ubuntu-latest`. | Another image changes the Python, docker and shellcheck versions under the pinned tools. |
 | External link cadence: every 7 days | A chosen trade-off, not derived from a SPEC number (see part 7): up to 7 days of unflagged rot versus 1 triage run per week. Daily would be up to 1 day versus 7 runs per week. No link-rot data exists yet. | Longer: rotted links stay published longer than 7 days. Shorter: more scheduled runs and outage noise to triage. Revisit with the first month of results in milestone 5. |
 | Commit-SHA pins, 40 hex characters | The length of a full SHA-1 commit id. | A shorter or tag-style reference is not guaranteed to stay on one commit, and the guard rejects it. |
+| Download retry options `--retry-all-errors --retry 19 --retry-delay 3 --retry-max-time 55 --max-time 40` (part 8, Replikanti/interviewscam#41) | The five values below. `fetch/retry-values` in the self-test requires `FETCH_RETRY_ARGS` in `tools/fetch-tools.sh` to equal the text in backticks. | A changed value without its derivation fails the self-test. |
+| R = `--retry-max-time 55` | At least twice E1's failing span, 2 × 27.21 = 54.42 s, the next 5 s step; at most 100 - D - M = 57 s from the caps row. | 27 s or less: E1 turns the job red again. Higher: three downloads can pass 300 s (caps row). |
+| D = `--retry-delay 3` | Target: a job's three downloads all succeed with at least 95 % probability at the 76 % peak, attempts independent: 0.76^n ≤ 1 - 0.95^(1/3) = 0.01695 needs n ≥ 14.86, so 15 attempts. In the observed shape the 15th attempt's retry decision comes at 11.23 + 13 × (D + 0.05) < 55, so D < 3.32, 3 s. At 3 s: 16 attempts in the mixed shape, 0.76^16 = 0.0124 per download, 3.7 % of jobs at the peak. | 5 s: 10 attempts, 18.1 % of jobs fail at the peak. 1 s: about 53 requests per download in one window during an incident caused by a surge of anonymous traffic, and `fetch/retry-schedule` could no longer tell the gap from curl's 1 s first backoff. |
+| M = `--max-time 40` | Above the slowest healthy CI case, workerd's 44,721,625 B at E2's 2,017,293 B/s = 22.17 s (1.8 ×; 32 × the slowest green 1.25 s); at most 100 - 55 - 3 = 42 s; 40 is the 5 s step below. | Below 22.2 s: a degraded workerd download is cut on every attempt. Above 42 s: three downloads can pass 300 s. Locally a link below 1,118,041 B/s (8.94 Mbit/s) cannot fetch workerd in one attempt: place the archive by hand (part 8). |
+| N = `--retry 19` | ceil(55 / 3), so the count never ends the window first: with instant failures the 19th retry decision comes at 54 s. | Fewer: instant failures use up the count before the window ends. More: no effect, the window ends first. |
+| Attempts in the 55 s window | Mixed shape (first 11.23 s, then 0.05 s each): 16, the last starting at 56.93 s. All slow (11.23 s each): 5, the last at 56.92 s, 0.76^5 → 58.4 % of jobs fail at the peak (weak point). All fast: 20, the last at 57.95 s. | Follows from R, D and N. |
+| Worst case of one download W and of all three | W < R + D + M = 55 + 3 + 40 = 98 s: curl starts no retry at 55 s or later and refuses a `Retry-After` that passes 55 s (measured on 8.18.0, re-checked on the runner by `fetch/retry-after-bound`), and the last attempt is cut at 40 s. `fetch_main` stops at the first failure, so all three take less than 3 × 98 = 294 s. The self-test's own fetch adds nothing in a job whose fetch step succeeded (all three cached); records mode has no self-test. | Follows from R, D and M. |
+| Caps of the jobs that run `fetch-tools.sh` | Public `ci.yml` `check`, 170 min = 10,200 s against its base 5,100 s (ADR-0004 Numbers): 5,100 + 294 = 5,394 s and 5,100 + 2 × 75 + 70 + 294 = 5,614 s, both ≤ 10,200 s. Private records `ci.yml`, `links-external.yml` and lighthouse `build`, 10 min = 600 s against B = 300 s (ADR-0007 Numbers): the outage term B + 294 = 594 s ≤ 600 s, a third term next to ADR-0007's 2B and B + 2 × 75 + 70, which already does not stack runner spread with launch stalls. Stacked on two full launch windows and the pin worst case (300 + 150 + 70 + 294 = 814 s) the private job is cancelled at 600 s (weak point: three rare events in one job). | A longer worst case than 300 s breaks the private 600 s cap in an outage. |
+| Self-test time of #41 | `fetch` about 13 s (4 gaps × 3 s plus the stubs), `answer-during-probe` about 1.9 s, `slow-first-answer` 0.5 s more, about 15 s per `check.sh` run: 4,817 + 15 = 4,832 s, under the 5,054 s re-derive line in `ci.yml`. | More than 237 s added would cross the re-derive line of the `ci.yml` cap. |
 
 ## Consequences
 

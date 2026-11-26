@@ -15034,12 +15034,28 @@ class DevTools:
         for fd in (self.write_fd, self.read_fd):
             os.close(fd)
 
+    def _take(self):
+        # One read of the pipe; an empty read is the closed pipe, so no
+        # caller can spin on it.
+        chunk = os.read(self.read_fd, 1 << 16)
+        if not chunk:
+            raise NoAnswerError("reflow: Chrome closed the DevTools pipe")
+        self.buffer += chunk
+
     def _read(self, deadline, budget, ticks=None, on_wait=None):
         # ticks: the times (time.monotonic) at which on_wait(elapsed) runs
         # while no message has come; only first_answer passes them. The
         # deadline stays fixed, so a probe never ends the wait early.
+        # The pipe is read before a due probe or the deadline decides: a
+        # probe can take longer than the gap between ticks, and an answer
+        # that came during it must not wait behind the next probe or lose
+        # to the deadline (Replikanti/interviewscam#41: three loaded probes
+        # ran back to back while the answer sat unread in the pipe).
         self.budget = budget
         while b"\0" not in self.buffer:
+            if select.select([self.read_fd], [], [], 0)[0]:
+                self._take()
+                continue
             now = time.monotonic()
             left = deadline - now
             if left <= 0:
@@ -15055,10 +15071,7 @@ class DevTools:
             ready, _, _ = select.select([self.read_fd], [], [], left)
             if not ready:
                 continue
-            chunk = os.read(self.read_fd, 1 << 16)
-            if not chunk:
-                raise NoAnswerError("reflow: Chrome closed the DevTools pipe")
-            self.buffer += chunk
+            self._take()
         message, self.buffer = self.buffer.split(b"\0", 1)
         return json.loads(message)
 

@@ -9,6 +9,12 @@
 # pinned archive never survives a run. The Nu Html Checker image
 # is pulled only when GITHUB_ACTIONS=true: outside CI this script never
 # touches a container runtime (ADR-0002 part 1).
+# Downloads retry on every error with a fixed delay inside a bounded
+# window (FETCH_RETRY_ARGS, derived in ADR-0002 part 8), so a short
+# upstream outage does not turn the job red.
+# A Nu Html Checker image already present by its pinned digest is not
+# pulled again: a nested run of this script (the self-test) then sends
+# no registry request (ADR-0002 part 8).
 #
 # Usage: bash tools/fetch-tools.sh
 # check.sh sources this file for load_pins and the tool paths; fetch_main
@@ -17,6 +23,9 @@
 FETCH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PINS_FILE="$FETCH_ROOT/tools/pins.env"
 TOOLS_DIR="$FETCH_ROOT/.tools"
+# The retry schedule of every download; the values and what breaks at
+# others: ADR-0002 part 8 and its Numbers row "Download retry options".
+FETCH_RETRY_ARGS=(--retry-all-errors --retry 19 --retry-delay 3 --retry-max-time 55 --max-time 40)
 
 # Read KEY=VALUE pins into PIN_<KEY> variables. The file is parsed, not
 # sourced, so a pin line can never run code. Anything else is an error.
@@ -76,8 +85,12 @@ fetch_verified() {
   mkdir -p "$TOOLS_DIR/cache" || return 1
   if [[ ! -f "$archive" ]]; then
     echo "fetch-tools: downloading $name $version"
-    curl --fail --silent --show-error --location --retry 3 \
-      --proto '=https' --tlsv1.2 --output "$archive.part" "$url" || return 1
+    rm -f "$archive.part"
+    curl -q --fail --silent --show-error --location "${FETCH_RETRY_ARGS[@]}" --proto '=https' --tlsv1.2 --output "$archive.part" "$url" || return 1
+    if [[ ! -f "$archive.part" ]]; then
+      echo "fetch-tools: FAIL: $name $version: curl ended without a file (a Retry-After past the retry window ends curl with exit 0)" >&2
+      return 1
+    fi
     mv "$archive.part" "$archive" || return 1
   fi
 
@@ -142,6 +155,10 @@ fetch_vnu() {
   if ! command -v docker >/dev/null 2>&1; then
     echo "fetch-tools: FAIL: docker not found; in CI the Nu Html Checker must run" >&2
     return 1
+  fi
+  if docker image inspect "$VNU_IMAGE" >/dev/null 2>&1; then
+    echo "fetch-tools: Nu Html Checker image already present by digest"
+    return 0
   fi
   if ! docker pull --quiet "$VNU_IMAGE"; then
     echo "fetch-tools: FAIL: could not pull the pinned Nu Html Checker image" >&2

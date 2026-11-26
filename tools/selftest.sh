@@ -4597,6 +4597,311 @@ SELFTEST_USAGE='usage: bash tools/selftest.sh [--only SUITE[,SUITE...]]'
 # split, so a newline cannot end the split early. On a missing value, an
 # empty list or name, a duplicate, a bad name, any other argument or a
 # second --only it prints the problem and the usage line and returns 2.
+# fetch_row <row> <problem> <ok note>: one row of the fetch suite; the
+# output in $out goes under a FAIL row.
+fetch_row() {
+  if [[ -z "$2" ]]; then
+    echo "ok   fetch/$1 ($3)"
+    n_passed=$((n_passed + 1))
+  else
+    echo "FAIL fetch/$1: $2; output:"
+    sed 's/^/     | /' "$out"
+    n_failed=$((n_failed + 1))
+  fi
+}
+
+# fetch_rows (Replikanti/interviewscam#41, ADR-0002 part 8): the downloads
+# and the Nu Html Checker pull of tools/fetch-tools.sh, offline. The
+# behaviour rows come before the values row, so a changed schedule fails a
+# behaviour row first.
+#   curl-arguments: a curl stub first on PATH records its arguments and
+#     writes a known body after --output; fetch_verified must call it once
+#     with exactly -q first, the fixed options, FETCH_RETRY_ARGS,
+#     --proto =https --tlsv1.2 and the .part file, pass the SHA-256 and
+#     leave the archive and no .part.
+#   cache-verified: a cached archive is checked against the pin without a
+#     download, the right one passes and a wrong one is deleted with the
+#     three mismatch lines (the SHA-256 path is unchanged by #41).
+#   gave-up-without-file: curl exits 0 and writes nothing (what a
+#     Retry-After past the retry window does), and a stale .part of an
+#     earlier run is there: fetch_verified fails closed, names the missing
+#     file, and promotes nothing.
+#   vnu-present: a docker stub; an image present by digest is not pulled,
+#     an absent one is pulled once, a failed pull is FAIL as before.
+#   retry-schedule: the real curl with FETCH_RETRY_ARGS against a loopback
+#     server that answers 504, 404, an empty reply, 504 and then 200: the
+#     file holds the 200 body, 5 requests, every gap 2.5 s or more (the
+#     fixed 3 s delay; curl's own backoff starts at 1 s).
+#   retry-after-bound: the real curl against a 503 with Retry-After 3600:
+#     one request, done within 10 s, no file (curl refuses a wait past
+#     --retry-max-time; without it curl waits the hour).
+#   retry-values: FETCH_RETRY_ARGS equals the ADR-0002 Numbers row
+#     "Download retry options", so a value never changes without its
+#     derivation.
+fetch_rows() {
+  local fx body sha archive problem calls url rc
+  fx="$(mktemp -d)" || { echo "FAIL fetch/setup: mktemp failed"; n_failed=$((n_failed + 1)); return; }
+  mkdir -p "$fx/bin" "$fx/tools"
+  url='https://example.invalid/hugo.tar.gz'
+  body='fixture archive body'
+  printf '%s\n' "$body" >"$fx/body"
+  sha="$(sha256sum "$fx/body" | cut -d' ' -f1)"
+  archive="$fx/tools/cache/$sha-hugo.tar.gz"
+  # The curl stub: one --call-- line and then its arguments, one per line;
+  # with $fx/write present it writes the body to the path after --output.
+  # It finds $fx from its own path.
+  cat >"$fx/bin/curl" <<'STUB'
+#!/bin/sh
+fx="${0%/bin/curl}"
+printf '%s\n' --call-- "$@" >>"$fx/calls"
+prev=""
+dest=""
+for a in "$@"; do
+  [ "$prev" = --output ] && dest="$a"
+  prev="$a"
+done
+[ -f "$fx/write" ] && [ -n "$dest" ] && cp "$fx/body" "$dest"
+exit 0
+STUB
+  chmod +x "$fx/bin/curl"
+
+  # fetch/curl-arguments
+  rm -rf "$fx/tools" "$fx/calls"
+  : >"$fx/write"
+  TOOLS_DIR="$fx/tools" PATH="$fx/bin:$PATH" \
+    fetch_verified hugo 0.0 "$url" "$sha" >"$out" 2>&1
+  rc=$?
+  printf '%s\n' --call-- -q --fail --silent --show-error --location "${FETCH_RETRY_ARGS[@]}" \
+    --proto =https --tlsv1.2 --output "$archive.part" "$url" >"$fx/expected"
+  problem=""
+  if [[ $rc -ne 0 ]]; then
+    problem="expected exit 0, got $rc"
+  elif ! cmp -s "$fx/expected" "$fx/calls"; then
+    problem="curl was not called exactly once with the expected arguments (expected: $(tr '\n' ' ' <"$fx/expected"); got: $(tr '\n' ' ' <"$fx/calls" 2>/dev/null))"
+  elif ! grep -qxF 'fetch-tools: hugo 0.0 SHA-256 OK' "$out"; then
+    problem="no 'SHA-256 OK' line"
+  elif [[ ! -f "$archive" || -e "$archive.part" ]]; then
+    problem="the archive is missing or the .part file is left"
+  fi
+  fetch_row curl-arguments "$problem" "one call, -q first, the schedule, --proto =https"
+  rm -f "$fx/write"
+
+  # fetch/cache-verified: (a) the right archive cached, (b) a wrong one.
+  rm -rf "$fx/tools" "$fx/calls"
+  mkdir -p "$fx/tools/cache"
+  cp "$fx/body" "$archive"
+  TOOLS_DIR="$fx/tools" PATH="$fx/bin:$PATH" \
+    fetch_verified hugo 0.0 "$url" "$sha" >"$out" 2>&1
+  rc=$?
+  problem=""
+  if [[ $rc -ne 0 ]]; then
+    problem="(a) the right cached archive: expected exit 0, got $rc"
+  elif [[ -e "$fx/calls" ]]; then
+    problem="(a) the right cached archive was downloaded again"
+  elif ! grep -qxF 'fetch-tools: hugo 0.0 SHA-256 OK' "$out"; then
+    problem="(a) no 'SHA-256 OK' line"
+  fi
+  if [[ -z "$problem" ]]; then
+    printf 'another body\n' >"$archive"
+    TOOLS_DIR="$fx/tools" PATH="$fx/bin:$PATH" \
+      fetch_verified hugo 0.0 "$url" "$sha" >"$out" 2>&1
+    rc=$?
+    if [[ $rc -ne 1 ]]; then
+      problem="(b) a wrong cached archive: expected exit 1, got $rc"
+    elif [[ -e "$fx/calls" ]]; then
+      problem="(b) a wrong cached archive started a download"
+    elif ! grep -qxF "fetch-tools: SHA-256 MISMATCH for $archive" "$out" \
+        || ! grep -qE "^fetch-tools: expected $sha, got [0-9a-f]{64}\$" "$out" \
+        || ! grep -qxF 'fetch-tools: deleted the download; the pin in tools/pins.env is authoritative' "$out"; then
+      problem="(b) the three mismatch lines are not all there"
+    elif [[ -e "$archive" ]]; then
+      problem="(b) the wrong archive was not deleted"
+    fi
+  fi
+  fetch_row cache-verified "$problem" "right: verified, no download; wrong: deleted, three lines"
+
+  # fetch/gave-up-without-file: curl exits 0 without a file, a stale .part
+  # with other bytes is there.
+  rm -rf "$fx/tools" "$fx/calls"
+  mkdir -p "$fx/tools/cache"
+  printf 'stale bytes of an earlier run\n' >"$archive.part"
+  TOOLS_DIR="$fx/tools" PATH="$fx/bin:$PATH" \
+    fetch_verified hugo 0.0 "$url" "$sha" >"$out" 2>&1
+  rc=$?
+  problem=""
+  if [[ $rc -ne 1 ]]; then
+    problem="expected exit 1, got $rc"
+  elif ! grep -qxF 'fetch-tools: FAIL: hugo 0.0: curl ended without a file (a Retry-After past the retry window ends curl with exit 0)' "$out"; then
+    problem="no 'curl ended without a file' line"
+  elif [[ -e "$archive" || -e "$archive.part" ]]; then
+    problem="an archive or a .part file is left"
+  fi
+  fetch_row gave-up-without-file "$problem" "exit 1, the stale .part removed, nothing promoted"
+
+  # fetch/vnu-present: a docker stub that records its calls and answers
+  # image inspect and pull with the codes in $fx/inspect and $fx/pull.
+  cat >"$fx/bin/docker" <<'STUB'
+#!/bin/sh
+fx="${0%/bin/docker}"
+printf '%s\n' "$*" >>"$fx/docker-calls"
+case "$1" in
+  image) exit "$(cat "$fx/inspect")" ;;
+  pull) exit "$(cat "$fx/pull")" ;;
+esac
+exit 3
+STUB
+  chmod +x "$fx/bin/docker"
+  local vnu_case vnu_image='ghcr.io/validator/validator@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+  problem=""
+  for vnu_case in a b c; do
+    rm -f "$fx/docker-calls"
+    case "$vnu_case" in
+      a) echo 0 >"$fx/inspect"; echo 0 >"$fx/pull" ;;
+      b) echo 1 >"$fx/inspect"; echo 0 >"$fx/pull" ;;
+      c) echo 1 >"$fx/inspect"; echo 1 >"$fx/pull" ;;
+    esac
+    GITHUB_ACTIONS=true VNU_IMAGE="$vnu_image" PATH="$fx/bin:$PATH" \
+      fetch_vnu >"$out" 2>&1
+    rc=$?
+    calls="$(grep -c '^pull ' "$fx/docker-calls" 2>/dev/null)"
+    case "$vnu_case" in
+      a)
+        if [[ $rc -ne 0 ]]; then
+          problem="(a) present: expected exit 0, got $rc"
+        elif [[ "${calls:-0}" != 0 ]]; then
+          problem="(a) an image present by digest was pulled"
+        elif ! grep -qxF 'fetch-tools: Nu Html Checker image already present by digest' "$out"; then
+          problem="(a) no 'already present by digest' line"
+        fi
+        ;;
+      b)
+        if [[ $rc -ne 0 ]]; then
+          problem="(b) absent: expected exit 0, got $rc"
+        elif [[ "$(grep '^pull ' "$fx/docker-calls" 2>/dev/null)" != "pull --quiet $vnu_image" ]]; then
+          problem="(b) an absent image was not pulled exactly once by digest"
+        fi
+        ;;
+      c)
+        if [[ $rc -ne 1 ]]; then
+          problem="(c) failed pull: expected exit 1, got $rc"
+        elif ! grep -qxF 'fetch-tools: FAIL: could not pull the pinned Nu Html Checker image' "$out" \
+            || ! grep -qxF "fetch-tools: $vnu_image" "$out" \
+            || ! grep -qF 'see the digest-loss fallback in ADR-0002 part 1' "$out"; then
+          problem="(c) the three FAIL lines are not all there"
+        fi
+        ;;
+    esac
+    [[ -n "$problem" ]] && break
+  done
+  fetch_row vnu-present "$problem" "present: no pull; absent: one pull; failed pull: FAIL"
+
+  # fetch/retry-schedule and fetch/retry-after-bound: the real curl against
+  # a loopback server, through the same driver. --noproxy: a proxy setting
+  # of the host must not catch the loopback address.
+  local driver="$fx/driver.py"
+  cat >"$driver" <<'PY'
+import http.server
+import os
+import subprocess
+import sys
+import threading
+import time
+
+mode, work, *retry_args = sys.argv[1:]
+BODY = b"the archive after the outage\n"
+if mode == "schedule":
+    plan = [504, 404, "empty", 504, 200]
+else:
+    plan = [503, 200]
+arrivals = []
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        arrivals.append(time.monotonic())
+        step = plan[min(len(arrivals), len(plan)) - 1]
+        if step == "empty":
+            self.close_connection = True
+            return
+        payload = BODY if step == 200 else b"outage\n"
+        self.send_response(step)
+        if step == 503:
+            self.send_header("Retry-After", "3600")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *args):
+        pass
+
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+target = os.path.join(work, "out")
+command = ["curl", "-q", "--noproxy", "*", "--fail", "--silent", "--show-error",
+           "--location", *retry_args, "--output", target,
+           f"http://127.0.0.1:{server.server_address[1]}/x"]
+start = time.monotonic()
+try:
+    rc = subprocess.run(command, timeout=60 if mode == "schedule" else 30).returncode
+except subprocess.TimeoutExpired:
+    rc = "timeout"
+took = time.monotonic() - start
+server.shutdown()
+print(f"exit: {rc}")
+print(f"took: {took:.2f}")
+print(f"requests: {len(arrivals)}")
+gaps = [b - a for a, b in zip(arrivals, arrivals[1:])]
+print("gaps: " + " ".join(f"{g:.2f}" for g in gaps))
+print(f"min gap: {min(gaps):.2f}" if gaps else "min gap: none")
+if os.path.exists(target):
+    with open(target, "rb") as f:
+        print("file: body" if f.read() == BODY else "file: other")
+else:
+    print("file: none")
+PY
+  rm -f "$fx/out"
+  python3 -I -B "$driver" schedule "$fx" "${FETCH_RETRY_ARGS[@]}" >"$out" 2>&1
+  problem=""
+  if ! grep -qxF 'exit: 0' "$out"; then
+    problem="curl did not succeed after the outage"
+  elif ! grep -qxF 'file: body' "$out"; then
+    problem="the file does not hold the 200 body"
+  elif ! grep -qxF 'requests: 5' "$out"; then
+    problem="expected 5 requests"
+  elif ! awk '$1 == "min" && $2 == "gap:" && $3 >= 2.5 { ok = 1 } END { exit !ok }' "$out"; then
+    problem="a gap between attempts was below 2.5 s (not the fixed delay)"
+  fi
+  fetch_row retry-schedule "$problem" "504, 404, empty reply, 504, 200: 5 requests, gaps $(awk '$1 == "gaps:" { $1 = ""; print substr($0, 2) }' "$out") s"
+
+  rm -f "$fx/out"
+  python3 -I -B "$driver" retry-after "$fx" "${FETCH_RETRY_ARGS[@]}" >"$out" 2>&1
+  problem=""
+  if ! grep -qxF 'requests: 1' "$out"; then
+    problem="expected 1 request (curl must not wait out a Retry-After past --retry-max-time)"
+  elif ! awk '$1 == "took:" && $2 <= 10 { ok = 1 } END { exit !ok }' "$out" \
+      || grep -qxF 'exit: timeout' "$out"; then
+    problem="curl did not end within 10 s"
+  elif ! grep -qxF 'file: none' "$out"; then
+    problem="curl left an output file"
+  fi
+  fetch_row retry-after-bound "$problem" "Retry-After 3600: 1 request, $(awk '$1 == "took:" { print $2 }' "$out") s, $(awk '$1 == "exit:" { print $2 }' "$out" | sed 's/^/exit /')"
+
+  # fetch/retry-values: the ADR-0002 Numbers row holds the options.
+  local adr_options
+  # shellcheck disable=SC2016 # the backticks are the ADR's Markdown
+  adr_options="$(sed -n 's/^| Download retry options `\([^`]*\)` .*/\1/p' "$SELFTEST_ROOT/docs/adr/0002-check-toolchain.md")"
+  printf 'FETCH_RETRY_ARGS: %s\nADR-0002: %s\n' "${FETCH_RETRY_ARGS[*]}" "$adr_options" >"$out"
+  problem=""
+  if [[ -z "$adr_options" ]]; then
+    problem="no row 'Download retry options' with the options in backticks in the ADR-0002 Numbers table"
+  elif [[ "${FETCH_RETRY_ARGS[*]}" != "$adr_options" ]]; then
+    problem="FETCH_RETRY_ARGS differs from the ADR-0002 Numbers row"
+  fi
+  fetch_row retry-values "$problem" "${FETCH_RETRY_ARGS[*]}"
+  rm -rf "$fx"
+}
+
 selftest_parse_args() {
   local seen="" problem="" item known
   local -a items
@@ -7301,10 +7606,15 @@ PY
     rm -rf "$inputs_root"
   fi
 
+  if selftest_wants fetch; then
+    fetch_rows
+  fi
+
   if selftest_wants reflow-launch; then
     # reflow-launch: the launch of sitecheck reflow (ADR-0003 part 6, #24)
     # against a stub browser, so the cases run locally and in CI, each with
-    # --launch-timeout 1 on reflow/pass-fluid (default-budget without it).
+    # --launch-timeout 1 on reflow/pass-fluid (default-budget without it,
+    # slow-first-answer with --launch-timeout 2).
     # The stub appends its PID to a launch log, its arguments to an argument
     # log and the file behind its stderr to a log-path log on every start,
     # writes one line to stdout and one to stderr (as Chrome logs), and then
@@ -7343,11 +7653,15 @@ PY
     #     option's default) on launch 1 and on launch 2. The stub exits at
     #     once, so the case never waits for that budget; first-answer-deadline
     #     below pins the deadline actually waited.
-    #   slow-first-answer: the stub answers Browser.getVersion after 0.5 s,
-    #     inside the budget, and then acts like later-call-no-retry: exit 2
-    #     from the later call, no retry line, 1 launch, a
-    #     "first answer after 0." line naming the log directory, a probe
-    #     before it and the launch's dump right after it.
+    #   slow-first-answer: the stub answers Browser.getVersion after 1.0 s
+    #     of a 2 s budget and then acts like later-call-no-retry: exit 2
+    #     from the later call, no retry line, 1 launch, a "first answer
+    #     after" line naming the 2 s budget and the log directory, a probe
+    #     before it (the first is due at 0.4 s) and the launch's dump right
+    #     after it. The 1.0 s above the answer hold a probe that runs when
+    #     the answer comes, under load (ADR-0003 Numbers, self-test row,
+    #     Replikanti/interviewscam#41); the elapsed time may read 0.9x s
+    #     when the clock starts after the stub, hence [01].
     # The stubs keep both pipe ends open while they sleep, so a later-call
     # failure is the closed pipe on the read (a NoAnswerError, which a retry
     # scoped too wide would catch) and never a BrokenPipeError on the write.
@@ -7409,15 +7723,18 @@ STUB
           ;;
         slow-first-answer)
           cat >>"$stub_dir/chrome" <<'STUB'
-sleep 0.5
+sleep 1
 printf '{"id":1,"result":{"product":"stub/1"}}\0' >&4
 exec sleep 3
 STUB
           ;;
       esac
       chmod +x "$stub_dir/chrome"
-      budget_args=(--launch-timeout 1)
-      [[ "$name" == default-budget ]] && budget_args=()
+      case "$name" in
+        slow-first-answer) budget_args=(--launch-timeout 2) ;;
+        default-budget) budget_args=() ;;
+        *) budget_args=(--launch-timeout 1) ;;
+      esac
       sitecheck reflow --chrome "$stub_dir/chrome" --no-search "${budget_args[@]}" \
         "$FIXTURES/reflow/pass-fluid" >"$out" 2>&1
       rc=$?
@@ -7507,9 +7824,9 @@ STUB
             problem="expected 1 launch, the stub counted $launches"
           elif ! grep -qF 'Chrome closed the DevTools pipe' "$out"; then
             problem="no 'Chrome closed the DevTools pipe' (the later call) in the output"
-          elif ! grep -qE "^reflow: first answer after 0\.[0-9]+ s on launch 1 of 2 \(budget 1 s, Chrome log [0-9]+ lines in $log_line\)\$" "$out"; then
-            problem="no 'first answer after 0.' line with the 1 s budget and the log directory"
-          elif ! awk '/^reflow: no answer after 0\.[0-9]+ s on launch 1 of 2 \(budget 1 s\): /{p = 1}
+          elif ! grep -qE "^reflow: first answer after [01]\.[0-9]{2} s on launch 1 of 2 \(budget 2 s, Chrome log [0-9]+ lines in $log_line\)\$" "$out"; then
+            problem="no 'first answer after' line with the 2 s budget and the log directory"
+          elif ! awk '/^reflow: no answer after [0-9]+\.[0-9][0-9] s on launch 1 of 2 \(budget 2 s\): /{p = 1}
               /^reflow: first answer after /{ok = p; exit}
               END{exit !ok}' "$out"; then
             problem="no probe line before the first answer"
@@ -7672,6 +7989,76 @@ PY
       n_failed=$((n_failed + 1))
     else
       echo "ok   reflow-launch/first-answer-deadline (first_answer(0.5) with REFLOW_TIMEOUT 0.1: $(awk '$1 == "waited:" { print $2 }' "$out") s, with 5: $(awk '$1 == "waited" && $2 == "additive:" { print $3 }' "$out") s)"
+      n_passed=$((n_passed + 1))
+    fi
+
+    # reflow-launch/answer-during-probe: an answer that comes while a probe
+    # runs is read before the next probe and before the deadline decides
+    # (Replikanti/interviewscam#41: under load each probe took 0.30 to
+    # 0.49 s, longer than the 0.2 s between ticks, and three probes ran back
+    # to back while the answer sat unread in the pipe until the deadline).
+    # The real DevTools client on two pipes; probe 1 writes the answer and
+    # then sleeps, as a slow /proc scan would. A: budget 1 s, probe 1 sleeps
+    # 0.5 s (the slowest probe seen, 0.49 s, rounded up), so it returns at
+    # 0.7 s or later, after tick 2 (0.4 s): first_answer must return the
+    # answer with one probe run (waited 1), not run the overdue ticks first.
+    # B: budget 1 s, probe 1 sleeps 1.0 s, so it returns at 1.2 s or later,
+    # past the 1.0 s deadline: the answer must still be taken, no retry.
+    # -B as above.
+    python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1 <<'PY'
+import importlib.util
+import os
+import sys
+import time
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+
+for name, sleep in (("A", 0.5), ("B", 1.0)):
+    command_r, command_w = os.pipe()
+    answer_r, answer_w = os.pipe()
+    tools = sitecheck.DevTools(command_w, answer_r)
+    calls = []
+
+    def probe(elapsed, sleep=sleep, answer_w=answer_w, calls=calls):
+        calls.append(elapsed)
+        if len(calls) == 1:
+            os.write(answer_w, b'{"id":1,"result":{"product":"stub/1"}}\0')
+            time.sleep(sleep)
+
+    start = time.monotonic()
+    try:
+        result = tools.first_answer(1.0, probe)
+    except Exception as exc:
+        print(f"{name}: {type(exc).__name__}: {exc}")
+    else:
+        print(f"{name}: returned {result!r}")
+    print(f"{name} waited: {tools.waited}")
+    print(f"{name} elapsed: {time.monotonic() - start:.3f}")
+PY
+    if ! grep -qxF "A: returned {'product': 'stub/1'}" "$out"; then
+      echo "FAIL reflow-launch/answer-during-probe: A, an answer written during a 0.5 s probe was not returned; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    elif ! grep -qxF 'A waited: 1' "$out"; then
+      echo "FAIL reflow-launch/answer-during-probe: A, the overdue probes ran before the pipe was read (waited is not 1); output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    elif ! grep -qxF "B: returned {'product': 'stub/1'}" "$out"; then
+      echo "FAIL reflow-launch/answer-during-probe: B, an answer written during a probe that ended past the deadline was lost to the deadline; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    elif ! grep -qxF 'B waited: 1' "$out"; then
+      echo "FAIL reflow-launch/answer-during-probe: B, waited is not 1; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    elif ! awk '$1 == "B" && $2 == "elapsed:" && $3 >= 1.0 { ok = 1 } END { exit !ok }' "$out"; then
+      echo "FAIL reflow-launch/answer-during-probe: B returned before its 1.0 s probe ended, so it did not test the deadline; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   reflow-launch/answer-during-probe (A: $(awk '$1 == "A" && $2 == "elapsed:" { print $3 }' "$out") s, B: $(awk '$1 == "B" && $2 == "elapsed:" { print $3 }' "$out") s, one probe each)"
       n_passed=$((n_passed + 1))
     fi
 
