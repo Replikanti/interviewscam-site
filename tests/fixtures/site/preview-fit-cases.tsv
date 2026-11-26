@@ -1,0 +1,36 @@
+# preview-fit/<row> (Replikanti/interviewscam#44 PR 3, ADR-0009 parts 7 and
+# 8): preview_fit_runner in tools/selftest.sh builds a small Hugo site with
+# the real card partials, data/ (canvas height set to the row's height),
+# the base image and the fonts, one record per row, and needs the template
+# (layouts/_partials/preview-image.html) and sitecheck's preview_card to
+# draw the same lines with the same alt, the name size and line count of
+# the expect column (0 = the site card). Columns: name, section, canvas
+# height, the record's params as TOML key = value pairs split by " | "
+# (added to a report's name_type company, state front, one report, reviewed
+# 2026-11-01, or a campaign's first and last seen dates), expect. A word
+# wider than a line at every name size gets the site card (in-word-break,
+# single-token): no break inside a word (fix round 1 of #44 PR 3).
+size-72	reports	630	name = "Example Front Company"	72 6
+size-60	reports	630	name = "Talentacquisitionrecruitmentpartne rshipsexecutivesearch Group"	60 7
+in-word-break	reports	630	name = "Talentacquisitionrecruitmentpartnershipsexecutivesearch Group"	0 3
+single-token	reports	630	name = "Interviewplatform2026withanunusuallylongnameforthereflowtest"	0 3
+size-48	reports	630	name = "Riley Placeholder" | name_type = "persona"	48 7
+size-40	reports	630	name = "Example Northwind Interview Platform Services Holding Group International Recruiting"	40 7
+overlong	reports	630	name = "Example Overlong Company Name That Fills Four Lines Of The Link Preview Card At The Smallest Name Size It Tries, So The Page Links The Site Card And Its Alt Instead Of A Card Of Its Own"	0 3
+height-exact	reports	590	name = "Riley Placeholder" | name_type = "persona"	48 7
+height-plus-one	reports	589	name = "Riley Placeholder" | name_type = "persona"	40 7
+persona	reports	630	name = "Avery Exampleton" | name_type = "persona"	48 7
+hidden	reports	630	name = "Avery Exampleton" | name_type = "persona" | hide_name = true	72 6
+name-abused	reports	630	name = "Example Abused Company" | state = "name_abused"	72 6
+combining	reports	630	name = "Ex\u0301ample Accent Mark Studio"	0 3
+cjk	reports	630	name = "Example \u682A\u5F0F\u4F1A\u793E"	0 3
+emoji	reports	630	name = "Example \U0001F642 Studio"	0 3
+nbsp-persona	reports	630	name = "Avery\u00A0Exampleton" | name_type = "persona"	0 3
+rtl	reports	630	name = "Example \u05D0\u05D1 Studio"	0 3
+double-space	reports	630	name = "Example  Front   Company"	72 6
+d7-many	reports	630	name = "Example Front Company" | independent_reports = 3	72 6
+d7-once	reports	630	name = "Example Front Company" | independent_reports = 1	72 6
+d7-one-source	reports	630	name = "Example Front Company" | independent_reports = 0 | sources = [{id = "a"}]	72 6
+d7-sources	reports	630	name = "Example Front Company" | independent_reports = 0 | sources = [{id = "a"}, {id = "b"}]	72 6
+campaign	campaigns	630	name = "Example Campaign Family"	72 4
+campaign-long	campaigns	630	name = "Example Campaign Family With A Name Long Enough To Need Several Lines On The Card At The First Sizes"	60 6

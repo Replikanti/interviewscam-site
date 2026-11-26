@@ -265,11 +265,15 @@ records_check() { sitecheck records --root "$1" --schemas "$2"; }
 # images (site rule (o), ADR-0009 part 6), which only the fixture build
 # runs (wiring/site-preview-pixels): its cost grows with the records, on the
 # private repo's metered minutes, and the fixture build holds the worst
-# cases of the same template, whose errorf guards hold every build.
+# cases of the same template, whose errorf guards hold every build. With it
+# comes the comparison of the committed fixture copies of the cards with
+# that build (--preview-copies, ADR-0009 part 7): the fixture build draws
+# the site card and every fixture record's card.
 site_check() {
   local pins=() pixels=()
   [[ "${4:-}" == no-built-pins ]] && pins=(--no-built-pins)
-  [[ "${4:-}" == preview-pixels ]] && pixels=(--preview-pixels)
+  [[ "${4:-}" == preview-pixels ]] \
+    && pixels=(--preview-pixels --preview-copies "$CHECK_ROOT/tests/fixtures")
   sitecheck site --records "$1" --schemas "$2" "${pins[@]}" "${pixels[@]}" "$3"
 }
 

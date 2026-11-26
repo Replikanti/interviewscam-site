@@ -1,7 +1,23 @@
 {{- /* The link preview card image of a page (SPEC section 6, ADR-0009
-  parts 4 and 6; sitecheck site rule (o), --preview-pixels). Returns (dict
-  "image" <the PNG resource> "alt" <its text>). This part draws the site
-  card, which every page links: the brand, then the site description.
+  parts 4 to 8; sitecheck site rule (o), --preview-pixels, render rule 21).
+  Called with the page; returns (dict "image" <the PNG resource> "alt" <its
+  text> "size" <the name size drawn, 0 on the site card> "lines" <every
+  drawn line in drawing order>). Every page but a record's own page gets
+  the site card: the brand, then the site description. A report's own page
+  gets its report card: the chip line (the D6 state chip and the name
+  type), the name as it renders (a visible persona with its D10 label, a
+  hidden one as the placeholder), the D6 state sentence, the D7 label and
+  the brand; a campaign's own page its campaign card: the type, the name,
+  the first and last seen dates and the brand.
+
+  The candidates are the record card at each name size of
+  hugo.Data.preview.record.name_sizes, in order, and the site card last.
+  The first candidate whose every block has lines (preview-wrap.html gives
+  false for a character the font tables lack, and no lines for no text)
+  and whose blocks fit the content box is drawn, so a record whose name the
+  font cannot draw, or that fits at no size, gets the site card (part 8).
+  The site card always fits; if it did not, the build fails (errorf)
+  instead of drawing a card that lost text.
 
   One images.Filter call over one slice of filters, from the 1 x 1 base
   image: the ground grows it to 1185 x 631 (the first padding), the second
@@ -9,48 +25,105 @@
   the left edge (1200 x 630), then one images.Text per line. Every number
   comes from data/preview.toml; lines start at the margin, a block's lines
   follow at its line pitch, the font's own line height ceil((ascender -
-  descender + lineGap) x size / unitsPerEm), and blocks are a gap apart. A
-  card whose blocks do not fit the content box, or whose text has a
-  character the font tables lack, fails the build (errorf) instead of
-  drawing a card that lost text.
+  descender + lineGap) x size / unitsPerEm), and blocks are a gap apart.
+  The fonts reach images.Text fingerprinted: Hugo names a drawn image by
+  the font's resource path, so the SHA-256 in that path gives a card drawn
+  with other font bytes another address (ADR-0009 part 4).
 
-  The alt is preview.alt_site over every drawn block in drawing order, so
-  it holds the image's whole text. Number literals: 0 and -1 in the
-  paddings (literals LITERALS_FILE_NUMBERS). */ -}}
+  The alt is preview.alt_site, alt_report or alt_campaign over every drawn
+  block in drawing order, so it holds the image's whole text. sitecheck
+  preview_card is the replica of this partial (render rule 21, the pixel
+  check); preview-fit/<row> compares the two. Number literals: 0 and -1 in
+  the paddings and sums (literals LITERALS_FILE_NUMBERS), and 0 as the site
+  card's name size (LITERALS_COLLECTION_VALUES). */ -}}
 {{- $p := hugo.Data.preview -}}
 {{- $c := $p.canvas -}}
+{{- $r := $p.record -}}
 {{- $width := sub (sub $c.width $c.margin) $c.margin -}}
 {{- $height := sub (sub $c.height $c.margin) $c.margin -}}
 {{- $brand := partial "label.html" "header.brand" -}}
 {{- $tld := partial "label.html" "header.brand_tld" -}}
 {{- $description := partial "label.html" "site.description" -}}
-{{- $blocks := slice
+{{- $candidates := slice -}}
+{{- if and (eq .Kind "page") (in (slice "reports" "campaigns") .Section) -}}
+  {{- $name := partial "record-name.html" (dict "page" . "html" false) -}}
+  {{- $first := "" -}}
+  {{- $facts := slice -}}
+  {{- $text := "" -}}
+  {{- if eq .Section "reports" -}}
+    {{- $chip := partial "label.html" (printf "state.%s.chip" .Params.state) -}}
+    {{- $type := partial "label.html" (printf "name_type.%s" .Params.name_type) -}}
+    {{- $first = printf (partial "label.html" "preview.chip_line") $chip $type -}}
+    {{- $sentence := partial "label.html" (printf "state.%s.sentence" .Params.state) -}}
+    {{- $label := partial "report-label.html" . -}}
+    {{- $facts = slice
+      (dict "text" $sentence "face" "regular" "size" $r.text_size "color" hugo.Data.tokens.color.text)
+      (dict "text" $label "face" "regular" "size" $r.text_size "color" hugo.Data.tokens.color.muted) -}}
+    {{- $text = printf (partial "label.html" "preview.alt_report") $first $name $sentence $label $brand $tld -}}
+  {{- else -}}
+    {{- $first = partial "label.html" "a_z.campaign_type" -}}
+    {{- $dates := printf (partial "label.html" "preview.campaign_fact") (time.Format "2006-01-02" .Params.first_seen) (time.Format "2006-01-02" .Params.last_seen) -}}
+    {{- $facts = slice (dict "text" $dates "face" "regular" "size" $r.text_size "color" hugo.Data.tokens.color.text) -}}
+    {{- $text = printf (partial "label.html" "preview.alt_campaign") $first $name $dates $brand $tld -}}
+  {{- end -}}
+  {{- range $size := $r.name_sizes -}}
+    {{- $blocks := slice
+      (dict "text" $first "face" "bold" "size" $r.text_size "color" hugo.Data.tokens.color.primary)
+      (dict "text" $name "face" "bold" "size" $size "color" hugo.Data.tokens.color.text) -}}
+    {{- range $facts -}}
+      {{- $blocks = $blocks | append . -}}
+    {{- end -}}
+    {{- $blocks = $blocks | append (dict "text" (printf "%s%s" $brand $tld) "face" "bold" "size" $r.text_size "color" hugo.Data.tokens.color.primary) -}}
+    {{- $candidates = $candidates | append (dict "size" $size "alt" $text "blocks" $blocks) -}}
+  {{- end -}}
+{{- end -}}
+{{- $candidates = $candidates | append (dict "size" 0 "alt" (printf (partial "label.html" "preview.alt_site") $brand $tld $description) "blocks" (slice
   (dict "text" (printf "%s%s" $brand $tld) "face" "bold" "size" $p.site.brand_size "color" hugo.Data.tokens.color.text)
-  (dict "text" $description "face" "regular" "size" $p.site.description_size "color" hugo.Data.tokens.color.muted) -}}
+  (dict "text" $description "face" "regular" "size" $p.site.description_size "color" hugo.Data.tokens.color.muted))) -}}
+{{- $found := false -}}
+{{- $alt := "" -}}
+{{- $size := 0 -}}
+{{- $card := slice -}}
+{{- range $candidates -}}
+  {{- if not $found -}}
+    {{- $laid := slice -}}
+    {{- $ok := true -}}
+    {{- $y := $c.margin -}}
+    {{- range $i, $b := .blocks -}}
+      {{- if $i -}}
+        {{- $y = add $y $c.gap -}}
+      {{- end -}}
+      {{- $face := index $p.face $b.face -}}
+      {{- $pitch := int (math.Ceil (div (mul (add (sub $face.ascender $face.descender) $face.line_gap) $b.size) (float $face.units_per_em))) -}}
+      {{- with partial "preview-wrap.html" (dict "text" $b.text "face" $b.face "size" $b.size "width" $width) -}}
+        {{- $laid = $laid | append (dict "lines" . "y" $y "pitch" $pitch "face" $b.face "size" $b.size "color" $b.color) -}}
+        {{- $y = add $y (mul $pitch (len .)) -}}
+      {{- else -}}
+        {{- $ok = false -}}
+      {{- end -}}
+    {{- end -}}
+    {{- if and $ok (ge (add $c.margin $height) $y) -}}
+      {{- $found = true -}}
+      {{- $alt = .alt -}}
+      {{- $size = .size -}}
+      {{- $card = $laid -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- if not $found -}}
+  {{- errorf "preview-image.html: the site card does not fit the content box or has a character the font tables lack" -}}
+{{- end -}}
 {{- $filters := slice
   (images.Padding 0 (sub $c.width $c.bar) $c.height 0 hugo.Data.tokens.color.ground)
   (images.Padding -1 0 0 -1)
   (images.Padding 0 0 0 $c.bar hugo.Data.tokens.color.primary) -}}
-{{- $y := $c.margin -}}
-{{- $fonts := dict "regular" (resources.Get "fonts/noto-sans-regular.ttf") "bold" (resources.Get "fonts/noto-sans-bold.ttf") -}}
-{{- range $i, $b := $blocks -}}
-  {{- if $i -}}
-    {{- $y = add $y $c.gap -}}
+{{- $fonts := dict "regular" (resources.Get "fonts/noto-sans-regular.ttf" | resources.Fingerprint) "bold" (resources.Get "fonts/noto-sans-bold.ttf" | resources.Fingerprint) -}}
+{{- $drawn := slice -}}
+{{- range $b := $card -}}
+  {{- range $i, $line := $b.lines -}}
+    {{- $filters = $filters | append (images.Text $line (dict "font" (index $fonts $b.face) "size" $b.size "x" $c.margin "y" (add $b.y (mul $i $b.pitch)) "color" $b.color)) -}}
+    {{- $drawn = $drawn | append $line -}}
   {{- end -}}
-  {{- $face := index $p.face $b.face -}}
-  {{- $pitch := int (math.Ceil (div (mul (add (sub $face.ascender $face.descender) $face.line_gap) $b.size) (float $face.units_per_em))) -}}
-  {{- with partial "preview-wrap.html" (dict "text" $b.text "face" $b.face "size" $b.size "width" $width) -}}
-    {{- range . -}}
-      {{- $filters = $filters | append (images.Text . (dict "font" (index $fonts $b.face) "size" $b.size "x" $c.margin "y" $y "color" $b.color)) -}}
-      {{- $y = add $y $pitch -}}
-    {{- end -}}
-  {{- else -}}
-    {{- errorf "preview-image.html: the site card text %s has no lines or a character the font tables lack" $b.text -}}
-  {{- end -}}
-{{- end -}}
-{{- if not (ge (add $c.margin $height) $y) -}}
-  {{- errorf "preview-image.html: the site card's blocks end at y %d, below the content box (%d)" $y (add $c.margin $height) -}}
 {{- end -}}
 {{- $image := resources.Get "og/base.png" | images.Filter $filters -}}
-{{- $alt := printf (partial "label.html" "preview.alt_site") $brand $tld $description -}}
-{{- return dict "image" $image "alt" $alt -}}
+{{- return dict "image" $image "alt" $alt "size" $size "lines" $drawn -}}

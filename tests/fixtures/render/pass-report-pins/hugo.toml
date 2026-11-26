@@ -31,6 +31,15 @@ mediaType = "application/json"
 baseName = "feed"
 isPlainText = true
 
+# The link preview card images (ADR-0009 part 4): no file cache for
+# processed images. Hugo keys a drawn image by the path of its font, not
+# its bytes, so a cached card would survive a replaced font or base image
+# (measured with the pinned Hugo: the same name, the old bytes); maxAge 0
+# draws every card on every build. The guard pins the key and reads it in
+# the effective config.
+[caches.images]
+maxAge = 0
+
 [markup.goldmark.renderer]
 # Raw HTML in Markdown is omitted. Already the default; explicit so the guard
 # can assert it (D8, D7).
@@ -42,9 +51,11 @@ linkify = false
 
 [markup.goldmark.parser.attribute]
 # No {attribute} syntax after a heading (title, on by default) or a block:
-# it would let record Markdown set dir, class, id, title or lang on a page,
-# and {dir="rtl"} on a heading draws its words in another order than every
-# check reads them (render rule 19, Replikanti/interviewscam#28).
+# with it, record Markdown could set dir, class, id, title or lang on a
+# page, and {dir="rtl"} on a heading draws its words in another order than
+# every check reads them (render rule 19, Replikanti/interviewscam#28). The
+# one other attribute channel, a fenced code block's info string, is closed
+# by markup.highlight.codeFences below.
 title = false
 block = false
 
@@ -54,6 +65,11 @@ block = false
 # colour values outside data/tokens.toml (sitecheck site rule (c) and
 # sitecheck tokens catch a regression).
 noClasses = false
+# No highlighting of fenced code blocks: Hugo copies the attributes of a
+# fence's info string (```text {dir="rtl" class="x"}) onto the highlight
+# wrapper whatever parser.attribute.block says, so record Markdown could set
+# dir, class, id or lang there (render rule 19, Replikanti/interviewscam#28).
+# No page uses a fence; a fence now renders as plain <pre><code>.
 codeFences = false
 
 [security.exec]
@@ -85,6 +101,13 @@ disable = true
 # anywhere (SPEC section 7, sitecheck site rule (e)).
 operator = "Martin Holý (Replikanti)"
 contact = "report@interviewscam.com"
+# The intake endpoint the report and correction forms post to (ADR-0006,
+# SPEC D5). Its value is pinned to INTAKE_ACTION in tools/sitecheck.py by
+# the guard, and only the forms of /report-a-scam/ and /corrections/ may
+# name it (sitecheck site rule (a), ADR-0006 part 9).
+intake = "https://intake.interviewscam.com/submit"
 # The single source of the Content Security Policy every page carries as a
 # meta tag; GitHub Pages cannot set response headers (D9, SPEC section 8).
-csp = "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'"
+# form-action holds 'self' for the Home search form and the intake origin
+# for the two forms (ADR-0006 part 9, SPEC section 8).
+csp = "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self' https://intake.interviewscam.com"
