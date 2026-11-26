@@ -21,14 +21,18 @@ Subcommands. Each exits 2 on a usage or input error.
       the tree after every run. It writes $RUNNER_TEMP/mutate/out/
       (results.tsv, meta.txt, mutants.jsonl, logs/) and a table to
       $GITHUB_STEP_SUMMARY. Exit 0 when every mutant of the shard has a
-      verdict (KILLED, SURVIVED, INVALID, TIMEOUT), else 1.
+      verdict (KILLED, SURVIVED, INVALID, TIMEOUT), else 1. When the
+      deadline refuses a mutant (NOT-RUN), it also writes one `shortfall`
+      line (meta.txt, step summary, stderr): how many mutants did not run,
+      the first refused one, the budget it needed and the elapsed time.
   merge DIR
       DIR holds the downloaded artifacts shard-1 to shard-SHARDS (`gh run
       download`). Prints the merged results.tsv in mutant file order and
       on stderr the summary line; exit 0 when the sweep is complete, 1
       (INCOMPLETE) on a missing or duplicate shard, mixed commits or mutant
-      files, a row in the wrong shard, a duplicate or unknown id, or any
-      mutant without a verdict.
+      files, a row in the wrong shard, a duplicate or unknown id, any
+      mutant without a verdict, or a shard that admitted fewer mutants than
+      it holds (its `shortfall` line is named in the problems).
 """
 
 import ctypes
@@ -738,6 +742,7 @@ class Shard:
         self.rows = {}
         self.controls = []
         self.deadline = DEADLINE_S
+        self.shortfall = None
 
     def elapsed(self):
         return self.clock() - self.start
@@ -825,6 +830,9 @@ class Shard:
             key = tuple(sorted(m["suites"]))
             limit = budget(times[key])
             if stop or self.elapsed() + limit > self.deadline:
+                if not stop:
+                    # The deadline refused it (not a settle() ERROR stop).
+                    self.shortfall = (mid, self.elapsed(), limit)
                 stop = True
                 self.rows[mid] = {"verdict": "NOT-RUN"}
                 continue
@@ -844,6 +852,15 @@ class Shard:
                 stop = True
             self.rows[mid] = row
 
+    def shortfall_text(self):
+        """The reason mutants were NOT-RUN by admission, one line, or None."""
+        if self.shortfall is None:
+            return None
+        mid, elapsed, needed = self.shortfall
+        n = sum(1 for m in self.mine if self.rows.get(m["id"], {}).get("verdict") == "NOT-RUN")
+        return (f"{n} of {len(self.mine)} mutants NOT-RUN: {mid} needs {needed:.1f} s "
+                f"after {elapsed:.1f} s, deadline {self.deadline} s")
+
     def write(self):
         lines = ["\t".join(TSV_HEADER)]
         for m in self.mine:
@@ -856,6 +873,10 @@ class Shard:
                 f"mutants_sha256 {hashlib.sha256(self.data).hexdigest()}"]
         meta += [f"control {','.join(key)} {status} {seconds:.1f}"
                  for key, status, seconds in self.controls]
+        short = self.shortfall_text()
+        if short:
+            meta.append(f"shortfall {short}")
+            print(f"mutate: shortfall: {short}", file=sys.stderr)
         meta += [f"deadline_s {self.deadline}", f"complete {'yes' if complete else 'no'}"]
         (self.out / "meta.txt").write_text("\n".join(meta) + "\n", encoding="utf-8")
         (self.out / "mutants.jsonl").write_bytes(self.data)
@@ -869,6 +890,10 @@ class Shard:
                     + f"; {'complete' if complete else 'INCOMPLETE'}", ""]
             for key, status, seconds in self.controls:
                 text.append(f"- control `{summary_cell(','.join(key))}`: {status}, {seconds:.1f} s")
+            if short:
+                text.append(f"- shortfall: {short}; the control gives B = {BUDGET_FACTOR} x T + "
+                            f"{BUDGET_ADD_S} s, a re-run on a faster runner may admit more, "
+                            "otherwise use named suites (ADR-0008 Numbers)")
             text += ["", "| id | verdict | killer | expected | seconds |", "|---|---|---|---|---|"]
             for line in lines[1:]:
                 mid, verdict, killer, expected, _, seconds = line.split("\t")
@@ -942,6 +967,8 @@ def merge_main(directory, stdout=sys.stdout, stderr=sys.stderr):
             problems.append(f"shard-{k}: its mutant file copy is not mutants_sha256")
         if meta.get("complete") != "yes":
             problems.append(f"shard-{k}: complete {meta.get('complete')!r}")
+        if "shortfall" in meta:
+            problems.append(f"shard-{k}: shortfall: {meta['shortfall']}")
         if lines[0] != "\t".join(TSV_HEADER) or lines[-1] != "":
             problems.append(f"shard-{k}: results.tsv is not the shard format")
             continue
