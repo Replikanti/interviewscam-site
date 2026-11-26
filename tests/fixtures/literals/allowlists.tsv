@@ -663,11 +663,17 @@ VH_REVEAL_DECLARATIONS	color	var(--color-primary)
 VH_REVEAL_DECLARATIONS	font-weight	var(--weight-label)
 VH_REVEAL_DECLARATIONS	height	auto
 VH_REVEAL_DECLARATIONS	left	var(--space-x2)
+VH_REVEAL_DECLARATIONS	letter-spacing	normal
+VH_REVEAL_DECLARATIONS	offset-path	none
 VH_REVEAL_DECLARATIONS	overflow	visible
 VH_REVEAL_DECLARATIONS	padding	var(--space-x3)var(--space-x4)
+VH_REVEAL_DECLARATIONS	rotate	none
+VH_REVEAL_DECLARATIONS	scale	none
 VH_REVEAL_DECLARATIONS	top	var(--space-x2)
+VH_REVEAL_DECLARATIONS	transform	none
 VH_REVEAL_DECLARATIONS	white-space	normal
 VH_REVEAL_DECLARATIONS	width	auto
+VH_REVEAL_DECLARATIONS	writing-mode	horizontal-tb
 VH_REVEAL_DECLARATIONS	z-index	1
 LITERALS_TEMPLATE_NAME	[a-z][a-z0-9_-]*	256
 LITERALS_SCRIPT_PATTERNS	assets/js/search.js	[\p{L}\p{N}]

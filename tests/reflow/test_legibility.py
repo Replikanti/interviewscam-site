@@ -149,6 +149,22 @@ class Measure(unittest.TestCase):
         self.assertEqual(rgb, (2, 3))
         self.assertEqual(rgba, rgb)
 
+    def test_every_channel_is_read(self):
+        # Fix round 1 (QA): non-grey pixels, so a decode that reads one
+        # channel from the wrong offset changes the result. Yellow on white
+        # differs only in blue: it paints (255 levels) and stays far below
+        # 4.5:1 (1.07:1); blue on white reaches 8.59:1.
+        for channels in (3, 4):
+            with self.subTest(channels=channels):
+                shot = flat(WHITE, channels=channels, marks={2: (255, 255, 0), 5: (0, 0, 255)})
+                self.assertEqual(sitecheck.text_pixels(shot, flat(WHITE, channels=channels)),
+                                 (1, 2))
+                width, _, got, rows = sitecheck.png_rows(base64.b64decode(
+                    image([(10, 20, 30), (40, 50, 60)], 2, channels)))
+                self.assertEqual(got, channels)
+                self.assertEqual(sitecheck.rgb_pixels(rows, channels),
+                                 [(10, 20, 30), (40, 50, 60)])
+
     def test_not_png_is_usage_error(self):
         junk = base64.b64encode(b"GIF89a not a png").decode()
         with self.assertRaises(sitecheck.UsageError):
@@ -184,6 +200,20 @@ class Verdict(unittest.TestCase):
     def test_unmeasurable_captures_fail(self):
         problem = sitecheck.legibility_problem(self.LABEL, self.BOX, None)
         self.assertIn("differ in size or hold a transparent pixel", problem)
+
+
+class Summary(unittest.TestCase):
+    def test_range_is_smallest_to_largest(self):
+        # Fix round 1 (QA): every real page counts the same, so only this
+        # case tells the two ends of the range apart.
+        with mock.patch.object(sitecheck, "REFLOW_TEXT_MIN_PIXELS", 343):
+            self.assertEqual(sitecheck.legibility_summary(3, 2, [700, 400, 512]),
+                             "skip-link reveals: 3, legible 2 (text pixels at 4.5:1 or more: "
+                             "400 to 700, at least 343)")
+
+    def test_no_count_ends_after_legible(self):
+        self.assertEqual(sitecheck.legibility_summary(0, 0, []),
+                         "skip-link reveals: 0, legible 0")
 
 
 class Constants(unittest.TestCase):

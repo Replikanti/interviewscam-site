@@ -71,6 +71,18 @@ body {
   border-radius: var(--radius-control) !important;
   color: var(--color-primary) !important;
   font-weight: var(--weight-label) !important;
+  /* Pinned so that no rule rearranges the label's pixels: case (7)'s
+     legibility step counts pixels, not their order, so a mirroring
+     transform, vertical text or overlapping glyphs would keep the count
+     (Replikanti/interviewscam#34 review run 1, findings 3 and 4). A
+     reversed bidi run needs `direction` or `unicode-bidi`, which render
+     rule 19 refuses anywhere in the built stylesheet. */
+  transform: none !important;
+  scale: none !important;
+  rotate: none !important;
+  offset-path: none !important;
+  writing-mode: horizontal-tb !important;
+  letter-spacing: normal !important;
 }
 
 /* Keyboard focus (SC 2.4.7): primary is 6.35:1 on the ground and 6.87:1 on

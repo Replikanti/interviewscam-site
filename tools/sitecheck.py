@@ -2286,6 +2286,21 @@ VH_REVEAL_DECLARATIONS = {
     "border-radius": "var(--radius-control)",
     "color": "var(--color-primary)",
     "font-weight": "var(--weight-label)",
+    # Replikanti/interviewscam#34 review run 1, findings 3 and 4: case (7)'s
+    # legibility step counts the label's pixels, not their order, so the
+    # reveal also pins every property that moves them (a mirroring
+    # transform, scale or rotate, a motion path, a vertical writing mode,
+    # overlapping glyphs). With !important banned elsewhere, no other rule
+    # can set them on the skip link. A reversed bidi run needs `direction`
+    # or `unicode-bidi`, which render rule 19 refuses in the built
+    # stylesheet, so those two are not declared here. Reflow case (7) reads
+    # all eight computed values too (REFLOW_PLACEMENT_STYLES).
+    "transform": "none",
+    "scale": "none",
+    "rotate": "none",
+    "offset-path": "none",
+    "writing-mode": "horizontal-tb",
+    "letter-spacing": "normal",
 }
 # review5 A3: re.ASCII and CSS whitespace, because a browser matches the
 # keyword in ASCII case only (`!` U+0131 `mportant` is no `!important`; the
@@ -12447,7 +12462,7 @@ LITERALS_SCRIPT_PATTERNS = frozenset({("assets/js/search.js", "[\\p{L}\\p{N}]")}
 # every style attribute and <style> element of a built page, and the CSP's
 # style-src 'self' would block them.
 STYLESHEET_SHA256 = {
-    "assets/css/site.css": "6140f5782ce7cab0aa23ee3b45b58e93b13dea79c8885e2e828937d771d93652",
+    "assets/css/site.css": "d32132d8bd092d80204f14fd8c6d0acf22e89ef14bbbe8b72eec6c60c7d3d926",
     "assets/css/tokens.css": "725a7b2808e32866e206468f43b1097c8b34e879e13baeee309391f1fe53ad27",
     "data/tokens.toml": "b867bb5bae4cc1a95bf730e132b3e2d4f0744a984308835837b73279dce39182",
 }
@@ -13808,7 +13823,7 @@ def preview_image_problems(root, public, files, images, built, pixels):
 
 
 BUILT_STYLESHEET_SHA256 = {
-    "site": "f0029531c083fb96a2c5602c1b04f5996446d4e056f24a72b994edac6185a23c",
+    "site": "828c2e803a0dc2945ae037a7ee11c1c7246af7c7fbe3f1437a502119e17117a2",
 }
 BUILT_SCRIPT_SHA384 = {
     "copy": "64df53ed5d62c8c5c8be3aee6bd39c1171a2bb88742b3424790354056657c3faf100ea7cc044affe06e76164b883b924",
@@ -14179,8 +14194,30 @@ REFLOW_TEXT_MIN_PIXELS = 343
 # the glyph fill: `color` would also change every currentcolor outline,
 # border, box shadow and column rule, which would then count as text (an
 # inset `outline: 1em solid; outline-offset: -1em` over invisible glyphs).
+# The ink probe also drops the text shadow (fix round 1, review run 1,
+# findings 1 and 2), so the reference is the box with no text paint at all:
+# with the shadow kept, white glyphs on white over `text-shadow: 0 0 #000`
+# counted 720 (the probe uncovered the shadow), and a drop shadow under a
+# readable label counted 220 (each glyph was compared with its shadow).
 REFLOW_PAINT_PROBE = (("transition", "none"), ("opacity", "0"))
-REFLOW_INK_PROBE = (("transition", "none"), ("-webkit-text-fill-color", "transparent"))
+REFLOW_INK_PROBE = (("transition", "none"), ("text-shadow", "none"),
+                    ("-webkit-text-fill-color", "transparent"))
+# The computed values that keep the label's pixels in reading order (fix
+# round 1, review run 1, findings 3 and 4): the count reads pixels, not
+# their order, so a mirroring `transform: scaleX(-1)` (689) and a reversed
+# `unicode-bidi: bidi-override; direction: rtl` (695) kept the count, and
+# `letter-spacing: -.35em` (456) lays the glyphs over each other. The
+# reveal pins six (VH_REVEAL_DECLARATIONS), render rule 19 refuses any
+# `direction` or `unicode-bidi` in the built stylesheet; this is the
+# outcome half, on the focused element. A transform, scale, rotate or motion path on an
+# ancestor (`body{transform:scaleX(-1)}`) mirrors the label too, so those
+# four are read on every ancestor as well; the other four inherit and the
+# element's own pinned value decides.
+REFLOW_PLACEMENT_STYLES = {"transform": "none", "scale": "none", "rotate": "none",
+                           "offset-path": "none", "direction": "ltr",
+                           "unicode-bidi": "normal", "writing-mode": "horizontal-tb",
+                           "letter-spacing": "normal"}
+REFLOW_ANCESTOR_PLACEMENT = ("transform", "scale", "rotate", "offset-path")
 # The computed `content` Chrome returns for ::before and ::after without
 # generated content: measured on Chrome 157, `none` for no rule, for
 # `content: none` and for `content: normal` alike (reflow fixture
@@ -14714,6 +14751,7 @@ def static_head(text):
 REFLOW_FOCUS_SCRIPT = r"""
 (() => {
   const exempt = %(exempt)s, noGenerated = %(generated)s;
+  const placement = %(placement)s, ancestorPlacement = %(ancestor)s;
   const label = (el) => {
     let s = el.tagName.toLowerCase();
     if (el.id) s += "#" + el.id;
@@ -14735,7 +14773,14 @@ REFLOW_FOCUS_SCRIPT = r"""
           generated: ["::before", "::after"]
             .map((p) => [p, getComputedStyle(a, p).content])
             .filter(([, c]) => !noGenerated.includes(c)),
-          textSecurity: cs.webkitTextSecurity};
+          textSecurity: cs.webkitTextSecurity,
+          placement: [a].concat((() => {
+            const up = [];
+            for (let e = a.parentElement; e; e = e.parentElement) up.push(e);
+            return up;
+          })()).flatMap((e) => (e === a ? Object.keys(placement) : ancestorPlacement)
+            .map((p) => [label(e), p, getComputedStyle(e).getPropertyValue(p)])
+            .filter(([, p, v]) => v !== placement[p]))};
 })()
 """
 # Case (7), the paint (M3 PR 10 fix round 1, PR #33 review, finding 1): a
@@ -15380,6 +15425,16 @@ def text_pixels(shown, blank):
         if (hi + 0.05) / (lo + 0.05) >= REFLOW_TEXT_CONTRAST:
             legible += 1
     return legible, painting
+
+
+def legibility_summary(reveals, legible, counts):
+    """The summary segment of case (7): the reveals, the legible ones, and
+    the range of the measured text pixel counts when any was measured."""
+    text = f"skip-link reveals: {reveals}, legible {legible}"
+    if counts:
+        text += (f" (text pixels at {REFLOW_TEXT_CONTRAST:g}:1 or more: {min(counts)} to "
+                 f"{max(counts)}, at least {REFLOW_TEXT_MIN_PIXELS})")
+    return text
 
 
 def legibility_problem(label, box, counts):
@@ -17482,6 +17537,16 @@ def cmd_reflow(args):
                              f"{show(focus.get('textSecurity'))}: its label is drawn as "
                              "substitute symbols, not its characters")
                 return None
+            placed = focus.get("placement")
+            if placed is None or placed:
+                findings.add(where, f"(7) the focused {label} is not drawn in reading order: "
+                             f"{show(placed, 200)} (element, property, computed value; each "
+                             "must be " + ", ".join(f"{p} {v}" for p, v in
+                                                    REFLOW_PLACEMENT_STYLES.items())
+                             + ", the first four on every ancestor too); the legibility count "
+                             "reads pixels, not their order, so a mirrored, rotated, reordered "
+                             "or overlapped label would count as legible")
+                return None
             shots, scrolls = reveal_captures(focus, REFLOW_INK_PROBE, shown=False)
             counts = None
             if any(xy != (focus["x"], focus["y"]) for xy in scrolls):
@@ -17502,8 +17567,11 @@ def cmd_reflow(args):
                     findings.add(where, problem)
             return counts
 
-        focus_script = REFLOW_FOCUS_SCRIPT % {"exempt": json.dumps(VISUALLY_HIDDEN),
-                                              "generated": json.dumps(sorted(REFLOW_NO_GENERATED))}
+        focus_script = REFLOW_FOCUS_SCRIPT % {
+            "exempt": json.dumps(VISUALLY_HIDDEN),
+            "generated": json.dumps(sorted(REFLOW_NO_GENERATED)),
+            "placement": json.dumps(REFLOW_PLACEMENT_STYLES),
+            "ancestor": json.dumps(list(REFLOW_ANCESTOR_PLACEMENT))}
         for rel, path in pages:
             where = f"public/{rel}"
             elements = parse_page((public / rel).read_text(encoding="utf-8",
@@ -17748,10 +17816,7 @@ def cmd_reflow(args):
                            f"hidden without the script: {n_copy} in 2 states; search "
                            f"results hidden until a query: {n_search} in 3 states, "
                            f"{n_revealed} sections revealed and reachable; "
-                           f"skip-link reveals: {n_reveals}, legible {n_legible}"
-                           + (f" (text pixels at {REFLOW_TEXT_CONTRAST:g}:1 or more: "
-                              f"{min(text_counts)} to {max(text_counts)}, at least "
-                              f"{REFLOW_TEXT_MIN_PIXELS})" if text_counts else "")
+                           + legibility_summary(n_reveals, n_legible, text_counts)
                            + f"; heads as parsed: {n_heads}; "
                            f"pinned regions as parsed: {n_regions}; documents as parsed "
                            f"(scripting off): {n_documents}; regions hit-tested and painting: "
