@@ -664,11 +664,16 @@ VH_REVEAL_DECLARATIONS	font-weight	var(--weight-label)
 VH_REVEAL_DECLARATIONS	height	auto
 VH_REVEAL_DECLARATIONS	left	var(--space-x2)
 VH_REVEAL_DECLARATIONS	letter-spacing	normal
+VH_REVEAL_DECLARATIONS	line-height	var(--line-height-body)
+VH_REVEAL_DECLARATIONS	max-width	none
 VH_REVEAL_DECLARATIONS	overflow	visible
 VH_REVEAL_DECLARATIONS	padding	var(--space-x3)var(--space-x4)
 VH_REVEAL_DECLARATIONS	rotate	none
 VH_REVEAL_DECLARATIONS	scale	none
+VH_REVEAL_DECLARATIONS	text-decoration-line	underline
+VH_REVEAL_DECLARATIONS	text-decoration-thickness	var(--underline-thickness)
 VH_REVEAL_DECLARATIONS	text-shadow	none
+VH_REVEAL_DECLARATIONS	text-underline-offset	var(--underline-offset)
 VH_REVEAL_DECLARATIONS	top	var(--space-x2)
 VH_REVEAL_DECLARATIONS	transform	none
 VH_REVEAL_DECLARATIONS	white-space	normal

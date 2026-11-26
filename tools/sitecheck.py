@@ -2306,6 +2306,17 @@ VH_REVEAL_DECLARATIONS = {
     # 2 px dilation 2112), and word spacing overlaps words (-1.5em, 539).
     "word-spacing": "normal",
     "text-shadow": "none",
+    # Review run 3: a line height of 0 under a narrow maximum width stacked
+    # the lines on one baseline (537), and a decoration takes the glyph fill
+    # colour, so the probe removed a line-through bar with the glyphs and
+    # counted it as ink (1056); the line metrics and today's underline are
+    # pinned. Width and height need no pin of their own: the reveal already
+    # holds them at auto.
+    "line-height": "var(--line-height-body)",
+    "max-width": "none",
+    "text-decoration-line": "underline",
+    "text-decoration-thickness": "var(--underline-thickness)",
+    "text-underline-offset": "var(--underline-offset)",
 }
 # review5 A3: re.ASCII and CSS whitespace, because a browser matches the
 # keyword in ASCII case only (`!` U+0131 `mportant` is no `!important`; the
@@ -12467,7 +12478,7 @@ LITERALS_SCRIPT_PATTERNS = frozenset({("assets/js/search.js", "[\\p{L}\\p{N}]")}
 # every style attribute and <style> element of a built page, and the CSP's
 # style-src 'self' would block them.
 STYLESHEET_SHA256 = {
-    "assets/css/site.css": "9f13023f5b37cea252e1c853f7c3b585bcc9eeafc4c91698e93a7907ad418115",
+    "assets/css/site.css": "dddd5cd33123d39e82c279fa389aba72325f0b55eaaaf376d179c1e50b661597",
     "assets/css/tokens.css": "725a7b2808e32866e206468f43b1097c8b34e879e13baeee309391f1fe53ad27",
     "data/tokens.toml": "b867bb5bae4cc1a95bf730e132b3e2d4f0744a984308835837b73279dce39182",
 }
@@ -13828,7 +13839,7 @@ def preview_image_problems(root, public, files, images, built, pixels):
 
 
 BUILT_STYLESHEET_SHA256 = {
-    "site": "ae37015b3eafa9eb7c983a507dc338b23c9c7383e7bd105f775d10fd7969e4af",
+    "site": "bf20c09576316697a6574c3162c51cd14012138656de88fd8b064ec5ed32559f",
 }
 BUILT_SCRIPT_SHA384 = {
     "copy": "64df53ed5d62c8c5c8be3aee6bd39c1171a2bb88742b3424790354056657c3faf100ea7cc044affe06e76164b883b924",
@@ -14233,7 +14244,19 @@ REFLOW_PLACEMENT_STYLES = {"transform": ["none"], "scale": ["none"], "rotate": [
                            "offset-path": ["none"], "direction": ["ltr"],
                            "unicode-bidi": ["normal"], "writing-mode": ["horizontal-tb"],
                            "letter-spacing": ["normal"], "word-spacing": ["normal", "0px"],
-                           "text-shadow": ["none"]}
+                           "text-shadow": ["none"], "line-height": ["normal"],
+                           "max-width": ["none"], "text-decoration-line": ["underline", "none"],
+                           "text-decoration-thickness": ["1px", "auto"],
+                           "text-underline-offset": ["3px", "auto"]}
+# Fix round 3 (review run 3): the line metrics and the decoration. A line
+# height passes as `normal` or as at least REFLOW_MIN_LINE_HEIGHT times the
+# computed font size of the same element or pseudo-element, so no two lines
+# share a baseline; a decoration passes as an underline or none (no
+# line-through or overline across the glyphs; ::first-line and
+# ::first-letter compute none of their own), 1 px thick and 3 px below the
+# baseline as data/tokens.toml [underline] gives them, or Chrome's `auto` of
+# an unstyled link (the hand-made reflow cases).
+REFLOW_MIN_LINE_HEIGHT = 1
 REFLOW_PLACEMENT_PSEUDOS = ("::first-line", "::first-letter")
 REFLOW_ANCESTOR_PLACEMENT = ("transform", "scale", "rotate", "offset-path")
 # The computed `content` Chrome returns for ::before and ::after without
@@ -14770,7 +14793,7 @@ REFLOW_FOCUS_SCRIPT = r"""
 (() => {
   const exempt = %(exempt)s, noGenerated = %(generated)s;
   const placement = %(placement)s, ancestorPlacement = %(ancestor)s;
-  const placementPseudos = %(pseudos)s;
+  const placementPseudos = %(pseudos)s, minLineHeight = %(minline)s;
   const label = (el) => {
     let s = el.tagName.toLowerCase();
     if (el.id) s += "#" + el.id;
@@ -14796,8 +14819,10 @@ REFLOW_FOCUS_SCRIPT = r"""
           placement: (() => {
             const out = [];
             const read = (e, pseudo, props) => props.forEach((p) => {
-              const v = getComputedStyle(e, pseudo).getPropertyValue(p);
-              if (!placement[p].includes(v)) out.push([label(e) + (pseudo || ""), p, v]);
+              const cs = getComputedStyle(e, pseudo), v = cs.getPropertyValue(p);
+              const ok = placement[p].includes(v) || (p === "line-height"
+                && parseFloat(v) >= minLineHeight * parseFloat(cs.fontSize));
+              if (!ok) out.push([label(e) + (pseudo || ""), p, v]);
             });
             read(a, null, Object.keys(placement));
             for (const pseudo of placementPseudos) read(a, pseudo, Object.keys(placement));
@@ -17566,6 +17591,8 @@ def cmd_reflow(args):
                              f"{show(placed, 200)} (element, property, computed value; each "
                              "must be " + ", ".join(f"{p} {' or '.join(v)}" for p, v in
                                                     REFLOW_PLACEMENT_STYLES.items())
+                             + f" (line-height also at least {REFLOW_MIN_LINE_HEIGHT:g} x the "
+                             "font size)"
                              + ", on the element, its ::first-line and ::first-letter, and "
                              "the first four on every ancestor too); the legibility count "
                              "reads pixels, not their order, so a mirrored, rotated, reordered "
@@ -17596,7 +17623,8 @@ def cmd_reflow(args):
             "generated": json.dumps(sorted(REFLOW_NO_GENERATED)),
             "placement": json.dumps(REFLOW_PLACEMENT_STYLES),
             "ancestor": json.dumps(list(REFLOW_ANCESTOR_PLACEMENT)),
-            "pseudos": json.dumps(list(REFLOW_PLACEMENT_PSEUDOS))}
+            "pseudos": json.dumps(list(REFLOW_PLACEMENT_PSEUDOS)),
+            "minline": json.dumps(REFLOW_MIN_LINE_HEIGHT)}
         for rel, path in pages:
             where = f"public/{rel}"
             elements = parse_page((public / rel).read_text(encoding="utf-8",

@@ -80,7 +80,11 @@ body {
      unknown to the Nu Html Checker's CSS validator, so reflow alone reads
      it. A text shadow counts as ink and can smear or replace the glyphs,
      and word spacing can lay words over each other, so both are pinned
-     too (review run 2, finding 2). */
+     too (review run 2, finding 2). A small line height under a narrow
+     maximum width stacks the label's lines on one baseline, and a text
+     decoration takes the glyph fill colour, so the probe removes it with
+     the glyphs and a bar through them counted as ink; the line metrics and
+     today's underline are pinned as well (review run 3). */
   transform: none !important;
   scale: none !important;
   rotate: none !important;
@@ -88,6 +92,11 @@ body {
   letter-spacing: normal !important;
   word-spacing: normal !important;
   text-shadow: none !important;
+  line-height: var(--line-height-body) !important;
+  max-width: none !important;
+  text-decoration-line: underline !important;
+  text-decoration-thickness: var(--underline-thickness) !important;
+  text-underline-offset: var(--underline-offset) !important;
 }
 
 /* Keyboard focus (SC 2.4.7): primary is 6.35:1 on the ground and 6.87:1 on
