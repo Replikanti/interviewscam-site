@@ -18,16 +18,16 @@ jobs:
     # duration, which timeout-minutes counts, on a bucketed base (M5b PR 2
     # fix rounds 9 and 10, Replikanti/interviewscam#13; re-derived in
     # Replikanti/interviewscam#40 PR 2, Replikanti/interviewscam#28 PR 2,
-    # Replikanti/interviewscam#39 and twice in Replikanti/interviewscam#58):
-    # the slowest green job, 3874 s (lighthouse.yml build, run 45487366958),
-    # plus 46 s of drift, rounded up to the next 5-minute step, 4200 s, sets
-    # both terms.
-    # Cap >= max(2 x 4200 s = 8400 s, 4200 s + 2 x 75 s
-    # (REFLOW_LAUNCH_TIMEOUT) + 70 s = 4420 s), so 140 min. Re-derive only
-    # when a green job takes more than 4154 s.
+    # Replikanti/interviewscam#39, twice in Replikanti/interviewscam#58 and in
+    # Replikanti/interviewscam#34): the slowest green job, 4817 s (ci.yml
+    # check, run 45764304803), plus 46 s of drift, rounded up to the next
+    # 5-minute step, 5100 s, sets both terms.
+    # Cap >= max(2 x 5100 s = 10200 s, 5100 s + 2 x 75 s
+    # (REFLOW_LAUNCH_TIMEOUT) + 70 s = 5320 s), so 170 min. Re-derive only
+    # when a green job takes more than 5054 s.
     # M3 has no external links to fetch yet (the fixture build's links stay
     # offline); revisit once milestone 5 adds sources.
-    timeout-minutes: 140
+    timeout-minutes: 170
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
