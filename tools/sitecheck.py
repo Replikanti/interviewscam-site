@@ -2289,16 +2289,16 @@ VH_REVEAL_DECLARATIONS = {
     # Replikanti/interviewscam#34 review run 1, findings 3 and 4: case (7)'s
     # legibility step counts the label's pixels, not their order, so the
     # reveal also pins every property that moves them (a mirroring
-    # transform, scale or rotate, a motion path, a vertical writing mode,
-    # overlapping glyphs). With !important banned elsewhere, no other rule
-    # can set them on the skip link. A reversed bidi run needs `direction`
-    # or `unicode-bidi`, which render rule 19 refuses in the built
-    # stylesheet, so those two are not declared here. Reflow case (7) reads
+    # transform, scale or rotate, a vertical writing mode, overlapping
+    # glyphs). With !important banned elsewhere, no other rule can set them
+    # on the skip link. A reversed bidi run needs `direction` or
+    # `unicode-bidi`, which render rule 19 refuses in the built stylesheet,
+    # and the Nu Html Checker's CSS validator refuses `offset-path` as an
+    # unknown property, so those three are not declared here. Reflow case (7) reads
     # all eight computed values too (REFLOW_PLACEMENT_STYLES).
     "transform": "none",
     "scale": "none",
     "rotate": "none",
-    "offset-path": "none",
     "writing-mode": "horizontal-tb",
     "letter-spacing": "normal",
 }
@@ -12462,7 +12462,7 @@ LITERALS_SCRIPT_PATTERNS = frozenset({("assets/js/search.js", "[\\p{L}\\p{N}]")}
 # every style attribute and <style> element of a built page, and the CSP's
 # style-src 'self' would block them.
 STYLESHEET_SHA256 = {
-    "assets/css/site.css": "d32132d8bd092d80204f14fd8c6d0acf22e89ef14bbbe8b72eec6c60c7d3d926",
+    "assets/css/site.css": "cd311c4ba72b450f0cb7e3c3ea1208473004e8884b2dac5e2df9083ccc2a4a79",
     "assets/css/tokens.css": "725a7b2808e32866e206468f43b1097c8b34e879e13baeee309391f1fe53ad27",
     "data/tokens.toml": "b867bb5bae4cc1a95bf730e132b3e2d4f0744a984308835837b73279dce39182",
 }
@@ -13823,7 +13823,7 @@ def preview_image_problems(root, public, files, images, built, pixels):
 
 
 BUILT_STYLESHEET_SHA256 = {
-    "site": "828c2e803a0dc2945ae037a7ee11c1c7246af7c7fbe3f1437a502119e17117a2",
+    "site": "9a3452c1fa2a18c760366fbbfbe08f3e93e61a298612082920f5af6b0286482e",
 }
 BUILT_SCRIPT_SHA384 = {
     "copy": "64df53ed5d62c8c5c8be3aee6bd39c1171a2bb88742b3424790354056657c3faf100ea7cc044affe06e76164b883b924",
@@ -14207,9 +14207,10 @@ REFLOW_INK_PROBE = (("transition", "none"), ("text-shadow", "none"),
 # their order, so a mirroring `transform: scaleX(-1)` (689) and a reversed
 # `unicode-bidi: bidi-override; direction: rtl` (695) kept the count, and
 # `letter-spacing: -.35em` (456) lays the glyphs over each other. The
-# reveal pins six (VH_REVEAL_DECLARATIONS), render rule 19 refuses any
-# `direction` or `unicode-bidi` in the built stylesheet; this is the
-# outcome half, on the focused element. A transform, scale, rotate or motion path on an
+# reveal pins five (VH_REVEAL_DECLARATIONS), render rule 19 refuses any
+# `direction` or `unicode-bidi` in the built stylesheet, and `offset-path`
+# (which the Nu Html Checker's CSS validator does not know) is read only
+# here; this is the outcome half, on the focused element. A transform, scale, rotate or motion path on an
 # ancestor (`body{transform:scaleX(-1)}`) mirrors the label too, so those
 # four are read on every ancestor as well; the other four inherit and the
 # element's own pinned value decides.

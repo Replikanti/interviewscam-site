@@ -76,11 +76,12 @@ body {
      transform, vertical text or overlapping glyphs would keep the count
      (Replikanti/interviewscam#34 review run 1, findings 3 and 4). A
      reversed bidi run needs `direction` or `unicode-bidi`, which render
-     rule 19 refuses anywhere in the built stylesheet. */
+     rule 19 refuses anywhere in the built stylesheet; `offset-path` is
+     unknown to the Nu Html Checker's CSS validator, so reflow alone reads
+     it. */
   transform: none !important;
   scale: none !important;
   rotate: none !important;
-  offset-path: none !important;
   writing-mode: horizontal-tb !important;
   letter-spacing: normal !important;
 }
