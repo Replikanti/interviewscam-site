@@ -3667,6 +3667,36 @@ row("name-apart-mark-separates", got == ([], [], [1, 2, 3], [1, 2, 3], [1, 2, 3]
                                          [4, 5, 6]),
     f"got (missed, missed by R5, mark inside a token twice, labelled, table mark, "
     f"forged separator, drawn order) {got!r}")
+# Fix round 2 (review run 2, finding 1): an initial whose letter takes a
+# mark the end run would not take, then its period ("Avery J" + U+20D2 +
+# ". Exampleton"), is found past R0 as on the base, where the readings
+# dropped the mark: name_pattern lets APART stand before the initial's
+# period too, and R5 agrees. R0 misses it, as on the base.
+try:
+    bad = [(n, t) for n, t in [("Avery J. Exampleton", "Avery J" + m + ". Exampleton")
+                               for m in ("\u20d2", "\u0338", "\u0336", "\u20dd", "\u093e",
+                                         "\u0483", "\u302e")]
+                              + [("A. Page", "A\u20d2. Page"), ("A. Page", "a\u0338. page")]
+           if hits(n, t) != [1, 2, 3] or sc.r5_reading(sc.r5_patterns(n), t) is None]
+except Exception as exc:  # noqa: BLE001 - the row reports any crash
+    bad = [repr(exc)]
+row("name-apart-mark-initial", not bad, f"not found past R0 or by R5: {bad!r}")
+# Fix round 2 (review run 2, finding 2): the base of a mark is the last
+# character before it that is neither a mark nor an invisible, as R0
+# sees it once fold_words drops the invisibles: a Hangul filler (U+3164,
+# U+115F, U+1160) or a musical format character (U+1D173) between the
+# composed last letter and an apart mark no longer lends the mark its own
+# script, so the mark separates and R1 to R3 find the name.
+try:
+    A = "Avery Exampleton"
+    bad = [t for t in (A + "\u0300\u3164\u302ex", A + "\u0300\u115f\u302ex",
+                       A + "\u0300\u1160\u302ex", A + "\u0300\U0001d173\U0001d167x",
+                       A + "\u0300\U0001d17a\U0001d165x")
+           if hits(A, t) != [1, 2, 3] or sc.r5_reading(sc.r5_patterns(A), t) is None]
+    got = (bad, hits(A, A + "\u3164\u302ex"), hits("ใจดี", "ใจด\u3164ีx"))
+except Exception as exc:  # noqa: BLE001 - the row reports any crash
+    got = repr(exc)
+row("name-apart-mark-past-invisible", got == ([], [0, 1, 2, 3], []), f"got (not found, filler without the grave, own mark after a filler) {got!r}")
 # The names of review run 1, each followed by every run of one or two
 # marks of its palette that holds a mark the end run would not take, and
 # a letter: some reading finds the name in every one (the review's probe

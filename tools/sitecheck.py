@@ -3749,6 +3749,14 @@ def marks_as_text():
                      and any(unicodedata.category(c)[0] != "M" for c in value))
 
 
+@functools.cache
+def apart_runs():
+    """A base that is neither a combining mark nor an invisible, and the
+    run of marks and invisibles after it."""
+    marks = mark_class(sorted(set(mark_code_points()) | set(INVISIBLE)))
+    return re.compile(f"([^{marks[1:]})({marks}+)")
+
+
 def apart_marks(text):
     """text with every combining mark that the end run would not take after
     its base (end_marks of the base's script_word) read as APART, a
@@ -3756,13 +3764,20 @@ def apart_marks(text):
     (marks_as_text); a run with no base, at the start of the text, is left
     alone. The readings past R0 drop the marks, so before this a mark drawn
     apart from a name joined it to the next letter there
-    (Replikanti/interviewscam#56 fix round 1, review findings 1 and 2)."""
+    (Replikanti/interviewscam#56 fix round 1, review findings 1 and 2).
+    The base is the last character before the mark that is neither a mark
+    nor an invisible, the letter R0 sees once fold_words drops the
+    invisibles: a Hangul filler (U+3164) or a musical format character
+    (U+1D173) in front of a mark no longer lends it its script (fix round
+    2, review run 2 finding 2). An invisible that is no mark stays as it
+    is; one that is a mark (U+FE0F, U+180B) is read as a mark."""
     def move(m):
         takes = end_mark_test(script_word(m.group(1)))
         keep = marks_as_text()
-        return m.group(1) + "".join(c if takes(c) or ord(c) in keep else APART
-                                    for c in m.group(2))
-    return mark_runs(1).sub(move, text)
+        return m.group(1) + "".join(
+            c if unicodedata.category(c)[0] != "M" or takes(c) or ord(c) in keep else APART
+            for c in m.group(2))
+    return apart_runs().sub(move, text)
 
 
 @functools.cache
@@ -5436,7 +5451,10 @@ def name_pattern(name, reading=0):
             return NEVER
         if i:
             parts.append(r"[\W_]*" if joinable or initial(tokens[i - 1]) else r"[\W_]+")
-        parts.append(stroke_pattern(text, reading) + (r"\." if initial(tok) else ""))
+        # Past R0 APART may stand before an initial's period as inside a
+        # token ("J" + U+20D2 + "."; fix round 2, review run 2 finding 1).
+        period = (rf"{APART}*\." if reading else r"\.") if initial(tok) else ""
+        parts.append(stroke_pattern(text, reading) + period)
     return re.compile(f"{before}{''.join(parts)}{after}")
 
 
