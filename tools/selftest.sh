@@ -2429,6 +2429,131 @@ print(f"ok   site-csp-equiv/html-parser-reading (Python {platform.python_version
 PY
 }
 
+# charref_reading <sitecheck.py> [drop [limit]] (Replikanti/interviewscam#59):
+# the lines that hold site rule (i)'s DROPPED_CHARREFS to the running
+# interpreter. site-charref/dropped-set parses one page through
+# sitecheck.parse_page, <p title="R">S</p>, where R holds the decimal and S
+# the hex reference of every code point from 0 to limit (hex, default
+# 10FFFF), each followed by a comma, and walks both readings against HTML's
+# numeric reference rule: U+0000, the surrogates and anything above
+# U+10FFFF give U+FFFD, U+0080 to U+009F map through windows-1252 (the five
+# bytes it leaves undefined stay as they are, as in the WHATWG table), every
+# other code point is kept. It fails when the interpreter drops a code point
+# outside DROPPED_CHARREFS or decodes a reference unlike HTML; a member that
+# it decodes as HTML does is only counted, because the rule still refuses
+# it (one way, as site-csp-equiv/space-set). drop (hex) leaves that member
+# out of the set, the negative proof, and then only this line runs.
+# site-charref/members calls dropped_charref_hits on every member in five
+# spellings (decimal, hex with x, hex with X and no ';', zero-padded to 8
+# decimal digits, hex after 5,000 zeros), each of which must give exactly
+# that code point, and on every non-member neighbour and the out-of-range
+# spellings, which must give none. site-charref/html-parser-reading cannot
+# fail: it names which of four members this html.parser reads unlike HTML,
+# so QA cites the runner's own reading from the check log. -B: no
+# tools/__pycache__.
+charref_reading() {
+  python3 -I -B - "$1" "${2:-}" "${3:-}" <<'PY'
+import importlib.util
+import platform
+import sys
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+drop = int(sys.argv[2], 16) if sys.argv[2] else None
+limit = int(sys.argv[3], 16) if sys.argv[3] else 0x10FFFF
+members = set(sitecheck.DROPPED_CHARREFS) - {drop}
+
+
+def html_reading(code):
+    """What HTML's numeric character reference rule gives for code."""
+    if code == 0 or 0xD800 <= code <= 0xDFFF or code > 0x10FFFF:
+        return "�"
+    if 0x80 <= code <= 0x9F:
+        try:
+            return bytes([code]).decode("cp1252")
+        except UnicodeDecodeError:
+            return chr(code)
+    return chr(code)
+
+
+codes = range(limit + 1)
+values = "".join(f"&#{code};," for code in codes)
+texts = "".join(f"&#x{code:X};," for code in codes)
+page = sitecheck.parse_page(f'<p title="{values}">{texts}</p>')
+readings = (("in a value", page.elements[0][1].get("title", "")), ("in text", "".join(page.text)))
+extra, wrong, kept = set(), set(), set()
+for where, reading in readings:
+    pos = 0
+    for code in codes:
+        want = html_reading(code) + ","
+        if reading.startswith(want, pos):
+            pos += len(want)
+            if code in members:
+                kept.add(code)
+        elif reading.startswith(",", pos):
+            pos += 1
+            if code not in members:
+                extra.add(code)
+        else:
+            wrong.add((code, where))
+            break
+    else:
+        if pos != len(reading):
+            wrong.add((limit + 1, where))
+if extra or wrong:
+    print("FAIL site-charref/dropped-set: this interpreter's html.parser drops "
+          f"{', '.join(f'U+{code:04X}' for code in sorted(extra)) or 'no code point'} "
+          "outside DROPPED_CHARREFS and reads "
+          f"{', '.join(f'U+{code:04X} {where}' for code, where in sorted(wrong)) or 'none'} "
+          "unlike HTML")
+else:
+    keeps = sorted(kept)
+    print(f"ok   site-charref/dropped-set (Python {platform.python_version()}: "
+          f"{len(codes)} references in a value and in text; drops "
+          + (f"exactly the {len(members)}" if not keeps else
+             f"{len(members) - len(keeps)} of the {len(members)}")
+          + " of DROPPED_CHARREFS"
+          + ("" if not keeps else
+             f", keeps {', '.join(f'U+{code:04X}' for code in keeps)} (still refused)")
+          + ", decodes the rest as HTML)")
+if drop is not None:
+    sys.exit(0)
+
+bad = []
+for code in sorted(sitecheck.DROPPED_CHARREFS):
+    for spelling in (f"&#{code};", f"&#x{code:x};", f"&#X{code:X} ", f"&#{code:08d};",
+                     "&#x" + "0" * 5000 + f"{code:x};"):
+        hits = sitecheck.dropped_charref_hits(f"a{spelling}b")
+        if [hit[0] for hit in hits] != [code]:
+            bad.append(f"{sitecheck.show(spelling, 20)} gave {hits!r:.60}")
+outside = {n for code in sitecheck.DROPPED_CHARREFS for n in (code - 1, code + 1)
+           if 0 <= n <= 0x10FFFF} - set(sitecheck.DROPPED_CHARREFS)
+spellings = [f"&#{n};" for n in sorted(outside)] + [f"&#x{n:X};" for n in sorted(outside)]
+spellings += ["&#1114112;", "&#11141110;", "&#x110000;", "&#x10FFFF0;", "&#" + "9" * 5000 + ";"]
+for spelling in spellings:
+    hits = sitecheck.dropped_charref_hits(f"a{spelling}b")
+    if hits:
+        bad.append(f"{sitecheck.show(spelling, 20)} gave {hits!r:.60}")
+if bad or not sitecheck.DROPPED_CHARREFS:
+    print(f"FAIL site-charref/members: {len(bad)} spelling(s) read wrong: {'; '.join(bad[:5])}")
+else:
+    print(f"ok   site-charref/members ({len(sitecheck.DROPPED_CHARREFS)} members in 5 spellings, "
+          f"{len(spellings)} neighbours and out-of-range spellings without a hit)")
+
+evidence = (
+    ("&#1; in a value", '<p title="&#1;"></p>', lambda p: p.elements[0][1].get("title") != "\x01"),
+    ("&#1; in text", "<p>&#1;</p>", lambda p: "".join(p.text) != "\x01"),
+    ("&#xFDD0; in a value", '<p title="&#xFDD0;"></p>',
+     lambda p: p.elements[0][1].get("title") != "﷐"),
+    ("&notx in a value", '<p title="&notx"></p>', lambda p: p.elements[0][1].get("title") != "&notx"),
+)
+differ = [label for label, text, unlike in evidence if unlike(sitecheck.parse_page(text))]
+print(f"ok   site-charref/html-parser-reading (Python {platform.python_version()}: "
+      f"html.parser reads {', '.join(differ) or 'none of the members'} unlike HTML)")
+PY
+}
+
 # intake_coverage <sitecheck.py> <render table> <site table> [drop] (M5b
 # PR 3): the rows of tests/fixtures/render/intake-cases.tsv and
 # tests/fixtures/site/intake-cases.tsv cover every member of the sets render
@@ -7296,6 +7421,62 @@ PINNED
       n_passed=$((n_passed + 1))
     else
       echo "FAIL site-csp-equiv/coverage-fails-on-missing-row: a member without a row did not fail; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+  if selftest_wants site-charref; then
+    # site-charref/<row> (Replikanti/interviewscam#59): site rule (i)'s
+    # numeric character references, from tests/fixtures/site/charref-cases.tsv
+    # on copies of render/pass-intake (site_intake_runner, built pins off),
+    # then the lines that hold DROPPED_CHARREFS to this interpreter
+    # (charref_reading: dropped-set, members, the html-parser-reading
+    # evidence) and the negative proof of dropped-set: with U+0001 left out
+    # of the set, over U+0000 to U+00FF, it must fail and name U+0001.
+    site_intake_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/site/charref-cases.tsv" "$FIXTURES/render/pass-intake" \
+      "$SELFTEST_ROOT/schema" site-charref >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )site-charref/table' "$out"; then
+      echo "FAIL site-charref: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+    charref_reading "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if [[ "$(grep -cE '^ok   site-charref/(dropped-set|members|html-parser-reading) ' "$out")" != 3 ]]; then
+      echo "FAIL site-charref/reading-lines: the three reading lines did not all pass; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+    charref_reading "$SELFTEST_ROOT/tools/sitecheck.py" 1 FF >"$out" 2>&1
+    if grep -qE '^FAIL site-charref/dropped-set: .*drops U\+0001 outside DROPPED_CHARREFS' "$out"; then
+      echo "ok   site-charref/dropped-set-fails-on-missing-member (U+0001 left out of the set fails the line)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL site-charref/dropped-set-fails-on-missing-member: a member left out of the set did not fail; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+  if selftest_wants render-charref; then
+    # render-charref/<row> (Replikanti/interviewscam#59): render's markup:
+    # reading of the same references, from
+    # tests/fixtures/render/charref-cases.tsv on copies of render/pass-intake
+    # (search_cases_runner, so COUNT= rows prove the class-scoped rules stay
+    # off on such a page).
+    search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/render/charref-cases.tsv" "$FIXTURES/render/pass-intake" \
+      "$SELFTEST_ROOT/schema" render-charref >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )render-charref/table' "$out"; then
+      echo "FAIL render-charref: the runner did not finish; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi

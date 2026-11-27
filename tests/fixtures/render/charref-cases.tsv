@@ -1,0 +1,21 @@
+# render's markup: reading of numeric character references
+# (Replikanti/interviewscam#59): a built page that holds a numeric
+# character reference to a code point of DROPPED_CHARREFS is not read
+# (parse_render_page sets page.dropped_charrefs, foreign_markup_problems
+# turns each entry into a markup: finding), because html.parser drops the
+# code point and the browser keeps it, so the class, hidden and text this
+# check reads are not the browser's: class="visually-hidden&#1;" is the
+# skip link's class to html.parser and a class no rule styles to the
+# browser, which shows the link. One finding per code point and page, with
+# the first spelling (count/ rows); COUNT=1 on the skip link proves that the
+# class-scoped rules stay off on such a page. On a copy of render/pass-intake
+# (search_cases_runner in tools/selftest.sh, label render-charref). Columns:
+# name, file, find (exactly one occurrence), replace, expect (PASS,
+# COUNT=<n> <text>, or a text the findings must hold).
+pass-unchanged	public/report-a-scam/index.html	<h1>	<h1>	PASS
+reader/skip-link-class	public/report-a-scam/index.html	<a class=visually-hidden href=#main>	<a class="visually-hidden&#1;" href=#main>	COUNT=1 markup: a numeric character reference to U+0001
+reader/h1-text	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#1; scam</h1>	markup: a numeric character reference to U+0001
+reader/hint-text	public/report-a-scam/index.html	Write links and domains defanged	Write&#xFDD0; links and domains defanged	markup: a numeric character reference to U+FDD0
+count/two-code-points	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#1;&#xFDD0; scam</h1>	COUNT=2 markup: a numeric character reference to U+FDD0
+count/same-code-point-twice	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#1; scam&#x1;</h1>	COUNT=1 markup: a numeric character reference to U+0001 ('&#1;')
+pass/space-reference	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#32;scam</h1>	PASS

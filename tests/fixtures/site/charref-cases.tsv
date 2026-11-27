@@ -1,0 +1,92 @@
+# Site rule (i), numeric character references (Replikanti/interviewscam#59):
+# no built HTML or XML file holds a numeric character reference to a code
+# point of DROPPED_CHARREFS (dropped_charref_problems in
+# tools/sitecheck.py). html.parser decodes references with html.unescape,
+# which drops those 94 code points (U+0001 to U+0008, U+000B, U+000E to
+# U+001F, U+007F, U+FDD0 to U+FDEF and the two last code points of every
+# plane), while the browser keeps them. So rel="stylesheet&#1;" is a
+# stylesheet link to every rule that reads the page through html.parser
+# (D9, (j), (k), (m), (a), (o), render) and none to the browser, and
+# &#1; after the CSP meta ends the head for the browser only. The rule
+# reads the raw text, not a parser's reading, so it refuses such a
+# reference anywhere: in text, in a quoted or unquoted value, in an
+# attribute name, an end tag and raw text, where neither reading decodes
+# (an over-refusal by design; the build writes no such reference). One
+# row per reader of the issue, per spelling (hex with x or X and
+# either case of digits, no ';', leading zeros), per range bound and its
+# outer neighbour, per context, at the start and end of the file, a count
+# row, look-alikes that are no reference in either reading, and the two
+# XML files Page reads. Out-of-range references pass: both readings give
+# U+FFFD. On a copy of render/pass-intake (the real built pages, no built
+# pins) through site_intake_runner in tools/selftest.sh, label
+# site-charref; the rows with the built pins on are in head-cases.tsv.
+# Columns: name, file, find (exactly one occurrence), replace, expect (PASS
+# or a text the findings must hold). The table holds only ASCII: \u{XXXX}
+# in find and replace is that code point.
+reader/d9-request-attribute	public/report-a-scam/index.html	<link rel=icon href=/favicon.svg 	<link rel=icon href="/favicon.svg&#1;" 	(i) a numeric character reference to U+0001
+reader/j-script-src	public/report-a-scam/index.html	b883b924.js integrity	b883b924.js&#1; integrity	(i) a numeric character reference to U+0001
+reader/j-jsonld-type	public/report-a-scam/index.html	</head>	<script type="application/ld+json&#1;">{}</script></head>	(i) a numeric character reference to U+0001
+reader/k-rel	public/report-a-scam/index.html	<link rel=stylesheet href	<link rel="stylesheet&#1;" href	(i) a numeric character reference to U+0001
+reader/k-href	public/report-a-scam/index.html	559f.css>	559f.css&#1;>	(i) a numeric character reference to U+0001
+reader/m-text-after-csp	public/report-a-scam/index.html	<meta name=viewport	&#1;<meta name=viewport	(i) a numeric character reference to U+0001
+reader/a-form-action	public/report-a-scam/index.html	action=https://intake.interviewscam.com/submit 	action="https://intake.interviewscam.com/submit&#1;" 	(i) a numeric character reference to U+0001
+reader/o-preview-scheme	public/report-a-scam/index.html	<meta property="og:description" content="How to report	<meta property="og:description" content="tel:&#1; How to report	(i) a numeric character reference to U+0001
+form/hex-lower	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#x1; scam</h1>	(i) a numeric character reference to U+0001
+form/hex-upper-x	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#X1F; scam</h1>	(i) a numeric character reference to U+001F
+form/hex-lower-digits	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#xfdd0; scam</h1>	(i) a numeric character reference to U+FDD0
+form/hex-decimal-digits	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#x10; scam</h1>	(i) a numeric character reference to U+0010
+form/no-semicolon	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#1 x scam</h1>	(i) a numeric character reference to U+0001
+form/leading-zeros-decimal	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#00000001; scam</h1>	(i) a numeric character reference to U+0001
+form/leading-zeros-hex	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#x0000001; scam</h1>	(i) a numeric character reference to U+0001
+bound/u0001	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#1; scam</h1>	(i) a numeric character reference to U+0001
+bound/u0008	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#8; scam</h1>	(i) a numeric character reference to U+0008
+bound/u000b	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#11; scam</h1>	(i) a numeric character reference to U+000B
+bound/u000e	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#x0E; scam</h1>	(i) a numeric character reference to U+000E
+bound/u001f	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#31; scam</h1>	(i) a numeric character reference to U+001F
+bound/u007f	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#127; scam</h1>	(i) a numeric character reference to U+007F
+bound/ufdd0	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#64976; scam</h1>	(i) a numeric character reference to U+FDD0
+bound/ufdef	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#xFDEF; scam</h1>	(i) a numeric character reference to U+FDEF
+bound/ufffe	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#xFFFE; scam</h1>	(i) a numeric character reference to U+FFFE
+bound/uffff	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#65535; scam</h1>	(i) a numeric character reference to U+FFFF
+bound/u1fffe	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#x1FFFE; scam</h1>	(i) a numeric character reference to U+1FFFE
+bound/u10ffff	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#1114111; scam</h1>	(i) a numeric character reference to U+10FFFF
+bound/u0000	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#0; scam</h1>	PASS
+bound/u0009	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#9; scam</h1>	PASS
+bound/u000a	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#10; scam</h1>	PASS
+bound/u000c	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#12; scam</h1>	PASS
+bound/u000d	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#13; scam</h1>	PASS
+bound/u0020	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#32; scam</h1>	PASS
+bound/u007e	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#126; scam</h1>	PASS
+bound/u0080	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#128; scam</h1>	PASS
+bound/u009f	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#x9F; scam</h1>	PASS
+bound/ufdcf	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#xFDCF; scam</h1>	PASS
+bound/ufdf0	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#xFDF0; scam</h1>	PASS
+bound/ufffd	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#xFFFD; scam</h1>	PASS
+bound/u10000	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#x10000; scam</h1>	PASS
+bound/u1fffd	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#x1FFFD; scam</h1>	PASS
+bound/u10fffd	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#x10FFFD; scam</h1>	PASS
+bound/surrogate-ud800	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#xD800; scam</h1>	PASS
+bound/out-of-range	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#1114112; scam</h1>	PASS
+bound/out-of-range-long	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#11141110; scam</h1>	PASS
+bound/hex-out-of-range	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#x10FFFF0; scam</h1>	PASS
+context/attr-double-quoted	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1 title="a&#1;b">Report a scam</h1>	(i) a numeric character reference to U+0001
+context/attr-single-quoted	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1 title='a&#1;b'>Report a scam</h1>	(i) a numeric character reference to U+0001
+context/attr-unquoted	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1 title=a&#1;b>Report a scam</h1>	(i) a numeric character reference to U+0001
+context/attr-name	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1 data-a&#1;b>Report a scam</h1>	(i) a numeric character reference to U+0001
+context/end-tag	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a scam</h1 title="&#1;">	(i) a numeric character reference to U+0001
+context/title	public/report-a-scam/index.html	<title>Report a scam 	<title>Report a&#1; scam 	(i) a numeric character reference to U+0001
+context/textarea	public/report-a-scam/index.html	intake-defang"></textarea>	intake-defang">&#1;</textarea>	(i) a numeric character reference to U+0001
+context/script-content	public/report-a-scam/index.html	</head>	<script type=application/ld+json>{"a":"&#1;"}</script></head>	(i) a numeric character reference to U+0001
+position/start-of-file	public/report-a-scam/index.html	<!doctype html>	&#1;<!doctype html>	(i) a numeric character reference to U+0001
+position/end-of-file	public/report-a-scam/index.html	</html>	</html>&#1	(i) a numeric character reference to U+0001
+count/two-code-points	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#1;&#xFDD0; scam</h1>	(i) a numeric character reference to U+FDD0
+lookalike/fullwidth-digit	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#\u{FF11}; scam</h1>	PASS
+lookalike/fullwidth-ampersand	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a\u{FF06}#1; scam</h1>	PASS
+lookalike/zero-width-space	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&\u{200B}#1; scam</h1>	PASS
+lookalike/space-after-hash	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&# 1; scam</h1>	PASS
+lookalike/no-digits	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#; scam</h1>	PASS
+lookalike/no-hex-digits	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#x; scam</h1>	PASS
+lookalike/escaped-ampersand	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&amp;#1; scam</h1>	PASS
+lookalike/build-apostrophe	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#x27; scam</h1>	PASS
+xml/svg-attribute	public/favicon.svg	fill="#2350C8"	fill="#2350C8&#xFDD0;"	(i) a numeric character reference to U+FDD0
+xml/sitemap-text	public/sitemap.xml	<loc>https://interviewscam.com/about/</loc>	<loc>https://interviewscam.com/about/&#1;</loc>	(i) a numeric character reference to U+0001
