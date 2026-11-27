@@ -12,10 +12,13 @@
 # reference anywhere: in text, in a quoted or unquoted value, in an
 # attribute name, an end tag and raw text, where neither reading decodes
 # (an over-refusal by design; the build writes no such reference). One
-# row per reader of the issue, per spelling (hex with x or X and
-# either case of digits, no ';', leading zeros), per range bound and its
-# outer neighbour, per context, at the start and end of the file, a count
-# row, look-alikes that are no reference in either reading, and the two
+# row per reader of the issue, per spelling (hex with x or X and either
+# case of digits, no ';', leading zeros, a decimal reference that a hex
+# letter ends), per range bound and its outer neighbour (and an
+# out-of-range hex reference that a letter ends), per context, at the
+# start and end of the file, a count row, look-alikes that are no
+# reference in either reading ('#1;' without '&' among them, next to the
+# build's own &#x27;, so the fast path does not skip it), and the two
 # XML files Page reads. Out-of-range references pass: both readings give
 # U+FFFD. On a copy of render/pass-intake (the real built pages, no built
 # pins) through site_intake_runner in tools/selftest.sh, label
@@ -38,6 +41,7 @@ form/hex-decimal-digits	public/report-a-scam/index.html	<h1>Report a scam</h1>	<
 form/no-semicolon	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#1 x scam</h1>	(i) a numeric character reference to U+0001
 form/leading-zeros-decimal	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#00000001; scam</h1>	(i) a numeric character reference to U+0001
 form/leading-zeros-hex	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#x0000001; scam</h1>	(i) a numeric character reference to U+0001
+form/decimal-then-hex-letter	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#1abc; scam</h1>	(i) a numeric character reference to U+0001
 bound/u0001	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#1; scam</h1>	(i) a numeric character reference to U+0001
 bound/u0008	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#8; scam</h1>	(i) a numeric character reference to U+0008
 bound/u000b	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#11; scam</h1>	(i) a numeric character reference to U+000B
@@ -69,6 +73,7 @@ bound/surrogate-ud800	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1
 bound/out-of-range	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#1114112; scam</h1>	PASS
 bound/out-of-range-long	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#11141110; scam</h1>	PASS
 bound/hex-out-of-range	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#x10FFFF0; scam</h1>	PASS
+bound/hex-out-of-range-then-letter	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#x10FFFFa scam</h1>	PASS
 context/attr-double-quoted	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1 title="a&#1;b">Report a scam</h1>	(i) a numeric character reference to U+0001
 context/attr-single-quoted	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1 title='a&#1;b'>Report a scam</h1>	(i) a numeric character reference to U+0001
 context/attr-unquoted	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1 title=a&#1;b>Report a scam</h1>	(i) a numeric character reference to U+0001
@@ -88,5 +93,6 @@ lookalike/no-digits	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>R
 lookalike/no-hex-digits	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#x; scam</h1>	PASS
 lookalike/escaped-ampersand	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&amp;#1; scam</h1>	PASS
 lookalike/build-apostrophe	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a&#x27; scam</h1>	PASS
+lookalike/no-ampersand	public/report-a-scam/index.html	<h1>Report a scam</h1>	<h1>Report a #1; #x1; &#x27; scam</h1>	PASS
 xml/svg-attribute	public/favicon.svg	fill="#2350C8"	fill="#2350C8&#xFDD0;"	(i) a numeric character reference to U+FDD0
 xml/sitemap-text	public/sitemap.xml	<loc>https://interviewscam.com/about/</loc>	<loc>https://interviewscam.com/about/&#1;</loc>	(i) a numeric character reference to U+0001

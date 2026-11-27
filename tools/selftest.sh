@@ -7448,8 +7448,9 @@ PINNED
     sed -n '/^ok   \|^FAIL /p' "$out"
     n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
     n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-    if [[ "$(grep -cE '^ok   site-charref/(dropped-set|members|html-parser-reading) ' "$out")" != 3 ]]; then
-      echo "FAIL site-charref/reading-lines: the three reading lines did not all pass; output:"
+    # dropped-set must have read every code point (1,114,112 references).
+    if [[ "$(grep -cE '^ok   site-charref/(dropped-set \(Python [^:]*: 1114112 references |members |html-parser-reading )' "$out")" != 3 ]]; then
+      echo "FAIL site-charref/reading-lines: the three reading lines did not all pass, or dropped-set read other than 1114112 references; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi
