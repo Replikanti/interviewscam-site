@@ -65,13 +65,22 @@ class PassSide(unittest.TestCase):
                 self.assertIn("@x{}", sitecheck.css_strip_comments(css))
         self.assertNotIn("@x", sitecheck.css_strip_comments("x xurl(/*@x{}*/){a:b}"))
         self.assertNotIn("@x", sitecheck.css_strip_comments("x _url(/*@x{}*/){a:b}"))
+        # Non-ASCII code points are ident code points in CSS, also those
+        # Python's \w does not take (U+20AC), and U+00E9.
         self.assertNotIn("@x", sitecheck.css_strip_comments("x éurl(/*@x{}*/){a:b}"))
+        self.assertNotIn("@x", sitecheck.css_strip_comments("x €url(/*@x{}*/){a:b}"))
 
     def test_url_with_a_string_is_a_function(self):
         # url( then a quote is a function holding a string: the string is
         # kept whole, ) inside it included, and what follows is read.
         out = sitecheck.css_strip_comments('a{b:url( "x)y")}/*c*/d{e:f}')
         self.assertEqual(out, 'a{b:url( "x)y")}d{e:f}')
+        # A ) and a /* inside that string end nothing and open nothing, with
+        # or without whitespace after url( (sweep 43-impl-r6 survivors).
+        for css in ('a{b:url( "a)/*")}c{d:e}', "a{b:url(\t'a)/*')}c{d:e}",
+                    'a{b:url("a)/*")}c{d:e}'):
+            with self.subTest(css=css):
+                self.assertEqual(sitecheck.css_strip_comments(css), css)
 
 
 class Blocks(unittest.TestCase):
