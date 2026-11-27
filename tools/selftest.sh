@@ -1834,7 +1834,10 @@ reflow_isolation_case_pin_rows() {
   # The parent's checks of the child's report, one per member: an exit 0
   # in the middle of the imports (no end record), another exit status, a
   # line that is not a record, a duplicated record, a record after the
-  # end record.
+  # end record, an end record with other totals, a file with no record, a
+  # record for a file that is not there, no report at all. The members
+  # that write records target the protocol on purpose (a Known limit of
+  # interviewscam-site#41); they prove the parent's checks, not a defence.
   cp_bad=""
   cp_fresh 2 -
   printf 'import os\nos._exit(0)\n' >"$cp_dir/test_b.py"
@@ -1853,6 +1856,20 @@ reflow_isolation_case_pin_rows() {
   printf 'import os, sys\nos.write(int(sys.argv[2]), b"[\\"end\\", 1, 2]\\n")\n' >"$cp_dir/test_b.py"
   cp_pin test_a:2 test_b:1
   cp_bad+="$(cp_want "the counting child's report does not end with its end record")"
+  printf 'import os, sys\nos.write(int(sys.argv[2]), b"[\\"file\\", \\"test_b\\", 1]\\n[\\"end\\", 2, 9]\\n")\nos._exit(0)\n' \
+    >"$cp_dir/test_b.py"
+  cp_pin test_a:2 test_b:1
+  cp_bad+="$(cp_want "the end record says 2 files and 9 cases, the report holds 2 and 3")"
+  printf 'import os, sys\nos.write(int(sys.argv[2]), b"[\\"end\\", 1, 2]\\n")\nos._exit(0)\n' >"$cp_dir/test_b.py"
+  cp_pin test_a:2 test_b:1
+  cp_bad+="$(cp_want "no report record for tests/reflow/test_b.py")"
+  printf 'import os, sys\nos.write(int(sys.argv[2]), b"[\\"file\\", \\"test_q\\", 0]\\n[\\"file\\", \\"test_b\\", 0]\\n[\\"end\\", 3, 2]\\n")\nos._exit(0)\n' \
+    >"$cp_dir/test_b.py"
+  cp_pin test_a:2 test_b:1
+  cp_bad+="$(cp_want "a report record for test_q, which is not a test_*.py file here")"
+  printf 'import os\nos._exit(0)\n' >"$cp_dir/test_a.py"
+  cp_pin test_a:2 test_b:1
+  cp_bad+="$(cp_want "the counting child gave no report")"
   cp_row fails-on-bad-report "$cp_bad"
 
   cp_fresh 2 -
