@@ -76,7 +76,7 @@ RECORDS_NOT_RUN_LINE="NOT RUN (records mode): machinery only, held by the pinned
 source "$CHECK_ROOT/tools/fetch-tools.sh"
 
 HTML_NOT_RUN_LINE='NOT RUN: HTML validation (Nu Html Checker) was NOT run locally. It runs only in CI (required check job). A local green does not mean the HTML is valid.'
-REFLOW_NOT_RUN_LINE='NOT RUN: reflow at 320 CSS px (sitecheck reflow) was NOT run locally, and with it its hidden-state cases (the Copy button hidden without its script, the search results hidden until a query, the skip link shown and legible on keyboard focus, the honeypot of the intake forms without a box), the hit test and paint check of the pinned regions (the intake forms and the result sections of /not-sent/ among them), and case (8), the search typed and submitted on Home against the oracle. It runs only in CI, in the runner'"'"'s Google Chrome. A local green does not mean the pages reflow or hide and reveal as they should, or that the search answers.'
+REFLOW_NOT_RUN_LINE='NOT RUN: reflow at 320 CSS px (sitecheck reflow) was NOT run locally, and with it its hidden-state cases (the Copy button hidden without its script, the search results hidden until a query, the skip link shown and legible on keyboard focus at 320, 341 and 385 CSS px, with the script running and with scripting off, the honeypot of the intake forms without a box), the hit test and paint check of the pinned regions (the intake forms and the result sections of /not-sent/ among them), and case (8), the search typed and submitted on Home against the oracle. It runs only in CI, in the runner'"'"'s Google Chrome. A local green does not mean the pages reflow or hide and reveal as they should, or that the search answers.'
 
 in_github_actions() { [[ "${GITHUB_ACTIONS:-}" == true ]]; }
 
@@ -114,19 +114,23 @@ links_check() {
     -- "$dir"
 }
 
-# reflow_check <absolute dir> [no-search]: load every HTML page under dir at
-# 320 CSS px in the runner's Google Chrome (ADR-0003 part 6), and run the
-# search of Home with queries from the tree's feed (case (8), ADR-0005 part
-# 6). Only ever called in CI. no-search (the self-test's reflow fixtures
-# without a search.txt only) leaves out case (8); both builds always run it.
+# reflow_check <absolute dir> [no-search] [no-cells]: load every HTML page
+# under dir at 320 CSS px in the runner's Google Chrome (ADR-0003 part 6),
+# and run the search of Home with queries from the tree's feed (case (8),
+# ADR-0005 part 6). Only ever called in CI. no-search (the self-test's
+# reflow fixtures without a search.txt only) leaves out case (8); no-cells
+# (the self-test's hand-made reflow fixtures only) leaves out case (7)'s
+# cells at 341 and 385 CSS px and with scripting off
+# (Replikanti/interviewscam#61). Both builds always run both.
 reflow_check() {
-  local chrome search=()
+  local chrome search=() cells=()
   chrome="$(command -v google-chrome || command -v google-chrome-stable)" || {
     echo "FAIL: Google Chrome not found; in CI the reflow check must run" >&2
     return 1
   }
   [[ "${2:-}" == no-search ]] && search=(--no-search)
-  sitecheck reflow --chrome "$chrome" "${search[@]}" "$1"
+  [[ "${3:-}" == no-cells ]] && cells=(--no-reveal-cells)
+  sitecheck reflow --chrome "$chrome" "${search[@]}" "${cells[@]}" "$1"
 }
 
 # The Chrome warm-up (ADR-0003 part 6, amended for #26): a fresh runner VM

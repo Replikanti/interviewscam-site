@@ -1,0 +1,20 @@
+# case (7)'s cells (Replikanti/interviewscam#61, ADR-0003 part 6 amendment):
+# the skip link shown and legible at 320, 341 and 385 CSS px, each with the
+# script running and with scripting off, on a copy of reflow/pass-search
+# with today's assets/js/search.js and the real built stylesheet
+# (reflow_search_runner in tools/selftest.sh, mode cells: case (7)'s cells
+# on, case (8) off; CI only). Columns as in search-cases.tsv: name, file,
+# find (exactly one occurrence; - leaves the file as it is), replace,
+# expect (PASS, or a text the findings must hold), an optional patch list,
+# then optional file, find and replace triples applied in order.
+pass-real-stylesheet	search.js	-	-	PASS
+above-24rem	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{opacity:.05}@media(max-width:24rem){body>a{opacity:1}}	at 385 x 640 CSS px with the script running: (7) the label of the focused
+above-24rem-count	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{opacity:.05}@media(max-width:24rem){body>a{opacity:1}}	reveal cells: 8 of 12 legible
+band-341	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}@media(max-width:24rem){body>a{opacity:.05}}@media(max-width:21.25rem){body>a{opacity:1}}	at 341 x 640 CSS px with the script running: (7) the label of the focused
+scripting-off	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body:has(.copy[hidden])>a{opacity:.05}	at 320 x 640 CSS px with scripting off: (7) the label of the focused
+scripting-off-cover	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}.copy[hidden]+.copy-status{position:fixed;top:0;left:0;width:20rem;height:5rem;z-index:2;background:var(--color-card)}	at 320 x 640 CSS px with scripting off: (7) the focused 'a[.]visually-hidden'
+scripting-off-above-24rem	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body:has(.copy[hidden])>a{opacity:.05}@media(max-width:24rem){body:has(.copy[hidden])>a{opacity:1}}	at 385 x 640 CSS px with scripting off: (7) the label of the focused
+scripting-off-band-341	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}@media(max-width:24rem){body:has(.copy[hidden])>a{opacity:.05}}@media(max-width:21.25rem){body:has(.copy[hidden])>a{opacity:1}}	at 341 x 640 CSS px with scripting off: (7) the label of the focused
+fresh-load	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{transition:opacity 3600s;opacity:.05}@media(max-width:24rem){body>a{opacity:1}}	at 385 x 640 CSS px with the script running: (7) the label of the focused
+outside-at-385	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}@media(min-width:385px){.visually-hidden:focus{left:400px!important}}	outside the 385 x 640 viewport
+long-label-inside-385	index.html	>Skip to content</a>	>Skip to content, then read this page from its first heading down to its end</a>	PASS		a-z/index.html	>Skip to content</a>	>Skip to content, then read this page from its first heading down to its end</a>

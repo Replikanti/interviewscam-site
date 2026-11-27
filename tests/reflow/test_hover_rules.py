@@ -35,6 +35,15 @@ THICK = "text-decoration-thickness:var(--underline-hover-thickness)"
 # The three rules of the built stylesheet, as the pinned Hugo writes them.
 TODAY = ("a:hover{" + THICK + "}.pill:hover{text-decoration:underline}"
          ".copy:hover{" + THICK + "}")
+
+
+def without_states(found):
+    """The findings other than the CSS state rules of
+    Replikanti/interviewscam#61 (an at-rule, a function or a viewport unit,
+    which the cases below hold too, by design)."""
+    return [item for item in found if "Replikanti/interviewscam#61" not in item]
+
+
 # The review's example (run 1, finding 1): a header that covers the page
 # whenever the pointer is over it.
 OVERLAY = ("body:hover .site-header{position:fixed;inset:0 0 auto 0;height:100vh;"
@@ -333,7 +342,7 @@ class Unreadable(unittest.TestCase):
     HIDDEN = "main:has(a:hover) h2{opacity:0}"
 
     def refusal(self, css):
-        return [item for item in sitecheck.css_rule_problems(css).problems
+        return [item for item in without_states(sitecheck.css_rule_problems(css).problems)
                 if "browser" in item and "built stylesheet" in item]
 
     def test_review_string_forms(self):
@@ -356,7 +365,7 @@ class Unreadable(unittest.TestCase):
         css = (TODAY + ".x{background-image:url(a(b)}" + self.HIDDEN
                + ".y{width:calc(1px)}.z{grid-area:a)}")
         self.assertEqual(problems(css), [])
-        found = sitecheck.css_rule_problems(css).problems
+        found = without_states(sitecheck.css_rule_problems(css).problems)
         self.assertEqual(len(found), 1, found)
         self.assertIn("url(", found[0])
 
@@ -412,7 +421,7 @@ class Unreadable(unittest.TestCase):
                 self.assertEqual(self.refusal("x{y:" + word + "}"), [])
 
     def test_two_forms_two_findings(self):
-        found = sitecheck.css_rule_problems("a{x:'\n'}b{y:url(a(b)}").problems
+        found = without_states(sitecheck.css_rule_problems("a{x:'\n'}b{y:url(a(b)}").problems)
         self.assertEqual(len(found), 2, found)
 
     def test_one_finding_per_form(self):
@@ -433,7 +442,7 @@ class Wired(unittest.TestCase):
 
     def test_css_rule_problems_carries_it(self):
         self.assertEqual(sitecheck.css_rule_problems(TODAY).problems, [])
-        found = sitecheck.css_rule_problems(TODAY + OVERLAY).problems
+        found = without_states(sitecheck.css_rule_problems(TODAY + OVERLAY).problems)
         self.assertEqual(len(found), 1, found)
         self.assertIn("body:hover", found[0])
 
