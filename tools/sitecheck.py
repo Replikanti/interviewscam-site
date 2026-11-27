@@ -5257,9 +5257,15 @@ def nav_targets(page):
     return targets
 
 
-def text_param(record, key):
-    value = record.params.get(key)
+def str_or_none(value):
+    """A record value that names a table entry, as a string or None: a list
+    or a table is not hashable, so the raw value must not reach a dict
+    lookup (Replikanti/interviewscam#67); the records check has reported it."""
     return value if isinstance(value, str) else None
+
+
+def text_param(record, key):
+    return str_or_none(record.params.get(key))
 
 
 def is_persona(record):
@@ -5372,7 +5378,7 @@ def lookup_urls(record):
         possible |= {form.format(value) for form in LOOKUPS.values()}
         on = entry.get("listed_on")
         for service in on if isinstance(on, list) else []:
-            if service in LOOKUPS:
+            if isinstance(service, str) and service in LOOKUPS:
                 listed.add(LOOKUPS[service].format(value))
     return listed, possible
 
@@ -5680,7 +5686,7 @@ def report_items(page, page_path, reports):
         if a.text() != name:
             problems.append(f"rule 3: the link to {where} reads {show(a.text())}; it "
                             f"shows its record's name as it renders, {show(name)} (D6)")
-        state = record.params.get("state")
+        state = text_param(record, "state")
         chips = [n for n in li.walk() if "state-chip" in n.classes]
         chip, found = shown_one(chips, "state-chip",
                                 f"rule 3: the list item linking {where}")
@@ -5726,7 +5732,7 @@ def state_problems(page, record, chips):
     state sentence, and the What was checked list equal to state_basis, in
     order."""
     problems = []
-    state = record.params.get("state")
+    state = text_param(record, "state")
     if state not in STATE_CHIP:
         return problems  # the schema's finding
     chip, found = shown_one(chips, "state-chip", "rule 3")
@@ -6226,7 +6232,7 @@ def preview_record_problems(page, record, chips):
         if label is not None and el is not None and el.text() != label:
             problems.append(f"rule 21: the D7 label of og:description, {show(label)}, is not "
                             f"the page's record-label {show(el.text())}")
-        chip = STATE_CHIP.get(record.params.get("state"))
+        chip = STATE_CHIP.get(text_param(record, "state"))
         shown, _ = shown_one(chips, "state-chip", "rule 21")
         if chip is not None and shown is not None and shown.text() != chip:
             problems.append(f"rule 21: the state chip of og:description, {show(chip)}, is not "
@@ -6352,7 +6358,7 @@ def campaign_line_problems(page, record, campaigns, page_path):
             problems.append(f"rule 6: the campaign line reads {show(el.text())}, an "
                             f"unattributed report reads {show(UNATTRIBUTED)}")
         return problems
-    slug = campaign.get("slug")
+    slug = str_or_none(campaign.get("slug"))
     target = campaigns.get(slug)
     name = text_param(target, "name") if target else None
     source = source_by_id(record, campaign.get("source"))
@@ -6452,7 +6458,8 @@ def artifact_problems(page, record):
 def external_link_problems(page, record):
     """Rule 7: on a record page every external link is a source URL of the
     record or a lookup URL of one of its hashes."""
-    allowed = {s.get("url") for s in sources_of(record)} | lookup_urls(record)[1]
+    allowed = {url for url in (s.get("url") for s in sources_of(record))
+               if isinstance(url, str)} | lookup_urls(record)[1]
     return [f"rule 7: external link {show(href)} is neither a source URL of this "
             "record nor a lookup of one of its hashes (D8)"
             for href, _ in links_in(page.root)
@@ -7195,7 +7202,7 @@ def feed_report_entry(record):
         if isinstance(entry, dict):
             on = entry.get("listed_on") if isinstance(entry.get("listed_on"), list) else []
             entry["lookup_urls"] = [LOOKUPS[s].format(entry.get("value")) for s in on
-                                    if s in LOOKUPS]
+                                    if isinstance(s, str) and s in LOOKUPS]
     return {
         "slug": record.slug, "url": f"{SITE_ORIGIN}/reports/{record.slug}/",
         "name": None if hidden else p.get("name"), "name_hidden": hidden,
@@ -7733,7 +7740,7 @@ def index_campaign_text(record, campaigns):
     campaign = record.params.get("campaign")
     if not isinstance(campaign, dict):
         return UNATTRIBUTED
-    target = campaigns.get(campaign.get("slug"))
+    target = campaigns.get(str_or_none(campaign.get("slug")))
     name = text_param(target, "name") if target else None
     return INDEX_CAMPAIGN_LINE.format(campaign=squash(name)) if name is not None else None
 
@@ -7748,8 +7755,8 @@ def index_entry_text(record, campaigns):
         return None
     first = [rendered_name(record)]
     if record.section == "reports":
-        chip = STATE_CHIP.get(record.params.get("state"))
-        kind = NAME_TYPES.get(record.params.get("name_type"))
+        chip = STATE_CHIP.get(text_param(record, "state"))
+        kind = NAME_TYPES.get(text_param(record, "name_type"))
         line = index_campaign_text(record, campaigns)
         if chip is None or kind is None or line is None:
             return None
@@ -7781,7 +7788,7 @@ def index_text_problems(li, link, record, campaigns):
                         f"{show(link.text())}; it shows the record's name as it renders, "
                         f"{show(name)}")
     kind = INDEX_CAMPAIGN_TYPE if record.section == "campaigns" else \
-        NAME_TYPES.get(record.params.get("name_type"))
+        NAME_TYPES.get(text_param(record, "name_type"))
     el, found = shown_one([n for n in li.walk() if INDEX_TYPE in n.classes], INDEX_TYPE,
                           f"rule 15 (b): the entry of {where}")
     problems += found
@@ -7837,7 +7844,7 @@ def index_entry_problems(page, li, record, campaigns):
             problems.append(f"rule 15 (c): the campaign family of the unattributed "
                             f"{where} holds {len(links)} link(s); it links nothing")
         return problems
-    slug = campaign.get("slug")
+    slug = str_or_none(campaign.get("slug"))
     target = campaigns.get(slug)
     name = text_param(target, "name") if target else None
     if name is None:
@@ -8317,8 +8324,8 @@ def report_regions(record):
     spec is a `pinned` tree compared with its texts (whole True) or a bare
     tree compared by shape (whole False); a region whose spec is None must
     not be on the page."""
-    state = record.params.get("state")
-    name_type = record.params.get("name_type")
+    state = text_param(record, "state")
+    name_type = text_param(record, "name_type")
     if state not in STATE_CHIP or name_type not in NAME_TYPES:
         return []  # the schema's finding
     chip = STATE_CHIP[state]
@@ -8487,7 +8494,7 @@ def state_text_problems(page, record):
     strings and attribute values included, holds the other state's
     sentence, so no other element of the page (a lead, a body paragraph, a
     footer line) states the other state, however it is spelt."""
-    state = record.params.get("state")
+    state = text_param(record, "state")
     if state not in STATE_SENTENCE:
         return []
     shown = sentence_folds(page.root.bidi_text())
@@ -14019,7 +14026,7 @@ def preview_card_texts(record):
     token)] between the name and the brand."""
     name = HIDDEN_NAME if is_hidden(record) else display_name(record)
     if record.section == "reports":
-        state, kind = record.params.get("state"), record.params.get("name_type")
+        state, kind = text_param(record, "state"), text_param(record, "name_type")
         chip, kind = STATE_CHIP.get(state), NAME_TYPES.get(kind)
         sentence, label = STATE_SENTENCE.get(state), record_label(record)
         if None in (chip, kind, sentence, label):
