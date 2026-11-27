@@ -17729,13 +17729,12 @@ def search_case(tools, session, findings, public, origin, load):
                 # already failed, and every later query would navigate and
                 # reload Home again, or wait REFLOW_TIMEOUT for a fetch that
                 # never starts when the script is inert (235 queries on
-                # reflow/pass-search). Home is reloaded for the double
-                # submit below.
+                # reflow/pass-search). The double submit below loads Home
+                # itself. tests/reflow/test_search_stop.py holds the stop.
                 findings.add(where, f"(8a) query {label} left Home (now on "
                              f"{show(seen.get('path'))}); the answer shows on the same page "
                              f"(ADR-0005 part 4), the {expected} answer by the oracle; "
                              "the later queries are not run")
-                before = open_home().get("sections") or {}
                 break
             shown = seen.get("shown") or []
             if expected == "empty":

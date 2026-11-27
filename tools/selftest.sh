@@ -966,8 +966,10 @@ for row in rows:
 # whose lines hold a line that starts with "FAIL ": the rows still running
 # are terminated, and the table line says how many rows were not reported.
 # Rows are independent and print in table order, so that row is the one a
-# full run reports first, and the verdict of a sweep does not change: only
-# a killed run ends sooner (Replikanti/interviewscam#47, ADR-0008 part 5).
+# full run reports first. A control or a survivor has no failing row and
+# runs every row; a mutant that fails a row ends sooner, so one that also
+# slows every row is KILLED inside the budget instead of TIMEOUT past it
+# (Replikanti/interviewscam#47, ADR-0008 part 5 amendment).
 stop_at_first_fail = os.environ.get("SELFTEST_STOP_AT_FIRST_FAIL") == "1"
 stopped, reported = None, 0
 with multiprocessing.get_context("fork").Pool(REFLOW_SEARCH_JOBS) as pool:
@@ -997,10 +999,13 @@ PY
 # search_cases_runner and reflow_search_runner against stub sitecheck
 # modules in a temporary directory, whose commands answer what the row's
 # outcome.txt says (pass, fail, a failure whose text holds "FAIL", raise,
-# exit). search_cases_runner: a row whose command raises KeyError is a FAIL
-# naming the exception, also when it expects PASS or a text the message
-# holds, the next row still runs, the table line is still printed last, and
-# a SystemExit is not caught. reflow_search_runner: with
+# a TypeError, a KeyError with a dot, exit); the stub's show is the real
+# one of tools/sitecheck.py, so the message is printed as findings print
+# it. search_cases_runner: a row whose command raises KeyError or TypeError
+# is a FAIL naming the exception, also when it expects PASS or a text the
+# message holds, its message defanged by the real show, the next row still
+# runs, the table line is still printed last, and a SystemExit is not
+# caught. reflow_search_runner: with
 # SELFTEST_STOP_AT_FIRST_FAIL=1 the output is exactly the lines up to the
 # first failing row (row 1 or the last row) plus the stopped line; without
 # the switch, with it set to anything but 1, and with every row passing,
@@ -1024,11 +1029,14 @@ case_runner_rows() {
   printf 'pass\n' >"$cr_tmp/reflow-base/outcome.txt"
   printf 'x\n' >"$cr_tmp/reflow-base/js/search.min.0a.js"
   printf 'x\n' >"$cr_tmp/search.js"
+  printf '%s\n' "$SELFTEST_ROOT/tools/sitecheck.py" >"$cr_tmp/real.txt"
   printf '<script src=/js/search.min.0a.js integrity=sha384-x defer>\n' \
     >"$cr_tmp/reflow-base/index.html"
   cat >"$cr_tmp/stub.py" <<'PY'
 """A stub of tools/sitecheck.py for case-runner: each command answers
-what outcome.txt of the case says."""
+what outcome.txt of the case says. show is the real one (real.txt names
+tools/sitecheck.py), so a raised message is defanged as findings are."""
+import importlib.util
 from pathlib import Path
 
 REFLOW_LAUNCH_TIMEOUT = 1
@@ -1038,14 +1046,21 @@ class UsageError(Exception):
     pass
 
 
-def show(value, limit=120):
-    return repr(str(value)[:limit])
+_real = Path(__file__).with_name("real.txt").read_text(encoding="utf-8").strip()
+_spec = importlib.util.spec_from_file_location("sitecheck_real", _real)
+_module = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_module)
+show = _module.show
 
 
 def answer(root):
     word = (Path(root) / "outcome.txt").read_text(encoding="utf-8").strip()
     if word == "raise":
         raise KeyError("name_type")
+    if word == "typeerror":
+        raise TypeError("unhashable type: 'list'")
+    if word == "raisedot":
+        raise KeyError("campaign.source")
     if word == "exit":
         raise SystemExit(5)
     if word == "fail":
@@ -1069,7 +1084,7 @@ def cmd_records(args):
 def cmd_reflow(args):
     return answer(args.public)
 PY
-  printf 'r-raise\toutcome.txt\tpass\traise\tPASS\nr-raise-text\toutcome.txt\tpass\traise\tname_type\nr-next\toutcome.txt\tpass\tok\tPASS\n' \
+  printf 'r-raise\toutcome.txt\tpass\traise\tPASS\nr-raise-text\toutcome.txt\tpass\traise\tname_type\nr-type\toutcome.txt\tpass\ttypeerror\tPASS\nr-dot\toutcome.txt\tpass\traisedot\tPASS\nr-next\toutcome.txt\tpass\tok\tPASS\n' \
     >"$cr_tmp/render.tsv"
   printf 'r-exit\toutcome.txt\tpass\texit\tPASS\nr-after\toutcome.txt\tpass\tok\tPASS\n' \
     >"$cr_tmp/render-exit.tsv"
@@ -1083,13 +1098,23 @@ PY
   done
   grep -q 'Traceback' <<<"$cr_out" && cr_bad+=" a traceback was printed;"
   cr_row raising-row-named "$cr_bad${cr_bad:+ output: $(tr '\n' '|' <<<"$cr_out")}"
+  # Any Exception, not only KeyError: a TypeError is a named FAIL too.
   cr_bad=""
-  [[ "$(grep -E '^(ok   |FAIL )x/' <<<"$cr_out" | sed -n 3p)" == "ok   x/r-next (passed as expected)" ]] \
+  grep -qxF "FAIL x/r-type: cmd_render raised TypeError: \"unhashable type: 'list'\"" <<<"$cr_out" \
+    || cr_bad+=" no FAIL line naming TypeError for r-type; output: $(tr '\n' '|' <<<"$cr_out")"
+  cr_row raising-row-any-exception "$cr_bad"
+  # The message goes through sitecheck's show: its dot is defanged.
+  cr_bad=""
+  grep -qxF "FAIL x/r-dot: cmd_render raised KeyError: \"'campaign[.]source'\"" <<<"$cr_out" \
+    || cr_bad+=" no FAIL line with the defanged message for r-dot; output: $(tr '\n' '|' <<<"$cr_out")"
+  cr_row raising-row-message-defanged "$cr_bad"
+  cr_bad=""
+  [[ "$(grep -E '^(ok   |FAIL )x/' <<<"$cr_out" | sed -n 5p)" == "ok   x/r-next (passed as expected)" ]] \
     || cr_bad+=" the row after the raising rows is not 'ok   x/r-next (passed as expected)'; output: $(tr '\n' '|' <<<"$cr_out")"
   cr_row raising-row-next-runs "$cr_bad"
   cr_bad=""
-  [[ "$(tail -n 1 <<<"$cr_out")" == "ok   x/table (3 rows)" ]] \
-    || cr_bad+=" the last line is not 'ok   x/table (3 rows)'; output: $(tr '\n' '|' <<<"$cr_out")"
+  [[ "$(tail -n 1 <<<"$cr_out")" == "ok   x/table (5 rows)" ]] \
+    || cr_bad+=" the last line is not 'ok   x/table (5 rows)'; output: $(tr '\n' '|' <<<"$cr_out")"
   cr_row table-line-after-raise "$cr_bad"
   cr_out="$(search_cases_runner "$cr_tmp/stub.py" "$cr_tmp/render-exit.tsv" "$cr_tmp/render-base" \
     "$cr_tmp/schema" x 2>&1)"
@@ -3101,6 +3126,19 @@ reset(({}, {}))
 got = sc.sentence_folds("a\u0345")
 row("marks-before-casefold", got[1:] == ("a",) * 6,
     f"every skeleton reading of a + U+0345 with an empty table: {got[1:]!r}")
+reset()
+
+# Invisibles dropped inside the loop, whatever the table holds
+# (Replikanti/interviewscam#47 fix round 1): a test table whose target
+# holds U+200B after a letter must fold to the letter alone, with marks
+# read and without. The real table has no target with an invisible and no
+# case fold or normalization makes one, so only a test table reaches this
+# drop.
+reset(({ord("a"): "b​"}, {ord("a"): "b​"}))
+got = [sc._skeleton("a", capital_i, marks) for capital_i in (False, True)
+       for marks in (False, True)]
+row("invisible-after-table", got == ["b"] * 4,
+    f"a with a table a -> b + U+200B, R1 and R2, marks off and on: {got!r}")
 reset()
 
 # SKELETON_ROUNDS, inclusive, against the number of ADR-0004 Numbers (4,
