@@ -26,6 +26,12 @@ SELFTEST_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SELFTEST_ROOT/tools/check.sh"
 
 FIXTURES="$SELFTEST_ROOT/tests/fixtures"
+# REFLOW_ISOLATION_CASES (Replikanti/interviewscam#66): an inventory of the
+# cases each tests/reflow module runs, <module>:<cases>, checked exactly by
+# reflow-isolation/case-pin. A PR that adds or removes a case there updates
+# its count in the same diff; removing a module or a case is then an edit
+# under tools/ (a safety-net change), not a quiet deletion.
+REFLOW_ISOLATION_CASES=(test_hover_rules:58 test_isolation:100 test_legibility:18 test_search_stop:4)
 # The version the synthetic Lighthouse reports in tests/fixtures/lighthouse/
 # carry. Fixed, not the pin, so a Lighthouse upgrade does not touch them.
 LIGHTHOUSE_FIXTURE_VERSION=13.6.0
@@ -1010,10 +1016,32 @@ PY
 # first failing row (row 1 or the last row) plus the stopped line; without
 # the switch, with it set to anything but 1, and with every row passing,
 # it is the full output; an ok line whose expect text holds FAIL does not
-# stop it. Called by selftest_blocks, whose counters it updates.
+# stop it. Every reflow_search_runner call runs under cr_watchdog
+# (Replikanti/interviewscam#66): in its own session, its process group
+# SIGKILLed after cr_watchdog_s, so a stop that hangs (a missing break
+# after pool.terminate()) fails its row by name instead of holding the
+# suite until a sweep's budget calls it TIMEOUT, and after a hang the
+# later calls are not run, so a hang of any kind costs one window.
+# watchdog-kills-hang and watchdog-skips-after-hang prove the watchdog on a
+# stub row that sleeps. The calls get TMPDIR inside cr_tmp, so the copy a
+# killed row leaves goes with it (watchdog-kills-hang finds it there). The numbers (also ADR-0008 Numbers, "case-runner
+# watchdog"): 60 s is about 29 times the slowest healthy call measured
+# (2.07 s, 12 calls in heavy.slice); below about 10 s a loaded machine
+# could fail a healthy call as a hang, above 220 s a hang could pass a
+# sweep budget (2 x T + 220 s, ADR-0008 part 8) for a small control time.
+# The kill row's limit is 5 s: the stub writes its pid once a pool worker
+# starts the row, and a whole 5-row table took at most 2.07 s. Its stub
+# sleeps 60 s, more than the row's 30 s bound (6 times the limit), so a
+# watchdog that never fires is told apart from one that fires; the
+# worker must be gone within 5 s, far below the stub's 60 s, so a kill of
+# the leader alone is caught. Called by selftest_blocks, whose counters it
+# updates.
 case_runner_rows() {
-  local cr_tmp cr_bad cr_rc cr_out cr_name
+  local cr_tmp cr_bad cr_rc cr_out cr_name cr_watchdog_s=60
   cr_tmp="$(mktemp -d)" || { echo "FAIL case-runner/setup: mktemp failed"; n_failed=$((n_failed + 1)); return; }
+  # The rows' temporary directories, so a killed row leaves nothing
+  # behind once cr_tmp is removed.
+  mkdir "$cr_tmp/tmp"
   # cr_row <name> <bad>: one case-runner line from the collected problems.
   cr_row() {
     if [[ -z "$2" ]]; then
@@ -1037,6 +1065,8 @@ case_runner_rows() {
 what outcome.txt of the case says. show is the real one (real.txt names
 tools/sitecheck.py), so a raised message is defanged as findings are."""
 import importlib.util
+import os
+import time
 from pathlib import Path
 
 REFLOW_LAUNCH_TIMEOUT = 1
@@ -1069,6 +1099,11 @@ def answer(root):
     if word == "failtext":
         print("FAIL: FAIL x")
         return 1
+    if word == "hang":
+        Path(__file__).with_name("hang.pid").write_text(str(os.getpid()), encoding="utf-8")
+        time.sleep(60)
+        print("stub checked")
+        return 0
     print("stub checked")
     return 0
 
@@ -1140,17 +1175,95 @@ PY
       fi
     done
   }
-  # cr_reflow <table> <switch|-unset>: the runner's output.
+  # cr_watchdog <seconds> <log> <command>...: runs the command in its own
+  # session, its output into <log> (a file, not a pipe, so an orphan that
+  # holds the descriptor cannot block the caller), polled as run_selftest
+  # in tools/mutate.py does. Once it has exited, or at the limit (a tie
+  # counts as hung), the whole process group gets SIGKILL before the
+  # leader is reaped, also on Ctrl-C (finally), so no pool worker outlives
+  # the call. Prints the log unchanged; at the limit it adds the watchdog
+  # line and exits 124, else the command's status (128 + n for a signal).
+  cr_watchdog() {
+    python3 -I -B - "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+limit, log_path, command = float(sys.argv[1]), sys.argv[2], sys.argv[3:]
+hung = False
+with open(log_path, "wb") as log:
+    proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log,
+                            stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        end = time.monotonic() + max(limit, 0)
+        while True:
+            if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+                break
+            left = end - time.monotonic()
+            if left <= 0:
+                hung = True
+                break
+            time.sleep(min(0.05, left))
+    finally:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        proc.wait()
+data = Path(log_path).read_bytes()
+sys.stdout.buffer.write(data)
+if hung:
+    if data and not data.endswith(b"\n"):
+        sys.stdout.buffer.write(b"\n")
+    sys.stdout.buffer.write(f"case-runner watchdog: reflow_search_runner did not exit within "
+                            f"{limit:g} s, its process group killed\n".encode("utf-8"))
+    sys.stdout.flush()
+    sys.exit(124)
+sys.stdout.flush()
+sys.exit(proc.returncode if proc.returncode >= 0 else 128 - proc.returncode)
+PY
+  }
+  # cr_reflow <table> <switch|-unset> [<seconds>]: the runner's output,
+  # under cr_watchdog (default cr_watchdog_s); exit 124 writes the hung
+  # flag, and once it exists no later call runs.
   cr_reflow() {
     (
+      if [[ -e "$cr_tmp/hung" ]]; then
+        echo "case-runner watchdog: not run, an earlier reflow_search_runner call hung"
+        exit 1
+      fi
       if [[ "$2" == -unset ]]; then
         unset SELFTEST_STOP_AT_FIRST_FAIL
       else
         export SELFTEST_STOP_AT_FIRST_FAIL="$2"
       fi
-      reflow_search_runner "$cr_tmp/stub.py" "$1" "$cr_tmp/reflow-base" "$cr_tmp/search.js" \
-        /nonexistent 2>&1
+      export -f reflow_search_runner
+      # shellcheck disable=SC2016
+      TMPDIR="$cr_tmp/tmp" cr_watchdog "${3:-$cr_watchdog_s}" "$cr_tmp/watch.log" bash -c 'reflow_search_runner "$@"' _ \
+        "$cr_tmp/stub.py" "$1" "$cr_tmp/reflow-base" "$cr_tmp/search.js" /nonexistent 2>&1
+      cr_rc=$?
+      [[ $cr_rc -eq 124 ]] && : >"$cr_tmp/hung"
+      exit "$cr_rc"
     )
+  }
+  # cr_diff <got> <want>: nothing when equal, else the problem text: the
+  # hang and its limit when got holds the watchdog line, the not-run text
+  # when got is the not-run line, else the output.
+  cr_diff() {
+    local secs
+    [[ "$1" == "$2" ]] && return 0
+    secs="$(sed -n 's/^case-runner watchdog: reflow_search_runner did not exit within \(.*\) s, its process group killed$/\1/p' <<<"$1" | tail -n 1)"
+    if [[ -n "$secs" ]]; then
+      printf ' reflow_search_runner hung, killed by the case-runner watchdog after %s s; output: %s' \
+        "$secs" "$(tr '\n' '|' <<<"$1")"
+    elif [[ "$1" == "case-runner watchdog: not run, an earlier reflow_search_runner call hung" ]]; then
+      printf ' not run, an earlier reflow_search_runner call hung'
+    else
+      printf ' output: %s' "$(tr '\n' '|' <<<"$1")"
+    fi
   }
   local cr_want cr_got cr_off cr_value
   cr_fail_lines() {
@@ -1160,41 +1273,35 @@ PY
   cr_want="$(cr_fail_lines r1
     echo "FAIL reflow-search/table: stopped after reflow-search/r1, the first failing row (SELFTEST_STOP_AT_FIRST_FAIL=1); 4 of 5 rows not reported")"
   cr_got="$(cr_reflow "$cr_tmp/first.tsv" 1)"
-  cr_bad=""
-  [[ "$cr_got" == "$cr_want" ]] || cr_bad=" output: $(tr '\n' '|' <<<"$cr_got")"
-  cr_row reflow-stop-first-row "$cr_bad"
+  cr_row reflow-stop-first-row "$(cr_diff "$cr_got" "$cr_want")"
 
   cr_table "$cr_tmp/last.tsv" pass:PASS pass:PASS pass:PASS pass:PASS fail:PASS
   cr_want="$(for cr_name in r1 r2 r3 r4; do echo "ok   reflow-search/$cr_name (passed as expected)"; done
     cr_fail_lines r5
     echo "FAIL reflow-search/table: stopped after reflow-search/r5, the first failing row (SELFTEST_STOP_AT_FIRST_FAIL=1); 0 of 5 rows not reported")"
   cr_got="$(cr_reflow "$cr_tmp/last.tsv" 1)"
-  cr_bad=""
-  [[ "$cr_got" == "$cr_want" ]] || cr_bad=" output: $(tr '\n' '|' <<<"$cr_got")"
-  cr_row reflow-stop-last-row "$cr_bad"
+  cr_row reflow-stop-last-row "$(cr_diff "$cr_got" "$cr_want")"
 
   cr_table "$cr_tmp/all.tsv" pass:PASS pass:PASS pass:PASS pass:PASS pass:PASS
   cr_want="$(for cr_name in r1 r2 r3 r4 r5; do echo "ok   reflow-search/$cr_name (passed as expected)"; done
     echo "ok   reflow-search/table (5 rows)")"
   cr_bad=""
   cr_got="$(cr_reflow "$cr_tmp/all.tsv" 1)"
-  [[ "$cr_got" == "$cr_want" ]] || cr_bad+=" with the switch: $(tr '\n' '|' <<<"$cr_got");"
+  [[ "$cr_got" == "$cr_want" ]] || cr_bad+=" with the switch:$(cr_diff "$cr_got" "$cr_want");"
   cr_got="$(cr_reflow "$cr_tmp/all.tsv" -unset)"
-  [[ "$cr_got" == "$cr_want" ]] || cr_bad+=" without it: $(tr '\n' '|' <<<"$cr_got");"
+  [[ "$cr_got" == "$cr_want" ]] || cr_bad+=" without it:$(cr_diff "$cr_got" "$cr_want");"
   cr_row reflow-stop-all-pass "$cr_bad"
 
   cr_off="$(cr_fail_lines r1
     for cr_name in r2 r3 r4 r5; do echo "ok   reflow-search/$cr_name (passed as expected)"; done
     echo "ok   reflow-search/table (5 rows)")"
   cr_got="$(cr_reflow "$cr_tmp/first.tsv" -unset)"
-  cr_bad=""
-  [[ "$cr_got" == "$cr_off" ]] || cr_bad=" output: $(tr '\n' '|' <<<"$cr_got")"
-  cr_row reflow-stop-off-without-switch "$cr_bad"
+  cr_row reflow-stop-off-without-switch "$(cr_diff "$cr_got" "$cr_off")"
 
   cr_bad=""
   for cr_value in yes 0 "" " 1" "1 " true; do
     cr_got="$(cr_reflow "$cr_tmp/first.tsv" "$cr_value")"
-    [[ "$cr_got" == "$cr_off" ]] || cr_bad+=" SELFTEST_STOP_AT_FIRST_FAIL='$cr_value' stopped the run: $(tr '\n' '|' <<<"$cr_got");"
+    [[ "$cr_got" == "$cr_off" ]] || cr_bad+=" SELFTEST_STOP_AT_FIRST_FAIL='$cr_value' stopped the run:$(cr_diff "$cr_got" "$cr_off");"
   done
   cr_row reflow-stop-switch-not-1 "$cr_bad"
 
@@ -1204,10 +1311,256 @@ PY
     cr_fail_lines r3
     echo "FAIL reflow-search/table: stopped after reflow-search/r3, the first failing row (SELFTEST_STOP_AT_FIRST_FAIL=1); 1 of 4 rows not reported")"
   cr_got="$(cr_reflow "$cr_tmp/text.tsv" 1)"
+  cr_row reflow-ok-line-mentions-fail "$(cr_diff "$cr_got" "$cr_want")"
+
+  # The watchdog rows come last: the hung flag they leave touches no
+  # other row. The hang stub writes its pid in the pool worker that runs
+  # the row and sleeps 60 s; a 5 s limit must end the call with exit 124,
+  # the watchdog line last, the worker gone (only a kill of the whole
+  # process group reaches it) and the flag written.
+  local cr_t0 cr_pid cr_line
+  cr_line="case-runner watchdog: reflow_search_runner did not exit within 5 s, its process group killed"
+  cr_table "$cr_tmp/hang.tsv" hang:PASS
+  cr_t0=$SECONDS
+  cr_got="$(cr_reflow "$cr_tmp/hang.tsv" 1 5)"
+  cr_rc=$?
   cr_bad=""
-  [[ "$cr_got" == "$cr_want" ]] || cr_bad=" output: $(tr '\n' '|' <<<"$cr_got")"
-  cr_row reflow-ok-line-mentions-fail "$cr_bad"
+  [[ $cr_rc -eq 124 ]] || cr_bad+=" exit $cr_rc, not 124;"
+  [[ "$(tail -n 1 <<<"$cr_got")" == "$cr_line" ]] || cr_bad+=" the last line is not '$cr_line';"
+  (( SECONDS - cr_t0 < 30 )) || cr_bad+=" took $((SECONDS - cr_t0)) s, want under 30 s;"
+  if [[ -s "$cr_tmp/hang.pid" ]]; then
+    cr_pid="$(<"$cr_tmp/hang.pid")"
+    for _ in {1..50}; do
+      st_alive "$cr_pid" || break
+      sleep 0.1
+    done
+    ! st_alive "$cr_pid" || cr_bad+=" the hang stub's process $cr_pid still runs 5 s after the call;"
+  else
+    cr_bad+=" the hang stub never ran (no hang.pid);"
+  fi
+  [[ -e "$cr_tmp/hung" ]] || cr_bad+=" no hung flag written;"
+  # The killed row's copy of the base stays behind, inside cr_tmp: the
+  # rows got TMPDIR, so a kill leaves nothing in the system temp directory.
+  compgen -G "$cr_tmp/tmp/*/case/outcome.txt" >/dev/null \
+    || cr_bad+=" the killed row left no copy under cr_tmp/tmp (TMPDIR not passed on);"
+  [[ "$(cr_diff "$cr_got" "")" == " reflow_search_runner hung, killed by the case-runner watchdog after 5 s"* ]] \
+    || cr_bad+=" cr_diff gave '$(cr_diff "$cr_got" "")';"
+  cr_row watchdog-kills-hang "$cr_bad${cr_bad:+ output: $(tr '\n' '|' <<<"$cr_got")}"
+
+  # After a hang no later call runs: the all-pass table prints only the
+  # not-run line, at once.
+  cr_want="$(for cr_name in r1 r2 r3 r4 r5; do echo "ok   reflow-search/$cr_name (passed as expected)"; done
+    echo "ok   reflow-search/table (5 rows)")"
+  cr_t0=$SECONDS
+  cr_got="$(cr_reflow "$cr_tmp/all.tsv" 1)"
+  cr_rc=$?
+  cr_bad=""
+  [[ $cr_rc -eq 1 ]] || cr_bad+=" exit $cr_rc, not 1;"
+  [[ "$cr_got" == "case-runner watchdog: not run, an earlier reflow_search_runner call hung" ]] \
+    || cr_bad+=" the output is not the not-run line;"
+  (( SECONDS - cr_t0 < 5 )) || cr_bad+=" took $((SECONDS - cr_t0)) s, want under 5 s;"
+  [[ "$(cr_diff "$cr_got" "$cr_want")" == " not run, an earlier reflow_search_runner call hung" ]] \
+    || cr_bad+=" cr_diff gave '$(cr_diff "$cr_got" "$cr_want")';"
+  cr_row watchdog-skips-after-hang "$cr_bad${cr_bad:+ output: $(tr '\n' '|' <<<"$cr_got")}"
   rm -rf "$cr_tmp"
+}
+
+# reflow_isolation_case_pin <unittest -v output file> <tests dir>
+# <module:count>... (Replikanti/interviewscam#66): one problem per line,
+# nothing on a match (exit 1 / 0). The output is read from the file
+# because stdin carries the script. A case line is `test_<name>
+# (<module>.<rest>) ... <result>` with any result: the pin counts the
+# cases run, and failing them is the unittest row's job. Problems: an
+# empty pin; a malformed entry (not <test_name>:<n>, n a positive decimal
+# without a leading zero) or a module pinned twice; a pinned module whose
+# file is missing; a pinned module that ran another number of cases,
+# exact, both ways; a module seen in the output, or a test_*.py file in
+# the directory, that the pin does not list; case lines that name no
+# module (a non-ASCII or otherwise unparsed module), when the attributed
+# cases do not add up to unittest's Ran count.
+reflow_isolation_case_pin() {
+  python3 -I -B - "$@" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+out_path, tests_dir, *entries = sys.argv[1:]
+text = Path(out_path).read_text(encoding="utf-8", errors="replace")
+REF = "(REFLOW_ISOLATION_CASES in tools/selftest.sh)"
+problems, pin = [], {}
+if not entries:
+    problems.append(f"the pin is empty {REF}")
+for entry in entries:
+    m = re.fullmatch(r"(test_[A-Za-z0-9_]+):([1-9][0-9]*)", entry)
+    if m is None:
+        problems.append(f"malformed pin entry {entry!r}, want <test_name>:<n>, n a positive "
+                        f"decimal without a leading zero {REF}")
+    elif m.group(1) in pin:
+        problems.append(f"{m.group(1)} is pinned twice {REF}")
+    else:
+        pin[m.group(1)] = int(m.group(2))
+counts = {}
+for m in re.finditer(r"^test_[A-Za-z0-9_]+ \((?P<m>[A-Za-z0-9_]+)\.[^()]*\) \.\.\. ", text,
+                     re.MULTILINE):
+    counts[m.group("m")] = counts.get(m.group("m"), 0) + 1
+files = {path.stem for path in Path(tests_dir).glob("test_*.py")}
+for module, n in pin.items():
+    if not (Path(tests_dir) / f"{module}.py").is_file():
+        problems.append(f"tests/reflow/{module}.py is missing (pinned at {n} cases)")
+    elif counts.get(module, 0) != n:
+        problems.append(f"{module} ran {counts.get(module, 0)} cases, pinned {n} {REF}")
+for module in sorted((set(counts) | files) - set(pin)):
+    problems.append(f"{module} ran {counts.get(module, 0)} cases and is not pinned")
+ran = re.findall(r"^Ran ([0-9]+) tests? in ", text, re.MULTILINE)
+attributed = sum(counts.values())
+if len(ran) != 1:
+    problems.append(f"{len(ran)} 'Ran N tests' lines in the output, want exactly one")
+elif int(ran[0]) > attributed:
+    problems.append(f"{int(ran[0]) - attributed} case lines name no module")
+elif int(ran[0]) < attributed:
+    problems.append(f"{attributed} case lines name a module, unittest ran {ran[0]}")
+for problem in problems:
+    print(problem)
+sys.exit(1 if problems else 0)
+PY
+}
+
+# reflow_isolation_case_pin_rows (Replikanti/interviewscam#66, local and
+# CI, seconds): the reflow-isolation/case-pin-<row> lines prove
+# reflow_isolation_case_pin on a synthetic pin (test_a:2 test_b:1), empty
+# module files in a temporary directory and synthetic `unittest -v` lines
+# with a matching Ran line (fails-on-bad-ran-count writes its own),
+# independent of the real run. Each failing row
+# requires its own problem text, and the match row keeps a check that
+# always complains from passing them. Called by selftest_blocks, whose
+# counters it updates.
+reflow_isolation_case_pin_rows() {
+  local cp_tmp cp_dir cp_n=0 cp_bad cp_got cp_rc cp_entry cp_want cp_line
+  cp_tmp="$(mktemp -d)" || { echo "FAIL reflow-isolation/case-pin-setup: mktemp failed"; n_failed=$((n_failed + 1)); return; }
+  # cp_row <name> <bad>: one line from the collected problems.
+  cp_row() {
+    if [[ -z "$2" ]]; then
+      echo "ok   reflow-isolation/case-pin-$1"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL reflow-isolation/case-pin-$1:$2"
+      n_failed=$((n_failed + 1))
+    fi
+  }
+  # cp_fresh <file>...: a fresh tests directory holding these empty files.
+  cp_fresh() {
+    local file
+    cp_n=$((cp_n + 1))
+    cp_dir="$cp_tmp/d$cp_n"
+    mkdir "$cp_dir"
+    for file in "$@"; do : >"$cp_dir/$file"; done
+  }
+  # cp_output <case line>...: the -v output of these case lines, with the
+  # Ran line counting them, in the file reflow_isolation_case_pin reads.
+  cp_output() {
+    {
+      printf '%s\n' "$@"
+      printf '\n----------------------------------------------------------------------\n'
+      printf 'Ran %s tests in 0.001s\n\nOK\n' "$#"
+    } >"$cp_tmp/out.txt"
+  }
+  # cp_pin <pin entry>...: the checker's problems in cp_got, its exit in cp_rc.
+  cp_pin() {
+    cp_got="$(reflow_isolation_case_pin "$cp_tmp/out.txt" "$cp_dir" "$@" 2>&1)"
+    cp_rc=$?
+  }
+  # cp_want <problem>: a problem when the checker did not report it.
+  cp_want() {
+    if [[ $cp_rc -ne 1 ]] || ! grep -qxF "$1" <<<"$cp_got"; then
+      printf " want exit 1 and '%s', got exit %s: %s;" "$1" "$cp_rc" "$(tr '\n' '|' <<<"$cp_got")"
+    fi
+  }
+  local cp_a1="test_x (test_a.A.test_x) ... ok" cp_a2="test_y (test_a.A.test_y) ... ok"
+  local cp_a3="test_w (test_a.A.test_w) ... FAIL" cp_b1="test_z (test_b.B.test_z) ... ok"
+  local cp_ref="(REFLOW_ISOLATION_CASES in tools/selftest.sh)"
+
+  cp_fresh test_a.py test_b.py
+  cp_output "$cp_a1" "$cp_a2" "$cp_b1"
+  cp_pin test_a:2 test_b:1
+  cp_bad=""
+  [[ $cp_rc -eq 0 && -z "$cp_got" ]] || cp_bad=" want exit 0 and no problem, got exit $cp_rc: $(tr '\n' '|' <<<"$cp_got")"
+  cp_row passes-on-match "$cp_bad"
+
+  cp_fresh test_a.py
+  cp_output "$cp_a1" "$cp_a2"
+  cp_pin test_a:2 test_b:1
+  cp_row fails-on-missing-file "$(cp_want "tests/reflow/test_b.py is missing (pinned at 1 cases)")"
+
+  cp_fresh test_a.py test_b.py
+  cp_output "$cp_a1" "$cp_b1"
+  cp_pin test_a:2 test_b:1
+  cp_row fails-on-fewer-cases "$(cp_want "test_a ran 1 cases, pinned 2 $cp_ref")"
+
+  # A failing case counts as run: the pin holds presence, the unittest row
+  # fails the case.
+  cp_fresh test_a.py test_b.py
+  cp_output "$cp_a1" "$cp_a2" "$cp_a3" "$cp_b1"
+  cp_pin test_a:2 test_b:1
+  cp_row fails-on-more-cases "$(cp_want "test_a ran 3 cases, pinned 2 $cp_ref")"
+
+  # Members: a module of its own and the subpackage form, whose first
+  # segment is the module name unittest reports.
+  cp_fresh test_a.py test_b.py
+  cp_output "$cp_a1" "$cp_a2" "$cp_b1" "test_v (test_c.C.test_v) ... ok" \
+    "test_u (sub.test_a.A.test_u) ... ok"
+  cp_pin test_a:2 test_b:1
+  cp_bad="$(cp_want "test_c ran 1 cases and is not pinned")$(cp_want "sub ran 1 cases and is not pinned")"
+  cp_row fails-on-unpinned-module "$cp_bad"
+
+  cp_fresh test_a.py test_b.py test_c.py
+  cp_output "$cp_a1" "$cp_a2" "$cp_b1"
+  cp_pin test_a:2 test_b:1
+  cp_row fails-on-unpinned-file "$(cp_want "test_c ran 0 cases and is not pinned")"
+
+  # Members: a module name with a Cyrillic a (U+0430) and a case line
+  # with no parenthesised id, each counted by the Ran line alone.
+  cp_bad=""
+  for cp_line in "test_t (test_$(printf '\320\260').A.test_t) ... ok" "test_s ... ok"; do
+    cp_fresh test_a.py test_b.py
+    cp_output "$cp_a1" "$cp_a2" "$cp_b1" "$cp_line"
+    cp_pin test_a:2 test_b:1
+    cp_bad+="$(cp_want "1 case lines name no module")"
+  done
+  cp_row fails-on-unattributed-row "$cp_bad"
+
+  # Members: no Ran line, two Ran lines, a Ran count below the case lines.
+  cp_fresh test_a.py test_b.py
+  cp_bad=""
+  printf '%s\n' "$cp_a1" "$cp_a2" "$cp_b1" "" OK >"$cp_tmp/out.txt"
+  cp_pin test_a:2 test_b:1
+  cp_bad+="$(cp_want "0 'Ran N tests' lines in the output, want exactly one")"
+  printf '%s\n' "$cp_a1" "$cp_a2" "$cp_b1" "Ran 3 tests in 0.001s" "Ran 3 tests in 0.001s" >"$cp_tmp/out.txt"
+  cp_pin test_a:2 test_b:1
+  cp_bad+="$(cp_want "2 'Ran N tests' lines in the output, want exactly one")"
+  printf '%s\n' "$cp_a1" "$cp_a2" "$cp_b1" "Ran 2 tests in 0.001s" >"$cp_tmp/out.txt"
+  cp_pin test_a:2 test_b:1
+  cp_bad+="$(cp_want "3 case lines name a module, unittest ran 2")"
+  cp_row fails-on-bad-ran-count "$cp_bad"
+
+  cp_fresh test_a.py test_b.py
+  cp_output "$cp_a1" "$cp_a2" "$cp_b1"
+  cp_pin
+  cp_row fails-on-empty-pin "$(cp_want "the pin is empty $cp_ref")"
+
+  # One check per member: a module pinned twice, count 0, a leading zero,
+  # no colon, a name that is not test_*.
+  cp_fresh test_a.py test_b.py
+  cp_output "$cp_a1" "$cp_a2" "$cp_b1"
+  cp_bad=""
+  cp_pin test_a:2 test_b:1 test_a:2
+  cp_bad+="$(cp_want "test_a is pinned twice $cp_ref")"
+  for cp_entry in test_b:0 test_b:01 test_b1 b:1; do
+    cp_pin test_a:2 "$cp_entry"
+    cp_want="malformed pin entry '$cp_entry', want <test_name>:<n>, n a positive decimal without a leading zero $cp_ref"
+    cp_bad+="$(cp_want "$cp_want")"
+  done
+  cp_row fails-on-malformed-pin "$cp_bad"
+  rm -rf "$cp_tmp"
 }
 
 # search_oracle_tables <sitecheck.py> <search.js> <ADR-0005> (M4 PR 4, the amendment's
@@ -9554,6 +9907,27 @@ PY
       echo "ok   reflow-isolation/unittest ($ri_n cases)"
       n_passed=$((n_passed + 1))
     fi
+    # reflow-isolation/case-pin (Replikanti/interviewscam#66): the cases
+    # each tests/reflow module ran against REFLOW_ISOLATION_CASES, exact,
+    # so removing or emptying a module fails a row (the unittest row above
+    # passes on fewer cases); reflow_isolation_case_pin_rows proves it.
+    local ri_pin ri_pin_rc ri_sum=0 ri_entry
+    printf '%s\n' "$ri_out" >"$out"
+    ri_pin="$(reflow_isolation_case_pin "$out" "$SELFTEST_ROOT/tests/reflow" \
+      "${REFLOW_ISOLATION_CASES[@]}" 2>&1)"
+    ri_pin_rc=$?
+    if [[ $ri_pin_rc -eq 0 && -z "$ri_pin" ]]; then
+      for ri_entry in "${REFLOW_ISOLATION_CASES[@]}"; do ri_sum=$((ri_sum + ${ri_entry##*:})); done
+      echo "ok   reflow-isolation/case-pin (${#REFLOW_ISOLATION_CASES[@]} modules, $ri_sum cases, as pinned)"
+      n_passed=$((n_passed + 1))
+    elif [[ -n "$ri_pin" ]]; then
+      echo "FAIL reflow-isolation/case-pin: $(awk 'NR > 1 { printf "; " } { printf "%s", $0 }' <<<"$ri_pin")"
+      n_failed=$((n_failed + 1))
+    else
+      echo "FAIL reflow-isolation/case-pin: the checker exited $ri_pin_rc and printed no problem"
+      n_failed=$((n_failed + 1))
+    fi
+    reflow_isolation_case_pin_rows
   fi
 
   if selftest_wants selftest-only; then
