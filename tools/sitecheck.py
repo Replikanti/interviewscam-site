@@ -3709,10 +3709,11 @@ def end_mark_test(script):
 
 
 @functools.cache
-def mark_runs():
-    """A non-mark base and the run of two or more combining marks after it."""
+def mark_runs(least):
+    """A non-mark base and the run of at least least combining marks after
+    it."""
     marks = combining_marks()
-    return re.compile(f"([^{marks[1:]})({marks}{{2,}})")
+    return re.compile(f"([^{marks[1:]})({marks}{{{least},}})")
 
 
 def defer_apart_marks(text):
@@ -3733,7 +3734,35 @@ def defer_apart_marks(text):
         if len(kept) in (0, len(run)):
             return m.group(0)
         return m.group(1) + kept + "".join(c for c in run if not takes(c))
-    return mark_runs().sub(move, text)
+    return mark_runs(2).sub(move, text)
+
+
+@functools.cache
+def marks_as_text():
+    """The combining marks a confusables table maps to a text with a
+    character that is no mark (48 under the pinned data: U+0C02, the Telugu
+    anusvara, reads as "o"). The table reads them, so apart_marks leaves
+    them to it."""
+    tables = (*confusable_tables(), stroke_table())
+    return frozenset(cp for table in tables for cp, value in table.items()
+                     if unicodedata.category(chr(cp))[0] == "M"
+                     and any(unicodedata.category(c)[0] != "M" for c in value))
+
+
+def apart_marks(text):
+    """text with every combining mark that the end run would not take after
+    its base (end_marks of the base's script_word) read as APART, a
+    separator, except a mark the confusables table reads as text
+    (marks_as_text); a run with no base, at the start of the text, is left
+    alone. The readings past R0 drop the marks, so before this a mark drawn
+    apart from a name joined it to the next letter there
+    (Replikanti/interviewscam#56 fix round 1, review findings 1 and 2)."""
+    def move(m):
+        takes = end_mark_test(script_word(m.group(1)))
+        keep = marks_as_text()
+        return m.group(1) + "".join(c if takes(c) or ord(c) in keep else APART
+                                    for c in m.group(2))
+    return mark_runs(1).sub(move, text)
 
 
 @functools.cache
@@ -4316,7 +4345,14 @@ STROKE = "\ue002"
 STROKE_CJK = "\ue003"
 STROKES = STROKE + STROKE_CJK
 CJK_STROKE = "\u4e28"
-STROKE_FORGERY = str.maketrans({STROKE: "\ufffd", STROKE_CJK: "\ufffd"})
+# APART stands for a combining mark the end run of a name would not take
+# after its base (apart_marks, Replikanti/interviewscam#56 fix round 1):
+# past R0 it separates a name from the next letter as a space would, and
+# inside a name's token stroke_pattern lets it stand between any two
+# characters, so a mark typed into a name does not split it. In the text
+# itself it is read as U+FFFD first, as the strokes are.
+APART = "\ue004"
+STROKE_FORGERY = str.maketrans({STROKE: "\ufffd", STROKE_CJK: "\ufffd", APART: "\ufffd"})
 # A run of 2 or more ASCII digits that no letter or digit touches stays
 # digits in the name readings (fix rounds 2 and 4): the table reads "1" as
 # "l" and "0" as "O", which holds for digits written inside a word
@@ -4813,7 +4849,7 @@ def visual_spans(text):
     return "".join(out)
 
 
-def _skeleton(text, capital_i, marks, visual=False, stroke=False):
+def _skeleton(text, capital_i, marks, visual=False, stroke=False, apart=False):
     """The skeleton loop of R1 (R2 with capital_i): NFD, invisibles dropped,
     the table (with capital_i the R2 table, so a capital whose prototype is
     "l" reads as its lower case), NFD; then {case fold, NFKC, NFD,
@@ -4828,13 +4864,18 @@ def _skeleton(text, capital_i, marks, visual=False, stroke=False):
     a drop before it would hide, and it maps U+0345, the one mark that the
     case fold turns into a letter (an iota), to U+0328, another mark, so
     U+0345 never reaches the case fold. With visual, the text is read in
-    the order a browser draws it first (visual_order)."""
+    the order a browser draws it first (visual_order). With apart, a mark
+    a name's end run would not take after its base reads as APART
+    (apart_marks), after visual_order, so the separator changes no bidi
+    class."""
     table, capital = confusable_tables()
     if stroke:
         table = stroke_table()
     first = capital if capital_i else table
     if visual:
         text = visual_order(text)
+    if apart:
+        text = apart_marks(text)
     normalize = unicodedata.normalize
     s = normalize("NFD", normalize("NFD", text).translate(INVISIBLE).translate(first))
     if marks:
@@ -4867,7 +4908,7 @@ def skeleton_fold(text, capital_i=False, visual=False, stroke=False):
                          text.translate(STROKE_FORGERY))
     if stroke:
         text = caps_l(text)
-    folded = _skeleton(text, capital_i, True, visual, stroke).translate(LM_AS_SPACE)
+    folded = _skeleton(text, capital_i, True, visual, stroke, apart=True).translate(LM_AS_SPACE)
     folded = folded.translate(DIGIT_RELEASE)
     return " ".join(unicodedata.normalize("NFC", folded).split())
 
@@ -4969,13 +5010,19 @@ def stroke_pattern(text, reading):
     alias "Il" does not meet the "'ll" of "I'll" and a dotted "i" of the
     name never meets a written "l" ("Ali", "all"), and a space also as
     either stroke (a stroke between two words reads as their separator)
-    (fix rounds 1 and 2)."""
-    if reading == 0 or not NAME_READING_FORMS[reading][1]:
+    (fix rounds 1 and 2). Past R0, APART may stand between any two
+    characters, so a mark the text adds inside a name leaves it whole, as
+    when the readings dropped it (Replikanti/interviewscam#56 fix round
+    1)."""
+    if reading == 0:
         return re.escape(text)
+    gap = f"{APART}*"
+    if not NAME_READING_FORMS[reading][1]:
+        return gap.join(re.escape(c) for c in text)
     stroke = f"(?:[i{STROKES}]|l(?!l))"
     classes = {"i": f"[i{STROKES}]", "l": f"[l{STROKES}]", STROKE: stroke,
                STROKE_CJK: stroke, " ": f"[ {STROKES}]"}
-    return "".join(classes.get(c) or re.escape(c) for c in text)
+    return gap.join(classes.get(c) or re.escape(c) for c in text)
 
 
 def name_bounds(reading, word):
@@ -4991,9 +5038,13 @@ def name_bounds(reading, word):
 
 @functools.lru_cache(maxsize=64)
 def label_pattern(reading):
-    """The D10 label after a name, with its space, under a reading."""
-    return re.compile(stroke_pattern(" " + name_fold(PERSONA_LABEL, reading, drawn=True),
-                                     reading))
+    """The D10 label after a name, with its space, under a reading; past
+    R0 after any APART too, so the separator read for a mark drawn apart
+    right after a name does not hide the label from the readings that
+    also find the name there (Replikanti/interviewscam#56 fix round 1)."""
+    return re.compile((f"{APART}*" if reading else "")
+                      + stroke_pattern(" " + name_fold(PERSONA_LABEL, reading, drawn=True),
+                                       reading))
 
 
 # M4 PR 3 fix round 10 (delta review 9 finding 1): foreign content. Python's

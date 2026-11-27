@@ -2995,6 +2995,7 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import itertools
 import os
 import re
 import sys
@@ -3486,8 +3487,10 @@ row("name-token-mark-bounds", got == ([], STORED, STORED, [], STORED, [0], [], S
 # Malagasy n with diaeresis, which does not compose; U+0305 left the run
 # in Replikanti/interviewscam#56, so R0 finds the name before it). A
 # spacing or enclosing mark of another script (U+093E, U+0F3E, U+20DD)
-# draws apart, so R0 finds the name before it, as on the base; the script
-# is the last token's ("Avery ใจด" takes a Thai mark).
+# draws apart, so R0 finds the name before it, as on the base, and since
+# #56 fix round 1 R1 to R3 too (apart_marks reads such a mark as a
+# separator); the script is the last token's ("Avery ใจด" takes a Thai
+# mark).
 try:
     A = "Avery Exampleton"
     got = (hits(A, A + "\u093ex"), hits(A, A + "\u0f3ex"), hits(A, A + "\u20ddx"),
@@ -3497,7 +3500,8 @@ try:
            hits(A, A + "\u0305x"))
 except Exception as exc:  # noqa: BLE001 - the row reports any crash
     got = repr(exc)
-row("name-end-mark-script", got == ([0], [0], [0], [], STORED, STORED, STORED, STORED, [0]),
+row("name-end-mark-script", got == (STORED, STORED, STORED, [], STORED, STORED, STORED, STORED,
+                                    STORED),
     f"got {got!r}")
 # Replikanti/interviewscam#56 (D1): the Inherited marks of the end run
 # are INHERITED_NAME_MARKS, every nonspacing mark of INHERITED_MARK_BLOCKS
@@ -3550,8 +3554,8 @@ row("name-inherited-marks-run", not bad, f"{detail}; wrong: {bad[:8]}" if bad el
 # U+20D0 to U+20FF with the enclosing-looking overlays U+20E6 and U+20E7,
 # the overlay U+0338, the overline U+0305, U+031A, and the first marks of
 # the extended, supplement and half-mark blocks plus U+1DFA), each between
-# the name and a letter: R0 finds the name before it (U+031A also under
-# R1 to R3, as before). Before the label, R0 reads the label at the mark
+# the name and a letter: R0 finds the name before it (and R1 to R3,
+# which since fix round 1 read the mark as a separator). Before the label, R0 reads the label at the mark
 # and fails closed, while R1 to R3, which drop the marks, see it labelled.
 try:
     A = "Avery Exampleton"
@@ -3565,15 +3569,16 @@ row("name-end-mark-removed-ranges", not bad and got == [1, 2, 3],
 # D2: a mark of the five blocks never joins the end run through
 # script_word. Its first name word (LATIN for U+0363, U+1ABF and U+1DD3,
 # CYRILLIC for the half titlo U+FE2E) is no script, since its Script
-# property is Inherited, so R0 finds the name before it. A Cyrillic mark
-# outside the blocks (U+0483, the titlo) still attaches to a Cyrillic
-# last letter.
+# property is Inherited, so every reading finds the name before it (R1 to
+# R3 since fix round 1). A Cyrillic mark outside the blocks (U+0483, the
+# titlo) still attaches to a Cyrillic last letter.
 try:
     got = (hits(A, A + "ͣx"), hits(A, A + "ᪿx"), hits(A, A + "ᷓx"),
            hits("Иван", "Иван︮х"), hits("Иван", "Иван҃х"))
 except Exception as exc:  # noqa: BLE001 - the row reports any crash
     got = repr(exc)
-row("name-end-mark-inherited-script-words", got == ([0], [0], [0], [0], []), f"got {got!r}")
+row("name-end-mark-inherited-script-words", got == (STORED, STORED, STORED, STORED, []),
+    f"got {got!r}")
 # The script of the end run is that of the name's last letter, not of its
 # last mark: after "Лука́" (U+0301, a member, whose first name word is
 # ACUTE) the Cyrillic titlo U+0483 still attaches, so the text is one
@@ -3599,7 +3604,9 @@ row("name-marks-named", not bad, f"{len(sc.mark_code_points())} marks, unnamed: 
 # and the label after the deferred mark fails closed under R0. A name is
 # deferred once, by name_fold of each token: "Ana" + U+20D0 + U+0301
 # defers to an acute first, which NFKC then composes, so a name deferred
-# twice would miss its own text.
+# twice would miss its own text. Every run of a text is deferred, not
+# only the first (fix round 1, QA survivor q-defer-first-only: an earlier
+# run "Bo" + U+0323 U+0300 U+20D2).
 try:
     ayo = "Ay\u1ecd\u0300"
     found = [(n, t) for n, t in ((ayo, ayo + "\u20d2x"), ("عليّ", "عليّ\u20d2ب"),
@@ -3608,7 +3615,8 @@ try:
                                  (ayo, ayo + "\u0338x"), ("Tariq", "Tariq\u0301\u20d2x"),
                                  ("Ay\u1ecd\u0338\u0300", "Ay\u1ecd\u0338\u0300"),
                                  (A, "\u0301\u20d2" + A),
-                                 ("Ana\u20d0\u0301", "Ana\u20d0\u0301"))
+                                 ("Ana\u20d0\u0301", "Ana\u20d0\u0301"),
+                                 (ayo, "Bo\u0323\u0300\u20d2 " + ayo + "\u20d2x"))
              if 0 not in hits(n, t)]
     got = (found, hits(ayo, ayo + "\u0301x"), hits("Tariq", "Tariq\u0323\u0300x"),
            sc.reading_folds([ayo + "\u20d2x"], [ayo + "\u20d2x"], 0, {}, 1)
@@ -3619,6 +3627,63 @@ except Exception as exc:  # noqa: BLE001 - the row reports any crash
     got = repr(exc)
 row("name-deferred-marks", got == ([], [], [], True, 0, [1, 2, 3]),
     f"got (not found under R0, glued, glued, reading_folds, R5, labelled) {got!r}")
+# Fix round 1 (review run 1, findings 1 and 2): past R0 a mark the end
+# run would not take after its base (end_marks of the base's script_word)
+# reads as a separator (APART), not as nothing, so it ends a name in every
+# reading. Before, R0 lost the name when the text first added a member
+# mark that NFKC composes into the name's last letter ("Exampletoń") or
+# sorts in among its own final marks (U+0323 after "Ayọ̀", U+064B before
+# the shadda, U+093C before the virama), and R1 to R3, which dropped the
+# apart mark, read the name glued to the next letter, so no reading and
+# not R5 found it. The same holds for a name whose own run carries an
+# apart mark ("Ana" + U+20D0 + U+0301) when the text adds a member and
+# then another apart mark. Inside a name the separator is transparent
+# (stroke_pattern lets APART stand between any two characters), so a mark
+# typed into a name still leaves it found as when the readings dropped it.
+# A mark the confusables table reads as a letter stays that letter (U+0C02
+# as "o", marks_as_text), and a U+E004 in the text itself is no APART.
+try:
+    A = "Avery Exampleton"
+    ayo = "Ay\u1ecd\u0300"
+    cases = ((A, A + "\u0300\u0338x"), (A, A + "\u0301\u20d2x"), (ayo, ayo + "\u0323\u0338x"),
+             ("علي\u0651", "علي\u0651\u0338\u064bب"), ("कमल\u094d", "कमल\u094d\u0338\u093cक"),
+             ("Maria", "Marià\u20e6x"), ("Ana\u20d0\u0301", "Ana\u20d0\u0301\u0300\u20ddx"),
+             ("Ana\u20d0\u0301", "Ana\u20d0\u0301\u0300\u093ex"),
+             ("Ana\u20d0\u0301", "Ana\u20d0\u0301\u0300\u0483x"))
+    missed = [t for n, t in cases if not hits(n, t)]
+    r5_missed = [t for n, t in cases if sc.r5_reading(sc.r5_patterns(n), t) is None]
+    got = (missed, r5_missed, hits(A, "Av\u20d2ery Exampleton"), hits(A, "Avery Exampl\u0338eton"),
+           labelled(A, A + "\u0301\u20d2" + L), hits("Riko", "Rik\u0c02 x"),
+           hits(A, "Avery Exampleto\ue004n"))
+except Exception as exc:  # noqa: BLE001 - the row reports any crash
+    got = repr(exc)
+row("name-apart-mark-separates", got == ([], [], [1, 2, 3], [1, 2, 3], [1, 2, 3], [1, 2, 3], []),
+    f"got (missed, missed by R5, mark inside a token twice, labelled, table mark, "
+    f"forged separator) {got!r}")
+# The names of review run 1, each followed by every run of one or two
+# marks of its palette that holds a mark the end run would not take, and
+# a letter: some reading finds the name in every one (the review's probe
+# found such a run for 10 of the 12 names on 1ca9b50). The detail prints
+# the number of texts.
+try:
+    palette = ("\u0300", "\u0301", "\u0308", "\u0323", "\u0327", "\u0303", "\u0338", "\u20d2",
+               "\u20dd", "\u20e6", "\u0305", "\u093c", "\u093e", "\u0483", "\u064b", "\u0e48",
+               "\u094d", "\u1ab0", "\ufe20", "\u0363")
+    missed, texts = [], 0
+    for n in ("Avery Exampleton", "Luca", "Tariq", ayo, "Лука\u0301", "कमल\u094d", "علي\u0651", "ใหม\u0e48",
+              "Zoë", "Nguyễn", "Maria", "José"):
+        last = sc.name_token().findall(sc.fold_words(n))[-1].translate(sc.MARKS_DROPPED)[-1]
+        takes = re.compile(sc.end_marks(sc.script_word(last))).fullmatch
+        for k in (1, 2):
+            for run in itertools.product(palette, repeat=k):
+                if all(takes(c) for c in run):
+                    continue
+                texts += 1
+                if not hits(n, n + "".join(run) + "x"):
+                    missed.append(n + "".join(run) + "x")
+except Exception as exc:  # noqa: BLE001 - the row reports any crash
+    missed, texts = [repr(exc)], 0
+row("name-apart-mark-runs-found", not missed, f"{texts} texts, missed {len(missed)}: {missed[:5]!r}")
 got = (sc.caps_l("RlLEY lVAN Il Ill all McLl"), sc.stroke_table()[0x4E28] == sc.STROKE_CJK,
        sorted(cp for cp, v in sc.confusable_tables()[0].items() if v == "丨")
        == sorted(cp for cp, v in sc.stroke_table().items() if v == sc.STROKE_CJK and cp != 0x4E28))
