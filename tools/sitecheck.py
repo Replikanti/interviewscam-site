@@ -1795,8 +1795,20 @@ def srcset_urls(value):
 
 
 # A comment opener inside a string is not a comment, so strings are matched
-# first and kept; an unclosed comment runs to the end of the sheet.
-CSS_COMMENT_OR_STRING = re.compile(r"""(["'])(?:\\.|(?!\1)[^\\])*\1|/\*.*?(?:\*/|\Z)""", re.S)
+# first and kept; an unclosed comment runs to the end of the sheet. Nor is
+# one inside an unquoted url( token (CSS Syntax 4.3.6: `url(` not preceded
+# by an ident code point, ASCII case-insensitive, optional whitespace, then
+# anything but a quote, up to the first `)` or the end of the sheet), so
+# those tokens are kept whole too (Replikanti/interviewscam#61 fix round 1,
+# review run 1 finding 1: `x url(/*){a:b}` ... `y url(*/){a:b}` hid every
+# rule between them from every reader of this pattern while a browser
+# applied them). Group 1 is every kept match, a string or a url token;
+# whitespace after `url(` is taken possessively, so a quote after it makes
+# the match a function holding a string, which the string branch keeps.
+CSS_COMMENT_OR_STRING = re.compile(
+    r"""((?P<q>["'])(?:\\.|(?!(?P=q))[^\\])*(?P=q)"""
+    r"""|(?<![\w\\\-\u0080-\U0010ffff])[uU][rR][lL]\([ \t\n\r\f]*+(?!["'])[^)]*\)?)"""
+    r"""|/\*.*?(?:\*/|\Z)""", re.S)
 CSS_ESCAPE = re.compile(r"\\(?:([0-9a-fA-F]{1,6})[ \t\r\n\f]?|(.))", re.S)
 CSS_URL = re.compile(r"(?i)url\(\s*(?:(['\"])(.*?)\1|([^)\s'\"]*))\s*\)", re.S)
 CSS_STRING = re.compile(r"(['\"])(.*?)\1", re.S)
@@ -2199,9 +2211,11 @@ def css_rules(css):
             buf.append(text[i:j + 1])
             i = j + 1
             continue
-        if ch == "(":
+        # A bracket block nests like a parenthesis: a } inside [...] ends no
+        # block in a browser (Replikanti/interviewscam#61 fix round 1).
+        if ch in "([":
             depth += 1
-        elif ch == ")":
+        elif ch in ")]":
             depth = max(0, depth - 1)
         if depth == 0 and ch == "{":
             prelude = "".join(buf).strip()
@@ -2683,7 +2697,7 @@ def css_desync_problems(css):
 # a rule (or at the start of the sheet), with its block right after; any
 # other at-rule (a condition, a layer, an import, a rule kind) is refused,
 # whatever its name, so a later Chrome's at-rule is refused too; (b) the
-# braces balance and none sits inside parentheses (the walk of (a) reads
+# braces balance and none sits inside parentheses or brackets (the walk of (a) reads
 # the sheet's blocks as a browser does); (c) every ( in a declaration value
 # is a call of SITE_VALUE_FUNCTIONS, the two the sheet uses, because if(),
 # env(), attr(), the math functions and url() can bring a condition back
@@ -2754,9 +2768,13 @@ def css_at_rule_problems(css):
                                 + ", ".join(SITE_MEDIA_PRELUDES)
                                 + ", each at the top level right after a rule); "
                                 + CSS_STATES_WHY)
-        elif ch == "(":
+        elif ch in "([":
+            # A bracket block nests like a parenthesis block, so a brace
+            # inside either is a finding (fix round 1, review run 1
+            # finding 2: `zz:[}]` kept a block open to the end of the sheet
+            # in a browser and closed it here).
             parens += 1
-        elif ch == ")":
+        elif ch in ")]":
             parens = max(0, parens - 1)
         elif ch in "{}":
             if parens or (ch == "}" and braces == 0):
@@ -2767,12 +2785,12 @@ def css_at_rule_problems(css):
                 braces -= 1
                 closed_rule = braces == 0
         i += 1
-    if unbalanced is None and braces:
+    if unbalanced is None and (braces or parens):
         unbalanced = n
     if unbalanced is not None:
         problems.append(f"the built stylesheet holds braces that do not balance or sit "
-                        f"inside parentheses (first at offset {unbalanced}): the checker "
-                        "reads its blocks, and with them every at-rule's place, only "
+                        f"inside parentheses or brackets (first at offset {unbalanced}): "
+                        "the checker reads its blocks, and with them every at-rule's place, only "
                         "where both readings agree (Replikanti/interviewscam#61)")
     return problems
 
@@ -2787,7 +2805,9 @@ def css_value_problems(rules):
         selector = css_selector_text(rule.prelude)
         for declaration in rule.declarations:
             name, sep, value = declaration.partition(":")
-            value = CSS_STRING_LITERAL.sub('""', value if sep else declaration)
+            # Escapes decoded after the strings are masked (fix round 1,
+            # QA): `1\76 w` is `1vw` to a browser.
+            value = css_unescape(CSS_STRING_LITERAL.sub('""', value if sep else declaration))
             for i, ch in enumerate(value):
                 if ch != "(":
                     continue

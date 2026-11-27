@@ -836,7 +836,9 @@ PY
 # (NAME=number, comma-separated) sets module constants through importlib,
 # as reflow-launch/first-answer-deadline does (the aria-busy row shortens
 # REFLOW_TIMEOUT, the fetch row SEARCH_FETCH_BUDGET). Then the real
-# cmd_reflow runs with case (8) on: expect PASS needs exit 0, any other
+# cmd_reflow runs with case (8) on: expect PASS needs exit 0, an expect
+# `EXIT2 <text>` exit 2 with <text> in the output and no traceback (a usage
+# error, such as a cell of case (7) whose state did not apply), any other
 # expect exit 1 with that text in the output. The rows run four at a time,
 # each in a forked process with its own Chrome, and print in table order
 # (the job's time: a row takes 10 to 15 s). The last line,
@@ -945,14 +947,20 @@ def run_row(row):
                 buffer.write(f"{exc}\n")
                 rc = 2
         output = buffer.getvalue()
+    # EXIT2 <text> (Replikanti/interviewscam#61 fix round 1): a usage error,
+    # exit 2, whose message holds <text> (a cell whose proof fails).
+    exit2 = expect.startswith("EXIT2 ")
+    text_expect = expect.removeprefix("EXIT2 ")
     if expect == "PASS" and rc == 0:
         print(f"ok   {label}/{name} (passed as expected)")
-    elif expect != "PASS" and rc == 1 and expect in output:
+    elif exit2 and rc == 2 and text_expect in output and "Traceback" not in output:
+        print(f"ok   {label}/{name} (exit 2 as expected: {text_expect})")
+    elif not exit2 and expect != "PASS" and rc == 1 and expect in output:
         print(f"ok   {label}/{name} (failed as expected: {expect})")
     else:
-        print(f"FAIL {label}/{name}: expected "
-              f"{'exit 0' if expect == 'PASS' else 'exit 1 and ' + repr(expect)}; got exit "
-              f"{rc}; output:")
+        want = ("exit 0" if expect == "PASS" else
+                ("exit 2 and " if exit2 else "exit 1 and ") + repr(text_expect))
+        print(f"FAIL {label}/{name}: expected {want}; got exit {rc}; output:")
         for line in output.splitlines()[-12:]:
             print(f"     | {line}")
     return lines
@@ -1078,6 +1086,8 @@ def answer(root):
         raise KeyError("campaign.source")
     if word == "exit":
         raise SystemExit(5)
+    if word == "usage":
+        raise UsageError("stub usage: the cell did not apply")
     if word == "fail":
         print("FAIL: stub finding")
         return 1
@@ -1258,6 +1268,19 @@ PY
   cr_bad=""
   [[ "$cr_got" == "$cr_want" ]] || cr_bad=" output: $(tr '\n' '|' <<<"$cr_got")"
   cr_row reflow-default-label-and-mode "$cr_bad"
+  # The EXIT2 expect (fix round 1): a usage error with the text is ok, the
+  # same error with another text, or exit 1 with the text, is a FAIL.
+  printf 'r1\toutcome.txt\tpass\tusage\tEXIT2 the cell did not apply\nr2\toutcome.txt\tpass\tusage\tEXIT2 another text\nr3\toutcome.txt\tpass\tfail\tEXIT2 stub finding\n' >"$cr_tmp/exit2.tsv"
+  cr_got="$(unset SELFTEST_STOP_AT_FIRST_FAIL; reflow_search_runner "$cr_tmp/stub.py" \
+    "$cr_tmp/exit2.tsv" "$cr_tmp/reflow-base" "$cr_tmp/search.js" /nonexistent x-cells cells 2>&1)"
+  cr_bad=""
+  grep -qxF 'ok   x-cells/r1 (exit 2 as expected: the cell did not apply)' <<<"$cr_got" \
+    || cr_bad+=" r1 is not ok;"
+  grep -qF "FAIL x-cells/r2: expected exit 2 and 'another text'; got exit 2" <<<"$cr_got" \
+    || cr_bad+=" r2 did not fail;"
+  grep -qF "FAIL x-cells/r3: expected exit 2 and 'stub finding'; got exit 1" <<<"$cr_got" \
+    || cr_bad+=" r3 did not fail;"
+  cr_row reflow-exit2-expect "$cr_bad${cr_bad:+ output: $(tr '\n' '|' <<<"$cr_got")}"
   # site_cases_runner mode css: an edited stylesheet is renamed to the name
   # rule (l) needs for its new bytes and relinked on every page, and
   # cmd_site runs with the built pins off; without the mode none of that.
