@@ -107,6 +107,18 @@ class Blocks(unittest.TestCase):
         for css in ("a{b:[x(y)z]}", "a{b:x([y])}", "a{b:[x]}c{d:e)]}"):
             with self.subTest(css=css):
                 self.assertEqual(sitecheck.css_at_rule_problems(css), [], css)
+        # Nested blocks of two kinds: the innermost one closes first, and
+        # the outer one stays open (sweep 43-impl-r8 survivors).
+        rules = sitecheck.css_rules("a{b:[x(y)z]}c{d:e}")
+        self.assertEqual([(r.prelude, r.declarations) for r in rules],
+                         [("a", ["b:[x(y)z]"]), ("c", ["d:e"])])
+        rules = sitecheck.css_rules("a{b:x([y]z)}c{d:e}")
+        self.assertEqual([(r.prelude, r.declarations) for r in rules],
+                         [("a", ["b:x([y]z)"]), ("c", ["d:e"])])
+        for css in ("a{b:[(x)}]", "a{b:([x]})"):
+            with self.subTest(css=css):
+                self.assertTrue(any("braces that do not balance" in p
+                                    for p in sitecheck.css_at_rule_problems(css)), css)
 
 
 class Parser(unittest.TestCase):
