@@ -2673,17 +2673,17 @@ def css_desync_problems(css):
 # The CSS states the browser checks never load (Replikanti/interviewscam#61,
 # ADR-0003 part 6 amendment of 2026-11-27). The browser checks load each
 # page at one width per band of the sheet's breakpoints (REFLOW_REVEAL_CELLS,
-# derived from CSS_MEDIA_PRELUDES) with the script running and with
+# derived from SITE_MEDIA_PRELUDES) with the script running and with
 # scripting off, so a rule that applies only in another state would pass
 # every check. The built stylesheet is held to states those loads reach:
-# (a) every @ outside a string begins one of CSS_MEDIA_PRELUDES, written
+# (a) every @ outside a string begins one of SITE_MEDIA_PRELUDES, written
 # exactly as the pinned minifier writes them, at the top level right after
 # a rule (or at the start of the sheet), with its block right after; any
 # other at-rule (a condition, a layer, an import, a rule kind) is refused,
 # whatever its name, so a later Chrome's at-rule is refused too; (b) the
 # braces balance and none sits inside parentheses (the walk of (a) reads
 # the sheet's blocks as a browser does); (c) every ( in a declaration value
-# is a call of CSS_VALUE_FUNCTIONS, the two the sheet uses, because if(),
+# is a call of SITE_VALUE_FUNCTIONS, the two the sheet uses, because if(),
 # env(), attr(), the math functions and url() can bring a condition back
 # without an at-rule (`opacity:if(media(min-width:25rem):.05;else:1)`);
 # (d) no viewport- or container-relative length, which makes every width
@@ -2691,16 +2691,19 @@ def css_desync_problems(css):
 # spacing, case, unit or equivalent form fails closed. Today's built sheet
 # holds exactly the two preludes, 258 var( and 1 inset(, and 0 such units
 # (ADR-0003 Numbers), so the rules cost it nothing.
-CSS_MEDIA_PRELUDES = ("@media(max-width:24rem)", "@media(max-width:21.25rem)")
-CSS_VALUE_FUNCTIONS = frozenset({"var", "inset"})
-# CSS Values 4 (the small, large and dynamic viewport forms) and CSS
-# Containment 3 (the query container units): 30 units.
-CSS_VIEWPORT_UNITS = frozenset(
-    [prefix + unit for prefix in ("", "sv", "lv", "dv")
-     for unit in ("vw", "vh", "vi", "vb", "vmin", "vmax")]
-    + ["cqw", "cqh", "cqi", "cqb", "cqmin", "cqmax"])
+SITE_MEDIA_PRELUDES = ("@media(max-width:24rem)", "@media(max-width:21.25rem)")
+SITE_VALUE_FUNCTIONS = frozenset({"var", "inset"})
+# CSS Values 4 (vw, vh, vi, vb, vmin, vmax and their small, large and
+# dynamic viewport forms svw ... dvmax) and CSS Containment 3 (the query
+# container units): 30 units, written out.
+SITE_VIEWPORT_UNITS = frozenset({
+    "vw", "vh", "vi", "vb", "vmin", "vmax",
+    "svw", "svh", "svi", "svb", "svmin", "svmax",
+    "lvw", "lvh", "lvi", "lvb", "lvmin", "lvmax",
+    "dvw", "dvh", "dvi", "dvb", "dvmin", "dvmax",
+    "cqw", "cqh", "cqi", "cqb", "cqmin", "cqmax"})
 CSS_VIEWPORT_UNIT = re.compile(
-    r"\d(" + "|".join(sorted(CSS_VIEWPORT_UNITS, key=lambda u: (-len(u), u)))
+    r"\d(" + "|".join(sorted(SITE_VIEWPORT_UNITS, key=lambda u: (-len(u), u)))
     + r")(?![A-Za-z0-9_\-]|[^\x00-\x7f])", re.ASCII | re.IGNORECASE)
 CSS_STATES_WHY = ("the browser checks load one width per band of these breakpoints with "
                   "the script running and with scripting off, so any other condition, "
@@ -2716,7 +2719,7 @@ def css_ident_char(ch):
 
 def css_at_rule_problems(css):
     """Rules (a) and (b) on one stylesheet, comments removed: the at-rules
-    outside CSS_MEDIA_PRELUDES and their places, the braces that do not
+    outside SITE_MEDIA_PRELUDES and their places, the braces that do not
     balance or sit inside parentheses, and a string that does not end."""
     text = css_strip_comments(css)
     problems = []
@@ -2742,11 +2745,11 @@ def css_at_rule_problems(css):
             continue
         if ch == "@":
             allowed = braces == 0 and parens == 0 and (i == 0 or after_rule) and any(
-                text.startswith(prelude + "{", i) for prelude in CSS_MEDIA_PRELUDES)
+                text.startswith(prelude + "{", i) for prelude in SITE_MEDIA_PRELUDES)
             if not allowed:
                 head = re.match(r"[^{;}]*", text[i:]).group(0)
                 problems.append(f"{show(head, 80)}: an at-rule outside the closed list ("
-                                + ", ".join(CSS_MEDIA_PRELUDES)
+                                + ", ".join(SITE_MEDIA_PRELUDES)
                                 + ", each at the top level right after a rule); "
                                 + CSS_STATES_WHY)
         elif ch == "(":
@@ -2790,17 +2793,17 @@ def css_value_problems(rules):
                 while start > 0 and css_ident_char(value[start - 1]):
                     start -= 1
                 function = value[start:i]
-                if function not in CSS_VALUE_FUNCTIONS:
+                if function not in SITE_VALUE_FUNCTIONS:
                     problems.append(f"{show(function + '(', 40)} in {show(selector, 80)}: a "
                                     "function outside the closed list ("
-                                    + ", ".join(sorted(CSS_VALUE_FUNCTIONS))
+                                    + ", ".join(sorted(SITE_VALUE_FUNCTIONS))
                                     + "); a function can bring a condition back without an "
                                     "at-rule (if(media()), env(), attr(), the math "
                                     "functions), which is a CSS state the browser checks "
                                     "never load (Replikanti/interviewscam#61)")
             for match in CSS_VIEWPORT_UNIT.finditer(value):
                 problems.append(f"{show(match.group(0), 40)} in {show(selector, 80)}: a "
-                                "viewport-relative length (CSS_VIEWPORT_UNITS); it makes "
+                                "viewport-relative length (SITE_VIEWPORT_UNITS); it makes "
                                 "every width and height a state of its own, and the "
                                 "browser checks load one width per band of the closed "
                                 "@media list (Replikanti/interviewscam#61)")
@@ -9593,7 +9596,7 @@ PINNED_ALLOWLISTS = LITERALS_PASSING_SETS + (
     "RECORDS_PERMISSIONS", "RECORDS_JOB_PERMISSIONS",
     # The CSS states of the browser checks (Replikanti/interviewscam#61): the
     # closed @media preludes, value functions and refused viewport units.
-    "CSS_MEDIA_PRELUDES", "CSS_VALUE_FUNCTIONS", "CSS_VIEWPORT_UNITS")
+    "SITE_MEDIA_PRELUDES", "SITE_VALUE_FUNCTIONS", "SITE_VIEWPORT_UNITS")
 # L5: the CSS properties and @counter-style descriptors whose strings the
 # browser draws as text.
 CSS_TEXT_PROPERTIES = {"content", "list-style", "list-style-type", "quotes",
@@ -16178,7 +16181,7 @@ def reveal_widths(preludes, base, root_px):
 
 
 REFLOW_REVEAL_BREAKPOINTS, REFLOW_REVEAL_WIDTHS = reveal_widths(
-    CSS_MEDIA_PRELUDES, REFLOW_WIDTH, REFLOW_ROOT_FONT_PX)
+    SITE_MEDIA_PRELUDES, REFLOW_WIDTH, REFLOW_ROOT_FONT_PX)
 # Indexes into REFLOW_STATES: with the script running (S0) and with
 # scripting off (S2).
 REFLOW_REVEAL_STATES = (0, 2)
@@ -16191,20 +16194,20 @@ REFLOW_REVEAL_CELLS = tuple((width, state) for width in REFLOW_REVEAL_WIDTHS
 REFLOW_CELL_SCRIPT = r"""
 (() => ({w: innerWidth, h: innerHeight,
          media: %(queries)s.map((q) => matchMedia(q).matches)}))()
-""" % {"queries": json.dumps([p.removeprefix("@media") for p in CSS_MEDIA_PRELUDES])}
+""" % {"queries": json.dumps([p.removeprefix("@media") for p in SITE_MEDIA_PRELUDES])}
 
 
 def cell_state_problem(width, height, seen):
     """None when the cell's page shows the width x height viewport and each
-    prelude of CSS_MEDIA_PRELUDES matches exactly when width is at most its
+    prelude of SITE_MEDIA_PRELUDES matches exactly when width is at most its
     breakpoint; else a text naming the first difference."""
     if seen.get("w") != width or seen.get("h") != height:
         return (f"the viewport is {seen.get('w')} x {seen.get('h')} CSS px, not {width} x "
                 f"{height}")
     media = seen.get("media")
-    if not isinstance(media, list) or len(media) != len(CSS_MEDIA_PRELUDES):
+    if not isinstance(media, list) or len(media) != len(SITE_MEDIA_PRELUDES):
         return f"the media proof is {show(media)}, not one answer per prelude"
-    for prelude, breakpoint, matches in zip(CSS_MEDIA_PRELUDES, REFLOW_REVEAL_BREAKPOINTS,
+    for prelude, breakpoint, matches in zip(SITE_MEDIA_PRELUDES, REFLOW_REVEAL_BREAKPOINTS,
                                             media):
         if matches is not (width <= breakpoint):
             return (f"{prelude} {'matches' if matches else 'does not match'} at {width} CSS "

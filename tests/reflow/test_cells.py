@@ -3,7 +3,7 @@ ADR-0003 part 6 amendment): reveal_widths, cell_state_problem,
 reveal_cells_summary and the cell constants.
 
 Why it exists: case (7) runs the skip-link case at one width per band of
-the built stylesheet's breakpoints (CSS_MEDIA_PRELUDES, the closed list of
+the built stylesheet's breakpoints (SITE_MEDIA_PRELUDES, the closed list of
 site rule (a)) with the script running and with scripting off. The widths
 are derived from the preludes, never hand-written, and a cell is measured
 only after the browser proves its media state. These cases pin the
@@ -43,7 +43,7 @@ class Derivation(unittest.TestCase):
     def test_breakpoints_from_preludes(self):
         breakpoints, _ = sitecheck.reveal_widths(PRELUDES, 320, 16)
         self.assertEqual(breakpoints, (Decimal(384), Decimal(340)))
-        self.assertEqual(sitecheck.CSS_MEDIA_PRELUDES, PRELUDES)
+        self.assertEqual(sitecheck.SITE_MEDIA_PRELUDES, PRELUDES)
         self.assertEqual(sitecheck.REFLOW_REVEAL_BREAKPOINTS, (384, 340))
 
     def test_cell_widths_one_per_band(self):
