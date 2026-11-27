@@ -5680,7 +5680,7 @@ def report_items(page, page_path, reports):
         if a.text() != name:
             problems.append(f"rule 3: the link to {where} reads {show(a.text())}; it "
                             f"shows its record's name as it renders, {show(name)} (D6)")
-        state = record.params.get("state")
+        state = text_param(record, "state")
         chips = [n for n in li.walk() if "state-chip" in n.classes]
         chip, found = shown_one(chips, "state-chip",
                                 f"rule 3: the list item linking {where}")
@@ -5726,7 +5726,7 @@ def state_problems(page, record, chips):
     state sentence, and the What was checked list equal to state_basis, in
     order."""
     problems = []
-    state = record.params.get("state")
+    state = text_param(record, "state")
     if state not in STATE_CHIP:
         return problems  # the schema's finding
     chip, found = shown_one(chips, "state-chip", "rule 3")
@@ -6226,7 +6226,7 @@ def preview_record_problems(page, record, chips):
         if label is not None and el is not None and el.text() != label:
             problems.append(f"rule 21: the D7 label of og:description, {show(label)}, is not "
                             f"the page's record-label {show(el.text())}")
-        chip = STATE_CHIP.get(record.params.get("state"))
+        chip = STATE_CHIP.get(text_param(record, "state"))
         shown, _ = shown_one(chips, "state-chip", "rule 21")
         if chip is not None and shown is not None and shown.text() != chip:
             problems.append(f"rule 21: the state chip of og:description, {show(chip)}, is not "
@@ -7748,8 +7748,8 @@ def index_entry_text(record, campaigns):
         return None
     first = [rendered_name(record)]
     if record.section == "reports":
-        chip = STATE_CHIP.get(record.params.get("state"))
-        kind = NAME_TYPES.get(record.params.get("name_type"))
+        chip = STATE_CHIP.get(text_param(record, "state"))
+        kind = NAME_TYPES.get(text_param(record, "name_type"))
         line = index_campaign_text(record, campaigns)
         if chip is None or kind is None or line is None:
             return None
@@ -7781,7 +7781,7 @@ def index_text_problems(li, link, record, campaigns):
                         f"{show(link.text())}; it shows the record's name as it renders, "
                         f"{show(name)}")
     kind = INDEX_CAMPAIGN_TYPE if record.section == "campaigns" else \
-        NAME_TYPES.get(record.params.get("name_type"))
+        NAME_TYPES.get(text_param(record, "name_type"))
     el, found = shown_one([n for n in li.walk() if INDEX_TYPE in n.classes], INDEX_TYPE,
                           f"rule 15 (b): the entry of {where}")
     problems += found
@@ -8317,8 +8317,8 @@ def report_regions(record):
     spec is a `pinned` tree compared with its texts (whole True) or a bare
     tree compared by shape (whole False); a region whose spec is None must
     not be on the page."""
-    state = record.params.get("state")
-    name_type = record.params.get("name_type")
+    state = text_param(record, "state")
+    name_type = text_param(record, "name_type")
     if state not in STATE_CHIP or name_type not in NAME_TYPES:
         return []  # the schema's finding
     chip = STATE_CHIP[state]
@@ -8487,7 +8487,7 @@ def state_text_problems(page, record):
     strings and attribute values included, holds the other state's
     sentence, so no other element of the page (a lead, a body paragraph, a
     footer line) states the other state, however it is spelt."""
-    state = record.params.get("state")
+    state = text_param(record, "state")
     if state not in STATE_SENTENCE:
         return []
     shown = sentence_folds(page.root.bidi_text())
@@ -14019,7 +14019,7 @@ def preview_card_texts(record):
     token)] between the name and the brand."""
     name = HIDDEN_NAME if is_hidden(record) else display_name(record)
     if record.section == "reports":
-        state, kind = record.params.get("state"), record.params.get("name_type")
+        state, kind = text_param(record, "state"), text_param(record, "name_type")
         chip, kind = STATE_CHIP.get(state), NAME_TYPES.get(kind)
         sentence, label = STATE_SENTENCE.get(state), record_label(record)
         if None in (chip, kind, sentence, label):

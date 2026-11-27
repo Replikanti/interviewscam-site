@@ -217,6 +217,31 @@ state-own-in-closed-details-passes	public/reports/example-abused-company/index.h
 # digit but 0 and 1 maps to a letter in confusables.txt).
 campaign-source-url-missing	content/reports/example-abused-company.md	\nurl = "https://vendor.example/research/fake-meeting-apps"		COUNT=5 params.sources[0]: required property 'url' is missing
 name-type-unknown	content/reports/example-abused-company.md	name_type = "company"	name_type = "companyx"	COUNT=3 params.name_type: must be one of
+# Replikanti/interviewscam#67 (a state or name_type that is not a string):
+# the render rules look the raw value up in STATE_CHIP, STATE_SENTENCE and
+# NAME_TYPES, and a list or an inline table is not hashable, so the first
+# of ten lookups raised TypeError (cmd_render raised TypeError, a FAIL here)
+# where the records check had already reported the schema finding. They read
+# both fields through text_param now, so a non-string is "no value", as an
+# absent key or an unknown string is. Every row counts 3 findings: the
+# schema finding (params.<field>: must be one of, or the required-property
+# finding for the missing rows), rule 21, which derives no card for the
+# record, and rule 12, which compares the feed (it keeps the raw value) with
+# the record. The list, empty-list and dict rows are the unhashable types
+# (the crash class). The integer and boolean rows (hashable non-strings), the
+# look-alike row (a Cyrillic o in place of the Latin one) and the missing rows
+# never crashed: they pin that the same finding comes out for them.
+state-list	content/reports/example-abused-company.md	state = "name_abused"	state = ["front"]	COUNT=3 params.state: must be one of
+state-list-empty	content/reports/example-abused-company.md	state = "name_abused"	state = []	COUNT=3 params.state: must be one of
+state-dict	content/reports/example-abused-company.md	state = "name_abused"	state = {}	COUNT=3 params.state: must be one of
+name-type-list	content/reports/example-abused-company.md	name_type = "company"	name_type = ["company"]	COUNT=3 params.name_type: must be one of
+name-type-list-empty	content/reports/example-abused-company.md	name_type = "company"	name_type = []	COUNT=3 params.name_type: must be one of
+name-type-dict	content/reports/example-abused-company.md	name_type = "company"	name_type = {}	COUNT=3 params.name_type: must be one of
+state-integer	content/reports/example-abused-company.md	state = "name_abused"	state = 1	COUNT=3 params.state: must be one of
+name-type-boolean	content/reports/example-abused-company.md	name_type = "company"	name_type = true	COUNT=3 params.name_type: must be one of
+state-missing	content/reports/example-abused-company.md	state = "name_abused"\n		COUNT=3 required property 'state' is missing
+name-type-missing	content/reports/example-abused-company.md	name_type = "company"\n		COUNT=3 required property 'name_type' is missing
+state-lookalike	content/reports/example-abused-company.md	state = "name_abused"	state = "fr\u{043E}nt"	COUNT=3 params.state: must be one of
 chip-text-split	public/reports/example-abused-company/index.html	<p class=record-type><span class=state-chip>Name abused</span> Company	<p class=record-type><span class=state-chip>Name</span> abused Company	COUNT=4 rule 17: the .record-type of the report page: <span class=state-chip> reads 'Name';
 state-digit-split-passes	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>No real com7pany, person or product was found behind this name. 	PASS
 # Replikanti/interviewscam#47 fix round 1 (QA's sweep of sentence_folds, the
