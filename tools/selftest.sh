@@ -1347,7 +1347,7 @@ PY
   # without hanging (no table: a traceback, exit 1) and one whose process
   # group gets SIGTERM from its own row (128 + 15), with no watchdog line
   # and no hung flag.
-  local cr_t0 cr_pid cr_line cr_job cr_wd cr_st
+  local cr_t0 cr_pid cr_line cr_job cr_wd
   cr_bad=""
   cr_got="$(cr_reflow "$cr_tmp/no-such-table.tsv" 1)"
   cr_rc=$?
@@ -1386,7 +1386,23 @@ PY
   # SIGTERM to the watchdog itself (a timeout(1) of the whole self-test,
   # a closed terminal sends SIGHUP) still kills the runner's group, which
   # has its own session: the hang stub's worker must be gone within 5 s.
-  # The watchdog is the parent of the session leader of that worker.
+  # The row signals only a process it has identified positively (review
+  # run 2 of interviewscam-site#41): exactly one process whose argv starts
+  # as the watchdog's (python3 -I -B - 30 <cr_tmp>/watch.log) and that runs
+  # below the background job, as its child or as the child of the job's
+  # subshell (cr_reflow's body is a subshell). The worker's session leader
+  # must be a child of that watchdog, so the runner is in a session of its
+  # own; otherwise nothing is signalled, the row fails and waits for the
+  # watchdog's own 30 s limit.
+  # cr_stat <pid> <field>: field 1 = ppid, 3 = session of /proc/<pid>/stat
+  # (counted after the state; empty when the process is gone).
+  cr_stat() {
+    local st f
+    { st="$(<"/proc/$1/stat")"; } 2>/dev/null || return 1
+    read -r -a f <<<"${st##*) }"
+    echo "${f[$2]}"
+  }
+  local cr_d cr_p cr_a cr_argv cr_found cr_sid
   cr_bad=""
   rm -f "$cr_tmp/hang.pid"
   cr_table "$cr_tmp/hang.tsv" hang:PASS
@@ -1396,17 +1412,27 @@ PY
     [[ -s "$cr_tmp/hang.pid" ]] && break
     sleep 0.1
   done
-  cr_pid="" cr_wd=""
-  if [[ -s "$cr_tmp/hang.pid" ]]; then
-    cr_pid="$(<"$cr_tmp/hang.pid")"
-    { cr_st="$(<"/proc/$cr_pid/stat")"; } 2>/dev/null && read -r _ _ _ cr_st _ <<<"${cr_st##*) }"
-    { cr_st="$(<"/proc/$cr_st/stat")"; } 2>/dev/null && read -r _ cr_wd _ <<<"${cr_st##*) }"
-  fi
-  if [[ -z "$cr_wd" ]]; then
-    cr_bad+=" the hang stub never ran or its watchdog was not found;"
-    kill -KILL "$cr_job" 2>/dev/null
+  cr_pid="" cr_wd="" cr_found=()
+  cr_argv="$(printf '%s\n' python3 -I -B - 30 "$cr_tmp/watch.log")"
+  for cr_d in /proc/[0-9]*; do
+    cr_p="${cr_d#/proc/}"
+    [[ "$({ tr '\0' '\n' <"$cr_d/cmdline"; } 2>/dev/null | head -n 6)" == "$cr_argv" ]] || continue
+    cr_a="$(cr_stat "$cr_p" 1)"
+    [[ "$cr_a" == "$cr_job" || "$(cr_stat "$cr_a" 1)" == "$cr_job" ]] && cr_found+=("$cr_p")
+  done
+  if [[ ! -s "$cr_tmp/hang.pid" ]]; then
+    cr_bad+=" the hang stub never ran; nothing signalled;"
+  elif [[ ${#cr_found[@]} -ne 1 ]]; then
+    cr_bad+=" ${#cr_found[@]} watchdog processes below the job, want exactly 1; nothing signalled;"
   else
-    kill -TERM "$cr_wd"
+    cr_pid="$(<"$cr_tmp/hang.pid")"
+    cr_sid="$(cr_stat "$cr_pid" 3)"
+    if [[ -z "$cr_sid" || "$(cr_stat "$cr_sid" 1)" != "${cr_found[0]}" ]]; then
+      cr_bad+=" the worker's session leader ${cr_sid:-?} is not a child of the watchdog ${cr_found[0]} (the runner has no session of its own); nothing signalled;"
+    else
+      cr_wd="${cr_found[0]}"
+      kill -TERM "$cr_wd"
+    fi
   fi
   wait "$cr_job"
   cr_rc=$?
@@ -1417,8 +1443,8 @@ PY
       sleep 0.1
     done
     ! st_alive "$cr_pid" || cr_bad+=" the hang stub's worker $cr_pid still runs 5 s after SIGTERM to the watchdog;"
+    [[ ! -e "$cr_tmp/hung" ]] || cr_bad+=" a hung flag after SIGTERM;"
   fi
-  [[ ! -e "$cr_tmp/hung" ]] || cr_bad+=" a hung flag after SIGTERM;"
   rm -f "$cr_tmp/hang.pid" "$cr_tmp/hung"
   cr_row watchdog-term-kills-group "$cr_bad${cr_bad:+ output: $(tail -n 5 "$cr_tmp/term.out" | tr '\n' '|')}"
 
@@ -1478,29 +1504,89 @@ PY
 # nothing on a match (exit 1 / 0). The cases are counted per source file,
 # not from the printed descriptions, which test code controls (a class
 # body that sets __module__, a docstring shaped like a case line; review
-# run 1 of interviewscam-site#41): each tests/reflow/test_*.py is
-# imported by its name with the directory first on sys.path (as discover
-# -t does) and loaded with unittest's loader, and each case must belong to
-# that file: its class's __module__ is the file's module and its test
-# method (unwrapped from decorators such as mock.patch) was compiled from
-# that file, which refuses a class imported or inherited from another
-# file. Only the Ran line is read from the output (the file, as stdin
-# carries the script): it must equal the cases the files hold, so cases
-# discovery finds outside them (a subpackage) fail too. Problems: an
-# empty pin; a malformed entry (not <test_name>:<n>, n a positive decimal
-# without a leading zero) or a module pinned twice; a pinned module whose
-# file is missing; a file that does not import; a case that is not one of
-# its file's; a pinned module with another number of cases, exact, both
-# ways; a test_*.py file the pin does not list; no Ran line, two, or a
-# count other than the files' total.
+# run 1 of interviewscam-site#41). The counting imports test code, so it
+# runs in a child (python3 -I -B), never in the process that decides: a
+# test file could otherwise send this process's output to /dev/null and
+# make it exit 0 (review run 2). The child imports each tests/reflow/
+# test_*.py by its name with the directory first on sys.path (as discover
+# -t does), loads it with unittest's loader and checks that each case
+# belongs to that file: its class's __module__ is the file's module and
+# its test method (unwrapped from decorators such as mock.patch) was
+# compiled from that file, which refuses a class imported or inherited
+# from another file. It reports one JSON record per line on a pipe of its
+# own (its stdout goes nowhere): per file a "file" record with the count
+# or an "import-error" record, a "foreign" record per case that is not
+# its file's own, and an "end" record with the numbers of files and
+# cases. This process requires exit 0, only well-formed records, exactly
+# one record per test_*.py file it globs itself, and the end record last
+# and once with the report's totals; only then does it read the counts.
+# Only the Ran line is read from the output (the file, as stdin carries
+# the script): it must equal the cases the files hold, so cases discovery
+# finds outside them (a subpackage) fail too. Problems: an empty pin; a
+# malformed entry (not <test_name>:<n>, n a positive decimal without a
+# leading zero) or a module pinned twice; a pinned module whose file is
+# missing; a failed or malformed report; a file that does not import; a
+# case that is not one of its file's; a pinned module with another number
+# of cases, exact, both ways; a test_*.py file the pin does not list; no
+# Ran line, two, or a count other than the files' total.
 reflow_isolation_case_pin() {
   python3 -I -B - "$@" <<'PY'
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+CHILD = r"""
 import importlib
 import inspect
-import re
+import json
+import os
 import sys
 import unittest
 from pathlib import Path
+
+root, out = Path(sys.argv[1]), os.fdopen(int(sys.argv[2]), "w", encoding="utf-8")
+
+
+def put(*record):
+    out.write(json.dumps(list(record), ensure_ascii=True) + "\n")
+    out.flush()
+
+
+sys.path.insert(0, str(root))
+files = cases = 0
+for path in sorted(root.glob("test_*.py")):
+    name = path.stem
+    files += 1
+    try:
+        module = importlib.import_module(name)
+    except Exception as exc:  # noqa: BLE001 (reported as a problem)
+        put("import-error", name, f"{type(exc).__name__}: {exc}")
+        continue
+    if Path(getattr(module, "__file__", "") or "").resolve() != path:
+        put("import-error", name, "it imports as another file")
+        continue
+    n, stack = 0, [unittest.TestLoader().loadTestsFromModule(module)]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, unittest.TestSuite):
+            stack.extend(item)
+            continue
+        n += 1
+        cls = type(item)
+        method = getattr(cls, getattr(item, "_testMethodName", ""), None)
+        code = getattr(inspect.unwrap(method), "__code__", None) if method is not None else None
+        where = Path(code.co_filename).resolve() if code is not None else None
+        if cls.__module__ != name or where != path:
+            put("foreign", name, item.id(), cls.__module__, where.name if where else "no code")
+    put("file", name, n)
+    cases += n
+put("end", files, cases)
+out.close()
+"""
 
 out_path, tests_dir, *entries = sys.argv[1:]
 root = Path(tests_dir).resolve()
@@ -1518,45 +1604,84 @@ for entry in entries:
         problems.append(f"{m.group(1)} is pinned twice {REF}")
     else:
         pin[m.group(1)] = int(m.group(2))
-sys.path.insert(0, str(root))
-counts = {}
-for path in sorted(root.glob("test_*.py")):
-    name = path.stem
+
+# The count, in a child; its report on a pipe of its own.
+read_end, write_end = os.pipe()
+with tempfile.TemporaryFile() as err:
+    child = subprocess.Popen([sys.executable, "-I", "-B", "-c", CHILD, str(root), str(write_end)],
+                             pass_fds=(write_end,), stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=err)
+    os.close(write_end)
+    with os.fdopen(read_end, "rb") as report:
+        data = report.read()
+    child.wait()
+    err.seek(0)
+    err_tail = err.read().decode("utf-8", "replace").strip().splitlines()[-1:]
+names = {path.stem for path in root.glob("test_*.py")}
+SHAPES = {"file": (str, int), "import-error": (str, str), "foreign": (str, str, str, str),
+          "end": (int, int)}
+bad, records = [], []
+if child.returncode != 0:
+    bad.append(f"the counting child exited {child.returncode}"
+               + (f": {err_tail[0]}" if err_tail else ""))
+lines = data.decode("utf-8", "replace").splitlines()
+if not lines:
+    bad.append("the counting child gave no report")
+for line in lines:
     try:
-        module = importlib.import_module(name)
-    except Exception as exc:  # noqa: BLE001 (reported as a problem)
-        problems.append(f"tests/reflow/{path.name} does not import: {type(exc).__name__}: {exc}")
+        record = json.loads(line)
+    except ValueError:
+        record = None
+    if not (type(record) is list and record and record[0] in SHAPES
+            and len(record) == 1 + len(SHAPES[record[0]])
+            and all(type(v) is t for v, t in zip(record[1:], SHAPES[record[0]]))):
+        bad.append(f"malformed report line {line[:120]!r}")
         continue
-    if Path(getattr(module, "__file__", "") or "").resolve() != path:
-        problems.append(f"tests/reflow/{path.name} does not import as itself")
-        continue
-    n, stack = 0, [unittest.TestLoader().loadTestsFromModule(module)]
-    while stack:
-        item = stack.pop()
-        if isinstance(item, unittest.TestSuite):
-            stack.extend(item)
+    records.append(record)
+if lines and not bad and ([r[0] for r in records].count("end") != 1
+                          or records[-1][0] != "end"):
+    bad.append("the counting child's report does not end with its end record")
+counts, seen = {}, set()
+if not bad:
+    for record in records[:-1]:
+        kind, name = record[0], record[1]
+        if kind == "end":
             continue
-        n += 1
-        cls = type(item)
-        method = getattr(cls, getattr(item, "_testMethodName", ""), None)
-        code = getattr(inspect.unwrap(method), "__code__", None) if method is not None else None
-        where = Path(code.co_filename).resolve() if code is not None else None
-        if cls.__module__ != name or where != path:
-            problems.append(f"tests/reflow/{path.name}: {item.id()} is not a case of this file "
-                            f"(class module {cls.__module__}, method in "
-                            f"{where.name if where else 'no code'})")
-    counts[name] = n
+        if kind == "foreign":
+            continue
+        if name in seen:
+            bad.append(f"duplicate report record for {name}")
+            continue
+        seen.add(name)
+        if kind == "file":
+            counts[name] = record[2]
+    for name in sorted(names - seen):
+        bad.append(f"no report record for tests/reflow/{name}.py")
+    for name in sorted(seen - names):
+        bad.append(f"a report record for {name}, which is not a test_*.py file here")
+    if not bad and records[-1][1:] != [len(seen), sum(counts.values())]:
+        bad.append(f"the end record says {records[-1][1]} files and {records[-1][2]} cases, "
+                   f"the report holds {len(seen)} and {sum(counts.values())}")
+problems += bad
+if not bad:
+    for record in records:
+        if record[0] == "import-error":
+            problems.append(f"tests/reflow/{record[1]}.py does not import: {record[2]}")
+        elif record[0] == "foreign":
+            problems.append(f"tests/reflow/{record[1]}.py: {record[2]} is not a case of this "
+                            f"file (class module {record[3]}, method in {record[4]})")
 for module, n in pin.items():
     if not (root / f"{module}.py").is_file():
         problems.append(f"tests/reflow/{module}.py is missing (pinned at {n} cases)")
-    elif module in counts and counts[module] != n:
+    elif not bad and module in counts and counts[module] != n:
         problems.append(f"{module} has {counts[module]} cases, pinned {n} {REF}")
-for module in sorted(set(counts) - set(pin)):
-    problems.append(f"{module} has {counts[module]} cases and is not pinned")
+if not bad:
+    for module in sorted(set(counts) - set(pin)):
+        problems.append(f"{module} has {counts[module]} cases and is not pinned")
 ran = re.findall(r"^Ran ([0-9]+) tests? in ", text, re.MULTILINE)
 if len(ran) != 1:
     problems.append(f"{len(ran)} 'Ran N tests' lines in the output, want exactly one")
-elif int(ran[0]) != sum(counts.values()):
+elif not bad and int(ran[0]) != sum(counts.values()):
     problems.append(f"unittest ran {ran[0]} cases, the test_*.py files hold "
                     f"{sum(counts.values())}")
 for problem in problems:
@@ -1694,6 +1819,41 @@ reflow_isolation_case_pin_rows() {
   cp_pin test_a:2 test_b:1
   cp_bad+="$(cp_want "test_b has 0 cases, pinned 1 $cp_ref")"
   cp_row fails-on-moved-cases "$cp_bad"
+
+  # A test file that silences the checker (review run 2 of
+  # interviewscam-site#41): stdout to /dev/null and an atexit exit 0, with
+  # test_b emptied. The counting runs in a child that reports over its own
+  # pipe, so the parent still decides and prints.
+  cp_fresh 2 0
+  printf '\nimport atexit, os, sys\nsys.stdout = open(os.devnull, "w")\natexit.register(os._exit, 0)\n' \
+    >>"$cp_dir/test_a.py"
+  cp_ran 2
+  cp_pin test_a:2 test_b:1
+  cp_row fails-on-silenced-checker "$(cp_want "test_b has 0 cases, pinned 1 $cp_ref")"
+
+  # The parent's checks of the child's report, one per member: an exit 0
+  # in the middle of the imports (no end record), another exit status, a
+  # line that is not a record, a duplicated record, a record after the
+  # end record.
+  cp_bad=""
+  cp_fresh 2 -
+  printf 'import os\nos._exit(0)\n' >"$cp_dir/test_b.py"
+  cp_ran 2
+  cp_pin test_a:2 test_b:1
+  cp_bad+="$(cp_want "the counting child's report does not end with its end record")"
+  printf 'import os\nos._exit(3)\n' >"$cp_dir/test_b.py"
+  cp_pin test_a:2 test_b:1
+  cp_bad+="$(cp_want "the counting child exited 3")"
+  printf 'import os, sys\nos.write(int(sys.argv[2]), b"not a record\\n")\n' >"$cp_dir/test_b.py"
+  cp_pin test_a:2 test_b:1
+  cp_bad+="$(cp_want "malformed report line 'not a record'")"
+  printf 'import os, sys\nos.write(int(sys.argv[2]), b"[\\"file\\", \\"test_a\\", 2]\\n")\n' >"$cp_dir/test_b.py"
+  cp_pin test_a:2 test_b:1
+  cp_bad+="$(cp_want "duplicate report record for test_a")"
+  printf 'import os, sys\nos.write(int(sys.argv[2]), b"[\\"end\\", 1, 2]\\n")\n' >"$cp_dir/test_b.py"
+  cp_pin test_a:2 test_b:1
+  cp_bad+="$(cp_want "the counting child's report does not end with its end record")"
+  cp_row fails-on-bad-report "$cp_bad"
 
   cp_fresh 2 -
   printf 'raise RuntimeError("broken on import")\n' >"$cp_dir/test_b.py"
@@ -10086,7 +10246,7 @@ PY
     fi
     # reflow-isolation/case-pin (Replikanti/interviewscam#66): the cases
     # each tests/reflow file holds, counted by unittest's loader per file
-    # and each one required to be that file's own, against
+    # in a child process and each one required to be that file's own, against
     # REFLOW_ISOLATION_CASES, exact, with their total against the run's Ran
     # line, so removing or emptying a module fails a row (the unittest row
     # above passes on fewer cases); reflow_isolation_case_pin_rows proves it.
