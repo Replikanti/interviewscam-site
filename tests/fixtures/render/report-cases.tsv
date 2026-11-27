@@ -220,7 +220,7 @@ name-type-unknown	content/reports/example-abused-company.md	name_type = "company
 # Replikanti/interviewscam#67 (a state or name_type that is not a string):
 # the render rules look the raw value up in STATE_CHIP, STATE_SENTENCE and
 # NAME_TYPES, and a list or an inline table is not hashable, so the first
-# of ten lookups raised TypeError (cmd_render raised TypeError, a FAIL here)
+# of eleven lookups raised TypeError (cmd_render raised TypeError, a FAIL here)
 # where the records check had already reported the schema finding. They read
 # both fields through text_param now, so a non-string is "no value", as an
 # absent key or an unknown string is. Every row counts 3 findings: the
@@ -231,7 +231,10 @@ name-type-unknown	content/reports/example-abused-company.md	name_type = "company
 # (the crash class). The integer and boolean rows (hashable non-strings), the
 # look-alike row (a Cyrillic o in place of the Latin one) and the missing rows
 # never crashed: they pin that the same finding comes out for them.
-state-list	content/reports/example-abused-company.md	state = "name_abused"	state = ["front"]	COUNT=3 params.state: must be one of
+# The state-list row expects rule 21's text, not the schema finding (the other
+# rows and the records fixtures pin that one): a card derived from a fallback
+# state still fails rule 21, with other words, so only this text kills it.
+state-list	content/reports/example-abused-company.md	state = "name_abused"	state = ["front"]	COUNT=3 rule 21: no card can be derived for this record
 state-list-empty	content/reports/example-abused-company.md	state = "name_abused"	state = []	COUNT=3 params.state: must be one of
 state-dict	content/reports/example-abused-company.md	state = "name_abused"	state = {}	COUNT=3 params.state: must be one of
 name-type-list	content/reports/example-abused-company.md	name_type = "company"	name_type = ["company"]	COUNT=3 params.name_type: must be one of
@@ -242,6 +245,20 @@ name-type-boolean	content/reports/example-abused-company.md	name_type = "company
 state-missing	content/reports/example-abused-company.md	state = "name_abused"\n		COUNT=3 required property 'state' is missing
 name-type-missing	content/reports/example-abused-company.md	name_type = "company"\n		COUNT=3 required property 'name_type' is missing
 state-lookalike	content/reports/example-abused-company.md	state = "name_abused"	state = "fr\u{043E}nt"	COUNT=3 params.state: must be one of
+# Same class, nested values (fix round 2 of the PR for #67): the campaign
+# slug is looked up in the campaign records (rule 6, the Home and A to Z
+# entries), each listed_on item in LOOKUPS (rule 7's lookup_urls, rule 12's
+# feed entry) and each source URL in rule 7's set of allowed links. A list or a
+# table there is unhashable too; the records check
+# reports the schema finding and render goes on, so the rows count that
+# finding and the findings of the rules that compare the built pages and the
+# feed with the record (the pages and the feed were built from the valid one).
+campaign-slug-list	content/reports/example-abused-company.md	slug = "example-unattributed-family"	slug = ["example-unattributed-family"]	COUNT=5 params.campaign.slug: expected type string
+campaign-slug-dict	content/reports/example-abused-company.md	slug = "example-unattributed-family"	slug = {}	COUNT=5 params.campaign.slug: expected type string
+listed-on-list	content/reports/example-front-company.md	listed_on = ["malwarebazaar", "virustotal"]	listed_on = [["x"]]	COUNT=4 params.artifacts.sha256[0].listed_on[0]: must be one of
+listed-on-dict	content/reports/example-front-company.md	listed_on = ["malwarebazaar", "virustotal"]	listed_on = [{}]	COUNT=4 params.artifacts.sha256[0].listed_on[0]: must be one of
+source-url-list	content/reports/example-abused-company.md	url = "https://vendor.example/research/fake-meeting-apps"	url = ["https://vendor.example/research/fake-meeting-apps"]	COUNT=5 params.sources[0].url: expected type string
+source-url-dict	content/reports/example-abused-company.md	url = "https://vendor.example/research/fake-meeting-apps"	url = {}	COUNT=5 params.sources[0].url: expected type string
 chip-text-split	public/reports/example-abused-company/index.html	<p class=record-type><span class=state-chip>Name abused</span> Company	<p class=record-type><span class=state-chip>Name</span> abused Company	COUNT=4 rule 17: the .record-type of the report page: <span class=state-chip> reads 'Name';
 state-digit-split-passes	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>No real com7pany, person or product was found behind this name. 	PASS
 # Replikanti/interviewscam#47 fix round 1 (QA's sweep of sentence_folds, the

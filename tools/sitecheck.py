@@ -5257,9 +5257,15 @@ def nav_targets(page):
     return targets
 
 
-def text_param(record, key):
-    value = record.params.get(key)
+def str_or_none(value):
+    """A record value that names a table entry, as a string or None: a list
+    or a table is not hashable, so the raw value must not reach a dict
+    lookup (Replikanti/interviewscam#67); the records check has reported it."""
     return value if isinstance(value, str) else None
+
+
+def text_param(record, key):
+    return str_or_none(record.params.get(key))
 
 
 def is_persona(record):
@@ -5372,7 +5378,7 @@ def lookup_urls(record):
         possible |= {form.format(value) for form in LOOKUPS.values()}
         on = entry.get("listed_on")
         for service in on if isinstance(on, list) else []:
-            if service in LOOKUPS:
+            if isinstance(service, str) and service in LOOKUPS:
                 listed.add(LOOKUPS[service].format(value))
     return listed, possible
 
@@ -6352,7 +6358,7 @@ def campaign_line_problems(page, record, campaigns, page_path):
             problems.append(f"rule 6: the campaign line reads {show(el.text())}, an "
                             f"unattributed report reads {show(UNATTRIBUTED)}")
         return problems
-    slug = campaign.get("slug")
+    slug = str_or_none(campaign.get("slug"))
     target = campaigns.get(slug)
     name = text_param(target, "name") if target else None
     source = source_by_id(record, campaign.get("source"))
@@ -6452,7 +6458,8 @@ def artifact_problems(page, record):
 def external_link_problems(page, record):
     """Rule 7: on a record page every external link is a source URL of the
     record or a lookup URL of one of its hashes."""
-    allowed = {s.get("url") for s in sources_of(record)} | lookup_urls(record)[1]
+    allowed = {url for url in (s.get("url") for s in sources_of(record))
+               if isinstance(url, str)} | lookup_urls(record)[1]
     return [f"rule 7: external link {show(href)} is neither a source URL of this "
             "record nor a lookup of one of its hashes (D8)"
             for href, _ in links_in(page.root)
@@ -7195,7 +7202,7 @@ def feed_report_entry(record):
         if isinstance(entry, dict):
             on = entry.get("listed_on") if isinstance(entry.get("listed_on"), list) else []
             entry["lookup_urls"] = [LOOKUPS[s].format(entry.get("value")) for s in on
-                                    if s in LOOKUPS]
+                                    if isinstance(s, str) and s in LOOKUPS]
     return {
         "slug": record.slug, "url": f"{SITE_ORIGIN}/reports/{record.slug}/",
         "name": None if hidden else p.get("name"), "name_hidden": hidden,
@@ -7733,7 +7740,7 @@ def index_campaign_text(record, campaigns):
     campaign = record.params.get("campaign")
     if not isinstance(campaign, dict):
         return UNATTRIBUTED
-    target = campaigns.get(campaign.get("slug"))
+    target = campaigns.get(str_or_none(campaign.get("slug")))
     name = text_param(target, "name") if target else None
     return INDEX_CAMPAIGN_LINE.format(campaign=squash(name)) if name is not None else None
 
@@ -7837,7 +7844,7 @@ def index_entry_problems(page, li, record, campaigns):
             problems.append(f"rule 15 (c): the campaign family of the unattributed "
                             f"{where} holds {len(links)} link(s); it links nothing")
         return problems
-    slug = campaign.get("slug")
+    slug = str_or_none(campaign.get("slug"))
     target = campaigns.get(slug)
     name = text_param(target, "name") if target else None
     if name is None:
