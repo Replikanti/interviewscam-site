@@ -3642,6 +3642,10 @@ row("name-deferred-marks", got == ([], [], [], True, 0, [1, 2, 3]),
 # typed into a name still leaves it found as when the readings dropped it.
 # A mark the confusables table reads as a letter stays that letter (U+0C02
 # as "o", marks_as_text), and a U+E004 in the text itself is no APART.
+# Every run of the text is read, not only the first ("Bo" + U+20D2 before
+# the name), and the separator is set after the bidi reordering, so a
+# mark inside a right-to-left look-alike leaves V1 to V3 reading it as
+# drawn (a strong left-to-right APART before visual_order split it).
 try:
     A = "Avery Exampleton"
     ayo = "Ay\u1ecd\u0300"
@@ -3649,17 +3653,20 @@ try:
              ("علي\u0651", "علي\u0651\u0338\u064bب"), ("कमल\u094d", "कमल\u094d\u0338\u093cक"),
              ("Maria", "Marià\u20e6x"), ("Ana\u20d0\u0301", "Ana\u20d0\u0301\u0300\u20ddx"),
              ("Ana\u20d0\u0301", "Ana\u20d0\u0301\u0300\u093ex"),
-             ("Ana\u20d0\u0301", "Ana\u20d0\u0301\u0300\u0483x"))
+             ("Ana\u20d0\u0301", "Ana\u20d0\u0301\u0300\u0483x"),
+             (A, "Bo\u20d2 " + A + "\u0301\u20d2x"))
     missed = [t for n, t in cases if not hits(n, t)]
     r5_missed = [t for n, t in cases if sc.r5_reading(sc.r5_patterns(n), t) is None]
     got = (missed, r5_missed, hits(A, "Av\u20d2ery Exampleton"), hits(A, "Avery Exampl\u0338eton"),
            labelled(A, A + "\u0301\u20d2" + L), hits("Riko", "Rik\u0c02 x"),
-           hits(A, "Avery Exampleto\ue004n"))
+           hits(A, "Avery Exampleto\ue004n"),
+           hits("Riley Placeholder", "Riley Placeh\u05d5\u20d2\u05e1der"))
 except Exception as exc:  # noqa: BLE001 - the row reports any crash
     got = repr(exc)
-row("name-apart-mark-separates", got == ([], [], [1, 2, 3], [1, 2, 3], [1, 2, 3], [1, 2, 3], []),
+row("name-apart-mark-separates", got == ([], [], [1, 2, 3], [1, 2, 3], [1, 2, 3], [1, 2, 3], [],
+                                         [4, 5, 6]),
     f"got (missed, missed by R5, mark inside a token twice, labelled, table mark, "
-    f"forged separator) {got!r}")
+    f"forged separator, drawn order) {got!r}")
 # The names of review run 1, each followed by every run of one or two
 # marks of its palette that holds a mark the end run would not take, and
 # a letter: some reading finds the name in every one (the review's probe
