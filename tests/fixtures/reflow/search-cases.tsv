@@ -237,3 +237,32 @@ legible-first-line-line-height	css/site.min.f259b2c984cca324d27710468a5df55c21e4
 legible-pinned-text-decoration-bar	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{text-decoration:line-through 6px}	PASS
 legible-first-line-text-decoration	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a::first-line{text-decoration:line-through 6px}	is not drawn in reading order
 legible-fill-transition	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{transition:-webkit-text-fill-color 2s linear,color 2s linear}	PASS
+# Replikanti/interviewscam#47 (the survivors of the Replikanti/interviewscam#40
+# acceptance sweep, browser set): rows where the script's answer differs
+# from the oracle's under one mutation of search.js, each PASS (or the
+# hand-over's (8a)) with today's script. A URL whose host no entry lists as
+# a domain (the urls list), Home without one result section (the build
+# guard: the script stays inert, the form submits natively, (8a)), a first
+# name with a space that the stem queries span (the fold's gap), www.
+# inside a domain (startsWith), a URL with two schemes (bare strips one), a
+# feed name that is a number (text() reads strings only), a feed without
+# campaigns (hands over, (8a)), a non-li child of the /a-z/ list after its
+# last entry (only li entries count), the /a-z/ reply not ok (hands over,
+# (8a); only a script edit gives a non-ok reply with an /a-z/ body), an
+# alias with a space before a dotted host (no host read), a domain that
+# ends in another without the dot, and U+20000 (a JSON escape in feed.json)
+# in an alias and a domain, so the 4-code-point prefix query refangs to 2
+# code points, 3 UTF-16 units: below SEARCH_PARTIAL_MIN by code point.
+url-host-not-a-domain	feed.json	"urls":["hxxps://call[.]meetfix[.]example/download"]	"urls":["hxxps://files[.]meetfix-cdn[.]example/download"]	PASS
+guard-no-partial-section	index.html	<section id=search-partial class=	<section class=	(8a) query
+guard-no-none-section	index.html	<section id=search-none class=	<section class=	(8a) query
+fold-gap-in-stem	feed.json	"name":"call[.]meetfix[.]example"	"name":"Ab Cdefgh"	PASS
+www-inside-domain	feed.json	"domains":["abused-hiring[.]example"]	"domains":["jobs[.]www[.]abused-hiring[.]example"]	PASS
+scheme-twice	feed.json	"urls":["hxxps://call[.]meetfix[.]example/download"]	"urls":["hxxp://hxxps://jobs[.]example/a"]	PASS		feed.json	"domains":["meetfix[.]example"]	"domains":["meetfix[.]example"],"urls":["hxxps://jobs[.]example/a"]
+name-not-a-string	feed.json	"name":"fixture[.]utils","name_hidden"	"name":7,"name_hidden"	PASS
+feed-without-campaigns-hands-over	feed.json	"campaigns":	"campaignz":	(8a) query
+a-z-non-li-child	a-z/index.html	<a href=/campaigns/example-campaign-family/>Example Campaign Family</a></span></span></li></ul>	<a href=/campaigns/example-campaign-family/>Example Campaign Family</a></span></span></li><div><a href=/reports/meetfix/>MeetFix</a></div></ul>	PASS
+a-z-reply-not-ok-hands-over	search.js	fetch(action)	fetch(action).then(function (reply) { return reply.text().then(function (body) { return new Response(body, {status: 503}); }); })	(8a) query
+alias-space-before-subdomain	feed.json	"aliases":[],"artifacts":{"domains":["call[.]meetfix[.]example"]	"aliases":["Mail from jobs[.]abused-hiring[.]example"],"artifacts":{"domains":["call[.]meetfix[.]example"]	PASS
+domain-suffix-without-dot	feed.json	"domains":["meetfix[.]example"]	"domains":["meetfix[.]example","notabused-hiring[.]example"]	PASS
+astral-cut-below-partial-min	feed.json	"aliases":[],"artifacts":{"domains":["call[.]meetfix[.]example"]	"aliases":["\ud840\udc00[.]x"],"artifacts":{"domains":["call[.]meetfix[.]example"]	PASS		feed.json	"domains":["meetfix[.]example"]	"domains":["meetfix[.]example","\ud840\udc00[.]example"]

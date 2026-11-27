@@ -203,3 +203,43 @@ state-hidden-span-split	public/reports/example-front-company/index.html	<h2 id=e
 state-artifact-split-copy-button	public/reports/example-front-company/index.html	<code class=artifact id=file_names-0>FrontCoMeet-Setup[.]exe</code>	<code class=artifact id=file_names-0>This name belongs to someone else[.] The campaign used it</code>	rule 17: the report page of a front record shows the name_abused sentence	<code class=artifact id=file_names-1>FrontCoMeet[.]dmg</code>	<code class=artifact id=file_names-1>without their involvement[.]</code>
 state-attribute-percent-encoded	public/reports/example-front-company/index.html	</main>	<p title="This%20name%20belongs%20to%20someone%20else%2E%20The%20campaign%20used%20it%20without%20their%20involvement%2E">x</p></main>	rule 17: the report page of a front record shows the name_abused sentence
 state-own-in-closed-details-passes	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>x</p><details><summary>More</summary>This name belongs to someone else. The campaign used it without their involvement.</details><p>	COUNT=2 rule 20: <details>
+# Replikanti/interviewscam#47 (the survivors of the Replikanti/interviewscam#40
+# acceptance sweep, static set): a source without its url (COUNT=5: the
+# schema finding, rule 6 twice, rule 7 and rule 12; campaign_line_tree must
+# read the url only as a string, or it raises), a name_type outside
+# NAME_TYPES (COUNT=3: the schema finding, rule 12 and, since the cards of
+# Replikanti/interviewscam#44 PR 3, rule 21, which derives no card for it;
+# report_regions must return no region for it, or it raises), the state chip's text split from
+# it with the line's whole text unchanged (COUNT=4: rule 3 twice, rule 17
+# for the chip's own text and rule 21; the whole text of the line is the
+# same, so only the chip's pin gives the rule 17 finding), and the
+# other state's sentence split by a digit, which every reading keeps (no
+# digit but 0 and 1 maps to a letter in confusables.txt).
+campaign-source-url-missing	content/reports/example-abused-company.md	\nurl = "https://vendor.example/research/fake-meeting-apps"		COUNT=5 params.sources[0]: required property 'url' is missing
+name-type-unknown	content/reports/example-abused-company.md	name_type = "company"	name_type = "companyx"	COUNT=3 params.name_type: must be one of
+chip-text-split	public/reports/example-abused-company/index.html	<p class=record-type><span class=state-chip>Name abused</span> Company	<p class=record-type><span class=state-chip>Name</span> abused Company	COUNT=4 rule 17: the .record-type of the report page: <span class=state-chip> reads 'Name';
+state-digit-split-passes	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>No real com7pany, person or product was found behind this name. 	PASS
+# Replikanti/interviewscam#47 fix round 1 (QA's sweep of sentence_folds, the
+# code that replaced the 16 INVALID static ids): one row per reading that
+# only it holds. R0 alone reads a long s (U+017F) as "s", because the
+# skeleton readings take its confusables.txt prototype "f"; with it, a Hangul
+# filler (U+3164, a letter the R0 filter would keep) needs R0's invisible
+# drop, an accent its NFD, upper case its case fold, and a full-width letter
+# its NFKC (the case fold alone handles the long s). A modifier letter w
+# (U+02B7) beside a Cyrillic o needs the NFKC inside the skeleton loop, which
+# R0, blind to the o, cannot replace. The count rows add two copies of the
+# own sentence that differ in which readings hold them: a capital I for an
+# l (R1, R3, V1, V3), an i for an l (R3, V3), a Greek capital iota for an i
+# (R2, R3, V2, V3), and a right-to-left pair drawn as "lo" with either of
+# those (the V readings only); each page counts its sentence 2 times under
+# the first reading that deviates and 3 times under R3 or V3, so a reading
+# replaced by another names a different count.
+state-plain-long-s-filler	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>No real company, perㅤſon or product was found behind this name. 	rule 17: the report page of a name_abused record shows the front sentence
+state-plain-long-s-accent	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>No real company, perſón or product was found behind this name. 	rule 17: the report page of a name_abused record shows the front sentence
+state-plain-long-s-upper	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>NO REAL COMPANY, PERſON OR PRODUCT WAS FOUND BEHIND THIS NAME. 	rule 17: the report page of a name_abused record shows the front sentence
+state-plain-long-s-fullwidth	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>No real company, perſon or product was found behind this ｎame. 	rule 17: the report page of a name_abused record shows the front sentence
+state-skeleton-nfkc-in-loop	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>Nо real company, person or product ʷas found behind this name. 	rule 17: the report page of a name_abused record shows the front sentence
+state-own-count-r1	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>This name beIongs to someone else. The campaign used it without their involvement. This name beiongs to someone else. The campaign used it without their involvement. 	rule 17: the report page shows its state sentence 2 times
+state-own-count-r2	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>ThΙs name belongs to someone else. The campaign used it without their involvement. This name beiongs to someone else. The campaign used it without their involvement. 	rule 17: the report page shows its state sentence 2 times
+state-own-count-v1	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>This name beסוngs to someone eIse. The campaign used it without their involvement. This name beסוngs to someone eise. The campaign used it without their involvement. 	rule 17: the report page shows its state sentence 2 times
+state-own-count-v2	public/reports/example-abused-company/index.html	<h2 id=evidence>Evidence reviewed</h2><p>	<h2 id=evidence>Evidence reviewed</h2><p>ThΙs name beסוngs to someone else. The campaign used it without their involvement. This name beסוngs to someone eise. The campaign used it without their involvement. 	rule 17: the report page shows its state sentence 2 times

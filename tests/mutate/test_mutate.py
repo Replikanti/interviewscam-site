@@ -1337,6 +1337,37 @@ class Capacity(unittest.TestCase):
                          [2, 1, 1, 1, 0, 0])
 
 
+class RunSelftest(unittest.TestCase):
+    """run_selftest hands SELFTEST_STOP_AT_FIRST_FAIL=1 to every run
+    (Replikanti/interviewscam#47, ADR-0008 part 5) on a copy of the
+    caller's environment."""
+
+    def run_stub(self, env):
+        tmp = Path(tempfile.mkdtemp(prefix="mutate-run-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "tools").mkdir()
+        (tmp / "tools" / "selftest.sh").write_text(
+            'printf \'switch=[%s] other=[%s]\\n\' '
+            '"${SELFTEST_STOP_AT_FIRST_FAIL-unset}" "${OTHER-unset}"\n')
+        return mutate.run_selftest(tmp, ("s",), 30, tmp / "log", env)
+
+    def test_run_selftest_sets_stop_switch(self):
+        rc, output, timed_out = self.run_stub({"PATH": os.environ["PATH"], "OTHER": "kept"})
+        self.assertEqual((rc, timed_out), (0, False))
+        self.assertEqual(output, "switch=[1] other=[kept]\n")
+        # A caller's other value is replaced, never kept.
+        rc, output, _ = self.run_stub({"PATH": os.environ["PATH"],
+                                       "SELFTEST_STOP_AT_FIRST_FAIL": "0"})
+        self.assertEqual(output, "switch=[1] other=[unset]\n")
+
+    def test_run_selftest_leaves_caller_env(self):
+        env = {"PATH": os.environ["PATH"], "OTHER": "kept"}
+        before = dict(env)
+        self.run_stub(env)
+        self.assertEqual(env, before)
+        self.assertNotIn("SELFTEST_STOP_AT_FIRST_FAIL", env)
+
+
 def upload_steps(text):
     return re.findall(r"(?ms)^      - uses: actions/upload-artifact@.*?(?=^      - |^  \S|\Z)",
                       text)

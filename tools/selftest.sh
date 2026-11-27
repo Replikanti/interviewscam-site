@@ -456,8 +456,10 @@ PY
 # recheck of 5b1519d) also needs exactly n findings, so a row can prove that
 # the class-scoped rules stay off on a page with a markup: finding. A find string that is absent, or present more
 # than once, fails the row, so a row cannot turn into a no-op when the
-# base case changes. The last line, render-search/table, counts the rows.
-# -B: no tools/__pycache__.
+# base case changes. A command that raises an Exception gives its row a
+# FAIL that names the exception (cmd_<command> raised <Type>: <message>),
+# never ok, and the next row runs (Replikanti/interviewscam#47). The last
+# line, render-search/table, counts the rows. -B: no tools/__pycache__.
 search_cases_runner() {
   python3 -I -B - "$1" "$2" "$3" "$4" "${5:-render-search}" "${6:-render}" <<'PY'
 import argparse
@@ -548,16 +550,33 @@ for row in rows:
             for target, text in texts.items():
                 target.write_text(text, encoding="utf-8")
         buffer = io.StringIO()
+        raised = None
         with contextlib.redirect_stdout(buffer):
-            if command == "records":
-                rc = sitecheck.cmd_records(argparse.Namespace(root=str(root),
-                                                              schemas=str(schema_dir)))
-            else:
-                rc = sitecheck.cmd_render(argparse.Namespace(
-                    records=str(root), schemas=str(schema_dir), fixtures=None,
-                    no_feed=no_feed, no_search=no_search, no_report_pins=no_report_pins,
-                    no_intake=no_intake, public=str(root / "public")))
+            # A command that raises is a named FAIL of its row, never ok,
+            # and the later rows still run (Replikanti/interviewscam#47: a
+            # mutant that raises KeyError inside cmd_render ended the whole
+            # runner, so no row named its kill). BaseException (SystemExit,
+            # KeyboardInterrupt) is not caught.
+            try:
+                if command == "records":
+                    rc = sitecheck.cmd_records(argparse.Namespace(root=str(root),
+                                                                  schemas=str(schema_dir)))
+                else:
+                    rc = sitecheck.cmd_render(argparse.Namespace(
+                        records=str(root), schemas=str(schema_dir), fixtures=None,
+                        no_feed=no_feed, no_search=no_search, no_report_pins=no_report_pins,
+                        no_intake=no_intake, public=str(root / "public")))
+            except Exception as exc:  # noqa: BLE001 (reported as the row's FAIL)
+                # The message as findings print a value (show: defanged,
+                # cut at 300 characters), no traceback.
+                shown = getattr(sitecheck, "show", None)
+                raised = (type(exc).__name__, shown(exc, 300) if shown else repr(str(exc))[:300])
         output = buffer.getvalue()
+    if raised is not None:
+        print(f"FAIL {label}/{name}: cmd_{command} raised {raised[0]}: {raised[1]}")
+        for line in output.splitlines()[-12:]:
+            print(f"     | {line}")
+        continue
     count = None
     if expect.startswith("COUNT="):
         head, _, expect = expect.partition(" ")
@@ -821,7 +840,11 @@ PY
 # expect exit 1 with that text in the output. The rows run four at a time,
 # each in a forked process with its own Chrome, and print in table order
 # (the job's time: a row takes 10 to 15 s). The last line,
-# reflow-search/table, counts the rows. -B: no tools/__pycache__.
+# reflow-search/table, counts the rows. With SELFTEST_STOP_AT_FIRST_FAIL=1
+# in the environment (only tools/mutate.py sets it, for sweep runs) the
+# runner stops after the first failing row and the table line says so
+# (Replikanti/interviewscam#47); without it the output is unchanged.
+# -B: no tools/__pycache__.
 reflow_search_runner() {
   python3 -I -B - "$1" "$2" "$3" "$4" "$5" <<'PY'
 import argparse
@@ -831,6 +854,7 @@ import hashlib
 import importlib.util
 import io
 import multiprocessing
+import os
 import re
 import shutil
 import sys
@@ -937,15 +961,253 @@ for row in rows:
     good.append(row)
 # REFLOW_SEARCH_JOBS rows at a time, each in a forked process with its own
 # Chrome (the job's time; the rows share nothing), printed in table order.
+# With SELFTEST_STOP_AT_FIRST_FAIL=1 (exactly "1"; tools/mutate.py sets it
+# for every sweep run, CI never does) the runner stops after the first row
+# whose lines hold a line that starts with "FAIL ": the rows still running
+# are terminated, and the table line says how many rows were not reported.
+# Rows are independent and print in table order, so that row is the one a
+# full run reports first. A control or a survivor has no failing row and
+# runs every row; a mutant that fails a row ends sooner, so one that also
+# slows every row is KILLED inside the budget instead of TIMEOUT past it
+# (Replikanti/interviewscam#47, ADR-0008 part 5 amendment).
+stop_at_first_fail = os.environ.get("SELFTEST_STOP_AT_FIRST_FAIL") == "1"
+stopped, reported = None, 0
 with multiprocessing.get_context("fork").Pool(REFLOW_SEARCH_JOBS) as pool:
-    for lines in pool.map(run_row, good, chunksize=1):
+    for row, lines in zip(good, pool.imap(run_row, good, chunksize=1)):
         for line in lines:
             print(line)
-if not rows or bad:
+        reported += 1
+        if stop_at_first_fail and any(line.startswith("FAIL ") for line in lines):
+            stopped = row[0]
+            sys.stdout.flush()
+            pool.terminate()
+            pool.join()
+            break
+if stopped is not None:
+    print(f"FAIL reflow-search/table: stopped after reflow-search/{stopped}, the first "
+          f"failing row (SELFTEST_STOP_AT_FIRST_FAIL=1); {len(good) - reported} of "
+          f"{len(good)} rows not reported")
+elif not rows or bad:
     print(f"FAIL reflow-search/table: {len(rows)} rows, {bad} malformed")
 else:
     print(f"ok   reflow-search/table ({len(rows)} rows)")
 PY
+}
+
+# case_runner_rows (Replikanti/interviewscam#47, local and CI, seconds, no
+# Chrome): the case-runner/<row> lines prove the row handling of
+# search_cases_runner and reflow_search_runner against stub sitecheck
+# modules in a temporary directory, whose commands answer what the row's
+# outcome.txt says (pass, fail, a failure whose text holds "FAIL", raise,
+# a TypeError, a KeyError with a dot, exit); the stub's show is the real
+# one of tools/sitecheck.py, so the message is printed as findings print
+# it. search_cases_runner: a row whose command raises KeyError or TypeError
+# is a FAIL naming the exception, also when it expects PASS or a text the
+# message holds, its message defanged by the real show, the next row still
+# runs, the table line is still printed last, and a SystemExit is not
+# caught. reflow_search_runner: with
+# SELFTEST_STOP_AT_FIRST_FAIL=1 the output is exactly the lines up to the
+# first failing row (row 1 or the last row) plus the stopped line; without
+# the switch, with it set to anything but 1, and with every row passing,
+# it is the full output; an ok line whose expect text holds FAIL does not
+# stop it. Called by selftest_blocks, whose counters it updates.
+case_runner_rows() {
+  local cr_tmp cr_bad cr_rc cr_out cr_name
+  cr_tmp="$(mktemp -d)" || { echo "FAIL case-runner/setup: mktemp failed"; n_failed=$((n_failed + 1)); return; }
+  # cr_row <name> <bad>: one case-runner line from the collected problems.
+  cr_row() {
+    if [[ -z "$2" ]]; then
+      echo "ok   case-runner/$1"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL case-runner/$1:$2"
+      n_failed=$((n_failed + 1))
+    fi
+  }
+  mkdir -p "$cr_tmp/render-base" "$cr_tmp/reflow-base/js" "$cr_tmp/schema"
+  printf 'pass\n' >"$cr_tmp/render-base/outcome.txt"
+  printf 'pass\n' >"$cr_tmp/reflow-base/outcome.txt"
+  printf 'x\n' >"$cr_tmp/reflow-base/js/search.min.0a.js"
+  printf 'x\n' >"$cr_tmp/search.js"
+  printf '%s\n' "$SELFTEST_ROOT/tools/sitecheck.py" >"$cr_tmp/real.txt"
+  printf '<script src=/js/search.min.0a.js integrity=sha384-x defer>\n' \
+    >"$cr_tmp/reflow-base/index.html"
+  cat >"$cr_tmp/stub.py" <<'PY'
+"""A stub of tools/sitecheck.py for case-runner: each command answers
+what outcome.txt of the case says. show is the real one (real.txt names
+tools/sitecheck.py), so a raised message is defanged as findings are."""
+import importlib.util
+from pathlib import Path
+
+REFLOW_LAUNCH_TIMEOUT = 1
+
+
+class UsageError(Exception):
+    pass
+
+
+_real = Path(__file__).with_name("real.txt").read_text(encoding="utf-8").strip()
+_spec = importlib.util.spec_from_file_location("sitecheck_real", _real)
+_module = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_module)
+show = _module.show
+
+
+def answer(root):
+    word = (Path(root) / "outcome.txt").read_text(encoding="utf-8").strip()
+    if word == "raise":
+        raise KeyError("name_type")
+    if word == "typeerror":
+        raise TypeError("unhashable type: 'list'")
+    if word == "raisedot":
+        raise KeyError("campaign.source")
+    if word == "exit":
+        raise SystemExit(5)
+    if word == "fail":
+        print("FAIL: stub finding")
+        return 1
+    if word == "failtext":
+        print("FAIL: FAIL x")
+        return 1
+    print("stub checked")
+    return 0
+
+
+def cmd_render(args):
+    return answer(args.records)
+
+
+def cmd_records(args):
+    return answer(args.root)
+
+
+def cmd_reflow(args):
+    return answer(args.public)
+PY
+  printf 'r-raise\toutcome.txt\tpass\traise\tPASS\nr-raise-text\toutcome.txt\tpass\traise\tname_type\nr-type\toutcome.txt\tpass\ttypeerror\tPASS\nr-dot\toutcome.txt\tpass\traisedot\tPASS\nr-next\toutcome.txt\tpass\tok\tPASS\n' \
+    >"$cr_tmp/render.tsv"
+  printf 'r-exit\toutcome.txt\tpass\texit\tPASS\nr-after\toutcome.txt\tpass\tok\tPASS\n' \
+    >"$cr_tmp/render-exit.tsv"
+  cr_out="$(search_cases_runner "$cr_tmp/stub.py" "$cr_tmp/render.tsv" "$cr_tmp/render-base" \
+    "$cr_tmp/schema" x 2>&1)"
+  cr_bad=""
+  for cr_name in r-raise r-raise-text; do
+    grep -qxF "FAIL x/$cr_name: cmd_render raised KeyError: \"'name_type'\"" <<<"$cr_out" \
+      || cr_bad+=" no FAIL line naming KeyError for $cr_name;"
+    ! grep -qF "ok   x/$cr_name " <<<"$cr_out" || cr_bad+=" $cr_name printed ok;"
+  done
+  grep -q 'Traceback' <<<"$cr_out" && cr_bad+=" a traceback was printed;"
+  cr_row raising-row-named "$cr_bad${cr_bad:+ output: $(tr '\n' '|' <<<"$cr_out")}"
+  # Any Exception, not only KeyError: a TypeError is a named FAIL too.
+  cr_bad=""
+  grep -qxF "FAIL x/r-type: cmd_render raised TypeError: \"unhashable type: 'list'\"" <<<"$cr_out" \
+    || cr_bad+=" no FAIL line naming TypeError for r-type; output: $(tr '\n' '|' <<<"$cr_out")"
+  cr_row raising-row-any-exception "$cr_bad"
+  # The message goes through sitecheck's show: its dot is defanged.
+  cr_bad=""
+  grep -qxF "FAIL x/r-dot: cmd_render raised KeyError: \"'campaign[.]source'\"" <<<"$cr_out" \
+    || cr_bad+=" no FAIL line with the defanged message for r-dot; output: $(tr '\n' '|' <<<"$cr_out")"
+  cr_row raising-row-message-defanged "$cr_bad"
+  cr_bad=""
+  [[ "$(grep -E '^(ok   |FAIL )x/' <<<"$cr_out" | sed -n 5p)" == "ok   x/r-next (passed as expected)" ]] \
+    || cr_bad+=" the row after the raising rows is not 'ok   x/r-next (passed as expected)'; output: $(tr '\n' '|' <<<"$cr_out")"
+  cr_row raising-row-next-runs "$cr_bad"
+  cr_bad=""
+  [[ "$(tail -n 1 <<<"$cr_out")" == "ok   x/table (5 rows)" ]] \
+    || cr_bad+=" the last line is not 'ok   x/table (5 rows)'; output: $(tr '\n' '|' <<<"$cr_out")"
+  cr_row table-line-after-raise "$cr_bad"
+  cr_out="$(search_cases_runner "$cr_tmp/stub.py" "$cr_tmp/render-exit.tsv" "$cr_tmp/render-base" \
+    "$cr_tmp/schema" x 2>&1)"
+  cr_rc=$?
+  cr_bad=""
+  [[ $cr_rc -eq 5 ]] || cr_bad+=" exit $cr_rc, not the SystemExit's 5;"
+  grep -q 'x/r-after\|x/table' <<<"$cr_out" && cr_bad+=" the runner went on after a SystemExit;"
+  cr_row base-exception-not-caught "$cr_bad${cr_bad:+ output: $(tr '\n' '|' <<<"$cr_out")}"
+
+  # The reflow tables: row names r1 to r5, each with its outcome (pass
+  # leaves outcome.txt as it is, through the find "-").
+  # cr_table <file> <outcome:expect>...: one row per pair.
+  cr_table() {
+    local file="$1" i=0 pair
+    shift
+    : >"$file"
+    for pair in "$@"; do
+      i=$((i + 1))
+      if [[ "${pair%%:*}" == pass ]]; then
+        printf 'r%s\toutcome.txt\t-\t-\t%s\n' "$i" "${pair#*:}" >>"$file"
+      else
+        printf 'r%s\toutcome.txt\tpass\t%s\t%s\n' "$i" "${pair%%:*}" "${pair#*:}" >>"$file"
+      fi
+    done
+  }
+  # cr_reflow <table> <switch|-unset>: the runner's output.
+  cr_reflow() {
+    (
+      if [[ "$2" == -unset ]]; then
+        unset SELFTEST_STOP_AT_FIRST_FAIL
+      else
+        export SELFTEST_STOP_AT_FIRST_FAIL="$2"
+      fi
+      reflow_search_runner "$cr_tmp/stub.py" "$1" "$cr_tmp/reflow-base" "$cr_tmp/search.js" \
+        /nonexistent 2>&1
+    )
+  }
+  local cr_want cr_got cr_off cr_value
+  cr_fail_lines() {
+    printf 'FAIL reflow-search/%s: expected exit 0; got exit 1; output:\n     | FAIL: stub finding\n' "$1"
+  }
+  cr_table "$cr_tmp/first.tsv" fail:PASS pass:PASS pass:PASS pass:PASS pass:PASS
+  cr_want="$(cr_fail_lines r1
+    echo "FAIL reflow-search/table: stopped after reflow-search/r1, the first failing row (SELFTEST_STOP_AT_FIRST_FAIL=1); 4 of 5 rows not reported")"
+  cr_got="$(cr_reflow "$cr_tmp/first.tsv" 1)"
+  cr_bad=""
+  [[ "$cr_got" == "$cr_want" ]] || cr_bad=" output: $(tr '\n' '|' <<<"$cr_got")"
+  cr_row reflow-stop-first-row "$cr_bad"
+
+  cr_table "$cr_tmp/last.tsv" pass:PASS pass:PASS pass:PASS pass:PASS fail:PASS
+  cr_want="$(for cr_name in r1 r2 r3 r4; do echo "ok   reflow-search/$cr_name (passed as expected)"; done
+    cr_fail_lines r5
+    echo "FAIL reflow-search/table: stopped after reflow-search/r5, the first failing row (SELFTEST_STOP_AT_FIRST_FAIL=1); 0 of 5 rows not reported")"
+  cr_got="$(cr_reflow "$cr_tmp/last.tsv" 1)"
+  cr_bad=""
+  [[ "$cr_got" == "$cr_want" ]] || cr_bad=" output: $(tr '\n' '|' <<<"$cr_got")"
+  cr_row reflow-stop-last-row "$cr_bad"
+
+  cr_table "$cr_tmp/all.tsv" pass:PASS pass:PASS pass:PASS pass:PASS pass:PASS
+  cr_want="$(for cr_name in r1 r2 r3 r4 r5; do echo "ok   reflow-search/$cr_name (passed as expected)"; done
+    echo "ok   reflow-search/table (5 rows)")"
+  cr_bad=""
+  cr_got="$(cr_reflow "$cr_tmp/all.tsv" 1)"
+  [[ "$cr_got" == "$cr_want" ]] || cr_bad+=" with the switch: $(tr '\n' '|' <<<"$cr_got");"
+  cr_got="$(cr_reflow "$cr_tmp/all.tsv" -unset)"
+  [[ "$cr_got" == "$cr_want" ]] || cr_bad+=" without it: $(tr '\n' '|' <<<"$cr_got");"
+  cr_row reflow-stop-all-pass "$cr_bad"
+
+  cr_off="$(cr_fail_lines r1
+    for cr_name in r2 r3 r4 r5; do echo "ok   reflow-search/$cr_name (passed as expected)"; done
+    echo "ok   reflow-search/table (5 rows)")"
+  cr_got="$(cr_reflow "$cr_tmp/first.tsv" -unset)"
+  cr_bad=""
+  [[ "$cr_got" == "$cr_off" ]] || cr_bad=" output: $(tr '\n' '|' <<<"$cr_got")"
+  cr_row reflow-stop-off-without-switch "$cr_bad"
+
+  cr_bad=""
+  for cr_value in yes 0 "" " 1" "1 " true; do
+    cr_got="$(cr_reflow "$cr_tmp/first.tsv" "$cr_value")"
+    [[ "$cr_got" == "$cr_off" ]] || cr_bad+=" SELFTEST_STOP_AT_FIRST_FAIL='$cr_value' stopped the run: $(tr '\n' '|' <<<"$cr_got");"
+  done
+  cr_row reflow-stop-switch-not-1 "$cr_bad"
+
+  cr_table "$cr_tmp/text.tsv" failtext:"FAIL x" pass:PASS fail:PASS pass:PASS
+  cr_want="$(echo "ok   reflow-search/r1 (failed as expected: FAIL x)"
+    echo "ok   reflow-search/r2 (passed as expected)"
+    cr_fail_lines r3
+    echo "FAIL reflow-search/table: stopped after reflow-search/r3, the first failing row (SELFTEST_STOP_AT_FIRST_FAIL=1); 1 of 4 rows not reported")"
+  cr_got="$(cr_reflow "$cr_tmp/text.tsv" 1)"
+  cr_bad=""
+  [[ "$cr_got" == "$cr_want" ]] || cr_bad=" output: $(tr '\n' '|' <<<"$cr_got")"
+  cr_row reflow-ok-line-mentions-fail "$cr_bad"
+  rm -rf "$cr_tmp"
 }
 
 # search_oracle_tables <sitecheck.py> <search.js> <ADR-0005> (M4 PR 4, the amendment's
@@ -2864,6 +3126,19 @@ reset(({}, {}))
 got = sc.sentence_folds("a\u0345")
 row("marks-before-casefold", got[1:] == ("a",) * 6,
     f"every skeleton reading of a + U+0345 with an empty table: {got[1:]!r}")
+reset()
+
+# Invisibles dropped inside the loop, whatever the table holds
+# (Replikanti/interviewscam#47 fix round 1): a test table whose target
+# holds U+200B after a letter must fold to the letter alone, with marks
+# read and without. The real table has no target with an invisible and no
+# case fold or normalization makes one, so only a test table reaches this
+# drop.
+reset(({ord("a"): "b​"}, {ord("a"): "b​"}))
+got = [sc._skeleton("a", capital_i, marks) for capital_i in (False, True)
+       for marks in (False, True)]
+row("invisible-after-table", got == ["b"] * 4,
+    f"a with a table a -> b + U+200B, R1 and R2, marks off and on: {got!r}")
 reset()
 
 # SKELETON_ROUNDS, inclusive, against the number of ADR-0004 Numbers (4,
@@ -9175,6 +9450,13 @@ PY
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi
+  fi
+
+  if selftest_wants case-runner; then
+    # case-runner/<row> (Replikanti/interviewscam#47, local and CI): the row
+    # handling of search_cases_runner and reflow_search_runner on stub
+    # modules (case_runner_rows above).
+    case_runner_rows
   fi
 
   if selftest_wants reflow-search; then
