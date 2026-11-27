@@ -2129,10 +2129,8 @@ def csp_reference_problems(text, metas):
     """No '&' in the http-equiv of any meta and none in the content of a CSP
     meta (metas: csp_metas of the page; Replikanti/interviewscam#54). The
     CSP rules compare the raw values, and html.parser and the browser
-    decode character references differently: html.unescape drops 94 code
-    points (U+0001 to U+0008, U+000B, U+000E to U+001F, U+007F, U+FDD0 to
-    U+FDEF and the two last code points of every plane, measured the same
-    on CPython 3.11 to 3.14) that the browser keeps, so
+    decode character references differently: html.unescape drops the 94
+    code points of DROPPED_CHARREFS that the browser keeps, so
     http-equiv="Content-Security-Policy&#1;" is a CSP meta to html.parser
     and inert to the browser, and default-src&#1; is a directive the
     browser drops. The build writes no '&' in either value (Hugo's minifier
@@ -3154,6 +3152,10 @@ def cmd_site(args):
         scans += [text, unescaped, urllib.parse.unquote(unescaped)]
         if suffix in HTML_SUFFIXES or suffix in XML_SUFFIXES:
             page = parse_page(text)
+            # (i) numeric references html.parser drops (Replikanti/interviewscam#59),
+            # in HTML and XML files alike, because Page reads both.
+            for problem in dropped_charref_problems(text):
+                findings.add(rel, problem)
             joined = "".join(page.text)
             scans += [joined, urllib.parse.unquote(joined)]
             for _, attrs in page.elements:
@@ -5027,6 +5029,12 @@ def foreign_markup_problems(page):
                         "value: html.parser reads it as whitespace and HTML does not, so the "
                         "attributes this check reads (hidden, class) are not the browser's; "
                         "fails closed (ADR-0004 part 14, render rule 20)")
+    for code, spelling in getattr(page, "dropped_charrefs", []):
+        problems.append(f"markup: a numeric character reference to U+{code:04X} "
+                        f"({show(spelling, 40)}): html.parser drops the code point and the "
+                        "browser keeps it, so the text and attributes this check reads are "
+                        "not the browser's; no built page holds one "
+                        "(Replikanti/interviewscam#59)")
     for tag in dict.fromkeys(page.stray):
         problems.append(f"markup: {page.stray.count(tag)} </{tag}> end tag(s) that close no "
                         "open element; the browser does not always ignore one (</p> inserts "
@@ -5047,6 +5055,12 @@ def parse_render_page(text):
     # holds hidden for this tree and an attribute named "\u00a0hidden" for
     # the browser, which shows the text. Such a page is not read.
     page.tag_spaces = tag_space_hits(text)
+    # Replikanti/interviewscam#59: a numeric reference to a code point that
+    # html.parser drops and the browser keeps (DROPPED_CHARREFS, read as
+    # site rule (i) reads it): class="visually-hidden&#1;" is the skip
+    # link's class to this tree and not to the browser. Such a page is not
+    # read.
+    page.dropped_charrefs = dropped_charref_hits(text)
     page.feed(text)
     page.close()
     return page
@@ -10875,6 +10889,30 @@ PARSER_ONLY_SPACE = frozenset({
 PARSER_ONLY_SPACE_ANY = re.compile("[" + "".join(chr(c) for c in sorted(PARSER_ONLY_SPACE)) + "]")
 TAG_NAME_SHOWN = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*|<[!?]", re.A)
 
+# Site rule (i), numeric character references (Replikanti/interviewscam#59):
+# the code points that html.unescape drops from a numeric character
+# reference and the browser keeps (HTML's rule only maps U+0000, the
+# surrogates and code points above U+10FFFF to U+FFFD and U+0080 to U+009F
+# through windows-1252). Written out, not computed from html.unescape, so the
+# rule is the same on every interpreter: U+0001 to U+0008 (8), U+000B (1),
+# U+000E to U+001F (18), U+007F (1), U+FDD0 to U+FDEF (32) and U+nFFFE and
+# U+nFFFF of planes 0 to 16 (34), 94 in all, measured the same on CPython
+# 3.11.14, 3.12.3, 3.12.12 and 3.14.8, where html.parser decodes every other
+# numeric reference as HTML does. No named reference maps into the set. The
+# self-test line site-charref/dropped-set fails when the running
+# interpreter drops a code point outside it.
+DROPPED_CHARREFS = frozenset(
+    [*range(0x01, 0x09), 0x0B, *range(0x0E, 0x20), 0x7F, *range(0xFDD0, 0xFDF0)]
+    + [plane << 16 | low for plane in range(17) for low in (0xFFFE, 0xFFFF)])
+# A numeric character reference as HTML spells one: '&#' and ASCII digits,
+# or '&#x' or '&#X' and ASCII hex digits, with an optional ';'. The value
+# comes from the significant digits: leading zeros are eaten possessively,
+# and more than 7 significant decimal or 6 hex digits is beyond U+10FFFF,
+# which both readings give as U+FFFD, so it does not match and int() never
+# reads a long digit string.
+NUMERIC_REFERENCE = re.compile(
+    r"&#(?:[xX]0*+([0-9A-Fa-f]{1,6})(?![0-9A-Fa-f])|0*+([0-9]{1,7})(?![0-9]));?", re.A)
+
 
 def tag_tokens(text):
     """(start, end, quoted, kind, name, attrs) of every tag of a built page
@@ -11042,6 +11080,43 @@ def tag_space_problems(text):
             "html.parser reads it as whitespace and HTML does not, so they split the "
             "attributes differently; fails closed"
             for code, name in tag_space_hits(text)]
+
+
+def dropped_charref_hits(text):
+    """(code point, first spelling) of every numeric character reference to a
+    code point of DROPPED_CHARREFS anywhere in a built file, sorted by code
+    point, each code point once: what site rule (i) and render's markup:
+    reading refuse (Replikanti/interviewscam#59)."""
+    if "&#" not in text:
+        return []
+    seen = {}
+    for match in NUMERIC_REFERENCE.finditer(text):
+        hex_digits, digits = match.groups()
+        code = int(hex_digits, 16) if hex_digits is not None else int(digits)
+        if code in DROPPED_CHARREFS:
+            seen.setdefault(code, match.group(0))
+    return sorted(seen.items())
+
+
+def dropped_charref_problems(text):
+    """Site rule (i) on a built HTML or XML file (Replikanti/interviewscam#59):
+    no numeric character reference to a code point of DROPPED_CHARREFS,
+    read in the raw text, so in text, in any attribute value, in an
+    attribute name, an end tag and raw text alike. html.parser drops the
+    code point and the browser keeps it, so rel="stylesheet&#1;" is a
+    stylesheet link to every rule that reads the page through html.parser
+    and none to the browser, and &#1; after the CSP meta ends the head for
+    the browser only. On a page without one every such rule reads the
+    numeric references as the browser does. The build writes no such
+    reference (its sources hold no numeric reference at all). One finding
+    per code point (dropped_charref_hits)."""
+    return [f"(i) a numeric character reference to U+{code:04X} ({show(spelling, 40)}): "
+            "html.parser drops the code point (html.unescape drops the 94 of "
+            "DROPPED_CHARREFS) and the browser keeps it, so every rule that reads this "
+            "page through html.parser reads other values and text than the browser (a "
+            "rel, a src, a form action, text that ends the head); fails closed "
+            "(Replikanti/interviewscam#59)"
+            for code, spelling in dropped_charref_hits(text)]
 
 
 def rawtext_built_problems(text):

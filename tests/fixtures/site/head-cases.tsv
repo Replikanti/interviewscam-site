@@ -273,3 +273,12 @@ value-og-image-type	public/index.html	<meta property="og:image:type" content="im
 value-og-image-width	public/index.html	<meta property="og:image:width" content="1200">	<meta property="og:image:width" content="1201">	(m) the head holds
 value-og-image-height	public/index.html	<meta property="og:image:height" content="630">	<meta property="og:image:height" content="629">	(m) the head holds
 preview-image-before-url	public/index.html	<meta property="og:url" content="https://interviewscam.com/"><meta property="og:image" content="https://interviewscam.com/og/base_hu_ed6c8e9f7faae282.png">	<meta property="og:image" content="https://interviewscam.com/og/base_hu_ed6c8e9f7faae282.png"><meta property="og:url" content="https://interviewscam.com/">	(m) the head holds
+# Replikanti/interviewscam#59 with the built pins on: a numeric reference
+# to a code point that html.parser drops and the browser keeps, in the
+# viewport name, as text after the CSP meta, in a script's integrity and in
+# the stylesheet's rel. html.parser reads the exact head and the pins, the
+# browser does not, so site rule (i) refuses the reference itself.
+charref-viewport-name	public/index.html	name="viewport"	name="viewport&#1;"	(i) a numeric character reference to U+0001
+charref-text-after-csp	public/index.html	<meta name="viewport"	&#1;<meta name="viewport"	(i) a numeric character reference to U+0001
+charref-script-integrity	public/index.html	integrity="sha384-ZN9T7V1iyMXIvjrua9OcEXGiu4h0KzQkeQNUBWZXw/rxAOp8wESv/gbnYWS4g7kk"	integrity="sha384-ZN9T7V1iyMXIvjrua9OcEXGiu4h0KzQkeQNUBWZXw/rxAOp8wESv/gbnYWS4g7kk&#1;"	(i) a numeric character reference to U+0001
+charref-stylesheet-rel	public/index.html	<link rel="stylesheet"	<link rel="stylesheet&#1;"	(i) a numeric character reference to U+0001
