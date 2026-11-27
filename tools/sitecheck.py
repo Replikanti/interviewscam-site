@@ -1085,8 +1085,10 @@ def word_variants(text, reading=0, name=False):
         return {name_fold(visual_order(v), reading, drawn=True) for v in variants}
     if reading:
         return {name_fold(v, reading) for v in variants}
-    return {" ".join(unicodedata.normalize("NFKC", v).translate(INVISIBLE)
-                     .casefold().split()) for v in variants}
+    # R0 moves the marks a name's end run would not take after the ones it
+    # takes, as rules 4, 9 and 12 do (Replikanti/interviewscam#56 D3).
+    return {defer_apart_marks(" ".join(unicodedata.normalize("NFKC", v).translate(INVISIBLE)
+                                       .casefold().split())) for v in variants}
 
 
 def bidi_forms(text):
@@ -3777,10 +3779,28 @@ MARK_SCAN_RANGES = ((0x0000, 0x1FFFF), (0xE0000, 0xE0FFF))
 # The blocks of the Inherited combining marks a base letter of any script
 # takes (Replikanti/interviewscam#49 fix round 1, review finding 1): the
 # combining diacritical marks, their extended and supplement blocks, the
-# marks for symbols and the half marks. Their nonspacing marks (Mn) join
-# a name's end run whatever the script of its last letter.
+# marks for symbols and the half marks. Their marks join a name's end run
+# only through INHERITED_NAME_MARKS, never through script_word: the first
+# name word of U+0363 (LATIN), U+0342 (GREEK) or U+FE2E (CYRILLIC) is no
+# script, since their Script property is Inherited
+# (Replikanti/interviewscam#56 D2).
 INHERITED_MARK_BLOCKS = ((0x0300, 0x036F), (0x1AB0, 0x1AFF), (0x1DC0, 0x1DFF),
                          (0x20D0, 0x20FF), (0xFE20, 0xFE2F))
+# The Inherited marks a name's end run takes whatever the script of its last
+# letter (Replikanti/interviewscam#56 D1): every nonspacing mark of
+# INHERITED_MARK_BLOCKS that occurs in the canonical decomposition of some
+# letter (General_Category L), the marks real orthographies put on letters.
+# Python 3.14.8 (Unicode 16.0) gives these 29 of the 248 Mn of the blocks,
+# all in U+0300 to U+0345 and none an overlay; canonical decompositions are
+# stable, and confusables/name-inherited-marks-derived derives the set again
+# under the runner's Python, so a literal, not a run-time derivation, keeps
+# a Python upgrade from widening it silently. The other marks of the blocks
+# (U+20D2, the overlays U+0334 to U+0338) are drawn apart from the name in
+# some fonts, so the name ends before them (ADR-0004 part 5, Numbers).
+INHERITED_NAME_MARKS = frozenset((
+    0x0300, 0x0301, 0x0302, 0x0303, 0x0304, 0x0306, 0x0307, 0x0308, 0x0309, 0x030A,
+    0x030B, 0x030C, 0x030F, 0x0311, 0x0313, 0x0314, 0x031B, 0x0323, 0x0324, 0x0325,
+    0x0326, 0x0327, 0x0328, 0x032D, 0x032E, 0x0330, 0x0331, 0x0342, 0x0345))
 
 
 @functools.cache
@@ -3826,15 +3846,95 @@ def script_word(ch):
 def end_marks(script):
     """The regex character class of the marks a name's end run takes after
     a last letter of the given script_word: the marks of that script
-    (spacing ones included, the Devanagari vowel sign of "कमला") and the
-    nonspacing marks of INHERITED_MARK_BLOCKS. A spacing or enclosing mark
-    of another script (U+093E after a Latin letter, U+0F3E, U+20DD) draws
-    apart from the name, so the name ends before it, as on the base of
-    Replikanti/interviewscam#49 (fix round 1, review finding 1)."""
+    outside INHERITED_MARK_BLOCKS (spacing ones included, the Devanagari
+    vowel sign of "कमला") and INHERITED_NAME_MARKS. A spacing or enclosing
+    mark of another script (U+093E after a Latin letter, U+0F3E, U+20DD)
+    draws apart from the name, so the name ends before it, as on the base
+    of Replikanti/interviewscam#49 (fix round 1, review finding 1), and so
+    does an Inherited mark outside INHERITED_NAME_MARKS, which some fonts
+    draw apart (U+20D2, U+0338; Replikanti/interviewscam#56 D1, D2)."""
     return mark_class(cp for cp in mark_code_points()
-                      if (script and script_word(chr(cp)) == script)
-                      or (unicodedata.category(chr(cp)) == "Mn"
-                          and any(lo <= cp <= hi for lo, hi in INHERITED_MARK_BLOCKS)))
+                      if cp in INHERITED_NAME_MARKS
+                      or (script and script_word(chr(cp)) == script
+                          and not any(lo <= cp <= hi for lo, hi in INHERITED_MARK_BLOCKS)))
+
+
+@functools.cache
+def end_mark_test(script):
+    """end_marks(script) compiled, for one character at a time."""
+    return re.compile(end_marks(script)).fullmatch
+
+
+@functools.cache
+def mark_runs(least):
+    """A non-mark base and the run of at least least combining marks after
+    it."""
+    marks = combining_marks()
+    return re.compile(f"([^{marks[1:]})({marks}{{{least},}})")
+
+
+def defer_apart_marks(text):
+    """text with, in each run of two or more marks after a non-mark base,
+    the marks the end run would take after that base (end_marks of its
+    script_word) first and the others after them, each group in its order
+    (Replikanti/interviewscam#56 D3). NFKC sorts a run by combining class,
+    so a low-class mark typed after a name that ends in a mark (U+20D2,
+    class 1, after the U+0300 of "Ayọ̀") lands inside the name's own marks,
+    and no reading found the name; R0 moves it back after them, in the
+    name and in the text alike. The length stays, so positions and the
+    SPAN_OPEN and SPAN_CLOSE markers (no marks) stay valid; a run with no
+    base, at the start of the text, is left alone."""
+    def move(m):
+        takes = end_mark_test(script_word(m.group(1)))
+        run = m.group(2)
+        kept = "".join(c for c in run if takes(c))
+        if len(kept) in (0, len(run)):
+            return m.group(0)
+        return m.group(1) + kept + "".join(c for c in run if not takes(c))
+    return mark_runs(2).sub(move, text)
+
+
+@functools.cache
+def marks_as_text():
+    """The combining marks a confusables table maps to a text with a
+    character that is no mark (48 under the pinned data: U+0C02, the Telugu
+    anusvara, reads as "o"). The table reads them, so apart_marks leaves
+    them to it."""
+    tables = (*confusable_tables(), stroke_table())
+    return frozenset(cp for table in tables for cp, value in table.items()
+                     if unicodedata.category(chr(cp))[0] == "M"
+                     and any(unicodedata.category(c)[0] != "M" for c in value))
+
+
+@functools.cache
+def apart_runs():
+    """A base that is neither a combining mark nor an invisible, and the
+    run of marks and invisibles after it."""
+    marks = mark_class(sorted(set(mark_code_points()) | set(INVISIBLE)))
+    return re.compile(f"([^{marks[1:]})({marks}+)")
+
+
+def apart_marks(text):
+    """text with every combining mark that the end run would not take after
+    its base (end_marks of the base's script_word) read as APART, a
+    separator, except a mark the confusables table reads as text
+    (marks_as_text); a run with no base, at the start of the text, is left
+    alone. The readings past R0 drop the marks, so before this a mark drawn
+    apart from a name joined it to the next letter there
+    (Replikanti/interviewscam#56 fix round 1, review findings 1 and 2).
+    The base is the last character before the mark that is neither a mark
+    nor an invisible, the letter R0 sees once fold_words drops the
+    invisibles: a Hangul filler (U+3164) or a musical format character
+    (U+1D173) in front of a mark no longer lends it its script (fix round
+    2, review run 2 finding 2). An invisible that is no mark stays as it
+    is; one that is a mark (U+FE0F, U+180B) is read as a mark."""
+    def move(m):
+        takes = end_mark_test(script_word(m.group(1)))
+        keep = marks_as_text()
+        return m.group(1) + "".join(
+            c if unicodedata.category(c)[0] != "M" or takes(c) or ord(c) in keep else APART
+            for c in m.group(2))
+    return apart_runs().sub(move, text)
 
 
 @functools.cache
@@ -4417,7 +4517,14 @@ STROKE = "\ue002"
 STROKE_CJK = "\ue003"
 STROKES = STROKE + STROKE_CJK
 CJK_STROKE = "\u4e28"
-STROKE_FORGERY = str.maketrans({STROKE: "\ufffd", STROKE_CJK: "\ufffd"})
+# APART stands for a combining mark the end run of a name would not take
+# after its base (apart_marks, Replikanti/interviewscam#56 fix round 1):
+# past R0 it separates a name from the next letter as a space would, and
+# inside a name's token stroke_pattern lets it stand between any two
+# characters, so a mark typed into a name does not split it. In the text
+# itself it is read as U+FFFD first, as the strokes are.
+APART = "\ue004"
+STROKE_FORGERY = str.maketrans({STROKE: "\ufffd", STROKE_CJK: "\ufffd", APART: "\ufffd"})
 # A run of 2 or more ASCII digits that no letter or digit touches stays
 # digits in the name readings (fix rounds 2 and 4): the table reads "1" as
 # "l" and "0" as "O", which holds for digits written inside a word
@@ -4914,7 +5021,7 @@ def visual_spans(text):
     return "".join(out)
 
 
-def _skeleton(text, capital_i, marks, visual=False, stroke=False):
+def _skeleton(text, capital_i, marks, visual=False, stroke=False, apart=False):
     """The skeleton loop of R1 (R2 with capital_i): NFD, invisibles dropped,
     the table (with capital_i the R2 table, so a capital whose prototype is
     "l" reads as its lower case), NFD; then {case fold, NFKC, NFD,
@@ -4929,13 +5036,18 @@ def _skeleton(text, capital_i, marks, visual=False, stroke=False):
     a drop before it would hide, and it maps U+0345, the one mark that the
     case fold turns into a letter (an iota), to U+0328, another mark, so
     U+0345 never reaches the case fold. With visual, the text is read in
-    the order a browser draws it first (visual_order)."""
+    the order a browser draws it first (visual_order). With apart, a mark
+    a name's end run would not take after its base reads as APART
+    (apart_marks), after visual_order, so the separator changes no bidi
+    class."""
     table, capital = confusable_tables()
     if stroke:
         table = stroke_table()
     first = capital if capital_i else table
     if visual:
         text = visual_order(text)
+    if apart:
+        text = apart_marks(text)
     normalize = unicodedata.normalize
     s = normalize("NFD", normalize("NFD", text).translate(INVISIBLE).translate(first))
     if marks:
@@ -4968,7 +5080,7 @@ def skeleton_fold(text, capital_i=False, visual=False, stroke=False):
                          text.translate(STROKE_FORGERY))
     if stroke:
         text = caps_l(text)
-    folded = _skeleton(text, capital_i, True, visual, stroke).translate(LM_AS_SPACE)
+    folded = _skeleton(text, capital_i, True, visual, stroke, apart=True).translate(LM_AS_SPACE)
     folded = folded.translate(DIGIT_RELEASE)
     return " ".join(unicodedata.normalize("NFC", folded).split())
 
@@ -5026,7 +5138,7 @@ def name_fold(text, reading, drawn=False, cache=True):
     the fold bypasses the caches: rules 4 and 9 fold whole pages and files
     once each, and a cache of them only holds memory."""
     if reading == 0:
-        return fold_words(text)
+        return defer_apart_marks(fold_words(text))
     capital_i, stroke, visual = NAME_READING_FORMS[reading]
     if visual and not drawn:
         order = visual_order if cache else visual_order.__wrapped__
@@ -5047,7 +5159,7 @@ def reading_folds(texts, drawn, reading, memo, uncached):
     without the caches (whole pages and files, read once)."""
     if reading not in memo:
         if reading == 0:
-            out = [fold_words(t) for t in texts]
+            out = [defer_apart_marks(fold_words(t)) for t in texts]
         elif reading in (1, 4):
             out = [t.replace(STROKE, "l").replace(STROKE_CJK, CJK_STROKE) for t in
                    reading_folds(texts, drawn, reading + 2, memo, uncached)]
@@ -5070,13 +5182,19 @@ def stroke_pattern(text, reading):
     alias "Il" does not meet the "'ll" of "I'll" and a dotted "i" of the
     name never meets a written "l" ("Ali", "all"), and a space also as
     either stroke (a stroke between two words reads as their separator)
-    (fix rounds 1 and 2)."""
-    if reading == 0 or not NAME_READING_FORMS[reading][1]:
+    (fix rounds 1 and 2). Past R0, APART may stand between any two
+    characters, so a mark the text adds inside a name leaves it whole, as
+    when the readings dropped it (Replikanti/interviewscam#56 fix round
+    1)."""
+    if reading == 0:
         return re.escape(text)
+    gap = f"{APART}*"
+    if not NAME_READING_FORMS[reading][1]:
+        return gap.join(re.escape(c) for c in text)
     stroke = f"(?:[i{STROKES}]|l(?!l))"
     classes = {"i": f"[i{STROKES}]", "l": f"[l{STROKES}]", STROKE: stroke,
                STROKE_CJK: stroke, " ": f"[ {STROKES}]"}
-    return "".join(classes.get(c) or re.escape(c) for c in text)
+    return gap.join(classes.get(c) or re.escape(c) for c in text)
 
 
 def name_bounds(reading, word):
@@ -5092,9 +5210,13 @@ def name_bounds(reading, word):
 
 @functools.lru_cache(maxsize=64)
 def label_pattern(reading):
-    """The D10 label after a name, with its space, under a reading."""
-    return re.compile(stroke_pattern(" " + name_fold(PERSONA_LABEL, reading, drawn=True),
-                                     reading))
+    """The D10 label after a name, with its space, under a reading; past
+    R0 after any APART too, so the separator read for a mark drawn apart
+    right after a name does not hide the label from the readings that
+    also find the name there (Replikanti/interviewscam#56 fix round 1)."""
+    return re.compile((f"{APART}*" if reading else "")
+                      + stroke_pattern(" " + name_fold(PERSONA_LABEL, reading, drawn=True),
+                                       reading))
 
 
 # M4 PR 3 fix round 10 (delta review 9 finding 1): foreign content. Python's
@@ -5434,6 +5556,12 @@ def name_pattern(name, reading=0):
     letter and its mark (Replikanti/interviewscam#49)."""
     visual = reading != 0 and NAME_READING_FORMS[reading][2]
     source = visual_order(name) if visual else name
+    # Not defer_apart_marks here: under R0 each token's text comes from
+    # name_fold, which defers its marks as the text's fold does, and a
+    # deferred run can fold again to another one ("Ana" + U+20D0 + U+0301:
+    # NFKC composes the acute once it stands first), so a name deferred
+    # twice no longer meets its own text (Replikanti/interviewscam#56,
+    # confusables/name-deferred-marks).
     folded = fold_words(source)
     if reading:
         # Past R0 the combining marks drop after the case fold, as the
@@ -5449,8 +5577,10 @@ def name_pattern(name, reading=0):
     # to end inside a longer word ("कमल" in "कमलाजी"); only after the last
     # token, so a mark between two tokens still separates them
     # (Replikanti/interviewscam#49 D1). Only the marks that attach to the
-    # last letter (end_marks: its script's, and the Inherited nonspacing
-    # ones; fix round 1, review finding 1).
+    # last letter (end_marks: its script's, and INHERITED_NAME_MARKS; fix
+    # round 1, review finding 1, and Replikanti/interviewscam#56). A mark
+    # NFKC sorted in among the name's own final marks stands after them
+    # again in both folds (defer_apart_marks), so the run ends before it.
     last = tokens[-1].translate(MARKS_DROPPED)[-1:] if tokens else ""
     after = f"{end_marks(script_word(last) if last else '')}*+{after}"
     if not tokens:
@@ -5478,7 +5608,10 @@ def name_pattern(name, reading=0):
             return NEVER
         if i:
             parts.append(r"[\W_]*" if joinable or initial(tokens[i - 1]) else r"[\W_]+")
-        parts.append(stroke_pattern(text, reading) + (r"\." if initial(tok) else ""))
+        # Past R0 APART may stand before an initial's period as inside a
+        # token ("J" + U+20D2 + "."; fix round 2, review run 2 finding 1).
+        period = (rf"{APART}*\." if reading else r"\.") if initial(tok) else ""
+        parts.append(stroke_pattern(text, reading) + period)
     return re.compile(f"{before}{''.join(parts)}{after}")
 
 
