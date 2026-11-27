@@ -1085,8 +1085,10 @@ def word_variants(text, reading=0, name=False):
         return {name_fold(visual_order(v), reading, drawn=True) for v in variants}
     if reading:
         return {name_fold(v, reading) for v in variants}
-    return {" ".join(unicodedata.normalize("NFKC", v).translate(INVISIBLE)
-                     .casefold().split()) for v in variants}
+    # R0 moves the marks a name's end run would not take after the ones it
+    # takes, as rules 4, 9 and 12 do (Replikanti/interviewscam#56 D3).
+    return {defer_apart_marks(" ".join(unicodedata.normalize("NFKC", v).translate(INVISIBLE)
+                                       .casefold().split())) for v in variants}
 
 
 def bidi_forms(text):
@@ -3620,10 +3622,28 @@ MARK_SCAN_RANGES = ((0x0000, 0x1FFFF), (0xE0000, 0xE0FFF))
 # The blocks of the Inherited combining marks a base letter of any script
 # takes (Replikanti/interviewscam#49 fix round 1, review finding 1): the
 # combining diacritical marks, their extended and supplement blocks, the
-# marks for symbols and the half marks. Their nonspacing marks (Mn) join
-# a name's end run whatever the script of its last letter.
+# marks for symbols and the half marks. Their marks join a name's end run
+# only through INHERITED_NAME_MARKS, never through script_word: the first
+# name word of U+0363 (LATIN), U+0342 (GREEK) or U+FE2E (CYRILLIC) is no
+# script, since their Script property is Inherited
+# (Replikanti/interviewscam#56 D2).
 INHERITED_MARK_BLOCKS = ((0x0300, 0x036F), (0x1AB0, 0x1AFF), (0x1DC0, 0x1DFF),
                          (0x20D0, 0x20FF), (0xFE20, 0xFE2F))
+# The Inherited marks a name's end run takes whatever the script of its last
+# letter (Replikanti/interviewscam#56 D1): every nonspacing mark of
+# INHERITED_MARK_BLOCKS that occurs in the canonical decomposition of some
+# letter (General_Category L), the marks real orthographies put on letters.
+# Python 3.14.8 (Unicode 16.0) gives these 29 of the 248 Mn of the blocks,
+# all in U+0300 to U+0345 and none an overlay; canonical decompositions are
+# stable, and confusables/name-inherited-marks-derived derives the set again
+# under the runner's Python, so a literal, not a run-time derivation, keeps
+# a Python upgrade from widening it silently. The other marks of the blocks
+# (U+20D2, the overlays U+0334 to U+0338) are drawn apart from the name in
+# some fonts, so the name ends before them (ADR-0004 part 5, Numbers).
+INHERITED_NAME_MARKS = frozenset((
+    0x0300, 0x0301, 0x0302, 0x0303, 0x0304, 0x0306, 0x0307, 0x0308, 0x0309, 0x030A,
+    0x030B, 0x030C, 0x030F, 0x0311, 0x0313, 0x0314, 0x031B, 0x0323, 0x0324, 0x0325,
+    0x0326, 0x0327, 0x0328, 0x032D, 0x032E, 0x0330, 0x0331, 0x0342, 0x0345))
 
 
 @functools.cache
@@ -3669,15 +3689,51 @@ def script_word(ch):
 def end_marks(script):
     """The regex character class of the marks a name's end run takes after
     a last letter of the given script_word: the marks of that script
-    (spacing ones included, the Devanagari vowel sign of "कमला") and the
-    nonspacing marks of INHERITED_MARK_BLOCKS. A spacing or enclosing mark
-    of another script (U+093E after a Latin letter, U+0F3E, U+20DD) draws
-    apart from the name, so the name ends before it, as on the base of
-    Replikanti/interviewscam#49 (fix round 1, review finding 1)."""
+    outside INHERITED_MARK_BLOCKS (spacing ones included, the Devanagari
+    vowel sign of "कमला") and INHERITED_NAME_MARKS. A spacing or enclosing
+    mark of another script (U+093E after a Latin letter, U+0F3E, U+20DD)
+    draws apart from the name, so the name ends before it, as on the base
+    of Replikanti/interviewscam#49 (fix round 1, review finding 1), and so
+    does an Inherited mark outside INHERITED_NAME_MARKS, which some fonts
+    draw apart (U+20D2, U+0338; Replikanti/interviewscam#56 D1, D2)."""
     return mark_class(cp for cp in mark_code_points()
-                      if (script and script_word(chr(cp)) == script)
-                      or (unicodedata.category(chr(cp)) == "Mn"
-                          and any(lo <= cp <= hi for lo, hi in INHERITED_MARK_BLOCKS)))
+                      if cp in INHERITED_NAME_MARKS
+                      or (script and script_word(chr(cp)) == script
+                          and not any(lo <= cp <= hi for lo, hi in INHERITED_MARK_BLOCKS)))
+
+
+@functools.cache
+def end_mark_test(script):
+    """end_marks(script) compiled, for one character at a time."""
+    return re.compile(end_marks(script)).fullmatch
+
+
+@functools.cache
+def mark_runs():
+    """A non-mark base and the run of two or more combining marks after it."""
+    marks = combining_marks()
+    return re.compile(f"([^{marks[1:]})({marks}{{2,}})")
+
+
+def defer_apart_marks(text):
+    """text with, in each run of two or more marks after a non-mark base,
+    the marks the end run would take after that base (end_marks of its
+    script_word) first and the others after them, each group in its order
+    (Replikanti/interviewscam#56 D3). NFKC sorts a run by combining class,
+    so a low-class mark typed after a name that ends in a mark (U+20D2,
+    class 1, after the U+0300 of "Ayọ̀") lands inside the name's own marks,
+    and no reading found the name; R0 moves it back after them, in the
+    name and in the text alike. The length stays, so positions and the
+    SPAN_OPEN and SPAN_CLOSE markers (no marks) stay valid; a run with no
+    base, at the start of the text, is left alone."""
+    def move(m):
+        takes = end_mark_test(script_word(m.group(1)))
+        run = m.group(2)
+        kept = "".join(c for c in run if takes(c))
+        if len(kept) in (0, len(run)):
+            return m.group(0)
+        return m.group(1) + kept + "".join(c for c in run if not takes(c))
+    return mark_runs().sub(move, text)
 
 
 @functools.cache
@@ -4869,7 +4925,7 @@ def name_fold(text, reading, drawn=False, cache=True):
     the fold bypasses the caches: rules 4 and 9 fold whole pages and files
     once each, and a cache of them only holds memory."""
     if reading == 0:
-        return fold_words(text)
+        return defer_apart_marks(fold_words(text))
     capital_i, stroke, visual = NAME_READING_FORMS[reading]
     if visual and not drawn:
         order = visual_order if cache else visual_order.__wrapped__
@@ -4890,7 +4946,7 @@ def reading_folds(texts, drawn, reading, memo, uncached):
     without the caches (whole pages and files, read once)."""
     if reading not in memo:
         if reading == 0:
-            out = [fold_words(t) for t in texts]
+            out = [defer_apart_marks(fold_words(t)) for t in texts]
         elif reading in (1, 4):
             out = [t.replace(STROKE, "l").replace(STROKE_CJK, CJK_STROKE) for t in
                    reading_folds(texts, drawn, reading + 2, memo, uncached)]
@@ -5277,6 +5333,12 @@ def name_pattern(name, reading=0):
     letter and its mark (Replikanti/interviewscam#49)."""
     visual = reading != 0 and NAME_READING_FORMS[reading][2]
     source = visual_order(name) if visual else name
+    # Not defer_apart_marks here: under R0 each token's text comes from
+    # name_fold, which defers its marks as the text's fold does, and a
+    # deferred run can fold again to another one ("Ana" + U+20D0 + U+0301:
+    # NFKC composes the acute once it stands first), so a name deferred
+    # twice no longer meets its own text (Replikanti/interviewscam#56,
+    # confusables/name-deferred-marks).
     folded = fold_words(source)
     if reading:
         # Past R0 the combining marks drop after the case fold, as the
@@ -5292,8 +5354,10 @@ def name_pattern(name, reading=0):
     # to end inside a longer word ("कमल" in "कमलाजी"); only after the last
     # token, so a mark between two tokens still separates them
     # (Replikanti/interviewscam#49 D1). Only the marks that attach to the
-    # last letter (end_marks: its script's, and the Inherited nonspacing
-    # ones; fix round 1, review finding 1).
+    # last letter (end_marks: its script's, and INHERITED_NAME_MARKS; fix
+    # round 1, review finding 1, and Replikanti/interviewscam#56). A mark
+    # NFKC sorted in among the name's own final marks stands after them
+    # again in both folds (defer_apart_marks), so the run ends before it.
     last = tokens[-1].translate(MARKS_DROPPED)[-1:] if tokens else ""
     after = f"{end_marks(script_word(last) if last else '')}*+{after}"
     if not tokens:
