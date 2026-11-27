@@ -93,6 +93,21 @@ class Blocks(unittest.TestCase):
         rules = sitecheck.css_rules("a{b:(});c:d}")
         self.assertEqual(rules[0].declarations, ["b:(})", "c:d"])
 
+    def test_only_its_own_closer_closes_a_block(self):
+        # Fix round 2 (review run 2): ) inside [...] and ] inside (...) are
+        # tokens, as in Chrome, in css_rules and in the at-rule walk.
+        for css, decls in (("a{b:[)}];c:d}e{f:g}", ["b:[)}]", "c:d"]),
+                           ("a{b:x(]});c:d}e{f:g}", ["b:x(]})", "c:d"])):
+            with self.subTest(css=css):
+                rules = sitecheck.css_rules(css)
+                self.assertEqual([(r.prelude, r.declarations) for r in rules],
+                                 [("a", decls), ("e", ["f:g"])])
+                self.assertTrue(any("braces that do not balance" in p
+                                    for p in sitecheck.css_at_rule_problems(css)), css)
+        for css in ("a{b:[x(y)z]}", "a{b:x([y])}", "a{b:[x]}c{d:e)]}"):
+            with self.subTest(css=css):
+                self.assertEqual(sitecheck.css_at_rule_problems(css), [], css)
+
 
 class Parser(unittest.TestCase):
     def test_reflow_runs_the_cells_by_default(self):

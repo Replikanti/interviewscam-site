@@ -2172,6 +2172,11 @@ def csp_reference_problems(text, metas):
 # named-colour scan. Strings, escapes and parentheses are kept intact, so a
 # brace or semicolon inside them does not end a block.
 
+# The closer of each CSS block opener: a block ends only at its own closer
+# (CSS Syntax 5.4.8, "consume a simple block").
+CSS_CLOSERS = {"(": ")", "[": "]"}
+
+
 class CssRule:
     def __init__(self, parents, prelude, declarations):
         self.parents = parents  # preludes of the enclosing blocks, outermost first
@@ -2185,7 +2190,7 @@ def css_rules(css):
     as prelude, no parents and no declarations. Unbalanced braces never raise:
     a stray } is ignored and an unclosed block ends with the sheet."""
     text = CSS_COMMENT_OR_STRING.sub(lambda m: m.group(0) if m.group(1) else " ", css)
-    rules, stack, buf = [], [], []
+    rules, stack, buf, openers = [], [], [], []
     depth, i, n = 0, 0, len(text)
 
     def flush():
@@ -2212,11 +2217,14 @@ def css_rules(css):
             i = j + 1
             continue
         # A bracket block nests like a parenthesis: a } inside [...] ends no
-        # block in a browser (Replikanti/interviewscam#61 fix round 1).
+        # block in a browser (Replikanti/interviewscam#61 fix round 1), and
+        # each block ends only at its own closer, so a ) inside [...] or a ]
+        # inside (...) is a token (fix round 2, review run 2).
         if ch in "([":
-            depth += 1
-        elif ch in ")]":
-            depth = max(0, depth - 1)
+            openers.append(ch)
+        elif openers and ch == CSS_CLOSERS[openers[-1]]:
+            openers.pop()
+        depth = len(openers)
         if depth == 0 and ch == "{":
             prelude = "".join(buf).strip()
             buf.clear()
@@ -2740,6 +2748,7 @@ def css_at_rule_problems(css):
     text = css_strip_comments(css)
     problems = []
     braces = parens = 0
+    openers = []  # the open ( and [ blocks, innermost last
     closed_rule = False  # the previous character is a } that closed a top-level block
     unbalanced = None
     i, n = 0, len(text)
@@ -2772,10 +2781,15 @@ def css_at_rule_problems(css):
             # A bracket block nests like a parenthesis block, so a brace
             # inside either is a finding (fix round 1, review run 1
             # finding 2: `zz:[}]` kept a block open to the end of the sheet
-            # in a browser and closed it here).
-            parens += 1
+            # in a browser and closed it here). Each block ends only at its
+            # own closer; any other closer is a token, as in Chrome (fix
+            # round 2, review run 2: `zz:[)}]` read `[)` as closed).
+            openers.append(ch)
+            parens = len(openers)
         elif ch in ")]":
-            parens = max(0, parens - 1)
+            if openers and ch == CSS_CLOSERS[openers[-1]]:
+                openers.pop()
+            parens = len(openers)
         elif ch in "{}":
             if parens or (ch == "}" and braces == 0):
                 unbalanced = i if unbalanced is None else unbalanced
