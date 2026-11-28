@@ -3349,6 +3349,11 @@ def cmd_site(args):
             # in HTML and XML files alike, because Page reads both.
             for problem in dropped_charref_problems(text):
                 findings.add(rel, problem)
+            # (i) legacy named references html.parser before 3.14 decodes in
+            # an attribute value (Replikanti/interviewscam#64), in HTML and
+            # XML files alike.
+            for problem in legacy_reference_problems(text):
+                findings.add(rel, problem)
             joined = "".join(page.text)
             scans += [joined, urllib.parse.unquote(joined)]
             for _, attrs in page.elements:
@@ -5348,6 +5353,12 @@ def foreign_markup_problems(page):
                         "browser keeps it, so the text and attributes this check reads are "
                         "not the browser's; no built page holds one "
                         "(Replikanti/interviewscam#59)")
+    for name, spelling in getattr(page, "legacy_refs", []):
+        problems.append(f"markup: the legacy named reference &{name} without ';' before a "
+                        f"letter, digit or '=' ({show(spelling, 40)}): html.parser before "
+                        "Python 3.14 decodes it in an attribute value and the browser keeps "
+                        "it, so the attributes this check reads are not the browser's; no "
+                        "built page holds one (Replikanti/interviewscam#64)")
     for tag in dict.fromkeys(page.stray):
         problems.append(f"markup: {page.stray.count(tag)} </{tag}> end tag(s) that close no "
                         "open element; the browser does not always ignore one (</p> inserts "
@@ -5374,6 +5385,12 @@ def parse_render_page(text):
     # link's class to this tree and not to the browser. Such a page is not
     # read.
     page.dropped_charrefs = dropped_charref_hits(text)
+    # Replikanti/interviewscam#64: a legacy named reference before an ASCII
+    # letter, digit or '=' (LEGACY_REFERENCES, read as site rule (i) reads
+    # it): content="Avery Exampleton&eacutex." holds the persona name as a
+    # whole word to the browser and not to html.parser before 3.14, which
+    # reads 'Exampletonéx'. Such a page is not read.
+    page.legacy_refs = legacy_reference_hits(text)
     page.feed(text)
     page.close()
     return page
@@ -11247,6 +11264,44 @@ DROPPED_CHARREFS = frozenset(
 NUMERIC_REFERENCE = re.compile(
     r"&#(?:[xX]0*+([0-9A-Fa-f]{1,6})(?![0-9A-Fa-f])|0*+([0-9]{1,7})(?![0-9]));?", re.A)
 
+# Site rule (i), legacy named references (Replikanti/interviewscam#64): the
+# 106 names of the WHATWG named character references that also work
+# without ';'. Inside an attribute value HTML keeps such a reference as text
+# when an ASCII letter, digit or '=' follows it (&notx stays '&notx'), while
+# html.parser before Python 3.14 decodes it there with html.unescape ('¬x'),
+# so every rule that reads a page through html.parser on such an
+# interpreter (CI's Ubuntu 3.12.3 among them) reads other attribute values
+# than the browser. Written out, not computed from html.entities, so the
+# rule is the same on every interpreter: the same 106 names, and no other
+# legacy name, on CPython 3.11.14, 3.12.3, 3.12.12 and 3.14.8. No name is a
+# prefix of another, so the order of the alternatives in LEGACY_REFERENCE
+# never changes a match. The self-test line site-legacyref/reading fails
+# when the running interpreter's table holds a legacy name outside the set
+# or a reading of a value the rule does not refuse differs from HTML's.
+LEGACY_REFERENCES = frozenset({
+    "AElig", "AMP", "Aacute", "Acirc", "Agrave", "Aring", "Atilde", "Auml", "COPY",
+    "Ccedil", "ETH", "Eacute", "Ecirc", "Egrave", "Euml", "GT", "Iacute", "Icirc",
+    "Igrave", "Iuml", "LT", "Ntilde", "Oacute", "Ocirc", "Ograve", "Oslash", "Otilde",
+    "Ouml", "QUOT", "REG", "THORN", "Uacute", "Ucirc", "Ugrave", "Uuml", "Yacute",
+    "aacute", "acirc", "acute", "aelig", "agrave", "amp", "aring", "atilde", "auml",
+    "brvbar", "ccedil", "cedil", "cent", "copy", "curren", "deg", "divide", "eacute",
+    "ecirc", "egrave", "eth", "euml", "frac12", "frac14", "frac34", "gt", "iacute",
+    "icirc", "iexcl", "igrave", "iquest", "iuml", "laquo", "lt", "macr", "micro",
+    "middot", "nbsp", "not", "ntilde", "oacute", "ocirc", "ograve", "ordf", "ordm",
+    "oslash", "otilde", "ouml", "para", "plusmn", "pound", "quot", "raquo", "reg",
+    "sect", "shy", "sup1", "sup2", "sup3", "szlig", "thorn", "times", "uacute",
+    "ucirc", "ugrave", "uml", "uuml", "yacute", "yen", "yuml",
+})
+# '&', a legacy name and then an ASCII letter, digit or '=' (the follower,
+# read but not consumed): the spelling HTML keeps as text in an attribute
+# value and html.parser before 3.14 decodes there. Case-sensitive, and the
+# follower class is written out, as in HTML. It also matches the ';'-names
+# that extend a legacy name with a letter or digit (&notin;), which both
+# readings decode: refused by design, the build writes none.
+LEGACY_REFERENCE = re.compile(
+    "&(" + "|".join(sorted(LEGACY_REFERENCES, key=lambda name: (-len(name), name)))
+    + ")(?=[A-Za-z0-9=])")
+
 
 def tag_tokens(text):
     """(start, end, quoted, kind, name, attrs) of every tag of a built page
@@ -11451,6 +11506,42 @@ def dropped_charref_problems(text):
             "rel, a src, a form action, text that ends the head); fails closed "
             "(Replikanti/interviewscam#59)"
             for code, spelling in dropped_charref_hits(text)]
+
+
+def legacy_reference_hits(text):
+    """(name, first spelling) of every legacy named reference of
+    LEGACY_REFERENCES that an ASCII letter, digit or '=' follows, anywhere in
+    a built file, sorted by name, each name once; the spelling holds the
+    follower. What site rule (i) and render's markup: reading refuse
+    (Replikanti/interviewscam#64)."""
+    if "&" not in text:
+        return []
+    seen = {}
+    for match in LEGACY_REFERENCE.finditer(text):
+        seen.setdefault(match.group(1), text[match.start():match.end() + 1])
+    return sorted(seen.items())
+
+
+def legacy_reference_problems(text):
+    """Site rule (i) on a built HTML or XML file (Replikanti/interviewscam#64):
+    no '&' + a name of LEGACY_REFERENCES + an ASCII letter, digit or '=',
+    read in the raw text, so in text, in any attribute value, in an
+    attribute name, an end tag and raw text alike. HTML keeps such a
+    reference as text in an attribute value and html.parser before Python
+    3.14 decodes it there, so content="&lt1:x" holds the scheme 'lt1:' to
+    the browser and none to (o7), and &notx and the sign it decodes to
+    (U+00AC) are two equal preview values to (o4), (o5), (o6) and (o11) and
+    two different ones to the browser. On a page without one every such rule reads the attribute
+    values as the browser does. The build writes none: the minifier writes
+    '&amp;' before every ASCII letter, digit and '#', so only a template's
+    own text could. One finding per name (legacy_reference_hits)."""
+    return [f"(i) the legacy named reference &{name} without ';' before a letter, digit "
+            f"or '=' ({show(spelling, 40)}): HTML keeps it as text in an attribute value "
+            "and html.parser before Python 3.14 decodes it there, so every rule that reads "
+            "this page through html.parser on such an interpreter reads other attribute "
+            "values than the browser (a persona name, a scheme, two preview values that "
+            "must be equal); write '&amp;'; fails closed (Replikanti/interviewscam#64)"
+            for name, spelling in legacy_reference_hits(text)]
 
 
 def rawtext_built_problems(text):

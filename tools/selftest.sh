@@ -3633,6 +3633,222 @@ print(f"ok   site-charref/html-parser-reading (Python {platform.python_version()
 PY
 }
 
+# legacyref_reading <sitecheck.py> [drop [widen]] (Replikanti/interviewscam#64):
+# the lines that hold site rule (i)'s LEGACY_REFERENCES to the running
+# interpreter. site-legacyref/members calls legacy_reference_hits on every
+# member followed by A, Z, a, z, 0, 9 and '=' (exactly that name, with
+# that spelling), by the neighbours of the follower class, ';', '_', '-', a
+# space, the end, U+00E9, U+00A0, U+FF21, U+FF11, '#' and '&' (no hit), on
+# 'not' with all 63 followers of the class, on each member without its
+# last letter (no hit) and in swapped case (a hit only when that is a
+# member), and fails when one member is a prefix of another.
+# site-legacyref/reading builds 29,700 values: every legacy name of this
+# interpreter's html.entities.html5 (the names without ';') followed by
+# each of 98 followers (U+0020 to U+007E but & # " ' < >, the end, U+00E9,
+# U+00A0, U+FF21, U+FF11, &, #, > and <), alone and as x&Ly, and every name
+# of the table followed by x, '=', a space and the end. It parses each in a
+# double-quoted, a single-quoted and an unquoted title (without whitespace,
+# quotes, '=', '<', '>', '`' and U+00A0, not ending in '/': the unquoted
+# value's own differentials, U+00A0 being rule (i)'s tag space) and in text
+# (without '<'), one sitecheck.parse_page per context, and walks two
+# readings against HTML's named reference rule (the longest match in the
+# table; in an attribute value a match without ';' before an ASCII letter,
+# digit or '=' stays text): (a) this html.parser, and (b) the pre-3.14
+# attribute reading, html.unescape on the raw value, which is what CPython
+# 3.11 and 3.12 parse_starttag does, so the line proves the rule against
+# CI's reading on any interpreter. It fails when a reading reads a value
+# the rule does not refuse unlike HTML, when (b) reads a refused value as
+# HTML and the longest match there is no ';'-name that extends the refused
+# name with a letter or digit (&notin;, D3: so the refused set is exactly
+# the differential plus those), and when the table holds a legacy name
+# outside LEGACY_REFERENCES (a member missing from the table is only
+# counted, because the rule still refuses it). drop leaves that name out of
+# the rule and widen adds its characters to the follower class (the
+# negative proofs); then only this line runs, with reader (b) alone, so the
+# proofs work on every interpreter. -B: no tools/__pycache__.
+legacyref_reading() {
+  python3 -I -B - "$1" "${2:-}" "${3:-}" <<'PY'
+import html
+import html.entities
+import importlib.util
+import platform
+import re
+import string
+import sys
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+drop, widen = sys.argv[2] or None, sys.argv[3]
+proof = drop is not None or bool(widen)
+members = frozenset(sitecheck.LEGACY_REFERENCES) - {drop}
+if proof:
+    # The rule with drop left out and widen added, built as sitecheck
+    # builds LEGACY_REFERENCE.
+    sitecheck.LEGACY_REFERENCE = re.compile(
+        "&(" + "|".join(sorted(members, key=lambda name: (-len(name), name)))
+        + ")(?=[A-Za-z0-9=" + re.escape(widen) + "])")
+
+FOLLOWS = frozenset(string.ascii_letters + string.digits + "=")
+if not proof:
+    def hits(text):
+        return sitecheck.legacy_reference_hits(text)
+
+    bad = []
+    neighbours = [*"@[`{/:;>_-", " ", "", "é", " ", "Ａ", "１", "#", "&"]
+    for name in sorted(members):
+        for follower in "AZaz09=":
+            got = hits(f"a&{name}{follower}b")
+            if got != [(name, f"&{name}{follower}")]:
+                bad.append(f"&{name}{follower} gave {got!r:.60}")
+        for follower in neighbours:
+            text = f"a&{name}{follower}" + ("b" if follower else "")
+            if hits(text):
+                bad.append(f"{ascii(text)} gave {hits(text)!r:.60}")
+        if hits(f"a&{name[:-1]}xb"):
+            bad.append(f"&{name[:-1]}x gave a hit")
+        swapped = name.swapcase()
+        got = [hit[0] for hit in hits(f"a&{swapped}xb")]
+        if got != ([swapped] if swapped in members else []):
+            bad.append(f"&{swapped}x gave {got!r:.60}")
+    for follower in sorted(FOLLOWS):
+        if [hit[0] for hit in hits(f"a&not{follower}b")] != ["not"]:
+            bad.append(f"&not{follower} gave no hit on not")
+    prefixes = sorted(f"{a} of {b}" for a in members for b in members
+                      if a != b and b.startswith(a))
+    bad += [f"{pair} is a prefix" for pair in prefixes]
+    if bad or not members:
+        print(f"FAIL site-legacyref/members: {len(bad)} form(s) read wrong"
+              f"{'' if members else ', LEGACY_REFERENCES is empty'}: {'; '.join(bad[:5])}")
+    else:
+        print(f"ok   site-legacyref/members ({len(members)} names with 7 followers each, "
+              f"{len(FOLLOWS)} followers on &not, the neighbours, truncations and case forms "
+              "without a hit)")
+
+table = html.entities.html5
+longest_name = max(map(len, table))
+legacy = sorted(name for name in table if not name.endswith(";"))
+extending = frozenset(
+    name for name in table if name.endswith(";")
+    and any(name.startswith(short) and name[len(short)] in string.ascii_letters + string.digits
+            for short in legacy if len(name) > len(short) + 1))
+
+
+def longest(value, at):
+    """The longest name of the table that follows the '&' at value[at]."""
+    for end in range(min(len(value), at + 1 + longest_name), at + 1, -1):
+        if value[at + 1:end] in table:
+            return value[at + 1:end]
+    return None
+
+
+def html_reading(value, attribute):
+    """What HTML's named character reference rule gives for value."""
+    out, at = [], 0
+    while at < len(value):
+        if value[at] != "&":
+            out.append(value[at])
+            at += 1
+            continue
+        name = longest(value, at)
+        if name is None:
+            out.append("&")
+            at += 1
+            continue
+        after = value[at + 1 + len(name):at + 2 + len(name)]
+        if attribute and not name.endswith(";") and after and after in FOLLOWS:
+            out.append("&" + name)
+        else:
+            out.append(table[name])
+        at += 1 + len(name)
+    return "".join(out)
+
+
+followers = ([chr(code) for code in range(0x20, 0x7F) if chr(code) not in "&#\"'<>"]
+             + ["", "é", " ", "Ａ", "１", "&", "#", ">", "<"])
+values = [form for name in legacy for follower in followers
+          for form in (f"&{name}{follower}", f"x&{name}{follower}y")]
+values += [f"&{name}{follower}" for name in sorted(table) for follower in ("x", "=", " ", "")]
+unquoted = [value for value in values
+            if not re.search("[\\s\"'=<>` ]", value) and not value.endswith("/")]
+in_text = [value for value in values if "<" not in value]
+contexts = (("double-quoted", values, '<i title="{}">', True),
+            ("single-quoted", values, "<i title='{}'>", True),
+            ("unquoted", unquoted, "<i title={} >", True),
+            ("text", in_text, "<i>{}</i>", False))
+attribute_model = {value: html_reading(value, True) for value in values}
+text_model = {value: html_reading(value, False) for value in in_text}
+refused = {value for value in values if sitecheck.legacy_reference_hits(value)}
+outside = [] if proof else sorted(set(legacy) - set(sitecheck.LEGACY_REFERENCES))
+missing = sorted(set(sitecheck.LEGACY_REFERENCES) - set(legacy))
+structure, wrong_a, wrong_b, inexact = [], [], [], []
+count_refused = count_a = count_b = 0
+for where, items, form, attribute in contexts:
+    model = attribute_model if attribute else text_model
+    if not proof:
+        page = sitecheck.parse_page("".join(form.format(value) for value in items))
+        readings = ([attrs.get("title") for tag, attrs in page.elements if tag == "i"]
+                    if attribute else page.text)
+        if len(readings) != len(items):
+            structure.append(f"{len(readings)} readings of {len(items)} {where} values")
+            readings = []
+        for value, reading in zip(items, readings):
+            if reading != model[value]:
+                if value not in refused:
+                    wrong_a.append((where, value))
+                elif attribute:
+                    count_a += 1
+    if not attribute:
+        continue
+    for value in items:
+        reading = html.unescape(value)
+        if value in refused:
+            count_refused += 1
+            if reading != model[value]:
+                count_b += 1
+                continue
+            for name, spelling in sitecheck.legacy_reference_hits(value):
+                match = longest(value, value.find(spelling))
+                if match not in extending or not match.startswith(name):
+                    inexact.append((where, value))
+                    break
+        elif reading != model[value]:
+            wrong_b.append((where, value))
+
+
+def first(found):
+    return f"(first: {found[0][0]} {ascii(found[0][1])})"
+
+
+parts = structure[:]
+if outside:
+    parts.append(f"the table holds the legacy name(s) {', '.join('&' + n for n in outside)} "
+                 "outside LEGACY_REFERENCES")
+if wrong_a:
+    parts.append(f"html.parser reads {len(wrong_a)} value(s) the rule does not refuse unlike "
+                 f"HTML {first(wrong_a)}")
+if wrong_b:
+    parts.append(f"the pre-3.14 reading reads {len(wrong_b)} value(s) the rule does not refuse "
+                 f"unlike HTML {first(wrong_b)}")
+if inexact:
+    parts.append(f"the pre-3.14 reading reads {len(inexact)} refused value(s) as HTML that hold "
+                 f"no extending ';' name {first(inexact)}")
+if parts:
+    print(f"FAIL site-legacyref/reading: {'; '.join(parts)}")
+else:
+    print(f"ok   site-legacyref/reading (Python {platform.python_version()}: {len(values)} values "
+          f"in two quoted contexts, {len(unquoted)} unquoted, {len(in_text)} in text; "
+          + ("html.parser not read (negative proof)" if proof else
+             f"html.parser reads {count_a} of the {count_refused} refused values unlike HTML "
+             "and every other value as HTML")
+          + f"; the pre-3.14 reading reads {count_b} of {count_refused} unlike HTML, every "
+          f"refused value it reads as HTML is one of the {len(extending)} extending ';' names, "
+          "every other value as HTML"
+          + (f"; {len(missing)} member(s) not in this table, still refused" if missing else "")
+          + ")")
+PY
+}
+
 # intake_coverage <sitecheck.py> <render table> <site table> [drop] (M5b
 # PR 3): the rows of tests/fixtures/render/intake-cases.tsv and
 # tests/fixtures/site/intake-cases.tsv cover every member of the sets render
@@ -8829,6 +9045,56 @@ PINNED
       n_failed=$((n_failed + 1))
     fi
   fi
+  if selftest_wants site-legacyref; then
+    # site-legacyref/<row> (Replikanti/interviewscam#64): site rule (i)'s
+    # legacy named references, from tests/fixtures/site/legacyref-cases.tsv
+    # on copies of render/pass-intake (site_intake_runner, built pins off),
+    # then the lines that hold LEGACY_REFERENCES to this interpreter
+    # (legacyref_reading: members, reading) and the two negative proofs of
+    # reading, with reader (b) alone: with 'not' left out of the rule it must
+    # fail and name a value with &not that the pre-3.14 reading reads unlike
+    # HTML, and with ';' added to the follower class it must fail and name a
+    # refused value ending in ';' that it reads as HTML.
+    site_intake_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/site/legacyref-cases.tsv" "$FIXTURES/render/pass-intake" \
+      "$SELFTEST_ROOT/schema" site-legacyref >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )site-legacyref/table' "$out"; then
+      echo "FAIL site-legacyref: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+    legacyref_reading "$SELFTEST_ROOT/tools/sitecheck.py" >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    # reading must have read all 29,700 values.
+    if [[ "$(grep -cE '^ok   site-legacyref/(members |reading \(Python [^:]*: 29700 values )' "$out")" != 2 ]]; then
+      echo "FAIL site-legacyref/reading-lines: the two reading lines did not both pass, or reading read other than 29700 values; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+    legacyref_reading "$SELFTEST_ROOT/tools/sitecheck.py" not >"$out" 2>&1
+    if grep -qE "^FAIL site-legacyref/reading: .*the pre-3\.14 reading reads [0-9]+ value\(s\) the rule does not refuse unlike HTML \(first: [a-z-]+ '[^']*&not" "$out"; then
+      echo "ok   site-legacyref/reading-fails-on-missing-name (&not left out of the rule fails the line)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL site-legacyref/reading-fails-on-missing-name: a name left out of the rule did not fail; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+    legacyref_reading "$SELFTEST_ROOT/tools/sitecheck.py" "" ";" >"$out" 2>&1
+    if grep -qE "^FAIL site-legacyref/reading: .*the pre-3\.14 reading reads [0-9]+ refused value\(s\) as HTML that hold no extending ';' name \(first: [a-z-]+ '[^']*;'\)" "$out"; then
+      echo "ok   site-legacyref/reading-fails-on-wide-rule (';' added to the follower class fails the line)"
+      n_passed=$((n_passed + 1))
+    else
+      echo "FAIL site-legacyref/reading-fails-on-wide-rule: a rule that refuses more than the differential did not fail; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
   if selftest_wants render-charref; then
     # render-charref/<row> (Replikanti/interviewscam#59): render's markup:
     # reading of the same references, from
@@ -8843,6 +9109,24 @@ PINNED
     n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
     if ! grep -qE '^(ok   |FAIL )render-charref/table' "$out"; then
       echo "FAIL render-charref: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+  if selftest_wants render-legacyref; then
+    # render-legacyref/<row> (Replikanti/interviewscam#64): render's markup:
+    # reading of the same references, from
+    # tests/fixtures/render/legacyref-cases.tsv on copies of
+    # render/pass-persona-label (search_cases_runner, so COUNT= rows prove
+    # that a page that is not read adds no other finding).
+    search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/render/legacyref-cases.tsv" "$FIXTURES/render/pass-persona-label" \
+      "$SELFTEST_ROOT/schema" render-legacyref >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )render-legacyref/table' "$out"; then
+      echo "FAIL render-legacyref: the runner did not finish; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi
