@@ -1,0 +1,1 @@
+params.sources[0].url: its host 'login[.]attacker[.]example' equals the declared artifact domain 'hxxps:login[.]attacker[.]example'

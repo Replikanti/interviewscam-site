@@ -94,3 +94,21 @@ csp-intake/style-src-attr	@csp	-	default-src 'none'; img-src 'self'; style-src '
 csp-intake/style-src-elem	@csp	-	default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self' https://intake.interviewscam.com; style-src-elem https://intake.interviewscam.com	CSP source not allowed in style-src-elem: 
 csp-intake/upgrade-insecure-requests	@csp	-	default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self' https://intake.interviewscam.com; upgrade-insecure-requests https://intake.interviewscam.com	CSP source not allowed in upgrade-insecure-requests: 
 csp-intake/worker-src	@csp	-	default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self' https://intake.interviewscam.com; worker-src https://intake.interviewscam.com	CSP source not allowed in worker-src: 
+fail-intake-host-slashless-ftp	public/index.html	</main>	<p><a href=ftp:intake.interviewscam.com/>x</a></p></main>	(a) <a href> names the intake origin
+fail-intake-host-slashless-http	public/index.html	</main>	<p><a href=http:intake.interviewscam.com/>x</a></p></main>	(a) <a href> names the intake origin
+fail-intake-host-slashless-https	public/index.html	</main>	<p><a href=https:intake.interviewscam.com/>x</a></p></main>	(a) <a href> names the intake origin
+fail-intake-host-slashless-ws	public/index.html	</main>	<p><a href=ws:intake.interviewscam.com/>x</a></p></main>	(a) <a href> names the intake origin
+fail-intake-host-slashless-wss	public/index.html	</main>	<p><a href=wss:intake.interviewscam.com/>x</a></p></main>	(a) <a href> names the intake origin
+fail-intake-host-slashless-mixed-case	public/index.html	</main>	<p><a href=HtTpS:INTAKE.interviewscam.com/>x</a></p></main>	(a) <a href> names the intake origin
+fail-intake-host-slashless-leading-space	public/index.html	</main>	<p><a href=" https:intake.interviewscam.com/">x</a></p></main>	(a) <a href> names the intake origin
+fail-intake-host-slashless-leading-c0	public/index.html	</main>	<p><a href="\u{0001}https:intake.interviewscam.com/">x</a></p></main>	(a) <a href> names the intake origin
+fail-intake-host-slashless-trailing-c0	public/index.html	</main>	<p><a href="https:intake.interviewscam.com\u{001F}">x</a></p></main>	(a) <a href> names the intake origin
+fail-intake-host-slashless-trailing-space	public/index.html	</main>	<p><a href="https:intake.interviewscam.com ">x</a></p></main>	(a) <a href> names the intake origin
+fail-intake-host-slashless-tab-in-scheme	public/index.html	</main>	<p><a href="ht\ttps:intake.interviewscam.com/">x</a></p></main>	(a) <a href> names the intake origin
+fail-intake-host-slashless-newline-in-scheme	public/index.html	</main>	<p><a href="ht\ntps:intake.interviewscam.com/">x</a></p></main>	(a) <a href> names the intake origin
+fail-intake-host-backslash	public/index.html	</main>	<p><a href=https:\intake.interviewscam.com/>x</a></p></main>	(a) <a href> names the intake origin
+fail-intake-host-slash-backslash	public/index.html	</main>	<p><a href=https:/\intake.interviewscam.com/>x</a></p></main>	(a) <a href> names the intake origin
+pass-intake-host-slashless-other-scheme	public/index.html	</main>	<p><a href=foo:intake.interviewscam.com/>x</a></p></main>	PASS
+pass-intake-host-slashless-file	public/index.html	</main>	<p><a href=file:intake.interviewscam.com/>x</a></p></main>	PASS
+pass-intake-host-slashless-userinfo-other-host	public/index.html	</main>	<p><a href=https:intake.interviewscam.com@intake2.interviewscam.com/>x</a></p></main>	PASS
+pass-intake-host-slashless-scheme-lookalike	public/index.html	</main>	<p><a href="http\u{017F}:intake.interviewscam.com/">x</a></p></main>	PASS

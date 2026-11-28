@@ -449,16 +449,29 @@ def host_forms(authority):
 
 
 URL_SCHEME = re.compile(r"(?i)[a-z][a-z0-9+.\-]*:(?=[/\\])")
+# The WHATWG special schemes that carry a host, file left out: after one of
+# them a browser reads the host right after the colon, with or without
+# slashes (Replikanti/interviewscam#60, ADR-0010 part 7).
+SPECIAL_HOST_SCHEMES = frozenset({"ftp", "http", "https", "ws", "wss"})
 C0_AND_SPACE = "".join(map(chr, range(0x21)))
 
 
 def url_authority(url):
     """The raw authority of a URL or a bare host (WHATWG: tab and newline
     removed, C0 controls and spaces trimmed, the scheme and any run of / or
-    \\ after it skipped)."""
+    \\ after it skipped). After a scheme of SPECIAL_HOST_SCHEMES (read by
+    url_scheme, ASCII only) the run may be empty, as in the special
+    authority ignore slashes state, so http:host names host; that holds
+    whatever the base of the page, also when the scheme is the base's own
+    (Replikanti/interviewscam#60). Other schemes keep their host only before
+    a / or \\ (foo:host is an opaque path)."""
     text = re.sub(r"[\t\n\r]", "", url).strip(C0_AND_SPACE)
-    match = URL_SCHEME.match(text)
-    rest = text[match.end():] if match else text
+    scheme = url_scheme(text)
+    if scheme in SPECIAL_HOST_SCHEMES:
+        rest = text[len(scheme) + 1:]
+    else:
+        match = URL_SCHEME.match(text)
+        rest = text[match.end():] if match else text
     return raw_authority(rest.lstrip("/\\"))
 
 
@@ -3145,7 +3158,8 @@ def is_intake_action(tag, name, value):
 def names_intake_host(value):
     """True when a URL attribute's value leaves the origin for the intake
     host, in any spelling a browser resolves to it (case, trailing dot,
-    userinfo, port, backslashes, protocol-relative)."""
+    userinfo, port, backslashes, protocol-relative, a special scheme without
+    slashes)."""
     return leaves_origin(value) and url_host(value) == INTAKE_HOSTNAME
 
 
@@ -7566,8 +7580,9 @@ def feed_license_problems(schema, pages):
     a visible <a> whose href is exactly url reads exactly name, and no
     other visible <a> to url reads anything else; the first element with
     the fragment as its id (the one a browser scrolls to) is a visible <h2>
-    with visible text, and the section it heads (its following siblings up
-    to the next <h1> or <h2>) holds that link. On every page, no link
+    with visible text, and the section it heads (the elements after it in
+    document order inside its parent, up to the next <h1> or <h2> at any
+    depth; heading_section) holds that link. On every page, no link
     (hidden ones included) names the host of url or a subdomain of it,
     except url itself on /data-feed/. So the page and the feed name one
     licence, the page links only its legal code, and the terms the feed
@@ -7654,20 +7669,27 @@ def feed_license_problems(schema, pages):
     return out
 
 
+# The tags that end the section a heading starts, at any depth (rule 13,
+# Replikanti/interviewscam#60).
+SECTION_END_TAGS = ("h1", "h2")
+
+
 def heading_section(heading):
-    """Every element of the section a heading starts: its following siblings
-    and their descendants, up to the next <h1> or <h2> sibling."""
+    """Every element of the section a heading starts: the elements after it
+    in document order inside its parent, its own subtree left out, up to the
+    first one whose tag is in SECTION_END_TAGS at any depth, visible or
+    hidden (Replikanti/interviewscam#60). The section never reaches past the
+    parent, so a link in the next card is not in it."""
     if heading.parent is None:
         return []
-    siblings = heading.parent.children
-    start = next(i for i, c in enumerate(siblings) if c is heading) + 1
+    order = list(heading.parent.walk())
+    # Pre-order: the heading's own descendants follow it directly.
+    start = next(i for i, el in enumerate(order) if el is heading) + len(list(heading.walk()))
     found = []
-    for child in siblings[start:]:
-        if isinstance(child, str):
-            continue
-        if child.tag in ("h1", "h2"):
+    for el in order[start:]:
+        if el.tag in SECTION_END_TAGS:
             break
-        found += list(child.walk())
+        found.append(el)
     return found
 
 
