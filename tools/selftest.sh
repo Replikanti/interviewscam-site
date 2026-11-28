@@ -3871,8 +3871,10 @@ PY
 # INTAKE_RESULT_IDS the section missing, doubled, its id elsewhere and its
 # heading and text reworded; per member of INTAKE_REFERRER_TAGS and per
 # channel a referrerpolicy row; per channel the page and its form missing;
-# per member of URL_ATTRS a row that names the intake host in it, and per
-# member of FORM_ATTRS one that leaves the origin; per page of
+# per member of URL_ATTRS a row that names the intake host in it, per
+# member of SPECIAL_HOST_SCHEMES one that names it after that scheme with no
+# slash (Replikanti/interviewscam#60), and per member of FORM_ATTRS one
+# that leaves the origin; per page of
 # INTAKE_FORM_PAGES the CSP without the intake origin; per member of
 # CSP_DIRECTIVES but form-action the intake origin in that directive. A row name the table
 # lacks fails the line render-intake/coverage or site-intake/coverage. With
@@ -3960,6 +3962,7 @@ if missing:
 else:
     print(f"ok   render-intake/coverage ({len(want)} member rows)")
 want = {f"fail-intake-host-in-{attr.replace(':', '-')}" for attr in sitecheck.URL_ATTRS}
+want |= {f"fail-intake-host-slashless-{s}" for s in sitecheck.SPECIAL_HOST_SCHEMES}
 want |= {f"fail-{tag}-{'action' if attr == 'action' else 'formaction'}-intake"
          + ("-slash" if tag == "form" else "") for tag, attr in sitecheck.FORM_ATTRS}
 want |= {"fail-csp-form-action-missing-intake"
@@ -3999,6 +4002,38 @@ if missing:
     print(f"FAIL {label}/coverage: {len(missing)} member(s) without a row: " + ", ".join(missing))
 else:
     print(f"ok   {label}/coverage ({len(want)} member rows)")
+PY
+}
+
+# feed_coverage <sitecheck.py> <feed cases table> [drop]
+# (Replikanti/interviewscam#60): tests/fixtures/render/feed-cases.tsv has a
+# row page-second-cc-link-slashless-<scheme> for every member of
+# SPECIAL_HOST_SCHEMES and a row page-link-after-nested-<tag> for every
+# member of SECTION_END_TAGS, both sets taken from the code; a member left
+# without a row, or an empty set, fails render-feed/coverage. With drop,
+# that row is left out of the table first, so the line must fail (the
+# negative proof). -B: no tools/__pycache__.
+feed_coverage() {
+  python3 -I -B - "$1" "$2" "${3:-}" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sitecheck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sitecheck)
+drop = sys.argv[3]
+names = {line.split("\t", 1)[0] for line in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
+         if line and not line.startswith("#")} - {drop}
+want = {f"page-second-cc-link-slashless-{s}" for s in sitecheck.SPECIAL_HOST_SCHEMES}
+want |= {f"page-link-after-nested-{tag}" for tag in sitecheck.SECTION_END_TAGS}
+missing = sorted(want - names)
+if not sitecheck.SPECIAL_HOST_SCHEMES or not sitecheck.SECTION_END_TAGS:
+    print("FAIL render-feed/coverage: SPECIAL_HOST_SCHEMES or SECTION_END_TAGS is empty")
+elif missing:
+    print(f"FAIL render-feed/coverage: {len(missing)} member(s) without a row: " + ", ".join(missing))
+else:
+    print(f"ok   render-feed/coverage ({len(want)} member rows)")
 PY
 }
 
@@ -7467,7 +7502,7 @@ selftest_only_rows() {
   so_partner_case partner-pin pin \
     $'ok   pin/pass-a\nok   pin/cases\ncounts 2 0'
   so_partner_case partner-intake site-intake \
-    $'ok   site-intake/table\nok   site-intake/coverage\nok   site-intake/coverage-fails-on-missing-row\nok   site-intake/coverage-fails-on-missing-row\nok   site-intake/coverage-fails-on-missing-row\nok   site-intake/coverage-fails-on-missing-row\ncounts 6 0'
+    $'ok   site-intake/table\nok   site-intake/coverage\nok   site-intake/coverage-fails-on-missing-row\nok   site-intake/coverage-fails-on-missing-row\nok   site-intake/coverage-fails-on-missing-row\nok   site-intake/coverage-fails-on-missing-row\nok   site-intake/coverage-fails-on-missing-row\ncounts 7 0'
   so_partner_case partner-both pin,pin-extra \
     "$(printf '%s\n' 'ok   pin/pass-a' 'FAIL pin-extra/sha-form'; for so_n in $(seq 1 13); do echo "ok   pin-extra/x-$so_n"; done; printf '%s\n' 'ok   pin/cases' 'FAIL pin/extra')"$'\ncounts 15 2'
 
@@ -8882,18 +8917,94 @@ PINNED
     # data feed, render rule 11 on the license object and the rule 13 tie
     # of its legal-code link and terms anchor to /data-feed/, branch by
     # branch from tests/fixtures/render/feed-cases.tsv on a copy of
-    # render/pass-feed, with the feed rules on (search_cases_runner above).
+    # render/pass-feed, with the feed rules on (search_cases_runner above);
+    # then render-feed/coverage (feed_coverage above) and its negative
+    # proof, one member row of each set left out and each set emptied
+    # (Replikanti/interviewscam#60); and render-feed/section-bounds:
+    # heading_section itself, per member of SECTION_END_TAGS, ends before
+    # that heading nested a level down and leaves out the heading and its
+    # subtree (QA of Replikanti/interviewscam-site#45: rule 13 only asks
+    # whether a link is in the section, and the ending heading is never a
+    # link, so no table row sees the ending heading itself counted).
     search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
       "$FIXTURES/render/feed-cases.tsv" "$FIXTURES/render/pass-feed" \
       "$SELFTEST_ROOT/schema" render-feed >"$out" 2>&1
+    feed_coverage "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render/feed-cases.tsv" \
+      >>"$out" 2>&1
+    python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >>"$out" 2>&1 <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sc)
+bad = []
+for tag in sc.SECTION_END_TAGS:
+    page = sc.parse_render_page(
+        "<!doctype html><html><body><main><h2 id=t>T</h2><p id=s1>a</p><div id=s2><p id=s3>b</p>"
+        f"<{tag} id=end>E <a href=/x/ id=in>l</a></{tag}><p>c</p></div><p>d</p></main></body></html>")
+    heading = next(el for el in page.root.walk() if el.attrs.get("id") == "t")
+    got = [el.attrs.get("id", el.tag) for el in sc.heading_section(heading)]
+    if got != ["s1", "s2", "s3"]:
+        bad.append(f"<{tag}>: {got}, want ['s1', 's2', 's3']")
+if bad or not sc.SECTION_END_TAGS:
+    print("FAIL render-feed/section-bounds: " + ("; ".join(bad) or "SECTION_END_TAGS is empty"))
+else:
+    print(f"ok   render-feed/section-bounds ({len(sc.SECTION_END_TAGS)} end tags, the ending "
+          "heading and its subtree left out)")
+PY
     sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
     n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
     n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
-    if ! grep -qE '^(ok   |FAIL )render-feed/table' "$out"; then
+    if ! grep -qE '^(ok   |FAIL )render-feed/table' "$out" \
+        || ! grep -qE '^(ok   |FAIL )render-feed/coverage' "$out" \
+        || ! grep -qE '^(ok   |FAIL )render-feed/section-bounds' "$out"; then
       echo "FAIL render-feed: the runner did not finish; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi
+    local feed_drop
+    for feed_drop in page-second-cc-link-slashless-ws page-link-after-nested-h1; do
+      feed_coverage "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render/feed-cases.tsv" \
+        "$feed_drop" >"$out" 2>&1
+      if grep -q "^FAIL render-feed/coverage: 1 member(s) without a row: $feed_drop\$" "$out"; then
+        echo "ok   render-feed/coverage-fails-on-missing-row ($feed_drop)"
+        n_passed=$((n_passed + 1))
+      else
+        echo "FAIL render-feed/coverage-fails-on-missing-row: without $feed_drop the coverage line did not fail; output:"
+        sed 's/^/     | /' "$out"
+        n_failed=$((n_failed + 1))
+      fi
+    done
+    # Each set emptied in a copy of sitecheck.py (QA of
+    # Replikanti/interviewscam-site#45): the coverage line must fail on it,
+    # not pass because an empty set wants no row.
+    local feed_set feed_tmp
+    for feed_set in SPECIAL_HOST_SCHEMES SECTION_END_TAGS; do
+      feed_tmp="$(mktemp -d)"
+      if [[ "$feed_set" == SPECIAL_HOST_SCHEMES ]]; then
+        sed 's/^SPECIAL_HOST_SCHEMES = frozenset(.*$/SPECIAL_HOST_SCHEMES = frozenset()/' \
+          "$SELFTEST_ROOT/tools/sitecheck.py" >"$feed_tmp/sitecheck.py"
+      else
+        sed 's/^SECTION_END_TAGS = (.*$/SECTION_END_TAGS = ()/' \
+          "$SELFTEST_ROOT/tools/sitecheck.py" >"$feed_tmp/sitecheck.py"
+      fi
+      if [[ "$(grep -cE "^$feed_set = (frozenset\(\)|\(\))\$" "$feed_tmp/sitecheck.py")" != 1 ]]; then
+        echo "FAIL render-feed/coverage-fails-on-empty-set: $feed_set could not be emptied in a copy of sitecheck.py"
+        n_failed=$((n_failed + 1))
+      else
+        feed_coverage "$feed_tmp/sitecheck.py" "$FIXTURES/render/feed-cases.tsv" >"$out" 2>&1
+        if grep -q '^FAIL render-feed/coverage: SPECIAL_HOST_SCHEMES or SECTION_END_TAGS is empty$' "$out"; then
+          echo "ok   render-feed/coverage-fails-on-empty-set ($feed_set)"
+          n_passed=$((n_passed + 1))
+        else
+          echo "FAIL render-feed/coverage-fails-on-empty-set: with $feed_set empty the coverage line did not fail; output:"
+          sed 's/^/     | /' "$out"
+          n_failed=$((n_failed + 1))
+        fi
+      fi
+      rm -rf "$feed_tmp"
+    done
   fi
 
   if selftest_wants render-intake; then
@@ -9162,7 +9273,8 @@ PINNED
     # control outside the form and the form-owner literal rows. Fix round 2:
     # the in-template and id-shadowed form-owner literal rows. Review 3:
     # the other five form-owner literal rows, so every member of that
-    # literal set has its drop. 66 drops.
+    # literal set has its drop. Replikanti/interviewscam#60: one
+    # SPECIAL_HOST_SCHEMES row. 67 drops.
     for drop in render:b-report-scam_alias-renamed render:b-correction-email-required \
         render:b-report-headers-maxlength-above render:b-correction-request-hint-reworded \
         render:b-correction-files-accept-without-webp render:d-error-doubled \
@@ -9197,7 +9309,8 @@ PINNED
         render:d-sitemap-urlset-misplaced render:d-sitemap-lastmod-misplaced \
         render:d-sitemap-url-attribute render:d-sitemap-loc-attribute \
         site:fail-intake-host-in-data site:fail-input-formaction-intake \
-        site:fail-csp-form-action-missing-intake-correction site:csp-intake/worker-src; do
+        site:fail-csp-form-action-missing-intake-correction site:csp-intake/worker-src \
+        site:fail-intake-host-slashless-ws; do
       kind="${drop%%:*}"
       selftest_wants "$kind-intake" || continue
       intake_coverage "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render/intake-cases.tsv" \
