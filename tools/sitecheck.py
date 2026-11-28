@@ -2174,7 +2174,7 @@ def csp_reference_problems(text, metas):
 
 # The closer of each CSS block opener: a block ends only at its own closer
 # (CSS Syntax 5.4.8, "consume a simple block").
-CSS_CLOSERS = {"(": ")", "[": "]"}
+BLOCK_CLOSERS = {"(": ")", "[": "]"}
 
 
 class CssRule:
@@ -2222,7 +2222,7 @@ def css_rules(css):
         # inside (...) is a token (fix round 2, review run 2).
         if ch in "([":
             openers.append(ch)
-        elif openers and ch == CSS_CLOSERS[openers[-1]]:
+        elif openers and ch == BLOCK_CLOSERS[openers[-1]]:
             openers.pop()
         depth = len(openers)
         if depth == 0 and ch == "{":
@@ -2787,7 +2787,7 @@ def css_at_rule_problems(css):
             openers.append(ch)
             parens = len(openers)
         elif ch in ")]":
-            if openers and ch == CSS_CLOSERS[openers[-1]]:
+            if openers and ch == BLOCK_CLOSERS[openers[-1]]:
                 openers.pop()
             parens = len(openers)
         elif ch in "{}":
