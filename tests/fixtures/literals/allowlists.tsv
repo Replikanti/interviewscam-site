@@ -804,3 +804,25 @@ SITE_VIEWPORT_UNITS	vi
 SITE_VIEWPORT_UNITS	vmax
 SITE_VIEWPORT_UNITS	vmin
 SITE_VIEWPORT_UNITS	vw
+SKIP_LINK_STYLE_ALLOWED	a.visually-hidden/width	length
+SKIP_LINK_STYLE_ALLOWED	a.visually-hidden/height	length
+SKIP_LINK_STYLE_ALLOWED	a.visually-hidden/inline-size	length
+SKIP_LINK_STYLE_ALLOWED	a.visually-hidden/block-size	length
+SKIP_LINK_STYLE_ALLOWED	a.visually-hidden/right	length
+SKIP_LINK_STYLE_ALLOWED	a.visually-hidden/bottom	length
+SKIP_LINK_STYLE_ALLOWED	a.visually-hidden/transform-origin	origin
+SKIP_LINK_STYLE_ALLOWED	a.visually-hidden/perspective-origin	origin
+SKIP_LINK_STYLE_ALLOWED	body/width	viewport
+SKIP_LINK_STYLE_ALLOWED	body/inline-size	viewport
+SKIP_LINK_STYLE_ALLOWED	body/height	length
+SKIP_LINK_STYLE_ALLOWED	body/block-size	length
+SKIP_LINK_STYLE_ALLOWED	body/transform-origin	origin
+SKIP_LINK_STYLE_ALLOWED	body/perspective-origin	origin
+SKIP_LINK_STYLE_ALLOWED	html/width	viewport
+SKIP_LINK_STYLE_ALLOWED	html/inline-size	viewport
+SKIP_LINK_STYLE_ALLOWED	html/height	length
+SKIP_LINK_STYLE_ALLOWED	html/block-size	length
+SKIP_LINK_STYLE_ALLOWED	html/transform-origin	origin
+SKIP_LINK_STYLE_ALLOWED	html/perspective-origin	origin
+SKIP_LINK_STYLE_ALLOWED	a.visually-hidden/inset-inline-end	length
+SKIP_LINK_STYLE_ALLOWED	a.visually-hidden/inset-block-end	length

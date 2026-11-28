@@ -2319,8 +2319,9 @@ VH_REVEAL_DECLARATIONS = {
     # on the skip link. A reversed bidi run needs `direction` or
     # `unicode-bidi`, which render rule 19 refuses in the built stylesheet,
     # and the Nu Html Checker's CSS validator refuses `offset-path` as an
-    # unknown property, so those three are not declared here. Reflow case (7) reads
-    # all eight computed values too (REFLOW_PLACEMENT_STYLES).
+    # unknown property, so those three are not declared here. Reflow case (7)
+    # compares the complete computed style with a pinned baseline too
+    # (SKIP_LINK_STYLE_SCOPES, Replikanti/interviewscam#63).
     "transform": "none",
     "scale": "none",
     "rotate": "none",
@@ -9787,7 +9788,10 @@ PINNED_ALLOWLISTS = LITERALS_PASSING_SETS + (
     "RECORDS_PERMISSIONS", "RECORDS_JOB_PERMISSIONS",
     # The CSS states of the browser checks (Replikanti/interviewscam#61): the
     # closed @media preludes, value functions and refused viewport units.
-    "SITE_MEDIA_PRELUDES", "SITE_VALUE_FUNCTIONS", "SITE_VIEWPORT_UNITS")
+    "SITE_MEDIA_PRELUDES", "SITE_VALUE_FUNCTIONS", "SITE_VIEWPORT_UNITS",
+    # The pinned skip-link style (Replikanti/interviewscam#63): the scope and
+    # property pairs compared by a rule, not with a pinned value.
+    "SKIP_LINK_STYLE_ALLOWED")
 # L5: the CSS properties and @counter-style descriptors whose strings the
 # browser draws as text.
 CSS_TEXT_PROPERTIES = {"content", "list-style", "list-style-type", "quotes",
@@ -15131,46 +15135,6 @@ REFLOW_TEXT_MIN_PIXELS = 343
 REFLOW_PAINT_PROBE = (("transition", "none"), ("opacity", "0"))
 REFLOW_INK_PROBE = (("transition", "none"), ("text-shadow", "none"),
                     ("-webkit-text-fill-color", "transparent"))
-# The computed values that keep the label's pixels in reading order (fix
-# round 1, review run 1, findings 3 and 4): the count reads pixels, not
-# their order, so a mirroring `transform: scaleX(-1)` (689) and a reversed
-# `unicode-bidi: bidi-override; direction: rtl` (695) kept the count, and
-# `letter-spacing: -.35em` (456) lays the glyphs over each other. The
-# reveal pins five (VH_REVEAL_DECLARATIONS), render rule 19 refuses any
-# `direction` or `unicode-bidi` in the built stylesheet, and `offset-path`
-# (which the Nu Html Checker's CSS validator does not know) is read only
-# here; this is the outcome half, on the focused element. A transform, scale, rotate or motion path on an
-# ancestor (`body{transform:scaleX(-1)}`) mirrors the label too, so those
-# four are read on every ancestor as well; the other four inherit and the
-# element's own pinned value decides. Fix round 2 (review run 2): a rule on
-# the link's ::first-line or ::first-letter sets a property on the text
-# itself, past the element's !important pin (`::first-line{letter-spacing:
-# -.35em}` counted 456, a ::first-line shadow under white glyphs 720), so
-# the element's list is read on both pseudo-elements too
-# (REFLOW_PLACEMENT_PSEUDOS); and `word-spacing` and `text-shadow` join the
-# list (pinned in the reveal as well): shadow pixels count as ink once the
-# probe drops the shadow, and negative word spacing lays words over each
-# other. Each property maps to the computed values that pass; Chrome may
-# write word spacing's `normal` as `0px`, the same zero.
-REFLOW_PLACEMENT_STYLES = {"transform": ["none"], "scale": ["none"], "rotate": ["none"],
-                           "offset-path": ["none"], "direction": ["ltr"],
-                           "unicode-bidi": ["normal"], "writing-mode": ["horizontal-tb"],
-                           "letter-spacing": ["normal"], "word-spacing": ["normal", "0px"],
-                           "text-shadow": ["none"], "line-height": ["normal"],
-                           "max-width": ["none"], "text-decoration-line": ["underline", "none"],
-                           "text-decoration-thickness": ["1px", "auto"],
-                           "text-underline-offset": ["3px", "auto"]}
-# Fix round 3 (review run 3): the line metrics and the decoration. A line
-# height passes as `normal` or as at least REFLOW_MIN_LINE_HEIGHT times the
-# computed font size of the same element or pseudo-element, so no two lines
-# share a baseline; a decoration passes as an underline or none (no
-# line-through or overline across the glyphs; ::first-line and
-# ::first-letter compute none of their own), 1 px thick and 3 px below the
-# baseline as data/tokens.toml [underline] gives them, or Chrome's `auto` of
-# an unstyled link (the hand-made reflow cases).
-REFLOW_MIN_LINE_HEIGHT = 1
-REFLOW_PLACEMENT_PSEUDOS = ("::first-line", "::first-letter")
-REFLOW_ANCESTOR_PLACEMENT = ("transform", "scale", "rotate", "offset-path")
 # The computed `content` Chrome returns for ::before and ::after without
 # generated content: measured on Chrome 157, `none` for no rule, for
 # `content: none` and for `content: normal` alike (reflow fixture
@@ -15179,6 +15143,134 @@ REFLOW_ANCESTOR_PLACEMENT = ("transform", "scale", "rotate", "offset-path")
 # hidden label), so it fails before the probe; a closed set, so
 # `content: ""` fails too.
 REFLOW_NO_GENERATED = frozenset({"none"})
+# Case (7), the pinned computed style (Replikanti/interviewscam#63, ADR-0003
+# part 6 amendment): the five scopes whose complete computed style is read
+# on the focused skip link, in this order: the element, its ::first-line and
+# ::first-letter, and its two ancestors, which the reveal's markup
+# (layouts/baseof.html) puts at body and html.
+SKIP_LINK_STYLE_SCOPES = ("a.visually-hidden", "a.visually-hidden::first-line",
+                          "a.visually-hidden::first-letter", "body", "html")
+# The pinned baseline of the five scopes: tools/skip-link-style.tsv, the
+# rows CI's Chrome measured on the built site (the CONFUSABLES_PATH form, so
+# records mode, the self-test's importlib loads and the sweep shards all
+# find it), pinned by SHA-256 like the vendored Unicode data; the guard
+# checks the same pin on every run (guard_skip_link_style_pin), so a
+# tampered or missing table fails locally although reflow runs only in CI.
+# A re-pin pastes the rows a failing run prints, then updates this digest.
+SKIP_LINK_STYLE_PATH = Path(__file__).resolve().parent / "skip-link-style.tsv"
+SKIP_LINK_STYLE_SHA256 = "e73134cb086c8582b1720063b55111e08c692ebef031ae97760153135c73411e"
+# The tolerance of the viewport and origin rules: Chrome lays out in
+# LayoutUnits of 1/64 px and serializes about 6 significant digits, so a
+# resolved value at these sizes is off by at most about 0.00005 px; a width
+# or an origin moved by one layout unit or more fails (ADR-0003 Numbers).
+SKIP_LINK_STYLE_TOLERANCE = 1 / 64
+# The significant digits Chrome serializes a computed length with: measured
+# on Chrome 158 (run 46118966945), `13045.2px` for a body 13045.17 px tall
+# and `6522.58px` for its centre, 0.02 px from half the written height. One
+# unit of the last digit of the size bounds that gap (half the size's
+# rounding plus the centre's own, at most three quarters of a unit), so the
+# origin rule allows the larger of it and SKIP_LINK_STYLE_TOLERANCE.
+SKIP_LINK_STYLE_DIGITS = 6
+# The scope and property pairs that are not compared with a pinned value
+# but with a rule, each a resolved used value that differs by page, cell or
+# runner while the stylesheet stays the same (ADR-0003 part 6 amendment of
+# Replikanti/interviewscam#63, one reason per rule):
+# - length: a non-negative length in px. The size of the revealed link
+#   follows its label and the runner's unpinned font metrics (part 7), and
+#   right and bottom (and their logical aliases inset-inline-end and
+#   inset-block-end, which Chrome reports with the same value) follow the
+#   size and the cell; the size of body and html follows the page's length.
+#   Case (7)'s box checks, the paint check and the ink count read the box by
+#   its outcome.
+# - viewport: the cell's width within SKIP_LINK_STYLE_TOLERANCE. body and
+#   html are as wide as the viewport, which the cells set (D7).
+# - origin: the centre of the same scope's resolved box, `Xpx Ypx` (with
+#   ` 0px` for transform-origin), each axis within the larger of
+#   SKIP_LINK_STYLE_TOLERANCE and one unit of the last of the
+#   SKIP_LINK_STYLE_DIGITS significant digits Chrome writes the box's size
+#   with (style_origin_tolerance): the initial `50% 50%` resolved against a
+#   box whose size the other rules allow to vary.
+SKIP_LINK_STYLE_ALLOWED = {
+    "a.visually-hidden/width": "length", "a.visually-hidden/height": "length",
+    "a.visually-hidden/inline-size": "length", "a.visually-hidden/block-size": "length",
+    "a.visually-hidden/right": "length", "a.visually-hidden/bottom": "length",
+    "a.visually-hidden/inset-inline-end": "length", "a.visually-hidden/inset-block-end": "length",
+    "a.visually-hidden/transform-origin": "origin",
+    "a.visually-hidden/perspective-origin": "origin",
+    "body/width": "viewport", "body/inline-size": "viewport", "body/height": "length",
+    "body/block-size": "length", "body/transform-origin": "origin",
+    "body/perspective-origin": "origin",
+    "html/width": "viewport", "html/inline-size": "viewport", "html/height": "length",
+    "html/block-size": "length", "html/transform-origin": "origin",
+    "html/perspective-origin": "origin",
+}
+SKIP_LINK_STYLE_LENGTH = re.compile(r"(0|[1-9][0-9]*)(\.[0-9]+)?px")
+# The focused element and its ancestors up to <html>, labelled as the focus
+# script labels them (tag, #id, .class each).
+SKIP_LINK_STYLE_CHAIN = ("a.visually-hidden", "body", "html")
+# What the style reference load blocks (D3): every stylesheet and script,
+# so the skip link and its ancestors take Chrome's own style for the markup.
+REFLOW_STYLE_REFERENCE_BLOCKED = ("*.css", "*.js", "*.mjs")
+# Runs on document.activeElement: the label of the element and of each
+# ancestor up to <html> (chain), and the complete computed style of each
+# scope, every property Chrome enumerates (cs.item(i) for i < cs.length)
+# with its getPropertyValue, in Chrome's order. The pseudo-elements are read
+# with getComputedStyle's second argument.
+REFLOW_STYLE_SCRIPT = r"""
+(() => {
+  const label = (el) => {
+    let s = el.tagName.toLowerCase();
+    if (el.id) s += "#" + el.id;
+    for (const c of el.classList) s += "." + c;
+    return s;
+  };
+  const read = (cs) => {
+    const out = [];
+    for (let i = 0; i < cs.length; i++) {
+      const p = cs.item(i);
+      out.push([p, cs.getPropertyValue(p)]);
+    }
+    return out;
+  };
+  const a = document.activeElement;
+  if (!a) return {chain: [], scopes: []};
+  const chain = [];
+  for (let e = a; e; e = e.parentElement) chain.push(label(e));
+  const scopes = [[label(a), read(getComputedStyle(a))]];
+  for (const pseudo of ["::first-line", "::first-letter"])
+    scopes.push([label(a) + pseudo, read(getComputedStyle(a, pseudo))]);
+  for (let e = a.parentElement; e; e = e.parentElement)
+    scopes.push([label(e), read(getComputedStyle(e))]);
+  return {chain, scopes};
+})()
+"""
+# The proof of the style reference load (D3): no stylesheet rule applies,
+# the focused element carries the class, and its computed position is
+# static (the class's own rule sets absolute). Measured on Chrome 158 (runs
+# 46117959559 and 46118966945): a blocked <link rel=stylesheet> still adds
+# one sheet to document.styleSheets, whose cssRules throws a SecurityError,
+# as a sheet that failed to load does. So the proof counts the rules of
+# every readable sheet, a sheet of this origin whose rules cannot be read
+# as blocked, any other unreadable sheet as one rule (a sheet of another
+# origin can be loaded and unreadable; site rule (k) allows none), and the
+# adopted sheets; the computed position backs it up.
+REFLOW_STYLE_REFERENCE_PROOF = r"""
+(() => {
+  const a = document.activeElement;
+  let rules = 0, blocked = 0;
+  for (const sheet of document.styleSheets) {
+    try { rules += sheet.cssRules.length; } catch (e) {
+      let own = false;
+      try { own = new URL(sheet.href).origin === location.origin; } catch (e2) {}
+      if (own) blocked += 1; else rules += 1;
+    }
+  }
+  return {sheets: document.styleSheets.length, rules, blocked,
+          adopted: document.adoptedStyleSheets.length,
+          hidden: !!(a && a.classList && a.classList.contains(%(exempt)s)),
+          position: a && a !== document.body ? getComputedStyle(a).position : null};
+})()
+"""
 # The pixel occlusion check's proof of the hiding (Replikanti/interviewscam#39,
 # ADR-0005 part 6 amendment): the computed styles DOMSnapshot.captureSnapshot
 # returns for every layout object, in this order. visibility proves that
@@ -15688,6 +15780,333 @@ def region_differences(seen, parsed):
     return out
 
 
+def style_observation(value):
+    """(chain, {scope: {property: value}}) of a REFLOW_STYLE_SCRIPT result,
+    or None when it has another shape: a chain of strings, and scopes as
+    [name, [[property, value], ...]] with string names, properties and
+    values and no property twice in a scope."""
+    if not isinstance(value, dict):
+        return None
+    chain, scopes = value.get("chain"), value.get("scopes")
+    if not isinstance(chain, list) or not all(isinstance(c, str) for c in chain) \
+            or not isinstance(scopes, list):
+        return None
+    table = {}
+    for item in scopes:
+        if not (isinstance(item, list) and len(item) == 2 and isinstance(item[0], str)
+                and isinstance(item[1], list)) or item[0] in table:
+            return None
+        props = {}
+        for pair in item[1]:
+            if not (isinstance(pair, list) and len(pair) == 2
+                    and all(isinstance(x, str) for x in pair)) or pair[0] in props:
+                return None
+            props[pair[0]] = pair[1]
+        table[item[0]] = props
+    return chain, table
+
+
+def skip_link_style_unescape(text, where):
+    """A field of tools/skip-link-style.tsv with its escapes resolved: \\\\,
+    \\t and \\n only, any other backslash is a UsageError naming where."""
+    out, i = [], 0
+    while i < len(text):
+        c = text[i]
+        if c != "\\":
+            out.append(c)
+            i += 1
+            continue
+        nxt = text[i + 1:i + 2]
+        if nxt not in ("\\", "t", "n"):
+            raise UsageError(f"{where}: the escape {show(c + nxt)} is not one of \\\\, \\t "
+                             "and \\n")
+        out.append({"\\": "\\", "t": "\t", "n": "\n"}[nxt])
+        i += 2
+    return "".join(out)
+
+
+def parse_skip_link_style(text, rel="tools/skip-link-style.tsv"):
+    """(product, {scope: {property: value}}) of the pinned skip-link style
+    (Replikanti/interviewscam#63). The text has no BOM, CR or NUL, ends in
+    one LF and holds no blank line; line 1 is exactly `# chrome: <product>`
+    and no other line starts with #; every other line is
+    scope<TAB>property<TAB>value, the scope one of SKIP_LINK_STYLE_SCOPES,
+    rows sorted by scope order and then by property in code-point order, no
+    pair twice, no custom property and no pair of SKIP_LINK_STYLE_ALLOWED;
+    every scope has a row. Anything else is a UsageError naming the line."""
+    if text.startswith("﻿"):
+        raise UsageError(f"{rel}:1: starts with a byte order mark")
+    for char, name in (("\r", "a carriage return"), ("\0", "a NUL")):
+        if char in text:
+            raise UsageError(f"{rel}:{text[:text.index(char)].count(chr(10)) + 1}: holds "
+                             f"{name}; the table is LF-only text")
+    if not text.endswith("\n"):
+        raise UsageError(f"{rel}:{text.count(chr(10)) + 1}: the last line does not end in "
+                         "LF")
+    lines = text[:-1].split("\n")
+    header = lines[0]
+    if not header.startswith("# chrome: ") or not header[len("# chrome: "):].strip():
+        raise UsageError(f"{rel}:1: the first line is not `# chrome: <Browser.getVersion "
+                         "product>`")
+    product = header[len("# chrome: "):]
+    order = {scope: n for n, scope in enumerate(SKIP_LINK_STYLE_SCOPES)}
+    table, previous = {scope: {} for scope in SKIP_LINK_STYLE_SCOPES}, None
+    for n, line in enumerate(lines[1:], 2):
+        where = f"{rel}:{n}"
+        if not line:
+            raise UsageError(f"{where}: a blank line")
+        if line.startswith("#"):
+            raise UsageError(f"{where}: a second header or comment line; only line 1 is one")
+        fields = line.split("\t")
+        if len(fields) != 3:
+            raise UsageError(f"{where}: {len(fields)} tab-separated fields, not 3 (scope, "
+                             "property, value)")
+        scope, prop, value = (skip_link_style_unescape(f, where) for f in fields)
+        if scope not in order:
+            raise UsageError(f"{where}: the scope {show(scope)} is not one of "
+                             f"{', '.join(SKIP_LINK_STYLE_SCOPES)}")
+        if not prop or prop.startswith("--"):
+            raise UsageError(f"{where}: {show(prop)} is empty or a custom property; custom "
+                             "properties are never pinned, their effect is")
+        if f"{scope}/{prop}" in SKIP_LINK_STYLE_ALLOWED:
+            raise UsageError(f"{where}: {scope} {prop} is in SKIP_LINK_STYLE_ALLOWED; an "
+                             "allowlisted pair is compared by its rule, never pinned")
+        if prop in table[scope]:
+            raise UsageError(f"{where}: {scope} {prop} is listed twice")
+        key = (order[scope], prop)
+        if previous is not None and key < previous:
+            raise UsageError(f"{where}: {scope} {prop} is out of order; rows are sorted by "
+                             "scope (SKIP_LINK_STYLE_SCOPES) and then by property in "
+                             "code-point order")
+        previous = key
+        table[scope][prop] = value
+    for scope in SKIP_LINK_STYLE_SCOPES:
+        if not table[scope]:
+            raise UsageError(f"{rel}:{len(lines)}: the scope {scope} has no row")
+    return product, table
+
+
+def render_skip_link_style(product, table):
+    """The text of tools/skip-link-style.tsv for product and table, the
+    form parse_skip_link_style reads back: allowlisted pairs and custom
+    properties left out."""
+    out = [f"# chrome: {product}"]
+    for scope in SKIP_LINK_STYLE_SCOPES:
+        for prop in sorted(table.get(scope, {})):
+            if prop.startswith("--") or f"{scope}/{prop}" in SKIP_LINK_STYLE_ALLOWED:
+                continue
+            out.append("\t".join(skip_link_style_escape(x)
+                                 for x in (scope, prop, table[scope][prop])))
+    return "\n".join(out) + "\n"
+
+
+def load_skip_link_style(path, sha256):
+    """parse_skip_link_style of path, which must be a regular file (no
+    symlink) whose bytes hash to sha256 and decode as UTF-8; anything else
+    is a UsageError (exit 2)."""
+    rel = "tools/skip-link-style.tsv"
+    if path.is_symlink() or not path.is_file():
+        raise UsageError(f"the pinned skip-link style {rel} is missing, a symlink or not a "
+                         "regular file")
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise UsageError(f"cannot read the pinned skip-link style {rel}: {exc}") from None
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != sha256:
+        raise UsageError(f"the pinned skip-link style {rel} has the SHA-256 {digest}, not the "
+                         f"pinned {sha256} (SKIP_LINK_STYLE_SHA256); a re-pin changes the "
+                         "rows and the digest together")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise UsageError(f"the pinned skip-link style {rel} is not UTF-8: {exc}") from None
+    return parse_skip_link_style(text, rel)
+
+
+def skip_link_style_scopes(value):
+    """{scope: {property: value}} of a REFLOW_STYLE_SCRIPT result whose
+    chain is SKIP_LINK_STYLE_CHAIN and whose scopes are exactly
+    SKIP_LINK_STYLE_SCOPES in order; (chain, None) for another chain; None
+    for another shape."""
+    seen = style_observation(value)
+    if seen is None:
+        return None
+    chain, table = seen
+    if tuple(chain) != SKIP_LINK_STYLE_CHAIN:
+        return chain, None
+    if tuple(table) != SKIP_LINK_STYLE_SCOPES:
+        return None
+    return chain, table
+
+
+def style_origin_tolerance(size):
+    """The origin rule's tolerance for an axis of a box size px long: the
+    larger of SKIP_LINK_STYLE_TOLERANCE and one unit of the last of the
+    SKIP_LINK_STYLE_DIGITS significant digits of size."""
+    if size <= 0:
+        return SKIP_LINK_STYLE_TOLERANCE
+    unit = 10.0 ** (math.floor(math.log10(size)) - SKIP_LINK_STYLE_DIGITS + 1)
+    return max(SKIP_LINK_STYLE_TOLERANCE, unit)
+
+
+def style_rule_problem(rule, value, scope_style, width):
+    """None when value meets the allowlist rule, else why not. length: a
+    non-negative px length; viewport: width within the tolerance; origin:
+    the centre of the scope's resolved width and height within the
+    tolerance, `Xpx Ypx`, for transform-origin also `Xpx Ypx 0px`."""
+    tol = SKIP_LINK_STYLE_TOLERANCE
+
+    def px(text):
+        match = SKIP_LINK_STYLE_LENGTH.fullmatch(text or "")
+        return float(text[:-2]) if match else None
+
+    if rule == "length":
+        return None if px(value) is not None else "not a non-negative length in px"
+    if rule == "viewport":
+        got = px(value)
+        if got is not None and abs(got - width) <= tol:
+            return None
+        return f"not the {width} CSS px of the cell"
+    box_w, box_h = px(scope_style.get("width")), px(scope_style.get("height"))
+    parts = value.split(" ")
+    if box_w is not None and box_h is not None and len(parts) in (2, 3) \
+            and (len(parts) == 2 or parts[2] == "0px") \
+            and (x := px(parts[0])) is not None and (y := px(parts[1])) is not None \
+            and abs(x - box_w / 2) <= style_origin_tolerance(box_w) \
+            and abs(y - box_h / 2) <= style_origin_tolerance(box_h):
+        return None
+    return (f"not the centre of its {show(scope_style.get('width'))} x "
+            f"{show(scope_style.get('height'))} box")
+
+
+def style_problems(observed, reference, table, product, chrome, width):
+    """The findings of the pinned computed style (Replikanti/interviewscam#63,
+    ADR-0003 part 6 amendment), in order, at most REFLOW_NAMED named plus
+    one "N more". observed is the REFLOW_STYLE_SCRIPT result of the cell,
+    reference the {scope: {property: value}} of the tree's style reference
+    load or None, table the pinned {scope: {property: value}} of product,
+    chrome this run's Browser.getVersion product, width the cell's width.
+    B1: a property of a table row must equal it. An allowlisted pair must
+    meet its rule. B2: any other property that is not custom must equal the
+    reference's same scope, or for ::first-line and ::first-letter the
+    element's own value. A table or allowlisted pair this Chrome does not
+    report fails, and so does a chain other than SKIP_LINK_STYLE_CHAIN."""
+    seen = skip_link_style_scopes(observed)
+    if seen is None:
+        return [f"could not read the computed style (the style script returned "
+                f"{show(observed, 120)})"]
+    chain, scopes = seen
+    if scopes is None:
+        return [f"the focused element and its ancestors are {show(' > '.join(chain), 160)}, "
+                f"not {' > '.join(SKIP_LINK_STYLE_CHAIN)}, so its computed style cannot be "
+                "compared with the pinned scopes"]
+    element = SKIP_LINK_STYLE_SCOPES[0]
+    other = f" (the table was pinned on {show(product)}, this is {show(chrome)})" \
+        if product != chrome else ""
+    out = []
+    for scope in SKIP_LINK_STYLE_SCOPES:
+        live, pinned = scopes[scope], table.get(scope, {})
+        allowed = {key.split("/", 1)[1]: rule for key, rule in SKIP_LINK_STYLE_ALLOWED.items()
+                   if key.split("/", 1)[0] == scope}
+        for prop in sorted(set(live) | set(pinned) | set(allowed)):
+            if prop.startswith("--"):
+                continue
+            if prop not in live:
+                out.append(f"the pinned style names {scope} {prop}, which this Chrome does "
+                           f"not report{other}")
+                continue
+            value = live[prop]
+            if prop in allowed:
+                why = style_rule_problem(allowed[prop], value, live, width)
+                if why:
+                    out.append(f"{scope} {prop} is {show(value)}, {why} (rule "
+                               f"{allowed[prop]})")
+            elif prop in pinned:
+                if value != pinned[prop]:
+                    text = f"{scope} {prop} is {show(value)}, pinned {show(pinned[prop])}"
+                    if reference is not None and reference.get(scope, {}).get(prop) == value:
+                        text += (", which is Chrome's own value for this markup with the "
+                                 "author styles blocked: this Chrome or the markup changed, "
+                                 "not the stylesheet")
+                    out.append(text + other)
+            elif scope in SKIP_LINK_STYLE_SCOPES[1:3]:
+                if value != scopes[element].get(prop):
+                    out.append(f"{scope} {prop} is {show(value)}, a property the pinned style "
+                               f"does not name, and not the element's own value "
+                               f"{show(scopes[element].get(prop))}")
+            elif reference is None:
+                out.append(f"{scope} {prop} is {show(value)}, a property the pinned style does "
+                           "not name, and the tree has no style reference load to compare it "
+                           "with")
+            elif value != reference.get(scope, {}).get(prop):
+                out.append(f"{scope} {prop} is {show(value)}, a property the pinned style does "
+                           f"not name, and not Chrome's own value "
+                           f"{show(reference.get(scope, {}).get(prop))} for this markup")
+    if len(out) > REFLOW_NAMED:
+        out = out[:REFLOW_NAMED] + [f"{len(out) - REFLOW_NAMED} more"]
+    return out
+
+
+def style_summary(compared, pinned, rows, no_baseline):
+    """The summary segment of the pinned skip-link style."""
+    if no_baseline:
+        return "skip-link style: not run (--no-style-baseline)"
+    return (f"skip-link style: {pinned} of {compared} cells as pinned ({rows} rows in "
+            f"{len(SKIP_LINK_STYLE_SCOPES)} scopes, {len(SKIP_LINK_STYLE_ALLOWED)} allowed)")
+
+
+def style_reference_problem(proof):
+    """None when the style reference load's proof holds (D3): no rule in
+    document.styleSheets and no adopted sheet, the focused element carries
+    the class, and its
+    computed position is static; else the text of the failure."""
+    if not isinstance(proof, dict):
+        return "returned no proof"
+    if proof.get("rules") != 0 or proof.get("adopted") != 0:
+        return (f"still applied a stylesheet: document.styleSheets holds "
+                f"{show(proof.get('rules'))} rule(s) in {show(proof.get('sheets'))} sheet(s) "
+                f"and {show(proof.get('adopted'))} adopted sheet(s), not 0")
+    if proof.get("hidden") is not True:
+        return f"focused no element of class {VISUALLY_HIDDEN} on one Tab press"
+    if proof.get("position") != "static":
+        return (f"still applied a stylesheet: the focused skip link's computed position is "
+                f"{show(proof.get('position'))}, not static")
+    return None
+
+
+def reflow_style_reference(tools, session, load, url, where):
+    """The style reference load (D3): the page loaded with every stylesheet
+    and script blocked (REFLOW_STYLE_REFERENCE_BLOCKED), one Tab press, the
+    proof, and the REFLOW_STYLE_SCRIPT result; the blocking then reset as
+    case (6)'s S1 resets it. A failed load or proof raises UsageError."""
+    tools.send("Network.enable", session=session)
+    tools.send("Network.setBlockedURLs", {"urls": list(REFLOW_STYLE_REFERENCE_BLOCKED)},
+               session=session)
+    error = load(url)
+    if error:
+        raise UsageError(f"reflow: the style reference load of {where} did not load: {error}")
+    for kind in ("keyDown", "keyUp"):
+        tools.send("Input.dispatchKeyEvent", dict(REFLOW_TAB_KEY, type=kind), session=session)
+    problem = style_reference_problem(reflow_value(
+        tools, session, REFLOW_STYLE_REFERENCE_PROOF % {"exempt": json.dumps(VISUALLY_HIDDEN)},
+        where))
+    if problem:
+        raise UsageError(f"reflow: the style reference load of {where} {problem}; the "
+                         "baseline's added properties cannot be compared with Chrome's own "
+                         "values")
+    observed = reflow_value(tools, session, REFLOW_STYLE_SCRIPT, where)
+    tools.send("Network.setBlockedURLs", {"urls": []}, session=session)
+    tools.send("Network.disable", session=session)
+    return observed
+
+
+def skip_link_style_escape(text):
+    """A value as tools/skip-link-style.tsv writes it: backslash, tab and
+    newline escaped as \\\\, \\t and \\n."""
+    return text.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+
+
 def static_head(text):
     """[(tag, attributes)] of the element children of the one <head> right
     inside the one <html> of the page as parse_render_page reads it, or
@@ -15704,8 +16123,6 @@ def static_head(text):
 REFLOW_FOCUS_SCRIPT = r"""
 (() => {
   const exempt = %(exempt)s, noGenerated = %(generated)s;
-  const placement = %(placement)s, ancestorPlacement = %(ancestor)s;
-  const placementPseudos = %(pseudos)s, minLineHeight = %(minline)s;
   const label = (el) => {
     let s = el.tagName.toLowerCase();
     if (el.id) s += "#" + el.id;
@@ -15727,20 +16144,7 @@ REFLOW_FOCUS_SCRIPT = r"""
           generated: ["::before", "::after"]
             .map((p) => [p, getComputedStyle(a, p).content])
             .filter(([, c]) => !noGenerated.includes(c)),
-          textSecurity: cs.webkitTextSecurity,
-          placement: (() => {
-            const out = [];
-            const read = (e, pseudo, props) => props.forEach((p) => {
-              const cs = getComputedStyle(e, pseudo), v = cs.getPropertyValue(p);
-              const ok = placement[p].includes(v) || (p === "line-height"
-                && parseFloat(v) >= minLineHeight * parseFloat(cs.fontSize));
-              if (!ok) out.push([label(e) + (pseudo || ""), p, v]);
-            });
-            read(a, null, Object.keys(placement));
-            for (const pseudo of placementPseudos) read(a, pseudo, Object.keys(placement));
-            for (let e = a.parentElement; e; e = e.parentElement) read(e, null, ancestorPlacement);
-            return out;
-          })()};
+          textSecurity: cs.webkitTextSecurity};
 })()
 """
 # Case (7), the paint (M3 PR 10 fix round 1, PR #33 review, finding 1): a
@@ -18423,6 +18827,14 @@ def cmd_reflow(args):
     # Case (7)'s cells (Replikanti/interviewscam#61): the cells run, the
     # base cell included, and the legible ones.
     n_cells = n_cells_legible = 0
+    # The pinned skip-link style (Replikanti/interviewscam#63): the cells
+    # compared and those as pinned; the table loads before Chrome starts, so
+    # a refused table exits 2 at once.
+    n_style = n_style_pinned = 0
+    style_dumped = False
+    style_reference = None
+    style_product, style_table = (None, None) if args.no_style_baseline else \
+        load_skip_link_style(SKIP_LINK_STYLE_PATH, SKIP_LINK_STYLE_SHA256)
     text_counts = []
     search_summary = "; search: not run (--no-search)"
     try:
@@ -18475,6 +18887,7 @@ def cmd_reflow(args):
 
         print(f"reflow: {version.get('product', '?')}, viewport {REFLOW_WIDTH}x"
               f"{REFLOW_HEIGHT} CSS px, mobile", flush=True)
+        chrome_product = version.get("product")
         target = tools.send("Target.createTarget", {"url": "about:blank"})["targetId"]
         session = tools.send("Target.attachToTarget",
                              {"targetId": target, "flatten": True})["sessionId"]
@@ -18587,15 +19000,19 @@ def cmd_reflow(args):
                 return shots[0]
             return None
 
-        def reveal_legibility(where, focus, box, shown):
+        def reveal_legibility(where, focus, box, shown, width, style):
             """Case (7), the legibility (Replikanti/interviewscam#34): no
             generated content and no text security, so the ink is the
-            label's own characters; then the box captured with the glyph
-            fill transparent and restored (REFLOW_INK_PROBE): the scroll
-            holds, the restored image equals the one as shown, and at least
-            REFLOW_TEXT_MIN_PIXELS text pixels reach REFLOW_TEXT_CONTRAST
-            (text_pixels). The counts, or None when no capture was made or
-            they could not be measured."""
+            label's own characters; unless --no-style-baseline, the
+            computed style as pinned (style_problems on style, the
+            REFLOW_STYLE_SCRIPT result read right after the Tab press, in a
+            cell width CSS px wide; Replikanti/interviewscam#63); then the
+            box captured with the glyph fill transparent and restored
+            (REFLOW_INK_PROBE): the scroll holds, the restored image equals
+            the one as shown, and at least REFLOW_TEXT_MIN_PIXELS text
+            pixels reach REFLOW_TEXT_CONTRAST (text_pixels). The counts, or
+            None when no capture was made or they could not be measured."""
+            nonlocal n_style, n_style_pinned, style_dumped
             label = show(focus["label"], 80)
             generated = focus.get("generated")
             if generated is None or generated:
@@ -18609,19 +19026,26 @@ def cmd_reflow(args):
                              f"{show(focus.get('textSecurity'))}: its label is drawn as "
                              "substitute symbols, not its characters")
                 return None
-            placed = focus.get("placement")
-            if placed is None or placed:
-                findings.add(where, f"(7) the focused {label} is not drawn in reading order: "
-                             f"{show(placed, 200)} (element, property, computed value; each "
-                             "must be " + ", ".join(f"{p} {' or '.join(v)}" for p, v in
-                                                    REFLOW_PLACEMENT_STYLES.items())
-                             + f" (line-height also at least {REFLOW_MIN_LINE_HEIGHT:g} x the "
-                             "font size)"
-                             + ", on the element, its ::first-line and ::first-letter, and "
-                             "the first four on every ancestor too); the legibility count "
-                             "reads pixels, not their order, so a mirrored, rotated, reordered "
-                             "or overlapped label would count as legible")
-                return None
+            if not args.no_style_baseline:
+                # The pinned computed style (Replikanti/interviewscam#63,
+                # D4): a finding ends the case here, so no ink probe runs
+                # and the cell never counts as legible.
+                n_style += 1
+                problems = style_problems(style, style_reference, style_table, style_product,
+                                          chrome_product, width)
+                for problem in problems:
+                    findings.add(where, f"(7) the focused {label} is not styled as pinned: "
+                                 f"{problem}")
+                if problems:
+                    seen = skip_link_style_scopes(style)
+                    if not style_dumped and seen is not None and seen[1] is not None:
+                        style_dumped = True
+                        dump = render_skip_link_style(chrome_product, seen[1])
+                        print(f"reflow: the observed skip-link style ({dump.count(chr(10)) - 1} "
+                              "rows), to re-pin tools/skip-link-style.tsv after review:")
+                        print(dump, end="", flush=True)
+                    return None
+                n_style_pinned += 1
             shots, scrolls = reveal_captures(focus, REFLOW_INK_PROBE, shown=False)
             counts = None
             if any(xy != (focus["x"], focus["y"]) for xy in scrolls):
@@ -18656,6 +19080,10 @@ def cmd_reflow(args):
                 tools.send("Input.dispatchKeyEvent", dict(REFLOW_TAB_KEY, type=kind),
                            session=session)
             focus = reflow_value(tools, session, focus_script, where)
+            # The pinned computed style (Replikanti/interviewscam#63), read
+            # before any probe sets an inline style.
+            style = None if args.no_style_baseline else reflow_value(
+                tools, session, REFLOW_STYLE_SCRIPT, where)
             box = (f"{focus.get('width', 0):.1f} x {focus.get('height', 0):.1f} CSS px at "
                    f"x {focus.get('left', 0):.1f} to {focus.get('right', 0):.1f}, y "
                    f"{focus.get('top', 0):.1f} to {focus.get('bottom', 0):.1f}")
@@ -18676,16 +19104,26 @@ def cmd_reflow(args):
                              f"{box}, outside the {width} x {REFLOW_HEIGHT} "
                              "viewport; the revealed skip link must be on screen")
             elif (shown := reveal_paint(where, focus, box)) is not None:
-                return True, reveal_legibility(where, focus, box, shown)
+                return True, reveal_legibility(where, focus, box, shown, width, style)
             return True, None
 
         focus_script = REFLOW_FOCUS_SCRIPT % {
             "exempt": json.dumps(VISUALLY_HIDDEN),
-            "generated": json.dumps(sorted(REFLOW_NO_GENERATED)),
-            "placement": json.dumps(REFLOW_PLACEMENT_STYLES),
-            "ancestor": json.dumps(list(REFLOW_ANCESTOR_PLACEMENT)),
-            "pseudos": json.dumps(list(REFLOW_PLACEMENT_PSEUDOS)),
-            "minline": json.dumps(REFLOW_MIN_LINE_HEIGHT)}
+            "generated": json.dumps(sorted(REFLOW_NO_GENERATED))}
+        # The style reference load (Replikanti/interviewscam#63, D3): once
+        # per tree, on the first page in page order whose file holds an
+        # element of the class, with the author stylesheets and scripts
+        # blocked; B2 compares a property the table does not name with it.
+        if not args.no_style_baseline:
+            for rel, path in pages:
+                elements = parse_page((public / rel).read_text(encoding="utf-8",
+                                                               errors="replace")).elements
+                if any(VISUALLY_HIDDEN in re.split(r"[\t\n\f\r ]+", attrs.get("class") or "")
+                       for _, attrs in elements):
+                    seen = skip_link_style_scopes(reflow_style_reference(
+                        tools, session, load, origin + path, f"public/{rel}"))
+                    style_reference = seen[1] if seen is not None else None
+                    break
         for rel, path in pages:
             where = f"public/{rel}"
             elements = parse_page((public / rel).read_text(encoding="utf-8",
@@ -18940,6 +19378,10 @@ def cmd_reflow(args):
                            + legibility_summary(n_reveals, n_legible, text_counts)
                            + "; " + (REFLOW_CELLS_NOT_RUN if args.no_reveal_cells else
                                      reveal_cells_summary(n_cells, n_cells_legible))
+                           + "; " + style_summary(
+                               n_style, n_style_pinned,
+                               sum(map(len, style_table.values())) if style_table else 0,
+                               args.no_style_baseline)
                            + f"; heads as parsed: {n_heads}; "
                            f"pinned regions as parsed: {n_regions}; documents as parsed "
                            f"(scripting off): {n_documents}; regions hit-tested and painting: "
@@ -21106,6 +21548,30 @@ def unicode_pins():
     ]
 
 
+def guard_skip_link_style_pin(root, findings):
+    """The pinned skip-link style (Replikanti/interviewscam#63): under a root
+    that holds tools/sitecheck.py or tools/skip-link-style.tsv, the table
+    must be a regular file that load_skip_link_style accepts with the pin
+    of this script (SKIP_LINK_STYLE_SHA256, the line form), so a tampered,
+    dropped or linked table fails the guard on every run, locally too,
+    although only CI's reflow reads it. A guard fixture root without either
+    leaves it alone."""
+    table = root / "tools" / SKIP_LINK_STYLE_PATH.name
+    if not (root / "tools" / "sitecheck.py").is_file() and not table.exists() \
+            and not table.is_symlink():
+        return
+    rel = f"tools/{SKIP_LINK_STYLE_PATH.name}"
+    if table.is_symlink() or not table.is_file():
+        findings.add(rel, "missing or not a regular file; case (7) compares the skip link's "
+                     "computed style with this table, pinned in tools/sitecheck.py "
+                     "(SKIP_LINK_STYLE_SHA256)")
+        return
+    try:
+        load_skip_link_style(table, SKIP_LINK_STYLE_SHA256)
+    except UsageError as exc:
+        findings.add(rel, str(exc))
+
+
 def guard_confusables_pin(root, findings):
     """The Unicode data pin (Replikanti/interviewscam#28): under a root that
     holds tools/sitecheck.py or tools/unicode/, every data file of
@@ -21671,6 +22137,7 @@ def cmd_guard(args):
     guard_stylesheet_pins(root, findings)
     guard_worker_pins(root, findings)
     guard_confusables_pin(root, findings)
+    guard_skip_link_style_pin(root, findings)
     guard_records_templates(root, findings)
     guard_preview_pins(root, files, findings)
     n_workflows = sum(f.startswith(".github/workflows/") for f in files)
@@ -22635,6 +23102,10 @@ def build_parser():
     # hand-made reflow fixtures and the reflow-search rows run case (7) at
     # REFLOW_WIDTH with the script running alone; check.sh never passes it.
     p.add_argument("--no-reveal-cells", action="store_true")
+    # Self-test only (the pinned skip-link style, Replikanti/interviewscam#63):
+    # the hand-made reflow fixtures (their own CSS) and the reflow-search and
+    # reflow-cells rows leave the comparison out; check.sh never passes it.
+    p.add_argument("--no-style-baseline", action="store_true")
     p.add_argument("public")
     p.set_defaults(func=cmd_reflow)
     p = sub.add_parser("guard", allow_abbrev=False)

@@ -31,7 +31,7 @@ FIXTURES="$SELFTEST_ROOT/tests/fixtures"
 # reflow-isolation/case-pin. A PR that adds or removes a case there updates
 # its count in the same diff; removing a module or a case is then an edit
 # under tools/ (a safety-net change), not a quiet deletion.
-REFLOW_ISOLATION_CASES=(test_cells:14 test_css_states:6 test_hover_rules:58 test_isolation:100 test_legibility:18 test_search_stop:4)
+REFLOW_ISOLATION_CASES=(test_cells:14 test_css_states:6 test_hover_rules:58 test_isolation:100 test_legibility:18 test_search_stop:4 test_style:54)
 # The version the synthetic Lighthouse reports in tests/fixtures/lighthouse/
 # carry. Fixed, not the pin, so a Lighthouse upgrade does not touch them.
 LIGHTHOUSE_FIXTURE_VERSION=13.6.0
@@ -855,7 +855,20 @@ PY
 # Optional [label] [mode] (Replikanti/interviewscam#61): the rows print as
 # <label>/<row> (default reflow-search); mode `cells` runs cmd_reflow with
 # case (7)'s cells on and case (8) off (the reflow-cells rows), any other
-# mode with the cells off and case (8) on, as the reflow-search rows.
+# mode with the cells off and case (8) on, as the reflow-search rows. The
+# pinned skip-link style (Replikanti/interviewscam#63) runs only in modes
+# `style` (cells off, case (8) off; the reflow-style rows) and `style-cells`
+# (cells on, case (8) off; the reflow-style-cells rows); every other mode
+# passes no_style_baseline True. The two style modes write the bytes of
+# the pinned built stylesheet, tests/fixtures/site/pass-built-pins/public/
+# css/site.min.<BUILT_STYLESHEET_SHA256["site"]>.css next to the
+# <sitecheck.py>'s tools/ directory, into the base's one built stylesheet
+# (its path unchanged), so the rows run on the shipped stylesheet, and fail
+# a row when those bytes have another SHA-256; and they take the file key
+# `skip-link-style.tsv`: the row's edits of it apply to a copy of the
+# tools/skip-link-style.tsv next to <sitecheck.py>, and the row's module
+# gets SKIP_LINK_STYLE_PATH set to the copy and SKIP_LINK_STYLE_SHA256 to
+# its digest (the loader keeps its checks).
 # -B: no tools/__pycache__.
 reflow_search_runner() {
   python3 -I -B - "$1" "$2" "$3" "$4" "$5" "${6:-reflow-search}" "${7:-}" <<'PY'
@@ -876,7 +889,14 @@ from pathlib import Path
 source, table, base, script, chrome, label, mode = sys.argv[1:8]
 # Mode cells (Replikanti/interviewscam#61): case (7)'s cells on and case (8)
 # off; any other mode the reverse, as the reflow-search rows always ran.
-no_reveal_cells, no_search = (False, True) if mode == "cells" else (True, False)
+# Modes style and style-cells (Replikanti/interviewscam#63): the pinned
+# skip-link style on and case (8) off, the cells off and on; every other
+# mode leaves the style out.
+no_reveal_cells, no_search, no_style_baseline = {
+    "cells": (False, True, True), "style": (True, True, False),
+    "style-cells": (False, True, False)}.get(mode, (True, False, True))
+style_mode = not no_style_baseline
+tools_dir = Path(source).resolve().parent
 REFLOW_SEARCH_JOBS = 4
 rows = [line.split("\t") for line in Path(table).read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")]
@@ -903,6 +923,33 @@ def run_row(row):
         shutil.copytree(base, root)
         built = sorted((root / "js").glob("search.min.*.js"))
         text, problem = real, None
+        if style_mode:
+            # The shipped stylesheet in place of the base's older build,
+            # and the row's copy of the pinned style table.
+            pin = sitecheck.BUILT_STYLESHEET_SHA256["site"]
+            pinned = (tools_dir.parent / "tests" / "fixtures" / "site" / "pass-built-pins"
+                      / "public" / "css" / f"site.min.{pin}.css")
+            sheets = sorted((root / "css").glob("site.min.*.css"))
+            data = pinned.read_bytes() if pinned.is_file() else b""
+            if hashlib.sha256(data).hexdigest() != pin:
+                problem = (f"the pinned built stylesheet {pinned.name} is missing or has "
+                           "another SHA-256 than BUILT_STYLESHEET_SHA256")
+            elif len(sheets) != 1:
+                problem = f"the base holds {len(sheets)} built stylesheets, it needs exactly one"
+            else:
+                sheets[0].write_bytes(data)
+            table_copy = Path(tmp) / "skip-link-style.tsv"
+            table_text = (tools_dir / "skip-link-style.tsv").read_text(encoding="utf-8")
+            for rel, find, replace in edits:
+                if rel == "skip-link-style.tsv" and find != "-":
+                    if table_text.count(find) != 1:
+                        problem = problem or (f"the find string occurs {table_text.count(find)} "
+                                              "times in tools/skip-link-style.tsv, the row needs "
+                                              "exactly one")
+                    table_text = table_text.replace(find, replace, 1)
+            table_copy.write_bytes(table_text.encode("utf-8"))
+            sitecheck.SKIP_LINK_STYLE_PATH = table_copy
+            sitecheck.SKIP_LINK_STYLE_SHA256 = hashlib.sha256(table_copy.read_bytes()).hexdigest()
         for rel, find, replace in edits:
             if rel == "search.js" and find != "-":
                 if text.count(find) != 1:
@@ -924,7 +971,7 @@ def run_row(row):
                 integrity = "sha384-" + base64.b64encode(hashlib.sha384(data).digest()).decode()
                 home.write_text(page.replace(tag.group(1), integrity, 1), encoding="utf-8")
         for rel, find, replace in edits:
-            if problem or rel == "search.js" or find == "-":
+            if problem or rel in ("search.js", "skip-link-style.tsv") or find == "-":
                 continue
             target = root / rel
             if not target.is_file():
@@ -947,7 +994,7 @@ def run_row(row):
             try:
                 rc = sitecheck.cmd_reflow(argparse.Namespace(
                     public=str(root), chrome=chrome, no_search=no_search,
-                    no_reveal_cells=no_reveal_cells,
+                    no_reveal_cells=no_reveal_cells, no_style_baseline=no_style_baseline,
                     launch_timeout=sitecheck.REFLOW_LAUNCH_TIMEOUT))
             except sitecheck.UsageError as exc:
                 buffer.write(f"{exc}\n")
@@ -1098,6 +1145,14 @@ import time
 from pathlib import Path
 
 REFLOW_LAUNCH_TIMEOUT = 1
+# The style modes of reflow_search_runner (Replikanti/interviewscam#63):
+# the pin of the built stylesheet, from pin.txt next to the stub, and the
+# table the runner replaces with its copy.
+_pin = Path(__file__).with_name("pin.txt")
+BUILT_STYLESHEET_SHA256 = {"site": _pin.read_text(encoding="utf-8").strip()
+                           if _pin.is_file() else ""}
+SKIP_LINK_STYLE_PATH = Path(__file__).with_name("skip-link-style.tsv")
+SKIP_LINK_STYLE_SHA256 = ""
 
 
 class UsageError(Exception):
@@ -1158,8 +1213,22 @@ def cmd_records(args):
 
 
 def cmd_reflow(args):
-    if (Path(args.public) / "outcome.txt").read_text(encoding="utf-8").strip() == "args":
-        print(f"FAIL: no_reveal_cells {args.no_reveal_cells}, no_search {args.no_search}")
+    word = (Path(args.public) / "outcome.txt").read_text(encoding="utf-8").strip()
+    if word == "args":
+        print(f"FAIL: no_reveal_cells {args.no_reveal_cells}, no_search {args.no_search}, "
+              f"no_style_baseline {args.no_style_baseline}")
+        return 1
+    if word == "style":
+        # What the style modes handed over: the SHA-256 of the base's one
+        # built stylesheet, and the table the module now names with
+        # whether its digest is the module's pin.
+        import hashlib
+        css = sorted((Path(args.public) / "css").glob("*.css"))
+        table = SKIP_LINK_STYLE_PATH.read_bytes()
+        print(f"FAIL: stylesheet {[hashlib.sha256(p.read_bytes()).hexdigest()[:12] for p in css]}"
+              f", table {table.decode()!r} pinned "
+              f"{hashlib.sha256(table).hexdigest() == SKIP_LINK_STYLE_SHA256}, copy "
+              f"{SKIP_LINK_STYLE_PATH != Path(__file__).with_name('skip-link-style.tsv')}")
         return 1
     return answer(args.public)
 
@@ -1317,7 +1386,8 @@ PY
       export -f reflow_search_runner
       # shellcheck disable=SC2016
       TMPDIR="$cr_tmp/tmp" cr_watchdog "${3:-$cr_watchdog_s}" "$cr_tmp/watch.log" bash -c 'reflow_search_runner "$@"' _ \
-        "$cr_tmp/stub.py" "$1" "$cr_tmp/reflow-base" "$cr_tmp/search.js" /nonexistent "${@:4}" 2>&1
+        "${cr_stub:-$cr_tmp/stub.py}" "$1" "${cr_base:-$cr_tmp/reflow-base}" "$cr_tmp/search.js" \
+        /nonexistent "${@:4}" 2>&1
       cr_rc=$?
       [[ $cr_rc -eq 124 ]] && : >"$cr_tmp/hung"
       exit "$cr_rc"
@@ -1392,18 +1462,74 @@ PY
   # the label names every row and the table line; mode cells hands
   # cmd_reflow no_reveal_cells False and no_search True, the default mode
   # the reverse (the stub's outcome `args` prints both as its finding).
-  printf 'r1\toutcome.txt\tpass\targs\tno_reveal_cells False, no_search True\n' >"$cr_tmp/cells.tsv"
-  printf 'r1\toutcome.txt\tpass\targs\tno_reveal_cells True, no_search False\n' >"$cr_tmp/search.tsv"
+  printf 'r1\toutcome.txt\tpass\targs\tno_reveal_cells False, no_search True, no_style_baseline True\n' >"$cr_tmp/cells.tsv"
+  printf 'r1\toutcome.txt\tpass\targs\tno_reveal_cells True, no_search False, no_style_baseline True\n' >"$cr_tmp/search.tsv"
   cr_got="$(cr_reflow "$cr_tmp/cells.tsv" -unset "" x-cells cells)"
-  cr_want="$(printf 'ok   x-cells/r1 (failed as expected: no_reveal_cells False, no_search True)\nok   x-cells/table (1 rows)')"
+  cr_want="$(printf 'ok   x-cells/r1 (failed as expected: no_reveal_cells False, no_search True, no_style_baseline True)\nok   x-cells/table (1 rows)')"
   cr_bad=""
   [[ "$cr_got" == "$cr_want" ]] || cr_bad=" output: $(tr '\n' '|' <<<"$cr_got")"
   cr_row reflow-label-and-cells-mode "$cr_bad"
   cr_got="$(cr_reflow "$cr_tmp/search.tsv" -unset)"
-  cr_want="$(printf 'ok   reflow-search/r1 (failed as expected: no_reveal_cells True, no_search False)\nok   reflow-search/table (1 rows)')"
+  cr_want="$(printf 'ok   reflow-search/r1 (failed as expected: no_reveal_cells True, no_search False, no_style_baseline True)\nok   reflow-search/table (1 rows)')"
   cr_bad=""
   [[ "$cr_got" == "$cr_want" ]] || cr_bad=" output: $(tr '\n' '|' <<<"$cr_got")"
   cr_row reflow-default-label-and-mode "$cr_bad"
+  # The style modes of Replikanti/interviewscam#63: mode style hands
+  # cmd_reflow no_reveal_cells True, no_search True and no_style_baseline
+  # False, mode style-cells the cells on; both write the pinned built
+  # stylesheet (a file under tests/fixtures/site/pass-built-pins next to the
+  # stub's tools/, named by the stub's BUILT_STYLESHEET_SHA256) over the
+  # base's one stylesheet, fail a row when its bytes have another digest,
+  # and apply the edits of the file key skip-link-style.tsv to a copy of
+  # the table next to the stub, which the module then names with its
+  # digest.
+  local cr_sroot="$cr_tmp/style-root" cr_spin
+  mkdir -p "$cr_sroot/tools" "$cr_sroot/tests/fixtures/site/pass-built-pins/public/css" \
+    "$cr_tmp/style-base/js" "$cr_tmp/style-base/css"
+  cp "$cr_tmp/stub.py" "$cr_tmp/real.txt" "$cr_sroot/tools/"
+  printf 'body{}\n' >"$cr_tmp/pinned.css"
+  cr_spin="$(sha256sum "$cr_tmp/pinned.css" | cut -c1-64)"
+  printf '%s\n' "$cr_spin" >"$cr_sroot/tools/pin.txt"
+  cp "$cr_tmp/pinned.css" "$cr_sroot/tests/fixtures/site/pass-built-pins/public/css/site.min.$cr_spin.css"
+  printf '# chrome: x\nrow\n' >"$cr_sroot/tools/skip-link-style.tsv"
+  printf 'style\n' >"$cr_tmp/style-base/outcome.txt"
+  printf 'old\n' >"$cr_tmp/style-base/css/site.min.0b.css"
+  cp "$cr_tmp/reflow-base/js/search.min.0a.js" "$cr_tmp/style-base/js/"
+  cp "$cr_tmp/reflow-base/index.html" "$cr_tmp/style-base/"
+  printf 'r1\toutcome.txt\tstyle\targs\tno_reveal_cells True, no_search True, no_style_baseline False\n' >"$cr_tmp/style-args.tsv"
+  printf 'r1\toutcome.txt\tstyle\targs\tno_reveal_cells False, no_search True, no_style_baseline False\n' >"$cr_tmp/style-cells-args.tsv"
+  cr_got="$(cr_stub="$cr_sroot/tools/stub.py" cr_base="$cr_tmp/style-base" cr_reflow "$cr_tmp/style-args.tsv" -unset "" x-style style)"
+  cr_want="$(printf 'ok   x-style/r1 (failed as expected: no_reveal_cells True, no_search True, no_style_baseline False)\nok   x-style/table (1 rows)')"
+  cr_bad=""
+  [[ "$cr_got" == "$cr_want" ]] || cr_bad=" mode style: $(tr '\n' '|' <<<"$cr_got")"
+  cr_got="$(cr_stub="$cr_sroot/tools/stub.py" cr_base="$cr_tmp/style-base" cr_reflow "$cr_tmp/style-cells-args.tsv" -unset "" x-style style-cells)"
+  cr_want="$(printf 'ok   x-style/r1 (failed as expected: no_reveal_cells False, no_search True, no_style_baseline False)\nok   x-style/table (1 rows)')"
+  [[ "$cr_got" == "$cr_want" ]] || cr_bad+=" mode style-cells: $(tr '\n' '|' <<<"$cr_got")"
+  cr_row reflow-style-modes "$cr_bad"
+  printf 'r1\toutcome.txt\t-\t-\tstylesheet ['"'"'%s'"'"'], table '"'"'# chrome: x\\nrow\\n'"'"' pinned True, copy True\n' "${cr_spin:0:12}" >"$cr_tmp/style-swap.tsv"
+  cr_got="$(cr_stub="$cr_sroot/tools/stub.py" cr_base="$cr_tmp/style-base" cr_reflow "$cr_tmp/style-swap.tsv" -unset "" x-style style)"
+  cr_bad=""
+  grep -q '^ok   x-style/r1 (failed as expected: ' <<<"$cr_got" \
+    || cr_bad=" output: $(tr '\n' '|' <<<"$cr_got")"
+  cr_row style-stylesheet-swap "$cr_bad"
+  printf 'r1\tskip-link-style.tsv\trow\tedited\ttable '"'"'# chrome: x\\nedited\\n'"'"' pinned True, copy True\n' >"$cr_tmp/style-key.tsv"
+  cr_got="$(cr_stub="$cr_sroot/tools/stub.py" cr_base="$cr_tmp/style-base" cr_reflow "$cr_tmp/style-key.tsv" -unset "" x-style style)"
+  cr_bad=""
+  grep -q '^ok   x-style/r1 (failed as expected: ' <<<"$cr_got" \
+    || cr_bad=" output: $(tr '\n' '|' <<<"$cr_got")"
+  [[ "$(cat "$cr_sroot/tools/skip-link-style.tsv")" == $'# chrome: x\nrow' ]] \
+    || cr_bad+=" the real table changed;"
+  cr_row style-table-key "$cr_bad"
+  # A pin whose file holds other bytes: the copy is refused, not written.
+  cr_spin="$(printf 'x' | sha256sum | cut -c1-64)"
+  printf '%s\n' "$cr_spin" >"$cr_sroot/tools/pin.txt"
+  cp "$cr_tmp/pinned.css" "$cr_sroot/tests/fixtures/site/pass-built-pins/public/css/site.min.$cr_spin.css"
+  cr_got="$(cr_stub="$cr_sroot/tools/stub.py" cr_base="$cr_tmp/style-base" cr_reflow "$cr_tmp/style-swap.tsv" -unset "" x-style style)"
+  cr_bad=""
+  grep -qF 'FAIL x-style/r1: the pinned built stylesheet site.min.' <<<"$cr_got" \
+    && grep -qF 'is missing or has another SHA-256 than BUILT_STYLESHEET_SHA256' <<<"$cr_got" \
+    || cr_bad=" output: $(tr '\n' '|' <<<"$cr_got")"
+  cr_row style-stylesheet-digest "$cr_bad"
   # The EXIT2 expect (fix round 1): a usage error with the text is ok, the
   # same error with another text, or exit 1 with the text, is a FAIL.
   printf 'r1\toutcome.txt\tpass\tusage\tEXIT2 the cell did not apply\nr2\toutcome.txt\tpass\tusage\tEXIT2 another text\nr3\toutcome.txt\tpass\tfail\tEXIT2 stub finding\n' >"$cr_tmp/exit2.tsv"
@@ -7808,6 +7934,7 @@ selftest_main() {
 # selftest_main, whose counters and $out it updates.
 selftest_blocks() {
   local dir check name kind rc expect leak_fixtures feed_mode search_mode pins_mode inputs_root
+  local -a reflow_words
   for dir in "$FIXTURES"/*/*/; do
     dir="${dir%/}"
     # Parameter expansion, not basename and dirname: two forks per case
@@ -7846,12 +7973,15 @@ selftest_blocks() {
           continue
         fi
         reflow_run=$((reflow_run + 1))
-        search_mode=no-search
-        [[ -f "$dir/search.txt" ]] && search_mode=""
+        reflow_words=(no-search)
+        [[ -f "$dir/search.txt" ]] && reflow_words=()
         # no-cells: case (7) at 320 CSS px with the script running alone;
         # the cells run on both trees and in the reflow-cells rows
-        # (Replikanti/interviewscam#61).
-        reflow_check "$dir" "$search_mode" no-cells >"$out" 2>&1
+        # (Replikanti/interviewscam#61). no-style: the hand-made trees
+        # bring their own CSS, so case (7)'s pinned computed style runs on
+        # both trees and in the reflow-style rows
+        # (Replikanti/interviewscam#63).
+        reflow_check "$dir" "${reflow_words[@]}" no-cells no-style >"$out" 2>&1
         rc=$?
         ;;
       tokens)
@@ -8227,6 +8357,31 @@ selftest_blocks() {
       n_failed=$((n_failed + 1))
     else
       echo "ok   wiring/reflow-reveal-cells (step_reflow 2 calls, step_records_reflow 1, none with --no-reveal-cells)"
+      n_passed=$((n_passed + 1))
+    fi
+
+    # Wiring: every reflow step runs case (7)'s pinned computed style
+    # (Replikanti/interviewscam#63): step_reflow (both trees) and
+    # step_records_reflow (the records' production tree), each against a
+    # stub sitecheck and a stub Chrome on PATH, call sitecheck reflow 2 and
+    # 1 times, never with --no-style-baseline.
+    local style_args style_records_args
+    reflow_bin="$(mktemp -d)"
+    printf '#!/bin/sh\nexit 0\n' >"$reflow_bin/google-chrome"
+    chmod +x "$reflow_bin/google-chrome"
+    style_args="$(sitecheck() { printf '%s\n' "$@"; }; PATH="$reflow_bin:$PATH" step_reflow)"
+    style_records_args="$(sitecheck() { printf '%s\n' "$@"; }; PATH="$reflow_bin:$PATH" step_records_reflow)"
+    rm -rf "$reflow_bin"
+    if [[ "$(grep -c '^reflow$' <<<"$style_args")" != 2 \
+        || "$(grep -c '^reflow$' <<<"$style_records_args")" != 1 ]] \
+        || grep -qx -- '--no-style-baseline' <<<"$style_args" \
+        || grep -qx -- '--no-style-baseline' <<<"$style_records_args"; then
+      echo "FAIL wiring/reflow-style-baseline: step_reflow or step_records_reflow in" \
+        "tools/check.sh does not run sitecheck reflow with case (7)'s pinned style (2 and 1" \
+        "calls, none with --no-style-baseline)"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   wiring/reflow-style-baseline (step_reflow 2 calls, step_records_reflow 1, none with --no-style-baseline)"
       n_passed=$((n_passed + 1))
     fi
 
@@ -10108,8 +10263,8 @@ STUB
         default-budget) budget_args=() ;;
         *) budget_args=(--launch-timeout 1) ;;
       esac
-      sitecheck reflow --chrome "$stub_dir/chrome" --no-search --no-reveal-cells "${budget_args[@]}" \
-        "$FIXTURES/reflow/pass-fluid" >"$out" 2>&1
+      sitecheck reflow --chrome "$stub_dir/chrome" --no-search --no-reveal-cells \
+        --no-style-baseline "${budget_args[@]}" "$FIXTURES/reflow/pass-fluid" >"$out" 2>&1
       rc=$?
       launches=0
       [[ -f "$stub_dir/launches" ]] && launches="$(wc -l <"$stub_dir/launches")"
@@ -10899,6 +11054,43 @@ PY
     fi
   fi
 
+  # reflow-style/<row> and reflow-style-cells/<row> (Replikanti/
+  # interviewscam#63, CI only): case (7)'s pinned computed style, row by
+  # row from tests/fixtures/reflow/style-cases.tsv (mode style: the base
+  # cell only) and style-cells-cases.tsv (mode style-cells: every cell) on a
+  # copy of reflow/pass-search with the pinned built stylesheet
+  # (reflow_search_runner), counted with the reflow fixtures.
+  local style_label style_table style_mode style_rows style_chrome
+  for style_label in reflow-style reflow-style-cells; do
+    selftest_wants "$style_label" || continue
+    style_mode="${style_label#reflow-}"
+    style_table="$FIXTURES/reflow/${style_mode}-cases.tsv"
+    style_rows="$(grep -cv '^#\|^$' "$style_table")"
+    reflow_total=$((reflow_total + style_rows))
+    if in_github_actions; then
+      if style_chrome="$(command -v google-chrome || command -v google-chrome-stable)"; then
+        reflow_search_runner "$SELFTEST_ROOT/tools/sitecheck.py" "$style_table" \
+          "$FIXTURES/reflow/pass-search" "$SELFTEST_ROOT/assets/js/search.js" "$style_chrome" \
+          "$style_label" "$style_mode" >"$out" 2>&1
+        sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+        n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+        n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+        reflow_run=$((reflow_run + $(grep "^\\(ok   \\|FAIL \\)$style_label/" "$out" \
+          | grep -cv "^\\(ok   \\|FAIL \\)$style_label/table")))
+        if ! grep -qE "^(ok   |FAIL )$style_label/table" "$out"; then
+          echo "FAIL $style_label: the runner did not finish; output:"
+          sed 's/^/     | /' "$out"
+          n_failed=$((n_failed + 1))
+        fi
+      else
+        echo "FAIL $style_label: Google Chrome not found; in CI case (7)'s pinned style must run"
+        n_failed=$((n_failed + 1))
+      fi
+    else
+      echo "NOT RUN $style_label/* ($style_rows rows, CI only)"
+    fi
+  done
+
   if selftest_wants mutate; then
     # mutate/<test> (Replikanti/interviewscam#40, ADR-0008): the unit tests
     # of tools/mutate.py, the sweep runner, on throwaway repositories with a
@@ -10992,10 +11184,11 @@ PY
   fi
 
   # The closing invariants hold for the suites that ran: the html pair when
-  # html is selected, the reflow pair when reflow, reflow-search or
-  # reflow-cells is.
+  # html is selected, the reflow pair when reflow, reflow-search,
+  # reflow-cells, reflow-style or reflow-style-cells is.
   local want_reflow=0
-  selftest_wants reflow reflow-search reflow-cells && want_reflow=1
+  selftest_wants reflow reflow-search reflow-cells reflow-style reflow-style-cells \
+    && want_reflow=1
   if selftest_wants html && [[ $html_total -eq 0 ]]; then
     echo "FAIL: no html fixtures found"
     n_failed=$((n_failed + 1))
