@@ -8919,17 +8919,46 @@ PINNED
     # branch from tests/fixtures/render/feed-cases.tsv on a copy of
     # render/pass-feed, with the feed rules on (search_cases_runner above);
     # then render-feed/coverage (feed_coverage above) and its negative
-    # proof, one member row of each set left out (Replikanti/interviewscam#60).
+    # proof, one member row of each set left out and each set emptied
+    # (Replikanti/interviewscam#60); and render-feed/section-bounds:
+    # heading_section itself, per member of SECTION_END_TAGS, ends before
+    # that heading nested a level down and leaves out the heading and its
+    # subtree (QA of Replikanti/interviewscam-site#45: rule 13 only asks
+    # whether a link is in the section, and the ending heading is never a
+    # link, so no table row sees the ending heading itself counted).
     search_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
       "$FIXTURES/render/feed-cases.tsv" "$FIXTURES/render/pass-feed" \
       "$SELFTEST_ROOT/schema" render-feed >"$out" 2>&1
     feed_coverage "$SELFTEST_ROOT/tools/sitecheck.py" "$FIXTURES/render/feed-cases.tsv" \
       >>"$out" 2>&1
+    python3 -I -B - "$SELFTEST_ROOT/tools/sitecheck.py" >>"$out" 2>&1 <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("sitecheck", sys.argv[1])
+sc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sc)
+bad = []
+for tag in sc.SECTION_END_TAGS:
+    page = sc.parse_render_page(
+        "<!doctype html><html><body><main><h2 id=t>T</h2><p id=s1>a</p><div id=s2><p id=s3>b</p>"
+        f"<{tag} id=end>E <a href=/x/ id=in>l</a></{tag}><p>c</p></div><p>d</p></main></body></html>")
+    heading = next(el for el in page.root.walk() if el.attrs.get("id") == "t")
+    got = [el.attrs.get("id", el.tag) for el in sc.heading_section(heading)]
+    if got != ["s1", "s2", "s3"]:
+        bad.append(f"<{tag}>: {got}, want ['s1', 's2', 's3']")
+if bad or not sc.SECTION_END_TAGS:
+    print("FAIL render-feed/section-bounds: " + ("; ".join(bad) or "SECTION_END_TAGS is empty"))
+else:
+    print(f"ok   render-feed/section-bounds ({len(sc.SECTION_END_TAGS)} end tags, the ending "
+          "heading and its subtree left out)")
+PY
     sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
     n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
     n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
     if ! grep -qE '^(ok   |FAIL )render-feed/table' "$out" \
-        || ! grep -qE '^(ok   |FAIL )render-feed/coverage' "$out"; then
+        || ! grep -qE '^(ok   |FAIL )render-feed/coverage' "$out" \
+        || ! grep -qE '^(ok   |FAIL )render-feed/section-bounds' "$out"; then
       echo "FAIL render-feed: the runner did not finish; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
@@ -8946,6 +8975,35 @@ PINNED
         sed 's/^/     | /' "$out"
         n_failed=$((n_failed + 1))
       fi
+    done
+    # Each set emptied in a copy of sitecheck.py (QA of
+    # Replikanti/interviewscam-site#45): the coverage line must fail on it,
+    # not pass because an empty set wants no row.
+    local feed_set feed_tmp
+    for feed_set in SPECIAL_HOST_SCHEMES SECTION_END_TAGS; do
+      feed_tmp="$(mktemp -d)"
+      if [[ "$feed_set" == SPECIAL_HOST_SCHEMES ]]; then
+        sed 's/^SPECIAL_HOST_SCHEMES = frozenset(.*$/SPECIAL_HOST_SCHEMES = frozenset()/' \
+          "$SELFTEST_ROOT/tools/sitecheck.py" >"$feed_tmp/sitecheck.py"
+      else
+        sed 's/^SECTION_END_TAGS = (.*$/SECTION_END_TAGS = ()/' \
+          "$SELFTEST_ROOT/tools/sitecheck.py" >"$feed_tmp/sitecheck.py"
+      fi
+      if [[ "$(grep -cE "^$feed_set = (frozenset\(\)|\(\))\$" "$feed_tmp/sitecheck.py")" != 1 ]]; then
+        echo "FAIL render-feed/coverage-fails-on-empty-set: $feed_set could not be emptied in a copy of sitecheck.py"
+        n_failed=$((n_failed + 1))
+      else
+        feed_coverage "$feed_tmp/sitecheck.py" "$FIXTURES/render/feed-cases.tsv" >"$out" 2>&1
+        if grep -q '^FAIL render-feed/coverage: SPECIAL_HOST_SCHEMES or SECTION_END_TAGS is empty$' "$out"; then
+          echo "ok   render-feed/coverage-fails-on-empty-set ($feed_set)"
+          n_passed=$((n_passed + 1))
+        else
+          echo "FAIL render-feed/coverage-fails-on-empty-set: with $feed_set empty the coverage line did not fail; output:"
+          sed 's/^/     | /' "$out"
+          n_failed=$((n_failed + 1))
+        fi
+      fi
+      rm -rf "$feed_tmp"
     done
   fi
 
