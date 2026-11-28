@@ -1795,8 +1795,20 @@ def srcset_urls(value):
 
 
 # A comment opener inside a string is not a comment, so strings are matched
-# first and kept; an unclosed comment runs to the end of the sheet.
-CSS_COMMENT_OR_STRING = re.compile(r"""(["'])(?:\\.|(?!\1)[^\\])*\1|/\*.*?(?:\*/|\Z)""", re.S)
+# first and kept; an unclosed comment runs to the end of the sheet. Nor is
+# one inside an unquoted url( token (CSS Syntax 4.3.6: `url(` not preceded
+# by an ident code point, ASCII case-insensitive, optional whitespace, then
+# anything but a quote, up to the first `)` or the end of the sheet), so
+# those tokens are kept whole too (Replikanti/interviewscam#61 fix round 1,
+# review run 1 finding 1: `x url(/*){a:b}` ... `y url(*/){a:b}` hid every
+# rule between them from every reader of this pattern while a browser
+# applied them). Group 1 is every kept match, a string or a url token;
+# whitespace after `url(` is taken possessively, so a quote after it makes
+# the match a function holding a string, which the string branch keeps.
+CSS_COMMENT_OR_STRING = re.compile(
+    r"""((?P<q>["'])(?:\\.|(?!(?P=q))[^\\])*(?P=q)"""
+    r"""|(?<![\w\\\-\u0080-\U0010ffff])[uU][rR][lL]\([ \t\n\r\f]*+(?!["'])[^)]*\)?)"""
+    r"""|/\*.*?(?:\*/|\Z)""", re.S)
 CSS_ESCAPE = re.compile(r"\\(?:([0-9a-fA-F]{1,6})[ \t\r\n\f]?|(.))", re.S)
 CSS_URL = re.compile(r"(?i)url\(\s*(?:(['\"])(.*?)\1|([^)\s'\"]*))\s*\)", re.S)
 CSS_STRING = re.compile(r"(['\"])(.*?)\1", re.S)
@@ -2160,6 +2172,11 @@ def csp_reference_problems(text, metas):
 # named-colour scan. Strings, escapes and parentheses are kept intact, so a
 # brace or semicolon inside them does not end a block.
 
+# The closer of each CSS block opener: a block ends only at its own closer
+# (CSS Syntax 5.4.8, "consume a simple block").
+BLOCK_CLOSERS = {"(": ")", "[": "]"}
+
+
 class CssRule:
     def __init__(self, parents, prelude, declarations):
         self.parents = parents  # preludes of the enclosing blocks, outermost first
@@ -2173,7 +2190,7 @@ def css_rules(css):
     as prelude, no parents and no declarations. Unbalanced braces never raise:
     a stray } is ignored and an unclosed block ends with the sheet."""
     text = CSS_COMMENT_OR_STRING.sub(lambda m: m.group(0) if m.group(1) else " ", css)
-    rules, stack, buf = [], [], []
+    rules, stack, buf, openers = [], [], [], []
     depth, i, n = 0, 0, len(text)
 
     def flush():
@@ -2199,10 +2216,15 @@ def css_rules(css):
             buf.append(text[i:j + 1])
             i = j + 1
             continue
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth = max(0, depth - 1)
+        # A bracket block nests like a parenthesis: a } inside [...] ends no
+        # block in a browser (Replikanti/interviewscam#61 fix round 1), and
+        # each block ends only at its own closer, so a ) inside [...] or a ]
+        # inside (...) is a token (fix round 2, review run 2).
+        if ch in "([":
+            openers.append(ch)
+        elif openers and ch == BLOCK_CLOSERS[openers[-1]]:
+            openers.pop()
+        depth = len(openers)
         if depth == 0 and ch == "{":
             prelude = "".join(buf).strip()
             buf.clear()
@@ -2672,6 +2694,165 @@ def css_desync_problems(css):
     return problems
 
 
+# The CSS states the browser checks never load (Replikanti/interviewscam#61,
+# ADR-0003 part 6 amendment of 2026-11-27). The browser checks load each
+# page at one width per band of the sheet's breakpoints (REFLOW_REVEAL_CELLS,
+# derived from SITE_MEDIA_PRELUDES) with the script running and with
+# scripting off, so a rule that applies only in another state would pass
+# every check. The built stylesheet is held to states those loads reach:
+# (a) every @ outside a string begins one of SITE_MEDIA_PRELUDES, written
+# exactly as the pinned minifier writes them, at the top level right after
+# a rule (or at the start of the sheet), with its block right after; any
+# other at-rule (a condition, a layer, an import, a rule kind) is refused,
+# whatever its name, so a later Chrome's at-rule is refused too; (b) the
+# braces balance and none sits inside parentheses or brackets (the walk of (a) reads
+# the sheet's blocks as a browser does); (c) every ( in a declaration value
+# is a call of SITE_VALUE_FUNCTIONS, the two the sheet uses, because if(),
+# env(), attr(), the math functions and url() can bring a condition back
+# without an at-rule (`opacity:if(media(min-width:25rem):.05;else:1)`);
+# (d) no viewport- or container-relative length, which makes every width
+# and height a state of its own. Exact strings, no normalised query: any
+# spacing, case, unit or equivalent form fails closed. Today's built sheet
+# holds exactly the two preludes, 258 var( and 1 inset(, and 0 such units
+# (ADR-0003 Numbers), so the rules cost it nothing.
+SITE_MEDIA_PRELUDES = ("@media(max-width:24rem)", "@media(max-width:21.25rem)")
+SITE_VALUE_FUNCTIONS = frozenset({"var", "inset"})
+# CSS Values 4 (vw, vh, vi, vb, vmin, vmax and their small, large and
+# dynamic viewport forms svw ... dvmax) and CSS Containment 3 (the query
+# container units): 30 units, written out.
+SITE_VIEWPORT_UNITS = frozenset({
+    "vw", "vh", "vi", "vb", "vmin", "vmax",
+    "svw", "svh", "svi", "svb", "svmin", "svmax",
+    "lvw", "lvh", "lvi", "lvb", "lvmin", "lvmax",
+    "dvw", "dvh", "dvi", "dvb", "dvmin", "dvmax",
+    "cqw", "cqh", "cqi", "cqb", "cqmin", "cqmax"})
+CSS_VIEWPORT_UNIT = re.compile(
+    r"\d(" + "|".join(sorted(SITE_VIEWPORT_UNITS, key=lambda u: (-len(u), u)))
+    + r")(?![A-Za-z0-9_\-]|[^\x00-\x7f])", re.ASCII | re.IGNORECASE)
+CSS_STATES_WHY = ("the browser checks load one width per band of these breakpoints with "
+                  "the script running and with scripting off, so any other condition, "
+                  "layer, import or rule kind is a CSS state they never load "
+                  "(Replikanti/interviewscam#61)")
+
+
+def css_ident_char(ch):
+    """An ident code point of CSS Syntax 4: an ASCII letter, digit, - or _,
+    or any code point at or above U+0080."""
+    return ch.isascii() and (ch.isalnum() or ch in "-_") or not ch.isascii()
+
+
+def css_at_rule_problems(css):
+    """Rules (a) and (b) on one stylesheet, comments removed: the at-rules
+    outside SITE_MEDIA_PRELUDES and their places, the braces that do not
+    balance or sit inside parentheses, and a string that does not end."""
+    text = css_strip_comments(css)
+    problems = []
+    braces = parens = 0
+    openers = []  # the open ( and [ blocks, innermost last
+    closed_rule = False  # the previous character is a } that closed a top-level block
+    unbalanced = None
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        after_rule, closed_rule = closed_rule, False
+        if ch in "\"'":
+            j = i + 1
+            while j < n and text[j] != ch:
+                j += 2 if text[j] == "\\" else 1
+            if j >= n:
+                problems.append(f"the built stylesheet holds a string that does not end "
+                                f"(from offset {i}): the checker and a browser could read "
+                                "what follows another way (Replikanti/interviewscam#61)")
+            i = j + 1
+            continue
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "@":
+            allowed = braces == 0 and parens == 0 and (i == 0 or after_rule) and any(
+                text.startswith(prelude + "{", i) for prelude in SITE_MEDIA_PRELUDES)
+            if not allowed:
+                head = re.match(r"[^{;}]*", text[i:]).group(0)
+                problems.append(f"{show(head, 80)}: an at-rule outside the closed list ("
+                                + ", ".join(SITE_MEDIA_PRELUDES)
+                                + ", each at the top level right after a rule); "
+                                + CSS_STATES_WHY)
+        elif ch in "([":
+            # A bracket block nests like a parenthesis block, so a brace
+            # inside either is a finding (fix round 1, review run 1
+            # finding 2: `zz:[}]` kept a block open to the end of the sheet
+            # in a browser and closed it here). Each block ends only at its
+            # own closer; any other closer is a token, as in Chrome (fix
+            # round 2, review run 2: `zz:[)}]` read `[)` as closed).
+            openers.append(ch)
+            parens = len(openers)
+        elif ch in ")]":
+            if openers and ch == BLOCK_CLOSERS[openers[-1]]:
+                openers.pop()
+            parens = len(openers)
+        elif ch in "{}":
+            if parens or (ch == "}" and braces == 0):
+                unbalanced = i if unbalanced is None else unbalanced
+            elif ch == "{":
+                braces += 1
+            else:
+                braces -= 1
+                closed_rule = braces == 0
+        i += 1
+    if unbalanced is None and (braces or parens):
+        unbalanced = n
+    if unbalanced is not None:
+        problems.append(f"the built stylesheet holds braces that do not balance or sit "
+                        f"inside parentheses or brackets (first at offset {unbalanced}): "
+                        "the checker reads its blocks, and with them every at-rule's place, only "
+                        "where both readings agree (Replikanti/interviewscam#61)")
+    return problems
+
+
+def css_value_problems(rules):
+    """Rules (c) and (d) on css_rules' rules (comments removed): every
+    declaration of every rule, custom properties and rules inside at-rule
+    blocks included, its value (the text after the first :, the whole text
+    without one) with its strings masked."""
+    problems = []
+    for rule in rules:
+        selector = css_selector_text(rule.prelude)
+        for declaration in rule.declarations:
+            name, sep, value = declaration.partition(":")
+            # Escapes decoded after the strings are masked (fix round 1,
+            # QA): `1\76 w` is `1vw` to a browser.
+            value = css_unescape(CSS_STRING_LITERAL.sub('""', value if sep else declaration))
+            for i, ch in enumerate(value):
+                if ch != "(":
+                    continue
+                start = i
+                while start > 0 and css_ident_char(value[start - 1]):
+                    start -= 1
+                function = value[start:i]
+                if function not in SITE_VALUE_FUNCTIONS:
+                    problems.append(f"{show(function + '(', 40)} in {show(selector, 80)}: a "
+                                    "function outside the closed list ("
+                                    + ", ".join(sorted(SITE_VALUE_FUNCTIONS))
+                                    + "); a function can bring a condition back without an "
+                                    "at-rule (if(media()), env(), attr(), the math "
+                                    "functions), which is a CSS state the browser checks "
+                                    "never load (Replikanti/interviewscam#61)")
+            for match in CSS_VIEWPORT_UNIT.finditer(value):
+                problems.append(f"{show(match.group(0), 40)} in {show(selector, 80)}: a "
+                                "viewport-relative length (SITE_VIEWPORT_UNITS); it makes "
+                                "every width and height a state of its own, and the "
+                                "browser checks load one width per band of the closed "
+                                "@media list (Replikanti/interviewscam#61)")
+    return problems
+
+
+def css_state_problems(css):
+    """Rules (a) to (d) of the CSS states (Replikanti/interviewscam#61) on
+    one stylesheet."""
+    return (css_at_rule_problems(css)
+            + css_value_problems(css_rules(css_strip_comments(css))))
+
+
 class CssRuleResult:
     def __init__(self):
         self.problems = []
@@ -2687,6 +2868,7 @@ def css_rule_problems(css):
     result = CssRuleResult()
     problems = result.problems
     problems.extend(css_desync_problems(css))
+    problems.extend(css_state_problems(css))
     problems.extend(css_hover_problems(css))
     custom, result.custom_properties = css_custom_property_problems(
         css_rules(css_strip_comments(css)))
@@ -3035,6 +3217,15 @@ def markup_problems(page, rel):
         if tag in SMIL_ELEMENTS:
             problems.append(f"(g) SMIL animation element <{tag}>: it can set any "
                             "attribute at run time")
+        # (p) No <noscript> (Replikanti/interviewscam#61): the HTML parser's
+        # scripting flag changes only how it parses <noscript>, so without
+        # one the two script-absent states S1 and S2 build the same tree
+        # and case (7)'s cells in S2 stand for S1 too.
+        if tag == "noscript":
+            problems.append("(p) a <noscript> element: with scripting off its content is "
+                            "markup and with the script blocked it is not, so the two "
+                            "script-absent states would differ, and case (7) measures only "
+                            "S2 (Replikanti/interviewscam#61)")
     # (d) Canonical tags (ADR-0003 part 3).
     if rel == "404.html":
         if canonicals:
@@ -9593,7 +9784,10 @@ PINNED_ALLOWLISTS = LITERALS_PASSING_SETS + (
     # the closed key sets of its workflows.
     "RECORDS_TOP", "RECORDS_WORKFLOWS", "RECORDS_TOP_KEYS", "RECORDS_JOB_KEYS",
     "RECORDS_STEP_KEYS", "RECORDS_JOB_STEPS", "RECORDS_NEEDS", "RECORDS_WITH",
-    "RECORDS_PERMISSIONS", "RECORDS_JOB_PERMISSIONS")
+    "RECORDS_PERMISSIONS", "RECORDS_JOB_PERMISSIONS",
+    # The CSS states of the browser checks (Replikanti/interviewscam#61): the
+    # closed @media preludes, value functions and refused viewport units.
+    "SITE_MEDIA_PRELUDES", "SITE_VALUE_FUNCTIONS", "SITE_VIEWPORT_UNITS")
 # L5: the CSS properties and @counter-style descriptors whose strings the
 # browser draws as text.
 CSS_TEXT_PROPERTIES = {"content", "list-style", "list-style-type", "quotes",
@@ -16216,6 +16410,92 @@ def legibility_summary(reveals, legible, counts):
     return text
 
 
+# Case (7)'s cells (Replikanti/interviewscam#61, ADR-0003 part 6 amendment
+# of 2026-11-27): the skip-link case runs at one width per band of the
+# closed @media list and in two script states. With site rules (a) to (d)
+# the built stylesheet can change only at those breakpoints, so one width
+# per band loads every width state; with rule (p) the two script-absent
+# states build the same tree and the same styles, so S2 stands for S1.
+# REFLOW_ROOT_FONT_PX: a media query resolves rem against the initial font
+# size, Chrome's default medium of 16 px, not the page's. At another value
+# the derived widths miss their bands, and the cell proof exits 2.
+REFLOW_ROOT_FONT_PX = 16
+REFLOW_MAX_WIDTH_PRELUDE = re.compile(r"@media\(max-width:(\d+(?:\.\d+)?)rem\)")
+
+
+def reveal_widths(preludes, base, root_px):
+    """(breakpoints, widths) of the cells: each prelude's breakpoint in CSS
+    px, in prelude order, and the widths base plus floor(breakpoint) + 1,
+    one per band. max-width is inclusive (340 still matches 21.25rem), and
+    device metrics take whole CSS px, so floor + 1 is the first whole width
+    of the band above. A prelude of another form, or a breakpoint below
+    base, raises ValueError: it needs cells of its own, not a silent pass."""
+    breakpoints = []
+    for prelude in preludes:
+        match = REFLOW_MAX_WIDTH_PRELUDE.fullmatch(prelude)
+        if match is None:
+            raise ValueError(f"{prelude!r} is not @media(max-width:<n>rem); the cells "
+                             "of case (7) cover max-width breakpoints only")
+        breakpoint = decimal.Decimal(match.group(1)) * root_px
+        if breakpoint < base:
+            raise ValueError(f"{prelude!r} is {float(breakpoint):g} CSS px, below the base width "
+                             f"{base}")
+        breakpoints.append(breakpoint)
+    widths = (base,) + tuple(sorted({math.floor(bp) + 1 for bp in breakpoints}))
+    return tuple(breakpoints), widths
+
+
+REFLOW_REVEAL_BREAKPOINTS, REFLOW_REVEAL_WIDTHS = reveal_widths(
+    SITE_MEDIA_PRELUDES, REFLOW_WIDTH, REFLOW_ROOT_FONT_PX)
+# Indexes into REFLOW_STATES: with the script running (S0) and with
+# scripting off (S2).
+REFLOW_REVEAL_STATES = (0, 2)
+# Every (width, state) pair, the base cell (REFLOW_WIDTH, S0) first: it is
+# the case (7) run of the first load, the others are fresh loads.
+REFLOW_REVEAL_CELLS = tuple((width, state) for width in REFLOW_REVEAL_WIDTHS
+                            for state in REFLOW_REVEAL_STATES)
+# The proof that a cell's state applied: the viewport and, per prelude,
+# whether its media query matches.
+REFLOW_CELL_SCRIPT = r"""
+(() => ({w: innerWidth, h: innerHeight,
+         media: %(queries)s.map((q) => matchMedia(q).matches)}))()
+""" % {"queries": json.dumps([p.removeprefix("@media") for p in SITE_MEDIA_PRELUDES])}
+
+
+def cell_state_problem(width, height, seen):
+    """None when the cell's page shows the width x height viewport and each
+    prelude of SITE_MEDIA_PRELUDES matches exactly when width is at most its
+    breakpoint; else a text naming the first difference."""
+    if seen.get("w") != width or seen.get("h") != height:
+        return (f"the viewport is {seen.get('w')} x {seen.get('h')} CSS px, not {width} x "
+                f"{height}")
+    media = seen.get("media")
+    if not isinstance(media, list) or len(media) != len(SITE_MEDIA_PRELUDES):
+        return f"the media proof is {show(media)}, not one answer per prelude"
+    for prelude, breakpoint, matches in zip(SITE_MEDIA_PRELUDES, REFLOW_REVEAL_BREAKPOINTS,
+                                            media):
+        if matches is not (width <= breakpoint):
+            return (f"{prelude} {'matches' if matches else 'does not match'} at {width} CSS "
+                    f"px ({float(breakpoint):g} CSS px at {REFLOW_ROOT_FONT_PX} px per rem)")
+    return None
+
+
+def english_list(items):
+    """a, b and c."""
+    items = [str(item) for item in items]
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+REFLOW_CELLS_NOT_RUN = "reveal cells: not run (--no-reveal-cells)"
+
+
+def reveal_cells_summary(cells, legible):
+    """The summary segment of case (7)'s cells."""
+    return (f"reveal cells: {legible} of {cells} legible "
+            f"({english_list(REFLOW_REVEAL_WIDTHS)} CSS px wide, "
+            f"{english_list(REFLOW_STATES[s] for s in REFLOW_REVEAL_STATES)})")
+
+
 def legibility_problem(label, box, counts):
     """The finding of case (7)'s legibility step for the counts of
     text_pixels, None when the label is legible: at least
@@ -17757,6 +18037,15 @@ def reflow_hits(tools, session, findings, where, revealed=None):
     return len(regions)
 
 
+def reflow_emulate(tools, session, width, height):
+    """The mobile viewport width x height CSS px at scale 1, as every
+    reflow load sees it (Emulation.setDeviceMetricsOverride)."""
+    tools.send("Emulation.setDeviceMetricsOverride",
+               {"width": width, "height": height, "screenWidth": width,
+                "screenHeight": height, "deviceScaleFactor": 1, "mobile": True},
+               session=session)
+
+
 def search_case(tools, session, findings, public, origin, load):
     """Case (8) on one tree (see the comment above SEARCH_VIEWPORT).
     Returns the summary text."""
@@ -17807,9 +18096,7 @@ def search_case(tools, session, findings, public, origin, load):
     width, height = SEARCH_VIEWPORT
 
     def emulate(w, h):
-        tools.send("Emulation.setDeviceMetricsOverride",
-                   {"width": w, "height": h, "screenWidth": w, "screenHeight": h,
-                    "deviceScaleFactor": 1, "mobile": True}, session=session)
+        reflow_emulate(tools, session, w, h)
 
     requests = []
 
@@ -18133,6 +18420,9 @@ def cmd_reflow(args):
     n_items = 0
     n_copy = n_search = n_reveals = n_revealed = n_heads = n_regions = n_documents = 0
     n_hit_regions = n_honeypots = n_legible = 0
+    # Case (7)'s cells (Replikanti/interviewscam#61): the cells run, the
+    # base cell included, and the legible ones.
+    n_cells = n_cells_legible = 0
     text_counts = []
     search_summary = "; search: not run (--no-search)"
     try:
@@ -18199,10 +18489,7 @@ def cmd_reflow(args):
         tools.send("DOMSnapshot.enable", session=session)
         tools.send("Emulation.setFocusEmulationEnabled", {"enabled": True},
                    session=session)
-        tools.send("Emulation.setDeviceMetricsOverride",
-                   {"width": REFLOW_WIDTH, "height": REFLOW_HEIGHT,
-                    "screenWidth": REFLOW_WIDTH, "screenHeight": REFLOW_HEIGHT,
-                    "deviceScaleFactor": 1, "mobile": True}, session=session)
+        reflow_emulate(tools, session, REFLOW_WIDTH, REFLOW_HEIGHT)
         script = REFLOW_SCRIPT % {"width": REFLOW_WIDTH, "limit": REFLOW_NAMED,
                                   "exempt": json.dumps(VISUALLY_HIDDEN),
                                   "eps": json.dumps(REFLOW_EPSILON)}
@@ -18355,6 +18642,43 @@ def cmd_reflow(args):
                     findings.add(where, problem)
             return counts
 
+        def reveal_case(where, width):
+            """Case (7) on the loaded page in a viewport width CSS px wide:
+            one Tab press from the loaded page focuses the first focusable
+            element, which must carry the class, grow past 1 x 1 px inside
+            the viewport, paint and be legible. (focusable, counts): False
+            when the page has no focusable element of the class; counts are
+            reveal_legibility's, or None when the case ended earlier."""
+            focus = reflow_value(tools, session, focus_script, where)
+            if not focus.get("focusable"):
+                return False, None
+            for kind in ("keyDown", "keyUp"):
+                tools.send("Input.dispatchKeyEvent", dict(REFLOW_TAB_KEY, type=kind),
+                           session=session)
+            focus = reflow_value(tools, session, focus_script, where)
+            box = (f"{focus.get('width', 0):.1f} x {focus.get('height', 0):.1f} CSS px at "
+                   f"x {focus.get('left', 0):.1f} to {focus.get('right', 0):.1f}, y "
+                   f"{focus.get('top', 0):.1f} to {focus.get('bottom', 0):.1f}")
+            if not focus.get("hidden"):
+                findings.add(where, f"(7) one Tab press focuses "
+                             f"{show(focus.get('label') or 'nothing', 80)}, not the "
+                             "element of class visually-hidden; the skip link must be "
+                             "the first focusable element (WCAG 2.2 SC 2.4.1, 2.4.7)")
+            elif not (focus["width"] > REFLOW_REVEAL_MIN
+                      and focus["height"] > REFLOW_REVEAL_MIN):
+                findings.add(where, f"(7) the focused {show(focus['label'], 80)} is "
+                             f"{box}; its :focus reveal does not apply, so the skip link "
+                             "stays hidden on keyboard focus (WCAG 2.2 SC 2.4.7)")
+            elif focus["left"] < -REFLOW_EPSILON or focus["top"] < -REFLOW_EPSILON \
+                    or focus["right"] > width + REFLOW_EPSILON \
+                    or focus["bottom"] > REFLOW_HEIGHT + REFLOW_EPSILON:
+                findings.add(where, f"(7) the focused {show(focus['label'], 80)} is "
+                             f"{box}, outside the {width} x {REFLOW_HEIGHT} "
+                             "viewport; the revealed skip link must be on screen")
+            elif (shown := reveal_paint(where, focus, box)) is not None:
+                return True, reveal_legibility(where, focus, box, shown)
+            return True, None
+
         focus_script = REFLOW_FOCUS_SCRIPT % {
             "exempt": json.dumps(VISUALLY_HIDDEN),
             "generated": json.dumps(sorted(REFLOW_NO_GENERATED)),
@@ -18457,41 +18781,15 @@ def cmd_reflow(args):
                             if tag == "input" and attrs.get("name") == "website")
             n_honeypots += reflow_honeypots(tools, session, findings, where, REFLOW_STATES[0],
                                             honeypots)
-            # (7) The skip link's reveal applies on keyboard focus: one Tab
-            # press from the loaded page focuses the first focusable
-            # element, which must carry the class and grow past 1 x 1 px
-            # inside the viewport.
-            focus = reflow_value(tools, session, focus_script, where)
-            if focus.get("focusable"):
-                for kind in ("keyDown", "keyUp"):
-                    tools.send("Input.dispatchKeyEvent", dict(REFLOW_TAB_KEY, type=kind),
-                               session=session)
-                focus = reflow_value(tools, session, focus_script, where)
+            # (7) The skip link's reveal on keyboard focus, the base cell.
+            focusable, counts = reveal_case(where, REFLOW_WIDTH)
+            if focusable:
                 n_reveals += 1
-                box = (f"{focus.get('width', 0):.1f} x {focus.get('height', 0):.1f} CSS px at "
-                       f"x {focus.get('left', 0):.1f} to {focus.get('right', 0):.1f}, y "
-                       f"{focus.get('top', 0):.1f} to {focus.get('bottom', 0):.1f}")
-                if not focus.get("hidden"):
-                    findings.add(where, f"(7) one Tab press focuses "
-                                 f"{show(focus.get('label') or 'nothing', 80)}, not the "
-                                 "element of class visually-hidden; the skip link must be "
-                                 "the first focusable element (WCAG 2.2 SC 2.4.1, 2.4.7)")
-                elif not (focus["width"] > REFLOW_REVEAL_MIN
-                          and focus["height"] > REFLOW_REVEAL_MIN):
-                    findings.add(where, f"(7) the focused {show(focus['label'], 80)} is "
-                                 f"{box}; its :focus reveal does not apply, so the skip link "
-                                 "stays hidden on keyboard focus (WCAG 2.2 SC 2.4.7)")
-                elif focus["left"] < -REFLOW_EPSILON or focus["top"] < -REFLOW_EPSILON \
-                        or focus["right"] > REFLOW_WIDTH + REFLOW_EPSILON \
-                        or focus["bottom"] > REFLOW_HEIGHT + REFLOW_EPSILON:
-                    findings.add(where, f"(7) the focused {show(focus['label'], 80)} is "
-                                 f"{box}, outside the {REFLOW_WIDTH} x {REFLOW_HEIGHT} "
-                                 "viewport; the revealed skip link must be on screen")
-                elif (shown := reveal_paint(where, focus, box)) is not None:
-                    counts = reveal_legibility(where, focus, box, shown)
-                    if counts is not None:
-                        text_counts.append(counts[0])
-                        n_legible += counts[0] >= REFLOW_TEXT_MIN_PIXELS
+                n_cells += 1
+                if counts is not None:
+                    text_counts.append(counts[0])
+                    n_legible += counts[0] >= REFLOW_TEXT_MIN_PIXELS
+                    n_cells_legible += counts[0] >= REFLOW_TEXT_MIN_PIXELS
             # The hit test and the paint check of the shown pinned regions
             # (M4 PR 4, the amendment's items 3 and 7), S0.
             n_hit_regions += reflow_hits(tools, session, findings, where)
@@ -18570,6 +18868,39 @@ def cmd_reflow(args):
                                  "foreign content)")
             tools.send("Emulation.setScriptExecutionDisabled", {"value": False},
                        session=session)
+            # (7) The other cells (Replikanti/interviewscam#61): each a fresh
+            # load with its viewport and script state set before the
+            # navigation, never a resize of the loaded page (a transition
+            # the resize starts keeps the old style through the captures).
+            if focusable and not args.no_reveal_cells:
+                for width, state in REFLOW_REVEAL_CELLS[1:]:
+                    cell = f"{where} at {width} x {REFLOW_HEIGHT} CSS px {REFLOW_STATES[state]}"
+                    reflow_emulate(tools, session, width, REFLOW_HEIGHT)
+                    tools.send("Emulation.setScriptExecutionDisabled",
+                               {"value": state == 2}, session=session)
+                    error = load(origin + path)
+                    if error:
+                        findings.add(where, f"did not load at {width} x {REFLOW_HEIGHT} CSS px "
+                                     f"{REFLOW_STATES[state]}: {error}")
+                        continue
+                    problem = cell_state_problem(width, REFLOW_HEIGHT, reflow_value(
+                        tools, session, REFLOW_CELL_SCRIPT, cell))
+                    if problem:
+                        raise UsageError(f"reflow: the cell {width} x {REFLOW_HEIGHT} CSS px "
+                                         f"{REFLOW_STATES[state]} did not apply on {where}: "
+                                         f"{problem}")
+                    n_cells += 1
+                    shown, counts = reveal_case(cell, width)
+                    if not shown:
+                        findings.add(cell, "(7) the page has no focusable element of class "
+                                     "visually-hidden in this cell, though it has one at "
+                                     f"{REFLOW_WIDTH} CSS px {REFLOW_STATES[0]}")
+                    elif counts is not None:
+                        text_counts.append(counts[0])
+                        n_cells_legible += counts[0] >= REFLOW_TEXT_MIN_PIXELS
+                tools.send("Emulation.setScriptExecutionDisabled", {"value": False},
+                           session=session)
+                reflow_emulate(tools, session, REFLOW_WIDTH, REFLOW_HEIGHT)
             n_copy += len(static_hidden["copy"])
             n_search += len(static_hidden["search-out"])
         # (8) the search, once per tree (M4 PR 4, ADR-0005 part 6).
@@ -18607,6 +18938,8 @@ def cmd_reflow(args):
                            f"results hidden until a query: {n_search} in 3 states, "
                            f"{n_revealed} sections revealed and reachable; "
                            + legibility_summary(n_reveals, n_legible, text_counts)
+                           + "; " + (REFLOW_CELLS_NOT_RUN if args.no_reveal_cells else
+                                     reveal_cells_summary(n_cells, n_cells_legible))
                            + f"; heads as parsed: {n_heads}; "
                            f"pinned regions as parsed: {n_regions}; documents as parsed "
                            f"(scripting off): {n_documents}; regions hit-tested and painting: "
@@ -22298,6 +22631,10 @@ def build_parser():
     # Self-test only (case (8)): a reflow fixture without a search.txt has
     # no feed and no /a-z/; check.sh never passes it.
     p.add_argument("--no-search", action="store_true")
+    # Self-test only (case (7)'s cells, Replikanti/interviewscam#61): the
+    # hand-made reflow fixtures and the reflow-search rows run case (7) at
+    # REFLOW_WIDTH with the script running alone; check.sh never passes it.
+    p.add_argument("--no-reveal-cells", action="store_true")
     p.add_argument("public")
     p.set_defaults(func=cmd_reflow)
     p = sub.add_parser("guard", allow_abbrev=False)

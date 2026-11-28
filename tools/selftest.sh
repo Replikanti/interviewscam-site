@@ -31,7 +31,7 @@ FIXTURES="$SELFTEST_ROOT/tests/fixtures"
 # reflow-isolation/case-pin. A PR that adds or removes a case there updates
 # its count in the same diff; removing a module or a case is then an edit
 # under tools/ (a safety-net change), not a quiet deletion.
-REFLOW_ISOLATION_CASES=(test_hover_rules:58 test_isolation:100 test_legibility:18 test_search_stop:4)
+REFLOW_ISOLATION_CASES=(test_cells:14 test_css_states:6 test_hover_rules:58 test_isolation:100 test_legibility:18 test_search_stop:4)
 # The version the synthetic Lighthouse reports in tests/fixtures/lighthouse/
 # carry. Fixed, not the pin, so a Lighthouse upgrade does not touch them.
 LIGHTHOUSE_FIXTURE_VERSION=13.6.0
@@ -842,7 +842,9 @@ PY
 # (NAME=number, comma-separated) sets module constants through importlib,
 # as reflow-launch/first-answer-deadline does (the aria-busy row shortens
 # REFLOW_TIMEOUT, the fetch row SEARCH_FETCH_BUDGET). Then the real
-# cmd_reflow runs with case (8) on: expect PASS needs exit 0, any other
+# cmd_reflow runs with case (8) on: expect PASS needs exit 0, an expect
+# `EXIT2 <text>` exit 2 with <text> in the output and no traceback (a usage
+# error, such as a cell of case (7) whose state did not apply), any other
 # expect exit 1 with that text in the output. The rows run four at a time,
 # each in a forked process with its own Chrome, and print in table order
 # (the job's time: a row takes 10 to 15 s). The last line,
@@ -850,9 +852,13 @@ PY
 # in the environment (only tools/mutate.py sets it, for sweep runs) the
 # runner stops after the first failing row and the table line says so
 # (Replikanti/interviewscam#47); without it the output is unchanged.
+# Optional [label] [mode] (Replikanti/interviewscam#61): the rows print as
+# <label>/<row> (default reflow-search); mode `cells` runs cmd_reflow with
+# case (7)'s cells on and case (8) off (the reflow-cells rows), any other
+# mode with the cells off and case (8) on, as the reflow-search rows.
 # -B: no tools/__pycache__.
 reflow_search_runner() {
-  python3 -I -B - "$1" "$2" "$3" "$4" "$5" <<'PY'
+  python3 -I -B - "$1" "$2" "$3" "$4" "$5" "${6:-reflow-search}" "${7:-}" <<'PY'
 import argparse
 import base64
 import contextlib
@@ -867,7 +873,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-source, table, base, script, chrome = sys.argv[1:6]
+source, table, base, script, chrome, label, mode = sys.argv[1:8]
+# Mode cells (Replikanti/interviewscam#61): case (7)'s cells on and case (8)
+# off; any other mode the reverse, as the reflow-search rows always ran.
+no_reveal_cells, no_search = (False, True) if mode == "cells" else (True, False)
 REFLOW_SEARCH_JOBS = 4
 rows = [line.split("\t") for line in Path(table).read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")]
@@ -931,26 +940,33 @@ def run_row(row):
                 continue
             target.write_text(body.replace(find, replace, 1), encoding="utf-8")
         if problem:
-            print(f"FAIL reflow-search/{name}: {problem}")
+            print(f"FAIL {label}/{name}: {problem}")
             return lines
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             try:
                 rc = sitecheck.cmd_reflow(argparse.Namespace(
-                    public=str(root), chrome=chrome, no_search=False,
+                    public=str(root), chrome=chrome, no_search=no_search,
+                    no_reveal_cells=no_reveal_cells,
                     launch_timeout=sitecheck.REFLOW_LAUNCH_TIMEOUT))
             except sitecheck.UsageError as exc:
                 buffer.write(f"{exc}\n")
                 rc = 2
         output = buffer.getvalue()
+    # EXIT2 <text> (Replikanti/interviewscam#61 fix round 1): a usage error,
+    # exit 2, whose message holds <text> (a cell whose proof fails).
+    exit2 = expect.startswith("EXIT2 ")
+    text_expect = expect.removeprefix("EXIT2 ")
     if expect == "PASS" and rc == 0:
-        print(f"ok   reflow-search/{name} (passed as expected)")
-    elif expect != "PASS" and rc == 1 and expect in output:
-        print(f"ok   reflow-search/{name} (failed as expected: {expect})")
+        print(f"ok   {label}/{name} (passed as expected)")
+    elif exit2 and rc == 2 and text_expect in output and "Traceback" not in output:
+        print(f"ok   {label}/{name} (exit 2 as expected: {text_expect})")
+    elif not exit2 and expect != "PASS" and rc == 1 and expect in output:
+        print(f"ok   {label}/{name} (failed as expected: {expect})")
     else:
-        print(f"FAIL reflow-search/{name}: expected "
-              f"{'exit 0' if expect == 'PASS' else 'exit 1 and ' + repr(expect)}; got exit "
-              f"{rc}; output:")
+        want = ("exit 0" if expect == "PASS" else
+                ("exit 2 and " if exit2 else "exit 1 and ") + repr(text_expect))
+        print(f"FAIL {label}/{name}: expected {want}; got exit {rc}; output:")
         for line in output.splitlines()[-12:]:
             print(f"     | {line}")
     return lines
@@ -960,7 +976,7 @@ names, bad, good = set(), 0, []
 for row in rows:
     if len(row) < 5 or (len(row) > 6 and (len(row) - 6) % 3) or not row[0] \
             or row[0] in names:
-        print(f"FAIL reflow-search/table: malformed or duplicate row {row!r}")
+        print(f"FAIL {label}/table: malformed or duplicate row {row!r}")
         bad += 1
         continue
     names.add(row[0])
@@ -990,13 +1006,13 @@ with multiprocessing.get_context("fork").Pool(REFLOW_SEARCH_JOBS) as pool:
             pool.join()
             break
 if stopped is not None:
-    print(f"FAIL reflow-search/table: stopped after reflow-search/{stopped}, the first "
+    print(f"FAIL {label}/table: stopped after {label}/{stopped}, the first "
           f"failing row (SELFTEST_STOP_AT_FIRST_FAIL=1); {len(good) - reported} of "
           f"{len(good)} rows not reported")
 elif not rows or bad:
-    print(f"FAIL reflow-search/table: {len(rows)} rows, {bad} malformed")
+    print(f"FAIL {label}/table: {len(rows)} rows, {bad} malformed")
 else:
-    print(f"ok   reflow-search/table ({len(rows)} rows)")
+    print(f"ok   {label}/table ({len(rows)} rows)")
 PY
 }
 
@@ -1038,8 +1054,14 @@ PY
 # sleeps 60 s, more than the row's 30 s bound (6 times the limit), so a
 # watchdog that never fires is told apart from one that fires; the
 # worker must be gone within 5 s, far below the stub's 60 s, so a kill of
-# the leader alone is caught. Called by selftest_blocks, whose counters it
-# updates.
+# the leader alone is caught.
+# The runner arguments of Replikanti/interviewscam#61: the label of
+# reflow_search_runner names its rows and table line, its mode cells hands
+# cmd_reflow no_reveal_cells False and no_search True and the default mode
+# the reverse; site_cases_runner's mode css renames an edited stylesheet to
+# the name rule (l) needs for its bytes, relinks it on every page and runs
+# cmd_site with the built pins off, and without the mode does none of it.
+# Called by selftest_blocks, whose counters it updates.
 case_runner_rows() {
   local cr_tmp cr_bad cr_rc cr_out cr_name cr_watchdog_s=60
   cr_tmp="$(mktemp -d)" || { echo "FAIL case-runner/setup: mktemp failed"; n_failed=$((n_failed + 1)); return; }
@@ -1087,6 +1109,7 @@ _spec = importlib.util.spec_from_file_location("sitecheck_real", _real)
 _module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_module)
 show = _module.show
+built_style_path = _module.built_style_path
 
 
 def answer(root):
@@ -1099,6 +1122,8 @@ def answer(root):
         raise KeyError("campaign.source")
     if word == "exit":
         raise SystemExit(5)
+    if word == "usage":
+        raise UsageError("stub usage: the cell did not apply")
     if word == "fail":
         print("FAIL: stub finding")
         return 1
@@ -1133,7 +1158,24 @@ def cmd_records(args):
 
 
 def cmd_reflow(args):
+    if (Path(args.public) / "outcome.txt").read_text(encoding="utf-8").strip() == "args":
+        print(f"FAIL: no_reveal_cells {args.no_reveal_cells}, no_search {args.no_search}")
+        return 1
     return answer(args.public)
+
+
+def cmd_site(args):
+    """What site_cases_runner handed over: whether every stylesheet's name
+    is the one rule (l) needs for its bytes, whether every page names
+    every stylesheet, and the built pins switch."""
+    public = Path(args.public)
+    css = sorted((public / "css").glob("*.css"))
+    names = all("/css/" + p.name == _module.built_style_path(p.name.split(".min.", 1)[0],
+                                                             p.read_bytes()) for p in css)
+    linked = all(p.name in page.read_text(encoding="utf-8")
+                 for page in sorted(public.rglob("*.html")) for p in css)
+    print(f"FAIL: names {names}, linked {linked}, no_built_pins {args.no_built_pins}")
+    return 1
 PY
   printf 'r-raise\toutcome.txt\tpass\traise\tPASS\nr-raise-text\toutcome.txt\tpass\traise\tname_type\nr-type\toutcome.txt\tpass\ttypeerror\tPASS\nr-dot\toutcome.txt\tpass\traisedot\tPASS\nr-next\toutcome.txt\tpass\tok\tPASS\n' \
     >"$cr_tmp/render.tsv"
@@ -1256,9 +1298,11 @@ sys.stdout.flush()
 sys.exit(proc.returncode if proc.returncode >= 0 else 128 - proc.returncode)
 PY
   }
-  # cr_reflow <table> <switch|-unset> [<seconds>]: the runner's output,
-  # under cr_watchdog (default cr_watchdog_s); exit 124 writes the hung
-  # flag, and once it exists no later call runs.
+  # cr_reflow <table> <switch|-unset> [<seconds>] [<label> <mode>]: the
+  # runner's output, under cr_watchdog (default cr_watchdog_s, also for an
+  # empty <seconds>); the label and the mode go to the runner
+  # (Replikanti/interviewscam#61); exit 124 writes the hung flag, and once
+  # it exists no later call runs.
   cr_reflow() {
     (
       if [[ -e "$cr_tmp/hung" ]]; then
@@ -1273,7 +1317,7 @@ PY
       export -f reflow_search_runner
       # shellcheck disable=SC2016
       TMPDIR="$cr_tmp/tmp" cr_watchdog "${3:-$cr_watchdog_s}" "$cr_tmp/watch.log" bash -c 'reflow_search_runner "$@"' _ \
-        "$cr_tmp/stub.py" "$1" "$cr_tmp/reflow-base" "$cr_tmp/search.js" /nonexistent 2>&1
+        "$cr_tmp/stub.py" "$1" "$cr_tmp/reflow-base" "$cr_tmp/search.js" /nonexistent "${@:4}" 2>&1
       cr_rc=$?
       [[ $cr_rc -eq 124 ]] && : >"$cr_tmp/hung"
       exit "$cr_rc"
@@ -1342,6 +1386,36 @@ PY
     echo "FAIL reflow-search/table: stopped after reflow-search/r3, the first failing row (SELFTEST_STOP_AT_FIRST_FAIL=1); 1 of 4 rows not reported")"
   cr_got="$(cr_reflow "$cr_tmp/text.tsv" 1)"
   cr_row reflow-ok-line-mentions-fail "$(cr_diff "$cr_got" "$cr_want")"
+
+  # The runner arguments of Replikanti/interviewscam#61 (before the hang
+  # rows, whose hung flag stops every later call). reflow_search_runner:
+  # the label names every row and the table line; mode cells hands
+  # cmd_reflow no_reveal_cells False and no_search True, the default mode
+  # the reverse (the stub's outcome `args` prints both as its finding).
+  printf 'r1\toutcome.txt\tpass\targs\tno_reveal_cells False, no_search True\n' >"$cr_tmp/cells.tsv"
+  printf 'r1\toutcome.txt\tpass\targs\tno_reveal_cells True, no_search False\n' >"$cr_tmp/search.tsv"
+  cr_got="$(cr_reflow "$cr_tmp/cells.tsv" -unset "" x-cells cells)"
+  cr_want="$(printf 'ok   x-cells/r1 (failed as expected: no_reveal_cells False, no_search True)\nok   x-cells/table (1 rows)')"
+  cr_bad=""
+  [[ "$cr_got" == "$cr_want" ]] || cr_bad=" output: $(tr '\n' '|' <<<"$cr_got")"
+  cr_row reflow-label-and-cells-mode "$cr_bad"
+  cr_got="$(cr_reflow "$cr_tmp/search.tsv" -unset)"
+  cr_want="$(printf 'ok   reflow-search/r1 (failed as expected: no_reveal_cells True, no_search False)\nok   reflow-search/table (1 rows)')"
+  cr_bad=""
+  [[ "$cr_got" == "$cr_want" ]] || cr_bad=" output: $(tr '\n' '|' <<<"$cr_got")"
+  cr_row reflow-default-label-and-mode "$cr_bad"
+  # The EXIT2 expect (fix round 1): a usage error with the text is ok, the
+  # same error with another text, or exit 1 with the text, is a FAIL.
+  printf 'r1\toutcome.txt\tpass\tusage\tEXIT2 the cell did not apply\nr2\toutcome.txt\tpass\tusage\tEXIT2 another text\nr3\toutcome.txt\tpass\tfail\tEXIT2 stub finding\n' >"$cr_tmp/exit2.tsv"
+  cr_got="$(cr_reflow "$cr_tmp/exit2.tsv" -unset "" x-cells cells)"
+  cr_bad=""
+  grep -qxF 'ok   x-cells/r1 (exit 2 as expected: the cell did not apply)' <<<"$cr_got" \
+    || cr_bad+=" r1 is not ok;"
+  grep -qF "FAIL x-cells/r2: expected exit 2 and 'another text'; got exit 2" <<<"$cr_got" \
+    || cr_bad+=" r2 did not fail;"
+  grep -qF "FAIL x-cells/r3: expected exit 2 and 'stub finding'; got exit 1" <<<"$cr_got" \
+    || cr_bad+=" r3 did not fail;"
+  cr_row reflow-exit2-expect "$cr_bad${cr_bad:+ output: $(tr '\n' '|' <<<"$cr_got")}"
 
   # The watchdog passes the command's status on: a runner that fails
   # without hanging (no table: a traceback, exit 1) and one whose process
@@ -1496,6 +1570,26 @@ PY
   [[ "$(cr_diff "$cr_got" "$cr_want")" == " not run, an earlier reflow_search_runner call hung" ]] \
     || cr_bad+=" cr_diff gave '$(cr_diff "$cr_got" "$cr_want")';"
   cr_row watchdog-skips-after-hang "$cr_bad${cr_bad:+ output: $(tr '\n' '|' <<<"$cr_got")}"
+
+  # site_cases_runner mode css: an edited stylesheet is renamed to the name
+  # rule (l) needs for its new bytes and relinked on every page, and
+  # cmd_site runs with the built pins off; without the mode none of that.
+  mkdir -p "$cr_tmp/site-base/public/css" "$cr_tmp/site-base/public/a"
+  printf 'a{}' >"$cr_tmp/site-base/public/css/site.min.0a.css"
+  printf '<link rel=stylesheet href=/css/site.min.0a.css>\n' >"$cr_tmp/site-base/public/index.html"
+  printf '<link rel=stylesheet href=/css/site.min.0a.css>\n' >"$cr_tmp/site-base/public/a/index.html"
+  printf 'c1\tpublic/css/site.min.0a.css\ta{}\tb{}\tnames True, linked True, no_built_pins True\n' >"$cr_tmp/css.tsv"
+  printf 'c1\tpublic/css/site.min.0a.css\ta{}\tb{}\tnames False, linked True, no_built_pins False\n' >"$cr_tmp/css-off.tsv"
+  cr_bad=""
+  cr_got="$(site_cases_runner "$cr_tmp/stub.py" "$cr_tmp/css.tsv" "$cr_tmp/site-base" \
+    "$cr_tmp/schema" x css 2>&1)"
+  [[ "$cr_got" == "$(printf 'ok   x/c1 (failed as expected: names True, linked True, no_built_pins True)\nok   x/table (1 rows)')" ]] \
+    || cr_bad+=" mode css: $(tr '\n' '|' <<<"$cr_got");"
+  cr_got="$(site_cases_runner "$cr_tmp/stub.py" "$cr_tmp/css-off.tsv" "$cr_tmp/site-base" \
+    "$cr_tmp/schema" x 2>&1)"
+  [[ "$cr_got" == "$(printf 'ok   x/c1 (failed as expected: names False, linked True, no_built_pins False)\nok   x/table (1 rows)')" ]] \
+    || cr_bad+=" no mode: $(tr '\n' '|' <<<"$cr_got");"
+  cr_row site-css-mode-renames-and-relinks "$cr_bad"
   rm -rf "$cr_tmp"
 }
 
@@ -2085,8 +2179,14 @@ PY
 # (Replikanti/interviewscam#44); every find string must occur exactly once,
 # so a row never turns into a no-op. An expect ONLY <text> needs every
 # finding to hold <text> (a row that must trip rule (m) and nothing else).
+# With a 6th argument `css` (label site-css-state, Replikanti/interviewscam#61)
+# a row whose file is a public/css/*.css file of the copy has that file
+# renamed after the edits to the name rule (l) needs for its new bytes
+# (<stem>.min.<SHA-256>.css, built_style_path), the old name replaced by the
+# new one in every .html file of the copy, and cmd_site runs with the
+# built pins off, so an edited stylesheet can PASS.
 site_cases_runner() {
-  python3 -I -B - "$1" "$2" "$3" "$4" "${5:-site-head}" <<'PY'
+  python3 -I -B - "$1" "$2" "$3" "$4" "${5:-site-head}" "${6:-}" <<'PY'
 import argparse
 import contextlib
 import importlib.util
@@ -2102,6 +2202,7 @@ sitecheck = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sitecheck)
 table, base, schema_dir = Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
 label = sys.argv[5]
+css_mode = sys.argv[6] == "css"
 
 
 def unescape(text):
@@ -2134,10 +2235,19 @@ for row in rows:
                   "(in turn), the row needs exactly one each")
             continue
         path.write_text(text, encoding="utf-8")
+        css_dir = root / "public" / "css"
+        if css_mode and path.parent == css_dir and path.suffix == ".css":
+            data = path.read_bytes()
+            stem = path.name.split(".min.", 1)[0]
+            fresh = root / "public" / sitecheck.built_style_path(stem, data)[1:]
+            path.rename(fresh)
+            for page in sorted((root / "public").rglob("*.html")):
+                body = page.read_text(encoding="utf-8")
+                page.write_text(body.replace(path.name, fresh.name), encoding="utf-8")
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             rc = sitecheck.cmd_site(argparse.Namespace(
-                records=str(root), schemas=str(schema_dir), no_built_pins=False,
+                records=str(root), schemas=str(schema_dir), no_built_pins=css_mode,
                 public=str(root / "public")))
         output = buffer.getvalue()
     only = expect.startswith("ONLY ")
@@ -7738,7 +7848,10 @@ selftest_blocks() {
         reflow_run=$((reflow_run + 1))
         search_mode=no-search
         [[ -f "$dir/search.txt" ]] && search_mode=""
-        reflow_check "$dir" "$search_mode" >"$out" 2>&1
+        # no-cells: case (7) at 320 CSS px with the script running alone;
+        # the cells run on both trees and in the reflow-cells rows
+        # (Replikanti/interviewscam#61).
+        reflow_check "$dir" "$search_mode" no-cells >"$out" 2>&1
         rc=$?
         ;;
       tokens)
@@ -8089,6 +8202,31 @@ selftest_blocks() {
       n_failed=$((n_failed + 1))
     else
       echo "ok   wiring/reflow-search-case (both reflow steps run case (8); no --no-search)"
+      n_passed=$((n_passed + 1))
+    fi
+
+    # Wiring: every reflow step runs case (7)'s cells (Replikanti/
+    # interviewscam#61): step_reflow (both trees) and step_records_reflow
+    # (the records' production tree), each against a stub sitecheck and a
+    # stub Chrome on PATH, call sitecheck reflow 2 and 1 times, never with
+    # --no-reveal-cells.
+    local cells_args cells_records_args
+    reflow_bin="$(mktemp -d)"
+    printf '#!/bin/sh\nexit 0\n' >"$reflow_bin/google-chrome"
+    chmod +x "$reflow_bin/google-chrome"
+    cells_args="$(sitecheck() { printf '%s\n' "$@"; }; PATH="$reflow_bin:$PATH" step_reflow)"
+    cells_records_args="$(sitecheck() { printf '%s\n' "$@"; }; PATH="$reflow_bin:$PATH" step_records_reflow)"
+    rm -rf "$reflow_bin"
+    if [[ "$(grep -c '^reflow$' <<<"$cells_args")" != 2 \
+        || "$(grep -c '^reflow$' <<<"$cells_records_args")" != 1 ]] \
+        || grep -qx -- '--no-reveal-cells' <<<"$cells_args" \
+        || grep -qx -- '--no-reveal-cells' <<<"$cells_records_args"; then
+      echo "FAIL wiring/reflow-reveal-cells: step_reflow or step_records_reflow in" \
+        "tools/check.sh does not run sitecheck reflow with case (7)'s cells (2 and 1" \
+        "calls, none with --no-reveal-cells)"
+      n_failed=$((n_failed + 1))
+    else
+      echo "ok   wiring/reflow-reveal-cells (step_reflow 2 calls, step_records_reflow 1, none with --no-reveal-cells)"
       n_passed=$((n_passed + 1))
     fi
 
@@ -8581,6 +8719,26 @@ PINNED
     n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
     if ! grep -qE '^(ok   |FAIL )site-head/table' "$out"; then
       echo "FAIL site-head: the runner did not finish; output:"
+      sed 's/^/     | /' "$out"
+      n_failed=$((n_failed + 1))
+    fi
+  fi
+
+  if selftest_wants site-css-state; then
+    # site-css-state (Replikanti/interviewscam#61, ADR-0003 part 6
+    # amendment): site rules (a) to (d) of the built stylesheet and markup
+    # rule (p) row by row from tests/fixtures/site/css-state-cases.tsv on
+    # site/pass-built-pins (site_cases_runner above, mode css: an edited
+    # stylesheet is renamed to its new SHA-256 and relinked, the built pins
+    # off), locally and in CI.
+    site_cases_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+      "$FIXTURES/site/css-state-cases.tsv" "$FIXTURES/site/pass-built-pins" \
+      "$SELFTEST_ROOT/schema" site-css-state css >"$out" 2>&1
+    sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+    n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+    n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+    if ! grep -qE '^(ok   |FAIL )site-css-state/table' "$out"; then
+      echo "FAIL site-css-state: the runner did not finish; output:"
       sed 's/^/     | /' "$out"
       n_failed=$((n_failed + 1))
     fi
@@ -9950,7 +10108,7 @@ STUB
         default-budget) budget_args=() ;;
         *) budget_args=(--launch-timeout 1) ;;
       esac
-      sitecheck reflow --chrome "$stub_dir/chrome" --no-search "${budget_args[@]}" \
+      sitecheck reflow --chrome "$stub_dir/chrome" --no-search --no-reveal-cells "${budget_args[@]}" \
         "$FIXTURES/reflow/pass-fluid" >"$out" 2>&1
       rc=$?
       launches=0
@@ -10707,6 +10865,40 @@ PY
     fi
   fi
 
+  if selftest_wants reflow-cells; then
+    # reflow-cells/<row> (Replikanti/interviewscam#61, CI only): case (7)'s
+    # cells, the skip link at 320, 341 and 385 CSS px with the script
+    # running and with scripting off, row by row from
+    # tests/fixtures/reflow/cells-cases.tsv on a copy of reflow/pass-search
+    # (reflow_search_runner, mode cells: case (8) off), counted with the
+    # reflow fixtures.
+    local cells_rows cells_chrome
+    cells_rows="$(grep -cv '^#\|^$' "$FIXTURES/reflow/cells-cases.tsv")"
+    reflow_total=$((reflow_total + cells_rows))
+    if in_github_actions; then
+      if cells_chrome="$(command -v google-chrome || command -v google-chrome-stable)"; then
+        reflow_search_runner "$SELFTEST_ROOT/tools/sitecheck.py" \
+          "$FIXTURES/reflow/cells-cases.tsv" "$FIXTURES/reflow/pass-search" \
+          "$SELFTEST_ROOT/assets/js/search.js" "$cells_chrome" reflow-cells cells >"$out" 2>&1
+        sed -n '/^ok   \|^FAIL /p; /^     | /p' "$out"
+        n_passed=$((n_passed + $(grep -c '^ok   ' "$out")))
+        n_failed=$((n_failed + $(grep -c '^FAIL ' "$out")))
+        reflow_run=$((reflow_run + $(grep '^\(ok   \|FAIL \)reflow-cells/' "$out" \
+          | grep -cv '^\(ok   \|FAIL \)reflow-cells/table')))
+        if ! grep -qE '^(ok   |FAIL )reflow-cells/table' "$out"; then
+          echo "FAIL reflow-cells: the runner did not finish; output:"
+          sed 's/^/     | /' "$out"
+          n_failed=$((n_failed + 1))
+        fi
+      else
+        echo "FAIL reflow-cells: Google Chrome not found; in CI case (7)'s cells must run"
+        n_failed=$((n_failed + 1))
+      fi
+    else
+      echo "NOT RUN reflow-cells/* ($cells_rows rows, CI only)"
+    fi
+  fi
+
   if selftest_wants mutate; then
     # mutate/<test> (Replikanti/interviewscam#40, ADR-0008): the unit tests
     # of tools/mutate.py, the sweep runner, on throwaway repositories with a
@@ -10800,9 +10992,10 @@ PY
   fi
 
   # The closing invariants hold for the suites that ran: the html pair when
-  # html is selected, the reflow pair when reflow or reflow-search is.
+  # html is selected, the reflow pair when reflow, reflow-search or
+  # reflow-cells is.
   local want_reflow=0
-  selftest_wants reflow reflow-search && want_reflow=1
+  selftest_wants reflow reflow-search reflow-cells && want_reflow=1
   if selftest_wants html && [[ $html_total -eq 0 ]]; then
     echo "FAIL: no html fixtures found"
     n_failed=$((n_failed + 1))
