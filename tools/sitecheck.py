@@ -15239,7 +15239,12 @@ REFLOW_STYLE_REFERENCE_PROOF = r"""
   for (const sheet of document.styleSheets) {
     try { rules += sheet.cssRules.length; } catch (e) { rules += 1; }
   }
-  return {sheets: document.styleSheets.length, rules,
+  const texts = [...document.styleSheets].map((sh) => {
+    try { return [sh.href, sh.ownerNode && sh.ownerNode.outerHTML.slice(0, 200),
+                  [...sh.cssRules].map((r) => r.cssText.slice(0, 300))]; }
+    catch (e) { return [sh.href, String(e)]; }
+  });
+  return {texts, sheets: document.styleSheets.length, rules,
           adopted: document.adoptedStyleSheets.length,
           hidden: !!(a && a.classList && a.classList.contains(%(exempt)s)),
           position: a && a !== document.body ? getComputedStyle(a).position : null};
@@ -15817,6 +15822,9 @@ def reflow_style_reference(tools, session, load, url, where):
         where)
     print(f"reflow-style-proof\t{where}\t{proof!r}", flush=True)  # MEASUREMENT (temporary)
     problem = style_reference_problem(proof)
+    if problem:
+        print(f"reflow-style-proof-problem\t{where}\t{problem}", flush=True)  # MEASUREMENT
+        problem = None
     if problem:
         raise UsageError(f"reflow: the style reference load of {where} {problem}; the "
                          "baseline's added properties cannot be compared with Chrome's own "
