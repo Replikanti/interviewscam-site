@@ -1,0 +1,16 @@
+# reflow case (7)'s pinned computed style in every cell
+# (Replikanti/interviewscam#63, ADR-0003 part 6 amendment, decision D7):
+# the comparison against tools/skip-link-style.tsv at 320, 341 and 385 CSS
+# px, each with the script running and with scripting off, on a copy of
+# reflow/pass-search with today's assets/js/search.js and the pinned built
+# stylesheet (reflow_search_runner in tools/selftest.sh, mode style-cells:
+# case (7)'s cells on, case (8) off; CI only). One baseline serves every
+# cell; only the viewport rule reads the cell's width. Columns as in
+# search-cases.tsv.
+pass-real-stylesheet-cells	search.js	-	-	PASS
+above-24rem	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{font-family:serif}@media(max-width:24rem){body>a{font-family:inherit}}	at 385 x 640 CSS px with the script running: (7) the focused 'a[.]visually-hidden' is not styled as pinned: a.visually-hidden font-family is
+above-24rem-scripting-off	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{font-family:serif}@media(max-width:24rem){body>a{font-family:inherit}}	at 385 x 640 CSS px with scripting off: (7) the focused 'a[.]visually-hidden' is not styled as pinned: a.visually-hidden font-family is
+count-above-24rem	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body>a{font-family:serif}@media(max-width:24rem){body>a{font-family:inherit}}	skip-link style: 8 of 12 cells as pinned
+band-341	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}@media(max-width:24rem){body>a{-webkit-text-stroke:1px}}@media(max-width:21.25rem){body>a{-webkit-text-stroke:initial}}	at 341 x 640 CSS px with the script running: (7) the focused 'a[.]visually-hidden' is not styled as pinned: a.visually-hidden -webkit-text-stroke-width is
+scripting-off	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}body:has(.copy[hidden])>a{-webkit-text-stroke:1px}	at 320 x 640 CSS px with scripting off: (7) the focused 'a[.]visually-hidden' is not styled as pinned: a.visually-hidden -webkit-text-stroke-width is
+html-width-fixed-320	css/site.min.f259b2c984cca324d27710468a5df55c21e474a7ef38c7225c5ce0aa37d9a932.css	.search-out[hidden]{display:none!important}	.search-out[hidden]{display:none!important}html{width:320px}	at 341 x 640 CSS px with the script running: (7) the focused 'a[.]visually-hidden' is not styled as pinned: html width is '320px', not the 341 CSS px of the cell

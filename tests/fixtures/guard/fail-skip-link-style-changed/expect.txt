@@ -1,0 +1,1 @@
+tools/skip-link-style.tsv: the pinned skip-link style tools/skip-link-style.tsv has the SHA-256
