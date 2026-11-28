@@ -282,3 +282,13 @@ charref-viewport-name	public/index.html	name="viewport"	name="viewport&#1;"	(i) 
 charref-text-after-csp	public/index.html	<meta name="viewport"	&#1;<meta name="viewport"	(i) a numeric character reference to U+0001
 charref-script-integrity	public/index.html	integrity="sha384-ZN9T7V1iyMXIvjrua9OcEXGiu4h0KzQkeQNUBWZXw/rxAOp8wESv/gbnYWS4g7kk"	integrity="sha384-ZN9T7V1iyMXIvjrua9OcEXGiu4h0KzQkeQNUBWZXw/rxAOp8wESv/gbnYWS4g7kk&#1;"	(i) a numeric character reference to U+0001
 charref-stylesheet-rel	public/index.html	<link rel="stylesheet"	<link rel="stylesheet&#1;"	(i) a numeric character reference to U+0001
+# Replikanti/interviewscam#64 with the built pins on: a legacy named
+# reference without ';' before a letter (&notx) in one of two preview
+# values that must be equal, the other holding the sign it decodes to
+# (\u{00AC}x). html.parser before Python 3.14 decodes &notx in a value and
+# reads the twins as equal, the browser keeps it as text, so site rule (i)
+# refuses the reference itself: the descriptions (o4), the titles (o5) and
+# the meta description against its previews (o6).
+legacyref-o4-description-twin	public/index.html	<meta property="og:description" content="A fixture page.">	<meta property="og:description" content="A fixture&notx page.">	(i) the legacy named reference &not without	<meta name="twitter:description" content="A fixture page.">	<meta name="twitter:description" content="A fixture\u{00AC}x page.">	<meta name="description" content="A fixture page.">	<meta name="description" content="A fixture\u{00AC}x page.">
+legacyref-o5-title	public/index.html	<title>fixture 	<title>fixture\u{00AC}x 	(i) the legacy named reference &not without	<meta property="og:title" content="fixture">	<meta property="og:title" content="fixture&notx">	<meta name="twitter:title" content="fixture">	<meta name="twitter:title" content="fixture&notx">
+legacyref-o6-meta-description	public/index.html	<meta name="description" content="A fixture page.">	<meta name="description" content="A fixture&notx page.">	(i) the legacy named reference &not without	<meta property="og:description" content="A fixture page.">	<meta property="og:description" content="A fixture\u{00AC}x page.">	<meta name="twitter:description" content="A fixture page.">	<meta name="twitter:description" content="A fixture\u{00AC}x page.">
