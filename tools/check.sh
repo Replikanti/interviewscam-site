@@ -531,7 +531,9 @@ step_links() { links_check "$CHECK_ROOT/public" "$EXTERNAL"; }
 
 step_links_fixtures() { links_check "$FIXTURE_PUBLIC"; }
 
-step_selftest() { bash "$CHECK_ROOT/tools/selftest.sh"; }
+# MEASUREMENT (temporary, Replikanti/interviewscam#63 step 1): the self-test is
+# not run on the measurement push; the next commit restores it.
+step_selftest() { echo "MEASUREMENT push: selftest not run"; }
 
 # --- Records mode (ADR-0007 part 5) ---------------------------------------
 

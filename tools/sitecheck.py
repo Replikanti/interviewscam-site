@@ -15179,6 +15179,63 @@ REFLOW_ANCESTOR_PLACEMENT = ("transform", "scale", "rotate", "offset-path")
 # hidden label), so it fails before the probe; a closed set, so
 # `content: ""` fails too.
 REFLOW_NO_GENERATED = frozenset({"none"})
+# Case (7), the pinned computed style (Replikanti/interviewscam#63, ADR-0003
+# part 6 amendment): the five scopes whose complete computed style is read
+# on the focused skip link, in this order: the element, its ::first-line and
+# ::first-letter, and its two ancestors, which the reveal's markup
+# (layouts/baseof.html) puts at body and html.
+SKIP_LINK_STYLE_SCOPES = ("a.visually-hidden", "a.visually-hidden::first-line",
+                          "a.visually-hidden::first-letter", "body", "html")
+# The focused element and its ancestors up to <html>, labelled as the focus
+# script labels them (tag, #id, .class each).
+SKIP_LINK_STYLE_CHAIN = ("a.visually-hidden", "body", "html")
+# What the style reference load blocks (D3): every stylesheet and script,
+# so the skip link and its ancestors take Chrome's own style for the markup.
+REFLOW_STYLE_REFERENCE_BLOCKED = ("*.css", "*.js", "*.mjs")
+# Runs on document.activeElement: the label of the element and of each
+# ancestor up to <html> (chain), and the complete computed style of each
+# scope, every property Chrome enumerates (cs.item(i) for i < cs.length)
+# with its getPropertyValue, in Chrome's order. The pseudo-elements are read
+# with getComputedStyle's second argument.
+REFLOW_STYLE_SCRIPT = r"""
+(() => {
+  const label = (el) => {
+    let s = el.tagName.toLowerCase();
+    if (el.id) s += "#" + el.id;
+    for (const c of el.classList) s += "." + c;
+    return s;
+  };
+  const read = (cs) => {
+    const out = [];
+    for (let i = 0; i < cs.length; i++) {
+      const p = cs.item(i);
+      out.push([p, cs.getPropertyValue(p)]);
+    }
+    return out;
+  };
+  const a = document.activeElement;
+  if (!a) return {chain: [], scopes: []};
+  const chain = [];
+  for (let e = a; e; e = e.parentElement) chain.push(label(e));
+  const scopes = [[label(a), read(getComputedStyle(a))]];
+  for (const pseudo of ["::first-line", "::first-letter"])
+    scopes.push([label(a) + pseudo, read(getComputedStyle(a, pseudo))]);
+  for (let e = a.parentElement; e; e = e.parentElement)
+    scopes.push([label(e), read(getComputedStyle(e))]);
+  return {chain, scopes};
+})()
+"""
+# The proof of the style reference load (D3): no stylesheet applies, the
+# focused element carries the class, and its computed position is static
+# (the class's own rule sets absolute).
+REFLOW_STYLE_REFERENCE_PROOF = r"""
+(() => {
+  const a = document.activeElement;
+  return {sheets: document.styleSheets.length,
+          hidden: !!(a && a.classList && a.classList.contains(%(exempt)s)),
+          position: a && a !== document.body ? getComputedStyle(a).position : null};
+})()
+"""
 # The pixel occlusion check's proof of the hiding (Replikanti/interviewscam#39,
 # ADR-0005 part 6 amendment): the computed styles DOMSnapshot.captureSnapshot
 # returns for every layout object, in this order. visibility proves that
@@ -15686,6 +15743,81 @@ def region_differences(seen, parsed):
         else:
             out.append(tree_difference(a[2], b[2], f"{kind} {nth} <{b[2][0]}>"))
     return out
+
+
+def style_observation(value):
+    """(chain, {scope: {property: value}}) of a REFLOW_STYLE_SCRIPT result,
+    or None when it has another shape: a chain of strings, and scopes as
+    [name, [[property, value], ...]] with string names, properties and
+    values and no property twice in a scope."""
+    if not isinstance(value, dict):
+        return None
+    chain, scopes = value.get("chain"), value.get("scopes")
+    if not isinstance(chain, list) or not all(isinstance(c, str) for c in chain) \
+            or not isinstance(scopes, list):
+        return None
+    table = {}
+    for item in scopes:
+        if not (isinstance(item, list) and len(item) == 2 and isinstance(item[0], str)
+                and isinstance(item[1], list)) or item[0] in table:
+            return None
+        props = {}
+        for pair in item[1]:
+            if not (isinstance(pair, list) and len(pair) == 2
+                    and all(isinstance(x, str) for x in pair)) or pair[0] in props:
+                return None
+            props[pair[0]] = pair[1]
+        table[item[0]] = props
+    return chain, table
+
+
+def style_reference_problem(proof):
+    """None when the style reference load's proof holds (D3): no stylesheet
+    in document.styleSheets, the focused element carries the class, and its
+    computed position is static; else the text of the failure."""
+    if not isinstance(proof, dict):
+        return "returned no proof"
+    if proof.get("sheets") != 0:
+        return (f"still applied a stylesheet: document.styleSheets holds "
+                f"{show(proof.get('sheets'))}, not 0")
+    if proof.get("hidden") is not True:
+        return f"focused no element of class {VISUALLY_HIDDEN} on one Tab press"
+    if proof.get("position") != "static":
+        return (f"still applied a stylesheet: the focused skip link's computed position is "
+                f"{show(proof.get('position'))}, not static")
+    return None
+
+
+def reflow_style_reference(tools, session, load, url, where):
+    """The style reference load (D3): the page loaded with every stylesheet
+    and script blocked (REFLOW_STYLE_REFERENCE_BLOCKED), one Tab press, the
+    proof, and the REFLOW_STYLE_SCRIPT result; the blocking then reset as
+    case (6)'s S1 resets it. A failed load or proof raises UsageError."""
+    tools.send("Network.enable", session=session)
+    tools.send("Network.setBlockedURLs", {"urls": list(REFLOW_STYLE_REFERENCE_BLOCKED)},
+               session=session)
+    error = load(url)
+    if error:
+        raise UsageError(f"reflow: the style reference load of {where} did not load: {error}")
+    for kind in ("keyDown", "keyUp"):
+        tools.send("Input.dispatchKeyEvent", dict(REFLOW_TAB_KEY, type=kind), session=session)
+    problem = style_reference_problem(reflow_value(
+        tools, session, REFLOW_STYLE_REFERENCE_PROOF % {"exempt": json.dumps(VISUALLY_HIDDEN)},
+        where))
+    if problem:
+        raise UsageError(f"reflow: the style reference load of {where} {problem}; the "
+                         "baseline's added properties cannot be compared with Chrome's own "
+                         "values")
+    observed = reflow_value(tools, session, REFLOW_STYLE_SCRIPT, where)
+    tools.send("Network.setBlockedURLs", {"urls": []}, session=session)
+    tools.send("Network.disable", session=session)
+    return observed
+
+
+def skip_link_style_escape(text):
+    """A value as tools/skip-link-style.tsv writes it: backslash, tab and
+    newline escaped as \\\\, \\t and \\n."""
+    return text.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
 
 
 def static_head(text):
@@ -18656,6 +18788,7 @@ def cmd_reflow(args):
                 tools.send("Input.dispatchKeyEvent", dict(REFLOW_TAB_KEY, type=kind),
                            session=session)
             focus = reflow_value(tools, session, focus_script, where)
+            diag_style(where)
             box = (f"{focus.get('width', 0):.1f} x {focus.get('height', 0):.1f} CSS px at "
                    f"x {focus.get('left', 0):.1f} to {focus.get('right', 0):.1f}, y "
                    f"{focus.get('top', 0):.1f} to {focus.get('bottom', 0):.1f}")
@@ -18686,6 +18819,56 @@ def cmd_reflow(args):
             "ancestor": json.dumps(list(REFLOW_ANCESTOR_PLACEMENT)),
             "pseudos": json.dumps(list(REFLOW_PLACEMENT_PSEUDOS)),
             "minline": json.dumps(REFLOW_MIN_LINE_HEIGHT)}
+        # MEASUREMENT (temporary, Replikanti/interviewscam#63 step 1): the
+        # reference load and the observed rows, printed for the baseline.
+        diag_first = []
+        diag_tree = str(public)
+        for rel, path in pages:
+            elements = parse_page((public / rel).read_text(encoding="utf-8",
+                                                           errors="replace")).elements
+            if any(VISUALLY_HIDDEN in re.split(r"[\t\n\f\r ]+", attrs.get("class") or "")
+                   for _, attrs in elements):
+                started = time.monotonic()
+                ref = style_observation(reflow_style_reference(
+                    tools, session, load, origin + path, f"public/{rel}"))
+                print(f"reflow-style-time\t{diag_tree}\treference\tpublic/{rel}\t"
+                      f"{time.monotonic() - started:.3f}", flush=True)
+                if ref is None:
+                    print(f"reflow-style-ref\t{diag_tree}\tUNREADABLE")
+                else:
+                    print(f"reflow-style-ref-chain\t{diag_tree}\t{ref[0]!r}")
+                    for scope, props in ref[1].items():
+                        for prop, value in sorted(props.items()):
+                            print(f"reflow-style-ref\t{diag_tree}\t{scope}\t{prop}\t"
+                                  f"{skip_link_style_escape(value)}")
+                break
+
+        def diag_style(where):
+            started = time.monotonic()
+            seen = style_observation(reflow_value(tools, session, REFLOW_STYLE_SCRIPT, where))
+            took = time.monotonic() - started
+            print(f"reflow-style-time\t{diag_tree}\tcell\t{where}\t{took:.3f}")
+            if seen is None:
+                print(f"reflow-style-vary\t{diag_tree}\t{where}\tUNREADABLE")
+                return
+            if not diag_first:
+                diag_first.append(seen)
+                print(f"reflow-style-dump-chain\t{diag_tree}\t{where}\t{seen[0]!r}")
+                for scope, props in seen[1].items():
+                    for prop, value in sorted(props.items()):
+                        print(f"reflow-style-dump\t{diag_tree}\t{scope}\t{prop}\t"
+                              f"{skip_link_style_escape(value)}")
+                return
+            first = diag_first[0]
+            if seen[0] != first[0]:
+                print(f"reflow-style-vary\t{diag_tree}\t{where}\tCHAIN\t{seen[0]!r}")
+            for scope in sorted(set(first[1]) | set(seen[1])):
+                a, b = first[1].get(scope, {}), seen[1].get(scope, {})
+                for prop in sorted(set(a) | set(b)):
+                    if a.get(prop) != b.get(prop):
+                        print(f"reflow-style-vary\t{diag_tree}\t{where}\t{scope}\t{prop}\t"
+                              f"{skip_link_style_escape(str(b.get(prop, '<absent>')))}")
+
         for rel, path in pages:
             where = f"public/{rel}"
             elements = parse_page((public / rel).read_text(encoding="utf-8",
