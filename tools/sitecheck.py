@@ -15225,13 +15225,22 @@ REFLOW_STYLE_SCRIPT = r"""
   return {chain, scopes};
 })()
 """
-# The proof of the style reference load (D3): no stylesheet applies, the
-# focused element carries the class, and its computed position is static
-# (the class's own rule sets absolute).
+# The proof of the style reference load (D3): no stylesheet rule applies,
+# the focused element carries the class, and its computed position is
+# static (the class's own rule sets absolute). Measured on Chrome 158 (run
+# 46117959559): a blocked <link rel=stylesheet> still adds one sheet to
+# document.styleSheets, with no rules, so the proof counts the rules of
+# every sheet (a sheet whose rules cannot be read counts as one) and the
+# adopted sheets, not the sheets.
 REFLOW_STYLE_REFERENCE_PROOF = r"""
 (() => {
   const a = document.activeElement;
-  return {sheets: document.styleSheets.length,
+  let rules = 0;
+  for (const sheet of document.styleSheets) {
+    try { rules += sheet.cssRules.length; } catch (e) { rules += 1; }
+  }
+  return {sheets: document.styleSheets.length, rules,
+          adopted: document.adoptedStyleSheets.length,
           hidden: !!(a && a.classList && a.classList.contains(%(exempt)s)),
           position: a && a !== document.body ? getComputedStyle(a).position : null};
 })()
@@ -15772,14 +15781,16 @@ def style_observation(value):
 
 
 def style_reference_problem(proof):
-    """None when the style reference load's proof holds (D3): no stylesheet
-    in document.styleSheets, the focused element carries the class, and its
+    """None when the style reference load's proof holds (D3): no rule in
+    document.styleSheets and no adopted sheet, the focused element carries
+    the class, and its
     computed position is static; else the text of the failure."""
     if not isinstance(proof, dict):
         return "returned no proof"
-    if proof.get("sheets") != 0:
+    if proof.get("rules") != 0 or proof.get("adopted") != 0:
         return (f"still applied a stylesheet: document.styleSheets holds "
-                f"{show(proof.get('sheets'))}, not 0")
+                f"{show(proof.get('rules'))} rule(s) in {show(proof.get('sheets'))} sheet(s) "
+                f"and {show(proof.get('adopted'))} adopted sheet(s), not 0")
     if proof.get("hidden") is not True:
         return f"focused no element of class {VISUALLY_HIDDEN} on one Tab press"
     if proof.get("position") != "static":
@@ -15801,9 +15812,11 @@ def reflow_style_reference(tools, session, load, url, where):
         raise UsageError(f"reflow: the style reference load of {where} did not load: {error}")
     for kind in ("keyDown", "keyUp"):
         tools.send("Input.dispatchKeyEvent", dict(REFLOW_TAB_KEY, type=kind), session=session)
-    problem = style_reference_problem(reflow_value(
+    proof = reflow_value(
         tools, session, REFLOW_STYLE_REFERENCE_PROOF % {"exempt": json.dumps(VISUALLY_HIDDEN)},
-        where))
+        where)
+    print(f"reflow-style-proof\t{where}\t{proof!r}", flush=True)  # MEASUREMENT (temporary)
+    problem = style_reference_problem(proof)
     if problem:
         raise UsageError(f"reflow: the style reference load of {where} {problem}; the "
                          "baseline's added properties cannot be compared with Chrome's own "
