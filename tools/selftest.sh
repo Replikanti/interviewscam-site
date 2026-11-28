@@ -7502,7 +7502,7 @@ selftest_only_rows() {
   so_partner_case partner-pin pin \
     $'ok   pin/pass-a\nok   pin/cases\ncounts 2 0'
   so_partner_case partner-intake site-intake \
-    $'ok   site-intake/table\nok   site-intake/coverage\nok   site-intake/coverage-fails-on-missing-row\nok   site-intake/coverage-fails-on-missing-row\nok   site-intake/coverage-fails-on-missing-row\nok   site-intake/coverage-fails-on-missing-row\ncounts 6 0'
+    $'ok   site-intake/table\nok   site-intake/coverage\nok   site-intake/coverage-fails-on-missing-row\nok   site-intake/coverage-fails-on-missing-row\nok   site-intake/coverage-fails-on-missing-row\nok   site-intake/coverage-fails-on-missing-row\nok   site-intake/coverage-fails-on-missing-row\ncounts 7 0'
   so_partner_case partner-both pin,pin-extra \
     "$(printf '%s\n' 'ok   pin/pass-a' 'FAIL pin-extra/sha-form'; for so_n in $(seq 1 13); do echo "ok   pin-extra/x-$so_n"; done; printf '%s\n' 'ok   pin/cases' 'FAIL pin/extra')"$'\ncounts 15 2'
 
